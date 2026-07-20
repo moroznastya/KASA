@@ -17,7 +17,7 @@ class ReceiptItemCreate(BaseModel):
     product_id: UUID = Field(..., description="ID товару")
     quantity: Decimal = Field(..., max_digits=10, decimal_places=3, description="Кількість")
     price: Decimal = Field(..., max_digits=10, decimal_places=2, description="Ціна за одиницю (грн)")
-    total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
+    total: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума (грн)")
 
 
 class ReceiptItemResponse(BaseModel):
@@ -25,9 +25,13 @@ class ReceiptItemResponse(BaseModel):
     id: UUID
     receipt_id: UUID
     product_id: UUID
+    product_name: str = Field("", description="Назва товару")
     quantity: Decimal
     price: Decimal
     total: Decimal
+    purchase_price: Optional[Decimal] = Field(None, description="Собівартість товару на момент продажу")
+    profit: Optional[Decimal] = Field(None, description="Прибуток = total - (purchase_price * quantity)")
+    vat_amount: Optional[Decimal] = Field(None, description="Сума ПДВ для цієї позиції")
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -35,9 +39,9 @@ class ReceiptItemResponse(BaseModel):
 
 class ReceiptCreate(BaseModel):
     """Схема створення нового чеку (продаж або повернення)."""
-    receipt_number: str = Field(..., max_length=50, description="Номер чеку")
+    receipt_number: Optional[str] = Field(None, max_length=50, description="Номер чеку")
     receipt_type: ReceiptType = Field(ReceiptType.SALE, description="Тип чеку: sale або return")
-    cashier_id: UUID = Field(..., description="ID касира")
+    cashier_id: Optional[UUID] = Field(None, description="ID касира")
     total_amount: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума чеку (грн)")
     is_return: bool = Field(False, description="Чи є поверненням")
     notes: Optional[str] = Field(None, description="Нотатки до чеку")
@@ -55,6 +59,8 @@ class ReceiptResponse(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
     items: list[ReceiptItemResponse] = []
+    total_profit: Optional[Decimal] = Field(None, description="Загальний чистий прибуток по чеку")
+    vat_amount: Optional[Decimal] = Field(None, description="Загальна сума ПДВ по чеку")
 
     model_config = ConfigDict(from_attributes=True)
 

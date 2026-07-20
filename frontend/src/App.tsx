@@ -22,6 +22,8 @@ const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoice
 const PosPage = lazy(() => import('@/pages/pos/PosPage'));
 const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'));
 const LedgerPage = lazy(() => import('@/pages/ledger/LedgerPage'));
+const ReceiptListPage = lazy(() => import('@/pages/receipts/ReceiptListPage'));
+const ReceiptDetailPage = lazy(() => import('@/pages/receipts/ReceiptDetailPage'));
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -83,6 +85,8 @@ const App: React.FC = () => {
             <Route path="documents/transfer/new" element={<TransferFormPage />} />
             <Route path="documents/write-off/new" element={<WriteOffFormPage />} />
             <Route path="documents/return/new" element={<ReturnInvoiceFormPage />} />
+            <Route path="receipts" element={<ReceiptListPage />} />
+            <Route path="receipts/:id" element={<ReceiptDetailPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="ledger" element={<LedgerPage />} />
           </Route>

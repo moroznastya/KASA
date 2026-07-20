@@ -9,6 +9,8 @@ import {
   TrendingUp,
   Plus,
   ArrowRight,
+  Receipt,
+  PiggyBank,
 } from 'lucide-react';
 import { receiptService } from '@/services/receiptService';
 import { productService } from '@/services/productService';
@@ -44,17 +46,24 @@ const DashboardPage: React.FC = () => {
   const statsCards = [
     {
       title: 'Продажі сьогодні',
-      value: todayStats ? formatCurrency(todayStats.total) : '0,00 ₴',
-      subtitle: `${todayStats?.count || 0} чеків`,
+      value: todayStats ? formatCurrency(todayStats.total_sales) : '0,00 ₴',
+      subtitle: `${todayStats?.receipts_count || 0} чеків, ${todayStats?.items_sold || 0} товарів`,
       icon: <TrendingUp className="w-6 h-6" />,
       color: 'bg-primary-50 dark:bg-primary-900/20 text-primary-600',
+    },
+    {
+      title: 'Чистий прибуток',
+      value: todayStats ? formatCurrency(todayStats.total_profit) : '0,00 ₴',
+      subtitle: 'за сьогодні',
+      icon: <PiggyBank className="w-6 h-6" />,
+      color: 'bg-success-50 dark:bg-success-900/20 text-success-600',
     },
     {
       title: 'Кількість товарів',
       value: productsData?.total?.toString() || '0',
       subtitle: 'всього в системі',
       icon: <Package className="w-6 h-6" />,
-      color: 'bg-success-50 dark:bg-success-900/20 text-success-600',
+      color: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600',
     },
     {
       title: 'Активні документи',
@@ -62,13 +71,6 @@ const DashboardPage: React.FC = () => {
       subtitle: 'очікують підтвердження',
       icon: <FileText className="w-6 h-6" />,
       color: 'bg-warning-50 dark:bg-warning-900/20 text-warning-600',
-    },
-    {
-      title: 'Загальний дохід',
-      value: todayStats ? formatCurrency(todayStats.total) : '0,00 ₴',
-      subtitle: 'за сьогодні',
-      icon: <DollarSign className="w-6 h-6" />,
-      color: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600',
     },
   ];
 
@@ -147,72 +149,52 @@ const DashboardPage: React.FC = () => {
       </div>
 
       {/* Recent receipts */}
-      <div className="card">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Останні чеки
-          </h3>
-          <button
-            onClick={() => navigate('/reports')}
-            className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
-          >
-            Всі звіти <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="overflow-x-auto">
-          {!recentReceipts ? (
-            <div className="flex justify-center py-8">
-              <Spinner />
+      {recentReceipts?.items && recentReceipts.items.length > 0 && (
+        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-gray-200 dark:border-slate-700 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Receipt className="w-5 h-5 text-primary-600" />
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Останні чеки</h3>
             </div>
-          ) : recentReceipts.items.length === 0 ? (
-            <div className="text-center py-8 text-gray-400">
-              <ShoppingCart className="w-12 h-12 mx-auto mb-2 opacity-50" />
-              <p>Ще немає чеків</p>
-            </div>
-          ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-slate-800/50">
-                  <th className="table-header">№</th>
-                  <th className="table-header">Сума</th>
-                  <th className="table-header">Метод</th>
-                  <th className="table-header">Статус</th>
-                  <th className="table-header">Час</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                {recentReceipts.items.map((receipt) => (
-                  <tr key={receipt.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50">
-                    <td className="table-cell font-medium">{receipt.receipt_number}</td>
-                    <td className="table-cell">{formatCurrency(receipt.total_amount)}</td>
-                    <td className="table-cell">{formatPaymentMethod(receipt.payment_method)}</td>
-                    <td className="table-cell">
-                      <Badge
-                        variant={
-                          receipt.payment_status === 'paid'
-                            ? 'success'
-                            : receipt.payment_status === 'debt'
-                            ? 'danger'
-                            : 'warning'
-                        }
-                      >
-                        {receipt.payment_status === 'paid'
-                          ? 'Оплачено'
-                          : receipt.payment_status === 'debt'
-                          ? 'Борг'
-                          : 'Частково'}
-                      </Badge>
-                    </td>
-                    <td className="table-cell text-gray-500">
-                      {formatDateTime(receipt.created_at)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+            <button
+              onClick={() => navigate('/receipts')}
+              className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1"
+            >
+              Всі чеки <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="space-y-2">
+            {recentReceipts.items.map((receipt: any) => (
+              <div
+                key={receipt.id}
+                onClick={() => navigate(`/receipts/${receipt.id}`)}
+                className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors border border-gray-100 dark:border-slate-700"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {receipt.receipt_number}
+                  </span>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                    receipt.receipt_type === 'sale'
+                      ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                      : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                  }`}>
+                    {receipt.receipt_type === 'sale' ? 'ПРОДАЖ' : 'ПОВЕРНЕННЯ'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
+                    {receipt.cashier_name || 'Невідомо'}
+                  </span>
+                  <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                    {parseFloat(receipt.total_amount).toLocaleString('uk-UA', { minimumFractionDigits: 2 })} грн
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

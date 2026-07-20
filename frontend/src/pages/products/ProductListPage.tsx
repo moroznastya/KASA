@@ -32,11 +32,11 @@ const ProductListPage: React.FC = () => {
 
   const columns: Column<Product>[] = [
     {
-      key: 'name',
+      key: 'title',
       header: 'Назва',
       render: (item) => (
         <div>
-          <p className="font-medium text-gray-900 dark:text-gray-100">{item.name}</p>
+          <p className="font-medium text-gray-900 dark:text-gray-100">{item.title}</p>
           {item.barcode && (
             <p className="text-xs text-gray-400">ШК: {item.barcode}</p>
           )}
@@ -58,25 +58,19 @@ const ProductListPage: React.FC = () => {
     {
       key: 'stock',
       header: 'Залишок',
-      render: (item) => (
-        <span className={item.stock <= 0 ? 'text-danger-600 font-medium' : ''}>
-          {item.stock} {formatUnit(item.unit)}
-        </span>
-      ),
+      render: (item) => {
+        const stockNum = parseFloat(item.stock);
+        return (
+          <span className={stockNum <= 0 ? 'text-danger-600 font-medium' : ''}>
+            {item.stock} {formatUnit(item.unit)}
+          </span>
+        );
+      },
     },
     {
-      key: 'category_name',
-      header: 'Категорія',
-      render: (item) => item.category_name || '-',
-    },
-    {
-      key: 'is_active',
-      header: 'Статус',
-      render: (item) => (
-        <Badge variant={item.is_active ? 'success' : 'default'}>
-          {item.is_active ? 'Активний' : 'Неактивний'}
-        </Badge>
-      ),
+      key: 'sku',
+      header: 'Артикул',
+      render: (item) => item.sku || '-',
     },
     {
       key: 'actions',
@@ -141,26 +135,30 @@ const ProductListPage: React.FC = () => {
         </Button>
       </div>
 
-      {/* Filters */}
+      {/* Filters — пошук = Назва + Штрих-код, категорії = Залишок + Артикул + Дії */}
       <div className="flex flex-col sm:flex-row gap-4">
-        <SearchInput
-          value={search}
-          onChange={(v) => {
-            setSearch(v);
-            setPage(1);
-          }}
-          placeholder="Пошук за назвою або штрих-кодом..."
-          className="flex-1"
-        />
-        <Select
-          options={categoryOptions}
-          value={categoryFilter}
-          onChange={(e) => {
-            setCategoryFilter(e.target.value);
-            setPage(1);
-          }}
-          className="w-full sm:w-48"
-        />
+        <div className="flex-[2]">
+          <SearchInput
+            value={search}
+            onChange={(v) => {
+              setSearch(v);
+              setPage(1);
+            }}
+            placeholder="Пошук за назвою або штрих-кодом..."
+            className="w-full"
+          />
+        </div>
+        <div className="flex-[3]">
+          <Select
+            options={categoryOptions}
+            value={categoryFilter}
+            onChange={(e) => {
+              setCategoryFilter(e.target.value);
+              setPage(1);
+            }}
+            className="w-full"
+          />
+        </div>
       </div>
 
       {/* Table */}

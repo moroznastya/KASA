@@ -6,6 +6,7 @@ API роутер для отримання списку всіх докумен�
 """
 
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -16,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.invoice import Invoice
 from app.models.transfer import Transfer
-from app.models.write_off import WriteOff
+from app.models.write_off import WriteOff, WriteOffItem
 from app.models.return_invoice import ReturnInvoice
 from app.models.receipt import Receipt
 from app.schemas.invoice import InvoiceResponse
@@ -36,6 +37,7 @@ router = APIRouter(
 async def list_documents(
     page: int = Query(1, ge=1, description="Сторінка"),
     size: int = Query(20, ge=1, le=100, description="Елементів на сторінці"),
+    status: Optional[str] = Query(None, description="Фільтр за статусом (draft, confirmed, cancelled, completed)"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
@@ -51,14 +53,23 @@ async def list_documents(
     """
     offset = (page - 1) * size
 
-    # Отримуємо всі документи окремо
-    invoices_result = await session.execute(
+    # Отримуємо всі документи окремо з eager loading для relationship-полів
+    # Використовуємо selectinload, щоб уникнути MissingGreenlet помилки
+    # (async SQLAlchemy не підтримує lazy loading)
+
+    # Прибуткові накладні
+    invoice_query = (
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(
+            selectinload(Invoice.items),
+            selectinload(Invoice.supplier),  # Eager load supplier, щоб уникнути lazy loading
+        )
         .order_by(desc(Invoice.created_at))
     )
+    invoices_result = await session.execute(invoice_query)
     invoices = invoices_result.scalars().all()
 
+    # Переміщення
     transfers_result = await session.execute(
         select(Transfer)
         .options(selectinload(Transfer.items))
@@ -66,20 +77,28 @@ async def list_documents(
     )
     transfers = transfers_result.scalars().all()
 
+    # Списання — завантажуємо items та product всередині items
     writeoffs_result = await session.execute(
         select(WriteOff)
-        .options(selectinload(WriteOff.items))
+        .options(
+            selectinload(WriteOff.items).selectinload(WriteOffItem.product),
+        )
         .order_by(desc(WriteOff.created_at))
     )
     writeoffs = writeoffs_result.scalars().all()
 
+    # Повернення постачальнику
     returns_result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items),
+            selectinload(ReturnInvoice.supplier),  # Eager load supplier
+        )
         .order_by(desc(ReturnInvoice.created_at))
     )
     returns = returns_result.scalars().all()
 
+    # Чеки продажу
     receipts_result = await session.execute(
         select(Receipt)
         .options(selectinload(Receipt.items))
@@ -91,30 +110,46 @@ async def list_documents(
     all_documents = []
 
     for inv in invoices:
+        # Перевіряємо статус (якщо фільтр заданий)
+        inv_status = inv.status.value if hasattr(inv.status, 'value') else str(inv.status)
+        if status and inv_status != status:
+            continue
+
+        # Отримуємо назву постачальника через eager loaded relationship
+        supplier_name = inv.supplier.name if inv.supplier else ""
+
         all_documents.append({
             "id": str(inv.id),
             "type": "invoice",
             "type_name": "Прибуткова накладна",
             "number": inv.number,
-            "status": inv.status.value if hasattr(inv.status, 'value') else str(inv.status),
+            "status": inv_status,
             "total_amount": float(inv.total_amount) if inv.total_amount else 0,
-            "supplier_name": inv.supplier.name if inv.supplier else "",
+            "supplier_name": supplier_name,
             "created_at": inv.created_at.isoformat() if inv.created_at else None,
         })
 
     for tr in transfers:
+        tr_status = tr.status.value if hasattr(tr.status, 'value') else str(tr.status)
+        if status and tr_status != status:
+            continue
+
         all_documents.append({
             "id": str(tr.id),
             "type": "transfer",
             "type_name": "Переміщення",
             "number": tr.number,
-            "status": tr.status.value if hasattr(tr.status, 'value') else str(tr.status),
+            "status": tr_status,
             "total_amount": 0,
             "supplier_name": "",
             "created_at": tr.created_at.isoformat() if tr.created_at else None,
         })
 
     for wo in writeoffs:
+        # Списання завжди confirmed, але перевіряємо фільтр
+        if status and status != "confirmed":
+            continue
+
         # Рахуємо суму з items (ціна товару * кількість)
         total = 0.0
         if wo.items:
@@ -135,18 +170,29 @@ async def list_documents(
         })
 
     for ri in returns:
+        ri_status = ri.status.value if hasattr(ri.status, 'value') else str(ri.status)
+        if status and ri_status != status:
+            continue
+
+        # Отримуємо назву постачальника через eager loaded relationship
+        supplier_name = ri.supplier.name if ri.supplier else ""
+
         all_documents.append({
             "id": str(ri.id),
             "type": "return_invoice",
             "type_name": "Повернення постачальнику",
             "number": ri.number,
-            "status": ri.status.value if hasattr(ri.status, 'value') else str(ri.status),
+            "status": ri_status,
             "total_amount": float(ri.total_amount) if ri.total_amount else 0,
-            "supplier_name": ri.supplier.name if ri.supplier else "",
+            "supplier_name": supplier_name,
             "created_at": ri.created_at.isoformat() if ri.created_at else None,
         })
 
     for rc in receipts:
+        # Чеки завжди completed
+        if status and status != "completed":
+            continue
+
         all_documents.append({
             "id": str(rc.id),
             "type": "receipt",

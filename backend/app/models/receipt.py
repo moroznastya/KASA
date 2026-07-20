@@ -132,6 +132,11 @@ class ReceiptItem(Base):
         nullable=False,
         comment="Загальна сума позиції (грн)",
     )
+    purchase_price: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Собівартість товару на момент продажу (грн)",
+    )
 
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(

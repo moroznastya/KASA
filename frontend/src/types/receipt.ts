@@ -1,7 +1,7 @@
 export interface Receipt {
   id: string;
   receipt_number: string;
-  receipt_type: 'SALE' | 'RETURN';
+  receipt_type: 'sale' | 'return';
   items: ReceiptItem[];
   total_amount: string;
   vat_amount: string;
@@ -15,6 +15,7 @@ export interface Receipt {
   created_by: string;
   created_by_name?: string;
   created_at: string;
+  total_profit?: number;
 }
 
 export interface ReceiptItem {
@@ -27,15 +28,17 @@ export interface ReceiptItem {
   total: string;
   vat_rate: number;
   vat_amount: string;
+  purchase_price?: number;
+  profit?: number;
 }
 
 export type PaymentMethod = 'cash' | 'card' | 'mixed';
 export type PaymentStatus = 'paid' | 'debt' | 'partially_paid';
 
 export interface ReceiptCreate {
-  receipt_number: string;
-  receipt_type: 'SALE' | 'RETURN';
-  cashier_id: string;
+  receipt_number?: string;
+  receipt_type: 'sale' | 'return';
+  cashier_id?: string;
   total_amount: string;
   items: ReceiptItemCreate[];
   payment_method?: PaymentMethod;

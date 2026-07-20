@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 
 interface CartItem {
   product_id: string;
-  product_name: string;
+  product_title: string;
   product_barcode: string | null;
   quantity: number;
   price: number;
@@ -58,7 +58,7 @@ const WriteOffFormPage: React.FC = () => {
         ...prev,
         {
           product_id: product.id,
-          product_name: product.name,
+          product_title: product.title,
           product_barcode: product.barcode,
           quantity: 1,
           price: 0,
@@ -95,7 +95,7 @@ const WriteOffFormPage: React.FC = () => {
       const doc = await createMutation.mutateAsync({
         document_type: 'write_off',
         notes: notes || undefined,
-        items: cart.map(({ product_name, product_barcode, ...item }) => ({
+        items: cart.map(({ product_title, product_barcode, ...item }) => ({
           product_id: item.product_id,
           quantity: item.quantity,
         })),
@@ -149,7 +149,7 @@ const WriteOffFormPage: React.FC = () => {
                 >
                   <div>
                     <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {product.name}
+                      {product.title}
                     </p>
                     {product.barcode && (
                       <p className="text-xs text-gray-400">ШК: {product.barcode}</p>
@@ -177,7 +177,7 @@ const WriteOffFormPage: React.FC = () => {
                   <tr key={item.product_id}>
                     <td className="table-cell">
                       <p className="font-medium text-gray-900 dark:text-gray-100">
-                        {item.product_name}
+                        {item.product_title}
                       </p>
                     </td>
                     <td className="table-cell">

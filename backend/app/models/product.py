@@ -75,6 +75,11 @@ class Product(Base):
         default=0.00,
         comment="Собівартість / закупівельна ціна (грн)",
     )
+    markup: Mapped[float | None] = mapped_column(
+        Numeric(5, 2),
+        default=0.00,
+        comment="Націнка (%)",
+    )
 
     # ── Облік залишків ──────────────────────────
     stock: Mapped[float | None] = mapped_column(
@@ -96,7 +101,7 @@ class Product(Base):
     )
     tax_rate: Mapped[float | None] = mapped_column(
         Numeric(5, 2),
-        default=20.00,
+        default=0.00,
         comment="Ставка ПДВ (%)",
     )
     tax_group: Mapped[str | None] = mapped_column(

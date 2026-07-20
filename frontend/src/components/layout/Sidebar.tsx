@@ -9,6 +9,7 @@ import {
   FileText,
   BarChart3,
   BookOpen,
+  Receipt,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -36,6 +37,12 @@ const navItems: NavItem[] = [
     label: 'POS-каса',
     icon: <ShoppingCart className="w-5 h-5" />,
     module: 'pos',
+  },
+  {
+    path: '/receipts',
+    label: 'Чеки',
+    icon: <Receipt className="w-5 h-5" />,
+    module: 'receipts',
   },
   {
     path: '/products',

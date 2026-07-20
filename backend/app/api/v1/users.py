@@ -5,6 +5,7 @@ API роутер для роботи з користувачами (Users) та 
   - POST   /auth/login         — логін за паролем
   - POST   /auth/login-pin     — логін за PIN-кодом
   - POST   /auth/refresh       — оновлення JWT токена
+  - POST   /auth/logout        — вихід із системи
   - GET    /users               — список користувачів (admin)
   - GET    /users/{id}          — отримати користувача за ID
   - POST   /users               — створити користувача (admin)
@@ -163,6 +164,20 @@ async def refresh_token(
         token_type="bearer",
         user=UserResponse.model_validate(user),
     )
+
+
+@auth_router.post("/logout", status_code=200)
+async def logout(
+    request: Request,
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Вихід із системи.
+
+    В JWT-орієнтованій системі logout — це просто видалення токена на клієнті.
+    На сервері повертаємо 200 OK для сумісності з фронтендом.
+    """
+    return {"message": "Успішний вихід із системи"}
 
 
 # ─── CRUD Користувачі ────────────────────────────────────────────────────────

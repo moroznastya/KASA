@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Barcode, Loader2 } from 'lucide-react';
-import { useSearchProducts } from '@/hooks/useProducts';
-import { useBarcodeSearch } from '@/hooks/useBarcodeSearch';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X } from 'lucide-react';
+import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -13,18 +12,16 @@ import toast from 'react-hot-toast';
 
 interface CartItem {
   product_id: string;
-  product_name: string;
+  product_title: string;
   product_barcode: string | null;
   quantity: number;
   price: number;
-  vat_rate: number;
+  tax_rate: number;
   is_weight: boolean;
 }
 
 const PosPage: React.FC = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [barcodeInput, setBarcodeInput] = useState('');
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashAmount, setCashAmount] = useState('');
@@ -35,24 +32,22 @@ const PosPage: React.FC = () => {
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [quantityInput, setQuantityInput] = useState('1');
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  const { data: searchData } = useSearchProducts(searchQuery);
+  const [searchFocused, setSearchFocused] = useState(false);
 
   const handleBarcodeFound = useCallback((product: any) => {
     addToCart(product);
-    setBarcodeInput('');
-    toast.success(`Додано: ${product.name}`);
+    toast.success(`Додано: ${product.title}`);
   }, []);
 
-  const { 
-    barcode, 
-    product: barcodeProduct, 
-    isSearching: isBarcodeSearching, 
-    error: barcodeError,
-    setBarcode: handleBarcodeChange,
-    reset: resetBarcode 
-  } = useBarcodeSearch({
-    onProductFound: handleBarcodeFound,
+  const {
+    query,
+    results,
+    isSearching,
+    error,
+    setQuery: handleSearchChange,
+    reset: resetSearch,
+  } = useUnifiedSearch({
+    onBarcodeFound: handleBarcodeFound,
   });
 
   useEffect(() => {
@@ -73,16 +68,17 @@ const PosPage: React.FC = () => {
         ...prev,
         {
           product_id: product.id,
-          product_name: product.name,
+          product_title: product.title,
           product_barcode: product.barcode,
           quantity,
           price: parseFloat(product.price),
-          vat_rate: product.vat_rate || 20,
+          tax_rate: parseFloat(product.tax_rate) || 20,
           is_weight: product.is_weight || false,
         },
       ];
     });
-  }, []);
+    resetSearch();
+  }, [resetSearch]);
 
   const handleProductSelect = (product: any) => {
     if (product.is_weight) {
@@ -91,7 +87,6 @@ const PosPage: React.FC = () => {
       setShowQuantityModal(true);
     } else {
       addToCart(product);
-      setSearchQuery('');
     }
   };
 
@@ -102,7 +97,6 @@ const PosPage: React.FC = () => {
         addToCart(selectedProduct, qty);
         setShowQuantityModal(false);
         setSelectedProduct(null);
-        setSearchQuery('');
       }
     }
   };
@@ -141,7 +135,7 @@ const PosPage: React.FC = () => {
 
   const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
   const vatAmount = cart.reduce(
-    (sum, item) => sum + (item.quantity * item.price * item.vat_rate) / (100 + item.vat_rate),
+    (sum, item) => sum + (item.quantity * item.price * item.tax_rate) / (100 + item.tax_rate),
     0
   );
 
@@ -154,19 +148,13 @@ const PosPage: React.FC = () => {
     setIsProcessing(true);
     try {
       const receiptData: ReceiptCreate = {
-        receipt_number: '',
-        receipt_type: 'SALE',
-        cashier_id: '',
+        receipt_type: 'sale',
         total_amount: subtotal.toFixed(2),
         items: cart.map((item) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
         })),
-        payment_method: paymentMethod,
-        cash_amount: paymentMethod === 'cash' ? subtotal : paymentMethod === 'mixed' ? (parseFloat(cashAmount) || 0) : 0,
-        card_amount: paymentMethod === 'card' ? subtotal : paymentMethod === 'mixed' ? (parseFloat(cardAmount) || 0) : 0,
-        is_debt: isDebt,
       };
 
       await receiptService.createReceipt(receiptData);
@@ -178,7 +166,16 @@ const PosPage: React.FC = () => {
       setIsDebt(false);
       setPaymentMethod('cash');
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || 'Помилка створення чеку');
+      const errMsg = error?.response?.data?.detail;
+      if (typeof errMsg === 'string') {
+        toast.error(errMsg);
+      } else if (Array.isArray(errMsg)) {
+        toast.error(errMsg.map((e: any) => e.msg || JSON.stringify(e)).join(', '));
+      } else if (errMsg && typeof errMsg === 'object') {
+        toast.error(JSON.stringify(errMsg));
+      } else {
+        toast.error('Помилка створення чеку');
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -189,83 +186,72 @@ const PosPage: React.FC = () => {
       ? parseFloat(cashAmount) - subtotal
       : 0;
 
-  const searchResults = searchQuery.length >= 2 ? (searchData || []) : [];
-
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
       {/* Left panel - Product search */}
       <div className="w-80 flex flex-col gap-4">
+        {/* Unified search field */}
         <div className="card p-4">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            {/* Лупа — показується тільки коли поле пусте І не у фокусі */}
+            {!query && !searchFocused && (
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            )}
             <input
               ref={searchInputRef}
               type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Пошук товару..."
-              className="input-field pl-10"
-              id="product-search"
-              name="product-search"
+              value={query}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder={searchFocused ? '' : "Пошук товару за назвою або штрих-кодом..."}
+              className="input-field pl-10 pr-10"
+              id="unified-search"
+              name="unified-search"
               autoComplete="off"
             />
-          </div>
-          <div className="mt-2 relative">
-            <Barcode className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={barcodeInput}
-              onChange={(e) => {
-                const value = e.target.value;
-                setBarcodeInput(value);
-                handleBarcodeChange(value);
-              }}
-              placeholder="Штрих-код (сканер)..."
-              className="input-field pl-10"
-              id="barcode-input"
-              name="barcode-input"
-              autoComplete="off"
-            />
-            {isBarcodeSearching && (
+            {isSearching && (
               <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-500 animate-spin" />
             )}
+            {query && !isSearching && (
+              <button
+                onClick={() => { resetSearch(); searchInputRef.current?.focus(); }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
-          {/* Barcode error message */}
-          {barcodeError && barcodeInput.length >= 8 && (
+          {/* Error message (barcode not found) */}
+          {error && query.length >= 8 && (
             <div className="mt-2 text-xs text-danger-500 bg-danger-50 dark:bg-danger-900/20 px-3 py-2 rounded-lg">
-              {barcodeError}
-            </div>
-          )}
-          {/* Barcode success - product found */}
-          {barcodeProduct && !barcodeError && barcodeInput.length >= 8 && (
-            <div className="mt-2 text-xs text-success-600 bg-success-50 dark:bg-success-900/20 px-3 py-2 rounded-lg">
-              Знайдено: {barcodeProduct.name} — {formatCurrency(parseFloat(barcodeProduct.price))}
+              {error}
             </div>
           )}
         </div>
 
         {/* Search results */}
         <div className="flex-1 overflow-y-auto space-y-2">
-          {searchResults.map((product: any) => (
+          {results.map((result) => (
             <button
-              key={product.id}
-              onClick={() => handleProductSelect(product)}
+              key={result.product.id}
+              onClick={() => handleProductSelect(result.product)}
               className="w-full card p-3 text-left hover:border-primary-300 dark:hover:border-primary-600 transition-all group"
             >
               <p className="font-medium text-sm text-gray-900 dark:text-gray-100 group-hover:text-primary-600">
-                {product.name}
+                {result.product.title}
               </p>
               <div className="flex items-center justify-between mt-1">
                 <span className="text-xs text-gray-400">
-                  {product.barcode || 'Без ШК'} | {product.stock} {formatUnit(product.unit)}
+                  {result.product.barcode || 'Без ШК'} | {result.product.stock} {formatUnit(result.product.unit)}
                 </span>
                 <span className="font-bold text-primary-600">
-                  {formatCurrency(product.price)}
+                  {formatCurrency(result.product.price)}
                 </span>
               </div>
             </button>
           ))}
-          {searchQuery.length >= 2 && searchResults.length === 0 && (
+          {query.length >= 2 && results.length === 0 && !isSearching && !error && (
             <div className="text-center py-8 text-gray-400 text-sm">
               Товари не знайдено
             </div>
@@ -307,7 +293,7 @@ const PosPage: React.FC = () => {
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {item.product_name}
+                        {item.product_title}
                       </p>
                       <p className="text-xs text-gray-400">
                         {formatCurrency(item.price)} / шт
@@ -392,7 +378,7 @@ const PosPage: React.FC = () => {
         <div className="space-y-4">
           {selectedProduct && (
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              {selectedProduct.name}
+              {selectedProduct.title}
             </p>
           )}
           <Input

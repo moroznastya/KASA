@@ -22,10 +22,11 @@ class ProductCreate(BaseModel):
     description: Optional[str] = Field(None, description="Опис товару")
     price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Роздрібна ціна (грн)")
     cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість (грн)")
+    markup: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Націнка (%)")
     stock: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Початковий залишок")
     uktzed: Optional[str] = Field(None, max_length=10, description="Код УКТЗЕД")
     scan_excise: bool = Field(False, description="Чи сканувати акцизну марку")
-    tax_rate: Optional[Decimal] = Field(Decimal("20.00"), max_digits=5, decimal_places=2, description="Ставка ПДВ (%)")
+    tax_rate: Optional[Decimal] = Field(Decimal("0.00"), max_digits=5, decimal_places=2, description="Ставка ПДВ (%)")
     tax_group: Optional[str] = Field("А", max_length=2, description="Група оподаткування")
     is_weight: bool = Field(False, description="Ваговий товар")
     unit: Optional[str] = Field("шт", max_length=10, description="Одиниця виміру")
@@ -41,6 +42,7 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = Field(None, description="Опис товару")
     price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Роздрібна ціна (грн)")
     cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість (грн)")
+    markup: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Націнка (%)")
     stock: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Залишок")
     uktzed: Optional[str] = Field(None, max_length=10, description="Код УКТЗЕД")
     scan_excise: Optional[bool] = Field(None, description="Чи сканувати акцизну марку")
@@ -61,6 +63,7 @@ class ProductResponse(BaseModel):
     description: Optional[str] = None
     price: Optional[Decimal] = None
     cost_price: Optional[Decimal] = None
+    markup: Optional[Decimal] = None
     stock: Optional[Decimal] = None
     uktzed: Optional[str] = None
     scan_excise: bool = False

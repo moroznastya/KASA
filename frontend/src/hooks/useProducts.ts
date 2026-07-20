@@ -71,6 +71,7 @@ export function useSearchProducts(query: string) {
     queryKey: ['products-search', query],
     queryFn: () => productService.searchProducts(query),
     enabled: query.length >= 2,
+    select: (data) => data.items, // Extract items from paginated response
   });
 }
 

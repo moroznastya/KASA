@@ -65,6 +65,7 @@ export function formatRelativeTime(dateStr: string): string {
 
 /**
  * Format unit of measure to Ukrainian
+ * Handles both enum values (pcs, kg) and raw strings (шт, кг)
  */
 export function formatUnit(unit: string): string {
   const units: Record<string, string> = {
@@ -74,6 +75,9 @@ export function formatUnit(unit: string): string {
     m: 'м',
     box: 'кор',
     pack: 'уп',
+    шт: 'шт',
+    кг: 'кг',
+    л: 'л',
   };
   return units[unit] || unit;
 }

@@ -83,6 +83,7 @@ class ProductService:
             tax_rate=data.tax_rate,
             tax_group=data.tax_group,
             is_weight=data.is_weight,
+            markup=data.markup,
             unit=data.unit,
             category_id=data.category_id,
             supplier_id=data.supplier_id,
