@@ -7,6 +7,7 @@
   - Swagger документацію
   - Middleware авторизації
   - Rate Limiting (slowapi)
+  - DI Container та Event Bus (ініціалізація в lifespan)
   - Обробники помилок
 """
 
@@ -23,6 +24,35 @@ from app.config import settings
 from app.api.v1 import api_v1_router
 from app.middleware.auth_middleware import AuthMiddleware
 from app.api.v1.users import limiter
+
+# ─── Інфраструктурні компоненти ─────────────────────────────────────────────
+from app.infrastructure.di import DIContainer, register_all_services
+from app.infrastructure.event_bus import LocalEventBus
+
+
+# ─── Глобальні екземпляри інфраструктури ────────────────────────────────────
+"""
+Глобальні екземпляри інфраструктурних компонентів.
+
+Створюються на рівні модуля для доступу з роутерів та middleware.
+Ініціалізуються в lifespan при старті застосунку.
+"""
+container: DIContainer | None = None
+event_bus: LocalEventBus | None = None
+
+
+def get_container() -> DIContainer:
+    """Повертає глобальний DI Container (для Depends)."""
+    if container is None:
+        raise RuntimeError("DI Container not initialized. App may not be started yet.")
+    return container
+
+
+def get_event_bus() -> LocalEventBus:
+    """Повертає глобальний Event Bus (для Depends)."""
+    if event_bus is None:
+        raise RuntimeError("Event Bus not initialized. App may not be started yet.")
+    return event_bus
 
 
 # ─── Опис застосунку для Swagger ─────────────────────────────────────────────
@@ -54,14 +84,43 @@ async def lifespan(app: FastAPI):
     """
     Управління життєвим циклом застосунку.
 
-    При старті: ініціалізація (якщо потрібно).
-    При завершенні: закриття з'єднань.
+    При старті:
+    - Ініціалізація DI Container
+    - Ініціалізація Event Bus
+    - Реєстрація всіх сервісів
+
+    При завершенні:
+    - Закриття з'єднань
     """
-    # Старт
+    global container, event_bus
+
     print(f"🚀 {settings.APP_NAME} запускається...")
+
+    # ─── 1. Ініціалізація DI Container ──────────────────────────────────────
+    container = DIContainer()
+    register_all_services(container)
+    print(f"   ✅ DI Container ініціалізовано: {len(container.registered_services)} сервісів")
+
+    # ─── 2. Отримуємо Event Bus з контейнера ────────────────────────────────
+    event_bus = container.resolve("event_bus")
+    print(f"   ✅ Event Bus ініціалізовано")
+
+    # ─── 3. Ініціалізація обробників подій (майбутнє) ──────────────────────
+    # Тут будуть підписуватись обробники подій:
+    # stock_handler = StockEventHandler(...)
+    # event_bus.subscribe(InvoiceConfirmed, stock_handler.handle)
+    # event_bus.subscribe(InvoiceConfirmed, ledger_handler.handle)
+
+    print(f"   ✅ Інфраструктура готова")
+
     yield
-    # Завершення
+
+    # ─── Завершення роботи ──────────────────────────────────────────────────
     print(f"👋 {settings.APP_NAME} завершує роботу.")
+
+    # Очищаємо глобальні посилання
+    container = None
+    event_bus = None
 
 
 # ─── Створення застосунку ────────────────────────────────────────────────────
