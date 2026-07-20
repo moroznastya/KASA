@@ -2,8 +2,8 @@ export type DocumentType = 'invoice' | 'transfer' | 'write_off' | 'return_invoic
 export type DocumentStatus = 'draft' | 'confirmed' | 'cancelled';
 
 export interface DocumentItem {
-  id: number;
-  product_id: number;
+  id: string;
+  product_id: string;
   product_name: string;
   product_barcode: string | null;
   quantity: number;
@@ -12,18 +12,18 @@ export interface DocumentItem {
 }
 
 export interface Document {
-  id: number;
+  id: string;
   document_type: DocumentType;
   document_number: string;
   status: DocumentStatus;
-  supplier_id: number | null;
+  supplier_id: string | null;
   supplier_name?: string;
   from_location: string | null;
   to_location: string | null;
   notes: string | null;
   items: DocumentItem[];
   total_amount: string;
-  created_by: number;
+  created_by: string;
   created_by_name?: string;
   created_at: string;
   updated_at: string;
@@ -32,7 +32,7 @@ export interface Document {
 
 export interface DocumentCreate {
   document_type: DocumentType;
-  supplier_id?: number | null;
+  supplier_id?: string | null;
   from_location?: string | null;
   to_location?: string | null;
   notes?: string | null;
@@ -40,14 +40,14 @@ export interface DocumentCreate {
 }
 
 export interface DocumentItemCreate {
-  product_id: number;
+  product_id: string;
   quantity: number;
   price?: number;
 }
 
 export interface InvoiceCreate extends DocumentCreate {
   document_type: 'invoice';
-  supplier_id: number;
+  supplier_id: string;
 }
 
 export interface TransferCreate extends DocumentCreate {
@@ -63,5 +63,5 @@ export interface WriteOffCreate extends DocumentCreate {
 
 export interface ReturnInvoiceCreate extends DocumentCreate {
   document_type: 'return_invoice';
-  supplier_id: number;
+  supplier_id: string;
 }

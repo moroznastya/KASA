@@ -37,7 +37,7 @@ export function useUpdateCategory() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: CategoryUpdate }) =>
+    mutationFn: ({ id, data }: { id: string; data: CategoryUpdate }) =>
       categoryService.updateCategory(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
@@ -54,7 +54,7 @@ export function useDeleteCategory() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: number) => categoryService.deleteCategory(id),
+    mutationFn: (id: string) => categoryService.deleteCategory(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       queryClient.invalidateQueries({ queryKey: ['categories-tree'] });

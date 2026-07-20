@@ -17,6 +17,7 @@ from app.services.auth_service import AuthService
 PUBLIC_PATHS = {
     "/api/v1/auth/login",
     "/api/v1/auth/login-pin",
+    "/api/v1/auth/refresh",
     "/docs",
     "/redoc",
     "/openapi.json",

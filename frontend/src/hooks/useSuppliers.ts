@@ -18,7 +18,7 @@ export function useAllSuppliers() {
   });
 }
 
-export function useSupplier(id: number) {
+export function useSupplier(id: string) {
   return useQuery({
     queryKey: ['supplier', id],
     queryFn: () => supplierService.getSupplier(id),
@@ -45,7 +45,7 @@ export function useUpdateSupplier() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: SupplierUpdate }) =>
+    mutationFn: ({ id, data }: { id: string; data: SupplierUpdate }) =>
       supplierService.updateSupplier(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
@@ -62,7 +62,7 @@ export function useDeleteSupplier() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: number) => supplierService.deleteSupplier(id),
+    mutationFn: (id: string) => supplierService.deleteSupplier(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] });
       toast.success('Постачальника видалено');

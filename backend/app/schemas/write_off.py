@@ -54,6 +54,8 @@ class WriteOffResponse(BaseModel):
     reason: WriteOffReason
     write_off_date: datetime
     notes: Optional[str] = None
+    status: str = "confirmed"
+    total_amount: Optional[Decimal] = None
     created_at: datetime
     updated_at: datetime
     items: list[WriteOffItemResponse] = []

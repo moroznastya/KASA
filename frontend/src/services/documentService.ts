@@ -8,7 +8,7 @@ export const documentService = {
     return response.data;
   },
 
-  async getDocument(id: number): Promise<Document> {
+  async getDocument(id: string): Promise<Document> {
     const response = await api.get<Document>(`/documents/${id}`);
     return response.data;
   },
@@ -18,22 +18,22 @@ export const documentService = {
     return response.data;
   },
 
-  async updateDocument(id: number, data: Partial<DocumentCreate>): Promise<Document> {
+  async updateDocument(id: string, data: Partial<DocumentCreate>): Promise<Document> {
     const response = await api.put<Document>(`/documents/${id}`, data);
     return response.data;
   },
 
-  async confirmDocument(id: number): Promise<Document> {
+  async confirmDocument(id: string): Promise<Document> {
     const response = await api.post<Document>(`/documents/${id}/confirm`);
     return response.data;
   },
 
-  async cancelDocument(id: number): Promise<Document> {
+  async cancelDocument(id: string): Promise<Document> {
     const response = await api.post<Document>(`/documents/${id}/cancel`);
     return response.data;
   },
 
-  async deleteDocument(id: number): Promise<void> {
+  async deleteDocument(id: string): Promise<void> {
     await api.delete(`/documents/${id}`);
   },
 };

@@ -18,7 +18,7 @@ import { formatCurrency, formatDateTime, formatPaymentMethod } from '@/utils/for
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 
-export const DashboardPage: React.FC = () => {
+const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
 
   const { data: todayStats } = useQuery({
@@ -38,7 +38,7 @@ export const DashboardPage: React.FC = () => {
 
   const { data: pendingDocs } = useQuery({
     queryKey: ['documents', { page: 1, size: 1, status: 'draft' }],
-    queryFn: () => documentService.getDocuments({ page: 1, size: 1 }),
+    queryFn: () => documentService.getDocuments({ page: 1, size: 1, status: 'draft' }),
   });
 
   const statsCards = [
@@ -216,3 +216,5 @@ export const DashboardPage: React.FC = () => {
     </div>
   );
 };
+
+export default DashboardPage;

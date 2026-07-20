@@ -11,7 +11,7 @@ export function useDocuments(params?: SearchParams & { document_type?: DocumentT
   });
 }
 
-export function useDocument(id: number) {
+export function useDocument(id: string) {
   return useQuery({
     queryKey: ['document', id],
     queryFn: () => documentService.getDocument(id),
@@ -38,7 +38,7 @@ export function useConfirmDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: number) => documentService.confirmDocument(id),
+    mutationFn: (id: string) => documentService.confirmDocument(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['document'] });
@@ -54,7 +54,7 @@ export function useCancelDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: number) => documentService.cancelDocument(id),
+    mutationFn: (id: string) => documentService.cancelDocument(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['document'] });

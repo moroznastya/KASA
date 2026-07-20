@@ -9,7 +9,7 @@ import toast from 'react-hot-toast';
 
 const PIN_LENGTH = 4;
 
-export const LoginPage: React.FC = () => {
+const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
   const [username, setUsername] = useState('');
@@ -188,3 +188,5 @@ export const LoginPage: React.FC = () => {
     </div>
   );
 };
+
+export default LoginPage;

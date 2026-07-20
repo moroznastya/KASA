@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { Category, CategoryCreate } from '@/types/product';
 
-export const CategoryListPage: React.FC = () => {
+const CategoryListPage: React.FC = () => {
   const { data: categories, isLoading } = useCategoryTree();
   const createMutation = useCreateCategory();
   const updateMutation = useUpdateCategory();
@@ -17,11 +17,11 @@ export const CategoryListPage: React.FC = () => {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editItem, setEditItem] = useState<Category | null>(null);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<CategoryCreate>({ name: '', parent_id: null });
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
-  const handleOpenCreate = (parentId?: number) => {
+  const handleOpenCreate = (parentId?: string) => {
     setEditItem(null);
     setForm({ name: '', parent_id: parentId ?? null });
     setModalOpen(true);
@@ -63,7 +63,7 @@ export const CategoryListPage: React.FC = () => {
     }
   };
 
-  const toggleExpand = (id: number) => {
+  const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(id)) {
@@ -207,7 +207,7 @@ export const CategoryListPage: React.FC = () => {
             onChange={(e) =>
               setForm((prev) => ({
                 ...prev,
-                parent_id: e.target.value ? Number(e.target.value) : null,
+                parent_id: e.target.value || null,
               }))
             }
           />
@@ -246,3 +246,5 @@ export const CategoryListPage: React.FC = () => {
     </div>
   );
 };
+
+export default CategoryListPage;

@@ -1,5 +1,5 @@
 export interface Supplier {
-  id: number;
+  id: string;
   name: string;
   code: string;
   contact_person: string | null;
@@ -25,5 +25,5 @@ export interface SupplierCreate {
 }
 
 export interface SupplierUpdate extends SupplierCreate {
-  id: number;
+  id: string;
 }

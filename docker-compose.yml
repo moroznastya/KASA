@@ -1,0 +1,60 @@
+# Kasa POS — Docker Compose
+# Запуск: docker compose up -d
+# Зупинка: docker compose down
+
+services:
+  # ─── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: kasa-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pos_system
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-VgxWd7MBJ10X}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pos_system"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - kasa-network
+
+  # ─── Backend (FastAPI) ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kasa-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-VgxWd7MBJ10X}
+      DB_NAME: pos_system
+      SECRET_KEY: ${SECRET_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 480
+      APP_NAME: "Kasa POS"
+      DEBUG: "False"
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+    ports:
+      - "8000:8000"
+    networks:
+      - kasa-network
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  kasa-network:
+    driver: bridge

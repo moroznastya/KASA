@@ -1,9 +1,9 @@
 export interface SupplierLedgerEntry {
-  id: number;
-  supplier_id: number;
+  id: string;
+  supplier_id: string;
   supplier_name: string;
   document_type: string;
-  document_id: number;
+  document_id: string;
   document_number: string;
   debit: string;
   credit: string;
@@ -13,13 +13,13 @@ export interface SupplierLedgerEntry {
 }
 
 export interface BalanceResponse {
-  supplier_id: number;
+  supplier_id: string;
   supplier_name: string;
   balance: string;
 }
 
 export interface PaymentCreate {
-  supplier_id: number;
+  supplier_id: string;
   amount: number;
   payment_method: PaymentMethod;
   notes?: string;
@@ -28,13 +28,13 @@ export interface PaymentCreate {
 export type PaymentMethod = 'cash' | 'card' | 'bank_transfer';
 
 export interface Payment {
-  id: number;
-  supplier_id: number;
+  id: string;
+  supplier_id: string;
   supplier_name: string;
   amount: string;
   payment_method: PaymentMethod;
   notes: string | null;
-  created_by: number;
+  created_by: string;
   created_by_name?: string;
   created_at: string;
 }

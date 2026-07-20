@@ -8,7 +8,7 @@ export const productService = {
     return response.data;
   },
 
-  async getProduct(id: number): Promise<Product> {
+  async getProduct(id: string): Promise<Product> {
     const response = await api.get<Product>(`/products/${id}`);
     return response.data;
   },
@@ -18,12 +18,12 @@ export const productService = {
     return response.data;
   },
 
-  async updateProduct(id: number, data: ProductUpdate): Promise<Product> {
+  async updateProduct(id: string, data: ProductUpdate): Promise<Product> {
     const response = await api.put<Product>(`/products/${id}`, data);
     return response.data;
   },
 
-  async deleteProduct(id: number): Promise<void> {
+  async deleteProduct(id: string): Promise<void> {
     await api.delete(`/products/${id}`);
   },
 

@@ -9,14 +9,14 @@ import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 interface CartItem {
-  product_id: number;
+  product_id: string;
   product_name: string;
   product_barcode: string | null;
   quantity: number;
   price: number;
 }
 
-export const TransferFormPage: React.FC = () => {
+const TransferFormPage: React.FC = () => {
   const navigate = useNavigate();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
@@ -71,7 +71,7 @@ export const TransferFormPage: React.FC = () => {
     setShowSearch(false);
   };
 
-  const updateQuantity = (productId: number, quantity: number) => {
+  const updateQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) {
       setCart((prev) => prev.filter((item) => item.product_id !== productId));
     } else {
@@ -83,7 +83,7 @@ export const TransferFormPage: React.FC = () => {
     }
   };
 
-  const removeFromCart = (productId: number) => {
+  const removeFromCart = (productId: string) => {
     setCart((prev) => prev.filter((item) => item.product_id !== productId));
   };
 
@@ -264,3 +264,5 @@ export const TransferFormPage: React.FC = () => {
     </div>
   );
 };
+
+export default TransferFormPage;

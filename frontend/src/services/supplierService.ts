@@ -13,7 +13,7 @@ export const supplierService = {
     return response.data;
   },
 
-  async getSupplier(id: number): Promise<Supplier> {
+  async getSupplier(id: string): Promise<Supplier> {
     const response = await api.get<Supplier>(`/suppliers/${id}`);
     return response.data;
   },
@@ -23,12 +23,12 @@ export const supplierService = {
     return response.data;
   },
 
-  async updateSupplier(id: number, data: SupplierUpdate): Promise<Supplier> {
+  async updateSupplier(id: string, data: SupplierUpdate): Promise<Supplier> {
     const response = await api.put<Supplier>(`/suppliers/${id}`, data);
     return response.data;
   },
 
-  async deleteSupplier(id: number): Promise<void> {
+  async deleteSupplier(id: string): Promise<void> {
     await api.delete(`/suppliers/${id}`);
   },
 };

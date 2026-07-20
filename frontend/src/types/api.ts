@@ -26,4 +26,8 @@ export interface PaginationParams {
 
 export interface SearchParams extends PaginationParams {
   search?: string;
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+  category_id?: string;
 }

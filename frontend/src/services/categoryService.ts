@@ -12,7 +12,7 @@ export const categoryService = {
     return response.data;
   },
 
-  async getCategory(id: number): Promise<Category> {
+  async getCategory(id: string): Promise<Category> {
     const response = await api.get<Category>(`/categories/${id}`);
     return response.data;
   },
@@ -22,12 +22,12 @@ export const categoryService = {
     return response.data;
   },
 
-  async updateCategory(id: number, data: CategoryUpdate): Promise<Category> {
+  async updateCategory(id: string, data: CategoryUpdate): Promise<Category> {
     const response = await api.put<Category>(`/categories/${id}`, data);
     return response.data;
   },
 
-  async deleteCategory(id: number): Promise<void> {
+  async deleteCategory(id: string): Promise<void> {
     await api.delete(`/categories/${id}`);
   },
 };

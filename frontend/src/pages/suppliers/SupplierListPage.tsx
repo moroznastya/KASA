@@ -10,11 +10,11 @@ import { Badge } from '@/components/ui/Badge';
 import { formatCurrency } from '@/utils/format';
 import { Supplier } from '@/types/supplier';
 
-export const SupplierListPage: React.FC = () => {
+const SupplierListPage: React.FC = () => {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useSuppliers({
     page,
@@ -185,3 +185,5 @@ export const SupplierListPage: React.FC = () => {
     </div>
   );
 };
+
+export default SupplierListPage;

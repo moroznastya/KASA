@@ -3,9 +3,10 @@
 
 Підключає:
   - Всі API роутери v1
-  - CORS middleware
+  - CORS middleware (через settings)
   - Swagger документацію
   - Middleware авторизації
+  - Rate Limiting (slowapi)
   - Обробники помилок
 """
 
@@ -14,10 +15,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
 from app.api.v1 import api_v1_router
 from app.middleware.auth_middleware import AuthMiddleware
+from app.api.v1.users import limiter
 
 
 # ─── Опис застосунку для Swagger ─────────────────────────────────────────────
@@ -71,14 +76,30 @@ app = FastAPI(
 )
 
 
+# ─── Rate Limiting ───────────────────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
 # ─── CORS Middleware ──────────────────────────────────────────────────────────
+# Використовуємо налаштування з config.py
+cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В продакшені замінити на конкретні домени
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Auth Middleware ──────────────────────────────────────────────────────────
+app.add_middleware(AuthMiddleware)
+
+
+# ─── SlowAPI Middleware (для rate limiting) ───────────────────────────────────
+app.add_middleware(SlowAPIMiddleware)
 
 
 # ─── Підключення роутерів ────────────────────────────────────────────────────
@@ -118,13 +139,20 @@ async def global_exception_handler(request: Request, exc: Exception):
     Глобальний обробник непередбачених помилок.
 
     Логує помилку та повертає 500.
+    В DEBUG режимі додає тип помилки для зручності розробки.
     """
     # В майбутньому тут можна додати логування в файл/Sentry
     print(f"❌ Непередбачена помилка: {exc}")
+
+    content = {
+        "detail": "Внутрішня помилка сервера",
+    }
+
+    # Додаємо тип помилки тільки в DEBUG режимі
+    if settings.DEBUG:
+        content["type"] = type(exc).__name__
+
     return JSONResponse(
         status_code=500,
-        content={
-            "detail": "Внутрішня помилка сервера",
-            "type": type(exc).__name__,
-        },
+        content=content,
     )

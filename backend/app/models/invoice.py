@@ -56,7 +56,7 @@ class Invoice(Base):
         comment="Дата накладної (від постачальника)",
     )
     status: Mapped[InvoiceStatus] = mapped_column(
-        Enum(InvoiceStatus, name="invoice_status", create_constraint=True),
+        Enum(InvoiceStatus, name="invoice_status", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         default=InvoiceStatus.DRAFT,
         nullable=False,
         comment="Статус накладної",

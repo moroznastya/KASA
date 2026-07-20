@@ -95,7 +95,7 @@ async def list_documents(
             "id": str(inv.id),
             "type": "invoice",
             "type_name": "Прибуткова накладна",
-            "number": inv.invoice_number,
+            "number": inv.number,
             "status": inv.status.value if hasattr(inv.status, 'value') else str(inv.status),
             "total_amount": float(inv.total_amount) if inv.total_amount else 0,
             "supplier_name": inv.supplier.name if inv.supplier else "",
@@ -107,7 +107,7 @@ async def list_documents(
             "id": str(tr.id),
             "type": "transfer",
             "type_name": "Переміщення",
-            "number": tr.transfer_number,
+            "number": tr.number,
             "status": tr.status.value if hasattr(tr.status, 'value') else str(tr.status),
             "total_amount": 0,
             "supplier_name": "",
@@ -115,13 +115,21 @@ async def list_documents(
         })
 
     for wo in writeoffs:
+        # Рахуємо суму з items (ціна товару * кількість)
+        total = 0.0
+        if wo.items:
+            for item in wo.items:
+                price = float(item.product.price) if item.product and item.product.price else 0
+                qty = float(item.quantity) if item.quantity else 0
+                total += price * qty
+
         all_documents.append({
             "id": str(wo.id),
             "type": "write_off",
             "type_name": "Списання",
-            "number": wo.write_off_number,
-            "status": wo.status.value if hasattr(wo.status, 'value') else str(wo.status),
-            "total_amount": float(wo.total_amount) if wo.total_amount else 0,
+            "number": wo.number,
+            "status": "confirmed",
+            "total_amount": float(wo.total_amount) if wo.total_amount else total,
             "supplier_name": "",
             "created_at": wo.created_at.isoformat() if wo.created_at else None,
         })
@@ -131,7 +139,7 @@ async def list_documents(
             "id": str(ri.id),
             "type": "return_invoice",
             "type_name": "Повернення постачальнику",
-            "number": ri.return_number,
+            "number": ri.number,
             "status": ri.status.value if hasattr(ri.status, 'value') else str(ri.status),
             "total_amount": float(ri.total_amount) if ri.total_amount else 0,
             "supplier_name": ri.supplier.name if ri.supplier else "",

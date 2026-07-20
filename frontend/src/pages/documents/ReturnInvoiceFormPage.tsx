@@ -11,20 +11,20 @@ import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 interface CartItem {
-  product_id: number;
+  product_id: string;
   product_name: string;
   product_barcode: string | null;
   quantity: number;
   price: number;
 }
 
-export const ReturnInvoiceFormPage: React.FC = () => {
+const ReturnInvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { data: suppliersData } = useAllSuppliers();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
 
-  const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [supplierId, setSupplierId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,7 +73,7 @@ export const ReturnInvoiceFormPage: React.FC = () => {
     setShowSearch(false);
   };
 
-  const updateQuantity = (productId: number, quantity: number) => {
+  const updateQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) {
       setCart((prev) => prev.filter((item) => item.product_id !== productId));
     } else {
@@ -85,7 +85,7 @@ export const ReturnInvoiceFormPage: React.FC = () => {
     }
   };
 
-  const updatePrice = (productId: number, price: number) => {
+  const updatePrice = (productId: string, price: number) => {
     setCart((prev) =>
       prev.map((item) =>
         item.product_id === productId ? { ...item, price } : item
@@ -93,7 +93,7 @@ export const ReturnInvoiceFormPage: React.FC = () => {
     );
   };
 
-  const removeFromCart = (productId: number) => {
+  const removeFromCart = (productId: string) => {
     setCart((prev) => prev.filter((item) => item.product_id !== productId));
   };
 
@@ -159,7 +159,7 @@ export const ReturnInvoiceFormPage: React.FC = () => {
           label="Постачальник *"
           options={supplierOptions}
           value={String(supplierId || '')}
-          onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)}
+          onChange={(e) => setSupplierId(e.target.value || null)}
         />
 
         <div className="relative">
@@ -301,3 +301,5 @@ export const ReturnInvoiceFormPage: React.FC = () => {
     </div>
   );
 };
+
+export default ReturnInvoiceFormPage;

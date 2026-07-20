@@ -25,13 +25,13 @@ const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'war
   cancelled: 'danger',
 };
 
-export const DocumentListPage: React.FC = () => {
+const DocumentListPage: React.FC = () => {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [page, setPage] = useState(1);
-  const [confirmId, setConfirmId] = useState<number | null>(null);
-  const [cancelId, setCancelId] = useState<number | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [cancelId, setCancelId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useDocuments({
     page,
@@ -242,3 +242,5 @@ export const DocumentListPage: React.FC = () => {
     </div>
   );
 };
+
+export default DocumentListPage;

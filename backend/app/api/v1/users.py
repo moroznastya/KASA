@@ -4,6 +4,7 @@ API роутер для роботи з користувачами (Users) та 
 Ендпоінти:
   - POST   /auth/login         — логін за паролем
   - POST   /auth/login-pin     — логін за PIN-кодом
+  - POST   /auth/refresh       — оновлення JWT токена
   - GET    /users               — список користувачів (admin)
   - GET    /users/{id}          — отримати користувача за ID
   - POST   /users               — створити користувача (admin)
@@ -11,9 +12,12 @@ API роутер для роботи з користувачами (Users) та 
   - DELETE /users/{id}          — видалити користувача (admin)
 """
 
+from datetime import timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +32,9 @@ from app.schemas.user import (
     UserTokenResponse,
 )
 from app.services.auth_service import AuthService
+
+# Rate limiter для auth ендпоінтів (5 запитів на хвилину)
+limiter = Limiter(key_func=get_remote_address)
 
 # Роутер для авторизації (публічний)
 auth_router = APIRouter(
@@ -45,26 +52,33 @@ users_router = APIRouter(
 # ─── Авторизація ─────────────────────────────────────────────────────────────
 
 @auth_router.post("/login", response_model=UserTokenResponse)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     data: UserLoginRequest,
     session: AsyncSession = Depends(get_session),
 ):
     """
     Аутентифікація користувача за логіном та паролем.
 
-    Повертає JWT токен доступу та дані користувача.
+    Повертає JWT токен доступу, refresh токен та дані користувача.
+    Rate limit: 5 запитів на хвилину.
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_password(data.login, data.password)
+    refresh_token = AuthService.create_refresh_token(user.id, user.role)
     return UserTokenResponse(
         access_token=token,
+        refresh_token=refresh_token,
         token_type="bearer",
         user=UserResponse.model_validate(user),
     )
 
 
 @auth_router.post("/login-pin", response_model=UserTokenResponse)
+@limiter.limit("5/minute")
 async def login_pin(
+    request: Request,
     data: UserPinLoginRequest,
     session: AsyncSession = Depends(get_session),
 ):
@@ -72,12 +86,80 @@ async def login_pin(
     Аутентифікація користувача за логіном та PIN-кодом.
 
     Використовується для швидкого входу на касі.
-    Повертає JWT токен доступу та дані користувача.
+    Повертає JWT токен доступу, refresh токен та дані користувача.
+    Rate limit: 5 запитів на хвилину.
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_pin(data.login, data.pin_code)
+    refresh_token = AuthService.create_refresh_token(user.id, user.role)
     return UserTokenResponse(
         access_token=token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        user=UserResponse.model_validate(user),
+    )
+
+
+@auth_router.post("/refresh", response_model=UserTokenResponse)
+async def refresh_token(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Оновлення JWT токена за refresh_token.
+
+    Приймає `{"refresh_token": "..."}`, декодує його,
+    перевіряє користувача в БД та повертає нову пару токенів (access + refresh).
+    """
+    refresh_token_value = data.get("refresh_token")
+    if not refresh_token_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Відсутній refresh_token",
+        )
+
+    # Декодуємо refresh токен
+    payload = AuthService.decode_access_token(refresh_token_value)
+    user_id = payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недійсний refresh_token: відсутній ідентифікатор користувача",
+        )
+
+    # Перевіряємо, що це саме refresh токен (має поле type=refresh)
+    if payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недійсний refresh_token: невірний тип токена",
+        )
+
+    # Шукаємо користувача в БД
+    result = await session.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Користувача не знайдено",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Користувач деактивований",
+        )
+
+    # Генеруємо нову пару токенів
+    new_access_token = AuthService.create_access_token(user.id, user.role)
+    new_refresh_token = AuthService.create_refresh_token(user.id, user.role)
+
+    return UserTokenResponse(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
         token_type="bearer",
         user=UserResponse.model_validate(user),
     )

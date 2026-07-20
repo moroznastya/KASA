@@ -42,7 +42,7 @@ class Receipt(Base):
         comment="Номер чеку (фіскальний або внутрішній)",
     )
     receipt_type: Mapped[ReceiptType] = mapped_column(
-        Enum(ReceiptType, name="receipt_type", create_constraint=True),
+        Enum(ReceiptType, name="receipt_type", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         default=ReceiptType.SALE,
         nullable=False,
         comment="Тип чеку: продаж або повернення",

@@ -12,7 +12,7 @@ import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
 import toast from 'react-hot-toast';
 
 interface CartItem {
-  product_id: number;
+  product_id: string;
   product_name: string;
   product_barcode: string | null;
   quantity: number;
@@ -21,7 +21,7 @@ interface CartItem {
   is_weight: boolean;
 }
 
-export const PosPage: React.FC = () => {
+const PosPage: React.FC = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -107,7 +107,7 @@ export const PosPage: React.FC = () => {
     }
   };
 
-  const updateQuantity = (productId: number, delta: number) => {
+  const updateQuantity = (productId: string, delta: number) => {
     setCart((prev) =>
       prev
         .map((item) =>
@@ -119,7 +119,7 @@ export const PosPage: React.FC = () => {
     );
   };
 
-  const setItemQuantity = (productId: number, quantity: number) => {
+  const setItemQuantity = (productId: string, quantity: number) => {
     if (quantity <= 0) {
       setCart((prev) => prev.filter((item) => item.product_id !== productId));
     } else {
@@ -131,7 +131,7 @@ export const PosPage: React.FC = () => {
     }
   };
 
-  const removeFromCart = (productId: number) => {
+  const removeFromCart = (productId: string) => {
     setCart((prev) => prev.filter((item) => item.product_id !== productId));
   };
 
@@ -154,6 +154,10 @@ export const PosPage: React.FC = () => {
     setIsProcessing(true);
     try {
       const receiptData: ReceiptCreate = {
+        receipt_number: '',
+        receipt_type: 'SALE',
+        cashier_id: '',
+        total_amount: subtotal.toFixed(2),
         items: cart.map((item) => ({
           product_id: item.product_id,
           quantity: item.quantity,
@@ -527,3 +531,5 @@ export const PosPage: React.FC = () => {
     </div>
   );
 };
+
+export default PosPage;

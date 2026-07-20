@@ -55,7 +55,7 @@ class ReturnInvoice(Base):
         comment="Дата повернення",
     )
     status: Mapped[ReturnInvoiceStatus] = mapped_column(
-        Enum(ReturnInvoiceStatus, name="return_invoice_status", create_constraint=True),
+        Enum(ReturnInvoiceStatus, name="return_invoice_status", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         default=ReturnInvoiceStatus.DRAFT,
         nullable=False,
         comment="Статус повернення",

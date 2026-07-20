@@ -32,8 +32,8 @@ interface FormState {
   price: number;
   cost_price: number | null;
   stock: number;
-  category_id: number | null;
-  supplier_id: number | null;
+  category_id: string | null;
+  supplier_id: string | null;
   vat_rate: VatRate;
   unit: UnitOfMeasure;
   is_weight: boolean;
@@ -41,12 +41,12 @@ interface FormState {
   is_active: boolean;
 }
 
-export const ProductFormPage: React.FC = () => {
+const ProductFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
 
-  const { data: product, isLoading: isLoadingProduct } = useProduct(Number(id));
+  const { data: product, isLoading: isLoadingProduct } = useProduct(id || '');
   const { data: categories } = useCategories();
   const { data: suppliersData } = useSuppliers({ page: 1, size: 100 });
   const createMutation = useCreateProduct();
@@ -122,8 +122,8 @@ export const ProductFormPage: React.FC = () => {
     try {
       if (isEdit && id) {
         await updateMutation.mutateAsync({
-          id: Number(id),
-          data: { ...data, id: Number(id) },
+          id,
+          data: { ...data, id },
         });
       } else {
         await createMutation.mutateAsync(data);
@@ -217,7 +217,7 @@ export const ProductFormPage: React.FC = () => {
             options={categoryOptions}
             value={String(form.category_id || '')}
             onChange={(e) =>
-              handleChange('category_id', e.target.value ? Number(e.target.value) : null)
+              handleChange('category_id', e.target.value || null)
             }
           />
         </div>
@@ -276,7 +276,7 @@ export const ProductFormPage: React.FC = () => {
             options={supplierOptions}
             value={String(form.supplier_id || '')}
             onChange={(e) =>
-              handleChange('supplier_id', e.target.value ? Number(e.target.value) : null)
+              handleChange('supplier_id', e.target.value || null)
             }
           />
         </div>
@@ -335,3 +335,5 @@ export const ProductFormPage: React.FC = () => {
     </div>
   );
 };
+
+export default ProductFormPage;

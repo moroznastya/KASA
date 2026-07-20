@@ -3,12 +3,12 @@ import { SupplierLedgerEntry, BalanceResponse, PaymentCreate, Payment } from '@/
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 export const ledgerService = {
-  async getSupplierBalance(supplierId: number): Promise<BalanceResponse> {
+  async getSupplierBalance(supplierId: string): Promise<BalanceResponse> {
     const response = await api.get<BalanceResponse>(`/ledger/balance/${supplierId}`);
     return response.data;
   },
 
-  async getSupplierLedger(supplierId: number, params?: SearchParams): Promise<PaginatedResponse<SupplierLedgerEntry>> {
+  async getSupplierLedger(supplierId: string, params?: SearchParams): Promise<PaginatedResponse<SupplierLedgerEntry>> {
     const response = await api.get<PaginatedResponse<SupplierLedgerEntry>>(`/ledger/${supplierId}`, { params });
     return response.data;
   },
@@ -23,7 +23,7 @@ export const ledgerService = {
     return response.data;
   },
 
-  async getPayments(supplierId: number, params?: SearchParams): Promise<PaginatedResponse<Payment>> {
+  async getPayments(supplierId: string, params?: SearchParams): Promise<PaginatedResponse<Payment>> {
     const response = await api.get<PaginatedResponse<Payment>>(`/ledger/payments/${supplierId}`, { params });
     return response.data;
   },

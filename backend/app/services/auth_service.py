@@ -6,6 +6,7 @@
   - Логін за PIN-кодом (bcrypt через passlib)
   - Генерацію JWT токенів (через python-jose)
   - Верифікацію токенів
+  - Оновлення токенів (refresh)
 """
 
 from datetime import datetime, timedelta
@@ -93,6 +94,7 @@ class AuthService:
         to_encode = {
             "sub": str(user_id),
             "role": role.value if hasattr(role, "value") else role,
+            "type": "access",
             "iat": datetime.utcnow(),
         }
         if expires_delta:
@@ -100,6 +102,42 @@ class AuthService:
         else:
             expire = datetime.utcnow() + timedelta(
                 minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+            )
+        to_encode["exp"] = expire
+        return jwt.encode(
+            to_encode,
+            settings.SECRET_KEY,
+            algorithm="HS256",
+        )
+
+    @staticmethod
+    def create_refresh_token(
+        user_id: UUID,
+        role: UserRole,
+        expires_delta: Optional[timedelta] = None,
+    ) -> str:
+        """
+        Створює JWT refresh токен (для оновлення access токена).
+
+        Args:
+            user_id: ID користувача.
+            role: Роль користувача.
+            expires_delta: Час дії токена (за замовчуванням 7 днів).
+
+        Returns:
+            JWT refresh токен у вигляді рядка.
+        """
+        to_encode = {
+            "sub": str(user_id),
+            "role": role.value if hasattr(role, "value") else role,
+            "type": "refresh",
+            "iat": datetime.utcnow(),
+        }
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(
+                minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES
             )
         to_encode["exp"] = expire
         return jwt.encode(

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { BarChart3, TrendingUp, Package, DollarSign, Calendar } from 'lucide-react';
 import { receiptService } from '@/services/receiptService';
@@ -11,22 +11,49 @@ import { Receipt } from '@/types/receipt';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
 
-export const ReportsPage: React.FC = () => {
+function getDateRange(period: Period): { date_from?: string; date_to?: string } {
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+
+  switch (period) {
+    case 'today':
+      return { date_from: today, date_to: today };
+    case 'week': {
+      const weekAgo = new Date(now);
+      weekAgo.setDate(weekAgo.getDate() - 7);
+      return { date_from: weekAgo.toISOString().split('T')[0], date_to: today };
+    }
+    case 'month': {
+      const monthAgo = new Date(now);
+      monthAgo.setMonth(monthAgo.getMonth() - 1);
+      return { date_from: monthAgo.toISOString().split('T')[0], date_to: today };
+    }
+    case 'custom':
+    default:
+      return {};
+  }
+}
+
+const ReportsPage: React.FC = () => {
   const [period, setPeriod] = useState<Period>('today');
 
+  const dateRange = useMemo(() => getDateRange(period), [period]);
+
+  const queryParams = useMemo(() => ({
+    page: 1,
+    size: 50,
+    ...(dateRange.date_from ? { date_from: dateRange.date_from } : {}),
+    ...(dateRange.date_to ? { date_to: dateRange.date_to } : {}),
+  }), [dateRange]);
+
   const { data: receiptsData, isLoading } = useQuery({
-    queryKey: ['receipts', { page: 1, size: 50 }],
-    queryFn: () => receiptService.getReceipts({ page: 1, size: 50 }),
+    queryKey: ['receipts', queryParams],
+    queryFn: () => receiptService.getReceipts(queryParams),
   });
 
   const { data: productsData } = useQuery({
     queryKey: ['products', { page: 1, size: 1 }],
     queryFn: () => productService.getProducts({ page: 1, size: 1 }),
-  });
-
-  const { data: todayStats } = useQuery({
-    queryKey: ['receipts-today-stats'],
-    queryFn: () => receiptService.getTodayStats(),
   });
 
   const totalRevenue = receiptsData?.items?.reduce(
@@ -206,3 +233,5 @@ export const ReportsPage: React.FC = () => {
     </div>
   );
 };
+
+export default ReportsPage;

@@ -8,7 +8,7 @@ export const receiptService = {
     return response.data;
   },
 
-  async getReceipt(id: number): Promise<Receipt> {
+  async getReceipt(id: string): Promise<Receipt> {
     const response = await api.get<Receipt>(`/receipts/${id}`);
     return response.data;
   },

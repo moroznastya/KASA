@@ -15,6 +15,12 @@ interface AuthStore {
   initialize: () => void;
 }
 
+function clearStorage() {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  localStorage.removeItem('user');
+}
+
 export const useAuthStore = create<AuthStore>((set) => ({
   user: null,
   accessToken: null,
@@ -34,26 +40,25 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
   login: (user: User, accessToken: string, refreshToken?: string | null) => {
     localStorage.setItem('accessToken', accessToken);
+    // Зберігаємо refresh_token тільки якщо він реально повернутий з бекенду
     if (refreshToken) {
       localStorage.setItem('refreshToken', refreshToken);
     } else {
-      // Якщо refresh_token не повернуто, зберігаємо access_token як refresh
-      localStorage.setItem('refreshToken', accessToken);
+      // Якщо refresh_token не повернуто — не зберігаємо нічого в refreshToken
+      localStorage.removeItem('refreshToken');
     }
     localStorage.setItem('user', JSON.stringify(user));
     set({
       user,
       accessToken,
-      refreshToken: refreshToken || accessToken,
+      refreshToken: refreshToken || null,
       isAuthenticated: true,
       isLoading: false,
     });
   },
 
   logout: () => {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    localStorage.removeItem('user');
+    clearStorage();
     set({
       user: null,
       accessToken: null,
@@ -74,12 +79,20 @@ export const useAuthStore = create<AuthStore>((set) => ({
         set({
           user,
           accessToken,
-          refreshToken: refreshToken || accessToken,
+          refreshToken: refreshToken || null,
           isAuthenticated: true,
           isLoading: false,
         });
       } catch {
-        set({ isLoading: false });
+        // При помилці парсингу — очищаємо сховище
+        clearStorage();
+        set({
+          user: null,
+          accessToken: null,
+          refreshToken: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
       }
     } else {
       set({ isLoading: false });

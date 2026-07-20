@@ -46,7 +46,7 @@ class WriteOff(Base):
         comment="Номер документа списання",
     )
     reason: Mapped[WriteOffReason] = mapped_column(
-        Enum(WriteOffReason, name="write_off_reason", create_constraint=True),
+        Enum(WriteOffReason, name="write_off_reason", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         comment="Причина списання",
     )
@@ -59,6 +59,17 @@ class WriteOff(Base):
         Text,
         nullable=True,
         comment="Додаткові нотатки",
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="confirmed",
+        nullable=False,
+        comment="Статус списання (confirmed за замовчуванням)",
+    )
+    total_amount: Mapped[float | None] = mapped_column(
+        Numeric(12, 2),
+        default=0.00,
+        comment="Загальна сума списання (грн)",
     )
 
     # ── Timestamps ──────────────────────────────

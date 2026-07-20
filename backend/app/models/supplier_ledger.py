@@ -50,7 +50,7 @@ class SupplierLedger(Base):
         comment="Ідентифікатор постачальника",
     )
     operation_type: Mapped[LedgerOperationType] = mapped_column(
-        Enum(LedgerOperationType, name="ledger_operation_type", create_constraint=True),
+        Enum(LedgerOperationType, name="ledger_operation_type", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         comment="Тип операції",
     )

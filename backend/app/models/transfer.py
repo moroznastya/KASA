@@ -58,7 +58,7 @@ class Transfer(Base):
         comment="Дата переміщення",
     )
     status: Mapped[TransferStatus] = mapped_column(
-        Enum(TransferStatus, name="transfer_status", create_constraint=True),
+        Enum(TransferStatus, name="transfer_status", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
         default=TransferStatus.DRAFT,
         nullable=False,
         comment="Статус переміщення",

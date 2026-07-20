@@ -13,10 +13,10 @@ import { formatCurrency, formatDateTime, formatPaymentMethod } from '@/utils/for
 import { SupplierLedgerEntry, Payment, PaymentMethod } from '@/types/ledger';
 import toast from 'react-hot-toast';
 
-export const LedgerPage: React.FC = () => {
+const LedgerPage: React.FC = () => {
   const queryClient = useQueryClient();
   const { data: suppliersData } = useAllSuppliers();
-  const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
     amount: '',
@@ -147,7 +147,7 @@ export const LedgerPage: React.FC = () => {
               options={supplierOptions}
               value={String(selectedSupplierId || '')}
               onChange={(e) =>
-                setSelectedSupplierId(e.target.value ? Number(e.target.value) : null)
+                setSelectedSupplierId(e.target.value || null)
               }
             />
           </div>
@@ -267,3 +267,5 @@ export const LedgerPage: React.FC = () => {
     </div>
   );
 };
+
+export default LedgerPage;

@@ -1,7 +1,7 @@
 export interface Category {
-  id: number;
+  id: string;
   name: string;
-  parent_id: number | null;
+  parent_id: string | null;
   children?: Category[];
   created_at: string;
   updated_at: string;
@@ -9,24 +9,24 @@ export interface Category {
 
 export interface CategoryCreate {
   name: string;
-  parent_id?: number | null;
+  parent_id?: string | null;
 }
 
 export interface CategoryUpdate extends CategoryCreate {
-  id: number;
+  id: string;
 }
 
 export interface Product {
-  id: number;
+  id: string;
   name: string;
   barcode: string | null;
   article: string | null;
   price: string;
   cost_price: string | null;
   stock: number;
-  category_id: number | null;
+  category_id: string | null;
   category_name?: string;
-  supplier_id: number | null;
+  supplier_id: string | null;
   supplier_name?: string;
   vat_rate: VatRate;
   unit: UnitOfMeasure;
@@ -47,8 +47,8 @@ export interface ProductCreate {
   price: number;
   cost_price?: number | null;
   stock?: number;
-  category_id?: number | null;
-  supplier_id?: number | null;
+  category_id?: string | null;
+  supplier_id?: string | null;
   vat_rate?: VatRate;
   unit?: UnitOfMeasure;
   is_weight?: boolean;
@@ -57,7 +57,7 @@ export interface ProductCreate {
 }
 
 export interface ProductUpdate extends ProductCreate {
-  id: number;
+  id: string;
 }
 
 export interface BarcodeSearchResult {

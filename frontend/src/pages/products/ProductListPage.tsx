@@ -13,17 +13,18 @@ import { formatCurrency, formatUnit } from '@/utils/format';
 import { Product } from '@/types/product';
 import toast from 'react-hot-toast';
 
-export const ProductListPage: React.FC = () => {
+const ProductListPage: React.FC = () => {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [page, setPage] = useState(1);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useProducts({
     page,
     size: 20,
     search: search || undefined,
+    category_id: categoryFilter || undefined,
   });
 
   const { data: categories } = useCategories();
@@ -144,14 +145,20 @@ export const ProductListPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row gap-4">
         <SearchInput
           value={search}
-          onChange={setSearch}
+          onChange={(v) => {
+            setSearch(v);
+            setPage(1);
+          }}
           placeholder="Пошук за назвою або штрих-кодом..."
           className="flex-1"
         />
         <Select
           options={categoryOptions}
           value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
+          onChange={(e) => {
+            setCategoryFilter(e.target.value);
+            setPage(1);
+          }}
           className="w-full sm:w-48"
         />
       </div>
@@ -186,3 +193,5 @@ export const ProductListPage: React.FC = () => {
     </div>
   );
 };
+
+export default ProductListPage;

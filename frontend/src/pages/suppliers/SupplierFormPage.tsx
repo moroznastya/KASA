@@ -7,12 +7,12 @@ import { Spinner } from '@/components/ui/Spinner';
 import { ArrowLeft, Save } from 'lucide-react';
 import { SupplierCreate } from '@/types/supplier';
 
-export const SupplierFormPage: React.FC = () => {
+const SupplierFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
 
-  const { data: supplier, isLoading: isLoadingSupplier } = useSupplier(Number(id));
+  const { data: supplier, isLoading: isLoadingSupplier } = useSupplier(id || '');
   const createMutation = useCreateSupplier();
   const updateMutation = useUpdateSupplier();
 
@@ -59,8 +59,8 @@ export const SupplierFormPage: React.FC = () => {
     try {
       if (isEdit && id) {
         await updateMutation.mutateAsync({
-          id: Number(id),
-          data: { ...form, id: Number(id) },
+          id,
+          data: { ...form, id },
         });
       } else {
         await createMutation.mutateAsync(form);
@@ -191,3 +191,5 @@ export const SupplierFormPage: React.FC = () => {
     </div>
   );
 };
+
+export default SupplierFormPage;
