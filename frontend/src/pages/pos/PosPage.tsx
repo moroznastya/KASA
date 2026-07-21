@@ -60,6 +60,16 @@ const PosPage: React.FC = () => {
   const debtorSearchRef = useRef<HTMLDivElement>(null);
   const debtorInputRef = useRef<HTMLInputElement>(null);
   const [panelMode, setPanelMode] = useState<'search' | 'categories'>('search');
+  
+  // Debtor modal for partial payment
+  const [showDebtorModal, setShowDebtorModal] = useState(false);
+  const [debtorModalDebtor, setDebtorModalDebtor] = useState<Debtor | null>(null);
+  const [debtorModalQuery, setDebtorModalQuery] = useState('');
+  const [debtorModalResults, setDebtorModalResults] = useState<Debtor[]>([]);
+  const [isSearchingDebtorModal, setIsSearchingDebtorModal] = useState(false);
+  const [showDebtorModalDropdown, setShowDebtorModalDropdown] = useState(false);
+  const debtorModalRef = useRef<HTMLDivElement>(null);
+  const debtorModalInputRef = useRef<HTMLInputElement>(null);
 
   // Search debtors when query changes
   useEffect(() => {
@@ -84,6 +94,39 @@ const PosPage: React.FC = () => {
 
     return () => clearTimeout(timer);
   }, [debtorQuery]);
+
+  // Search debtors in modal
+  useEffect(() => {
+    if (!debtorModalQuery.trim()) {
+      setDebtorModalResults([]);
+      setShowDebtorModalDropdown(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingDebtorModal(true);
+      try {
+        const results = await debtorService.search(debtorModalQuery);
+        setDebtorModalResults(results);
+        setShowDebtorModalDropdown(results.length > 0);
+      } catch {
+        // Ignore
+      } finally {
+        setIsSearchingDebtorModal(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [debtorModalQuery]);
+
+  // Close debtor modal dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (debtorModalRef.current && !debtorModalRef.current.contains(e.target as Node)) {
+        setShowDebtorModalDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Close debtor dropdown on click outside
   useEffect(() => {
@@ -296,11 +339,10 @@ const PosPage: React.FC = () => {
       paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
     }
 
-    // Якщо сума менша за чек — обов'язково потрібен боржник
+    // Якщо сума менша за чек — показуємо модалку боржника
     const isPartialPayment = paidAmount < subtotal;
-    if (isPartialPayment && !selectedDebtor) {
-      setShowDebtorField(true);
-      toast.error('Сума оплати менша за суму чеку. Виберіть боржника для запису різниці в борг');
+    if (isPartialPayment) {
+      setShowDebtorModal(true);
       return;
     }
 
@@ -358,6 +400,92 @@ const PosPage: React.FC = () => {
     setSelectedDebtor(debtor);
     setDebtorQuery(debtor.name);
     setShowDebtorDropdown(false);
+  };
+
+  const handleDebtorModalSelect = (debtor: Debtor) => {
+    setDebtorModalDebtor(debtor);
+    setDebtorModalQuery(debtor.name);
+    setShowDebtorModalDropdown(false);
+  };
+
+  const handleCreateAndSelectDebtorModal = async () => {
+    if (!debtorModalQuery.trim()) {
+      toast.error("Введіть ім'я боржника");
+      return;
+    }
+    try {
+      const newDebtor = await debtorService.create({ name: debtorModalQuery.trim() });
+      setDebtorModalDebtor(newDebtor);
+      setDebtorModalQuery(newDebtor.name);
+      setShowDebtorModalDropdown(false);
+      toast.success(`Боржника "${newDebtor.name}" створено`);
+    } catch {
+      toast.error('Помилка створення боржника');
+    }
+  };
+
+  const handleConfirmDebtorModal = async () => {
+    if (!debtorModalDebtor) {
+      toast.error('Оберіть або створіть боржника');
+      return;
+    }
+    
+    // Визначаємо фактично сплачену суму
+    let paidAmount: number;
+    if (paymentMethod === 'cash') {
+      paidAmount = parseFloat(cashAmount) || 0;
+    } else if (paymentMethod === 'card') {
+      paidAmount = subtotal;
+    } else {
+      paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
+    }
+    
+    setIsProcessing(true);
+    try {
+      const receiptData: ReceiptCreate = {
+        receipt_type: 'sale',
+        total_amount: subtotal.toFixed(2),
+        paid_amount: paidAmount.toFixed(2),
+        debtor_id: debtorModalDebtor.id,
+        items: cart.map((item) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          price: item.price,
+        })),
+      };
+
+      await receiptService.createReceipt(receiptData);
+
+      const debtAmount = subtotal - paidAmount;
+      toast.success(
+        `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
+        `Борг ${formatCurrency(debtAmount)} записано на "${debtorModalDebtor.name}"`
+      );
+
+      setCart([]);
+      setShowPayment(false);
+      setShowDebtorModal(false);
+      setCashAmount('');
+      setCardAmount('');
+      setPaymentMethod('cash');
+      setDebtorModalDebtor(null);
+      setDebtorModalQuery('');
+      setSelectedDebtor(null);
+      setDebtorQuery('');
+    } catch (error: any) {
+      const errMsg = error?.response?.data?.detail;
+      if (typeof errMsg === 'string') {
+        toast.error(errMsg);
+      } else if (Array.isArray(errMsg)) {
+        toast.error(errMsg.map((e: any) => e.msg || JSON.stringify(e)).join(', '));
+      } else if (errMsg && typeof errMsg === 'object') {
+        toast.error(JSON.stringify(errMsg));
+      } else {
+        toast.error('Помилка створення чеку');
+      }
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleCreateAndSelectDebtor = async () => {
@@ -934,7 +1062,149 @@ const PosPage: React.FC = () => {
               isLoading={isProcessing}
               size="lg"
             >
-              {isPartialPayment ? `Сплатити ${formatCurrency(getPaidAmount())} (борг ${formatCurrency(subtotal - getPaidAmount())})` : 'Сплатити'}
+              Сплатити
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Модалка боржника для неповної оплати */}
+      <Modal
+        isOpen={showDebtorModal}
+        onClose={() => {
+          setShowDebtorModal(false);
+          setDebtorModalDebtor(null);
+          setDebtorModalQuery('');
+        }}
+        title="Недостатня сума оплати"
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-700">
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+              Сума оплати менша за суму чеку.
+            </p>
+            <p className="text-sm text-amber-600 dark:text-amber-500 mt-1">
+              Решта ({formatCurrency(subtotal - getPaidAmount())}) буде записана в борг.
+            </p>
+            <div className="flex justify-between text-sm mt-2 pt-2 border-t border-amber-200 dark:border-amber-700">
+              <span className="text-amber-700 dark:text-amber-400">До сплати:</span>
+              <span className="font-bold text-amber-700 dark:text-amber-400">{formatCurrency(subtotal)}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-amber-700 dark:text-amber-400">Сплачено:</span>
+              <span className="font-bold text-amber-700 dark:text-amber-400">{formatCurrency(getPaidAmount())}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-danger-600 font-medium">Борг:</span>
+              <span className="font-bold text-danger-600">{formatCurrency(subtotal - getPaidAmount())}</span>
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+              Оберіть або створіть боржника <span className="text-danger-500">*</span>
+            </p>
+            
+            <div ref={debtorModalRef} className="relative">
+              <div className="relative">
+                <input
+                  ref={debtorModalInputRef}
+                  type="text"
+                  value={debtorModalQuery}
+                  onChange={(e) => {
+                    setDebtorModalQuery(e.target.value);
+                    setDebtorModalDebtor(null);
+                  }}
+                  placeholder="Введіть ім'я боржника..."
+                  className="input-field pl-10 pr-10"
+                  autoFocus
+                  id="debtor-modal-name"
+                  name="debtor-modal-name"
+                  autoComplete="off"
+                />
+                <UserPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                {isSearchingDebtorModal && (
+                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-500 animate-spin" />
+                )}
+              </div>
+
+              {/* Dropdown */}
+              {showDebtorModalDropdown && debtorModalResults.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                  {debtorModalResults.map((debtor) => (
+                    <button
+                      key={debtor.id}
+                      onClick={() => handleDebtorModalSelect(debtor)}
+                      className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors flex items-center justify-between"
+                    >
+                      <span className="font-medium text-gray-900 dark:text-gray-100">
+                        {debtor.name}
+                      </span>
+                      {debtor.total_debt > 0 && (
+                        <span className="text-xs text-danger-500 font-medium">
+                          Борг: {formatCurrency(debtor.total_debt)}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Create new debtor */}
+              {debtorModalQuery.trim() && !debtorModalDebtor && !isSearchingDebtorModal && (
+                <button
+                  onClick={handleCreateAndSelectDebtorModal}
+                  className="mt-1 w-full px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors flex items-center gap-2"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Створити боржника &quot;{debtorModalQuery.trim()}&quot;</span>
+                </button>
+              )}
+
+              {debtorModalDebtor && (
+                <div className="mt-2 px-3 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-lg flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-primary-700 dark:text-primary-400">
+                      {debtorModalDebtor.name}
+                    </p>
+                    {debtorModalDebtor.total_debt > 0 && (
+                      <p className="text-xs text-danger-500">
+                        Поточний борг: {formatCurrency(debtorModalDebtor.total_debt)}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      setDebtorModalDebtor(null);
+                      setDebtorModalQuery('');
+                      debtorModalInputRef.current?.focus();
+                    }}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    Змінити
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
+            <Button variant="secondary" onClick={() => {
+              setShowDebtorModal(false);
+              setDebtorModalDebtor(null);
+              setDebtorModalQuery('');
+            }}>
+              Скасувати
+            </Button>
+            <Button
+              onClick={handleConfirmDebtorModal}
+              isLoading={isProcessing}
+              disabled={!debtorModalDebtor}
+            >
+              {debtorModalDebtor
+                ? `Створити чек (борг на ${debtorModalDebtor.name})`
+                : 'Оберіть боржника'}
             </Button>
           </div>
         </div>
