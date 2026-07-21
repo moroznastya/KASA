@@ -10,6 +10,16 @@ import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
+/** Спосіб оплати з постачальником */
+type PaymentMethod = 'credit' | 'bank_transfer' | 'cash' | 'other';
+
+const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
+  { value: 'credit', label: 'В борг постачальнику' },
+  { value: 'bank_transfer', label: 'По перерахунку' },
+  { value: 'cash', label: 'Готівкою з каси' },
+  { value: 'other', label: 'Інший спосіб' },
+];
+
 interface CartItem {
   product_id: string;
   product_title: string;
@@ -34,6 +44,7 @@ const InvoiceFormPage: React.FC = () => {
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
   const [isFiscal, setIsFiscal] = useState(false);
   const [supplierId, setSupplierId] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -173,6 +184,7 @@ const InvoiceFormPage: React.FC = () => {
         number: number.trim(),
         supplier_id: supplierId,
         invoice_date: new Date(invoiceDate).toISOString(),
+        payment_method: paymentMethod || undefined,
         is_fiscal: isFiscal,
         notes: notes || undefined,
         items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
@@ -227,6 +239,14 @@ const InvoiceFormPage: React.FC = () => {
     })) || []),
   ];
 
+  const paymentMethodOptions = [
+    { value: '', label: 'Не вибрано' },
+    ...PAYMENT_METHODS.map((pm) => ({
+      value: pm.value,
+      label: pm.label,
+    })),
+  ];
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
@@ -276,12 +296,20 @@ const InvoiceFormPage: React.FC = () => {
           </div>
         </div>
 
-        <Select
-          label="Постачальник *"
-          options={supplierOptions}
-          value={String(supplierId || '')}
-          onChange={(e) => setSupplierId(e.target.value || null)}
-        />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Select
+            label="Постачальник *"
+            options={supplierOptions}
+            value={String(supplierId || '')}
+            onChange={(e) => setSupplierId(e.target.value || null)}
+          />
+          <Select
+            label="Спосіб оплати"
+            options={paymentMethodOptions}
+            value={paymentMethod}
+            onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
+          />
+        </div>
 
         {/* Пошук товару + кнопка додати новий */}
         <div className="flex gap-3 items-end">

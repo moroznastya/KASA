@@ -86,6 +86,7 @@ async def create_invoice(
         number=data.number,
         supplier_id=data.supplier_id,
         invoice_date=invoice_date,
+        payment_method=data.payment_method,
         is_fiscal=data.is_fiscal,
         notes=data.notes,
         total_amount=data.total_amount,

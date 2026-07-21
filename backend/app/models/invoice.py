@@ -25,6 +25,14 @@ class InvoiceStatus(str, PyEnum):
     CANCELLED = "cancelled"   # Скасовано
 
 
+class PaymentMethod(str, PyEnum):
+    """Спосіб оплати постачальнику."""
+    CREDIT = "credit"               # В борг постачальнику
+    BANK_TRANSFER = "bank_transfer" # По перерахунку
+    CASH = "cash"                   # Готівкою з каси
+    OTHER = "other"                 # Інший спосіб
+
+
 class Invoice(Base):
     """Прибуткова накладна (надходження товару від постачальника)."""
 
@@ -60,6 +68,11 @@ class Invoice(Base):
         default=InvoiceStatus.DRAFT,
         nullable=False,
         comment="Статус накладної",
+    )
+    payment_method: Mapped[PaymentMethod | None] = mapped_column(
+        Enum(PaymentMethod, name="payment_method", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
+        nullable=True,
+        comment="Спосіб оплати з постачальником",
     )
     is_fiscal: Mapped[bool] = mapped_column(
         Boolean,

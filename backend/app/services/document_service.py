@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
 from app.models.transfer import Transfer, TransferItem, TransferStatus
 from app.models.write_off import WriteOff, WriteOffItem
 from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
@@ -27,6 +27,15 @@ from app.services.ledger_service import LedgerService
 
 # Тип документа для узагальненої роботи
 DocumentType = Union[Invoice, Transfer, WriteOff, ReturnInvoice]
+
+
+# Мапа для відображення способу оплати в текст
+PAYMENT_METHOD_LABELS: dict[PaymentMethod, str] = {
+    PaymentMethod.CREDIT: "в борг",
+    PaymentMethod.BANK_TRANSFER: "по перерахунку",
+    PaymentMethod.CASH: "готівкою з каси",
+    PaymentMethod.OTHER: "інший спосіб",
+}
 
 
 class DocumentService:
@@ -92,6 +101,12 @@ class DocumentService:
 
         # Створюємо запис у SupplierLedger
         if invoice.total_amount and invoice.total_amount > 0:
+            # Додаємо інформацію про спосіб оплати в нотатки
+            notes = f"Прибуткова накладна №{invoice.number}"
+            if invoice.payment_method:
+                method_label = PAYMENT_METHOD_LABELS.get(invoice.payment_method, invoice.payment_method.value)
+                notes += f" ({method_label})"
+
             await self.ledger_service.create_ledger_entry(
                 supplier_id=invoice.supplier_id,
                 operation_type="invoice",
@@ -99,7 +114,7 @@ class DocumentService:
                 document_number=invoice.number,
                 amount=invoice.total_amount,
                 operation_date=invoice.invoice_date,
-                notes=f"Прибуткова накладна №{invoice.number}",
+                notes=notes,
             )
 
         # Змінюємо статус

@@ -64,6 +64,7 @@ export interface InvoiceCreate {
   number: string;
   supplier_id: string;
   invoice_date: string;
+  payment_method?: 'credit' | 'bank_transfer' | 'cash' | 'other';
   is_fiscal: boolean;
   notes?: string | null;
   items: InvoiceItemInput[];
