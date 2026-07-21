@@ -10,7 +10,18 @@ import { Input } from '@/components/ui/Input';
 import { formatCurrency, formatUnit } from '@/utils/format';
 import { CategoryPanel } from '@/components/pos/CategoryPanel';
 import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
+import { Product } from '@/types/product';
+import { categoryService } from '@/services/categoryService';
+import { productService } from '@/services/productService';
 import toast from 'react-hot-toast';
+
+// ========== Інтерфейси ==========
+interface CategoryNode {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  children: CategoryNode[];
+}
 
 interface CartItem {
   product_id: string;
@@ -63,6 +74,14 @@ const PosPage: React.FC = () => {
   
   // Collapse/Expand для правої панелі каталогу
   const [catalogCollapsed, setCatalogCollapsed] = useState(false);
+  
+  // Категорії для горизонтальної панелі
+  const [categories, setCategories] = useState<CategoryNode[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [selectedCategoryName, setSelectedCategoryName] = useState('');
+  const [categoryProducts, setCategoryProducts] = useState<Product[]>([]);
+  const [categoryProductsLoading, setCategoryProductsLoading] = useState(false);
   
   // Debtor modal for partial payment
   const [showDebtorModal, setShowDebtorModal] = useState(false);
@@ -141,6 +160,46 @@ const PosPage: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Завантажуємо категорії для горизонтальної панелі
+  useEffect(() => {
+    const load = async () => {
+      setCategoriesLoading(true);
+      try {
+        const tree = await categoryService.getCategoryTree();
+        setCategories(tree as unknown as CategoryNode[]);
+      } catch (err) {
+        console.error('Помилка завантаження категорій:', err);
+      } finally {
+        setCategoriesLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  // Завантажуємо товари при виборі категорії
+  useEffect(() => {
+    if (!selectedCategoryId) {
+      setCategoryProducts([]);
+      return;
+    }
+    const load = async () => {
+      setCategoryProductsLoading(true);
+      try {
+        const response = await productService.getProducts({
+          category_id: selectedCategoryId,
+          size: 100,
+        });
+        setCategoryProducts(response.items);
+      } catch (err) {
+        console.error('Помилка завантаження товарів:', err);
+        setCategoryProducts([]);
+      } finally {
+        setCategoryProductsLoading(false);
+      }
+    };
+    load();
+  }, [selectedCategoryId]);
 
   const handleBarcodeFound = useCallback((product: any) => {
     const stock = parseFloat(product.stock) || 0;
@@ -308,6 +367,18 @@ const PosPage: React.FC = () => {
   const clearCart = () => {
     setCart([]);
   };
+
+  // ========== Категорії ==========
+  const handleCategoryClick = useCallback((cat: CategoryNode) => {
+    setSelectedCategoryId(cat.id);
+    setSelectedCategoryName(cat.name);
+  }, []);
+
+  const clearCategorySelection = useCallback(() => {
+    setSelectedCategoryId(null);
+    setSelectedCategoryName('');
+    setCategoryProducts([]);
+  }, []);
 
   const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
   const vatAmount = cart.reduce(
@@ -521,7 +592,7 @@ const PosPage: React.FC = () => {
   const isPartialPayment = showPayment && getPaidAmount() > 0 && getPaidAmount() < subtotal;
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-4">
+    <div className="flex flex-col h-[calc(100vh-8rem)] gap-0">
       {/* Кнопка collapse/expand — інтегрована в ліву панель */}
       {catalogCollapsed && (
         <div className="flex flex-col items-center pt-2">
@@ -664,7 +735,60 @@ const PosPage: React.FC = () => {
         )}
       </div>
 
-      {/* Center - Cart */}
+      {/* ===== Горизонтальна панель категорій під хедером ===== */}
+      <div className="flex-shrink-0 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 px-4 py-2 overflow-x-auto">
+        {categoriesLoading ? (
+          <div className="flex items-center gap-2 py-1">
+            <Loader2 className="w-4 h-4 text-primary-500 animate-spin" />
+            <span className="text-xs text-gray-400">Завантаження...</span>
+          </div>
+        ) : categories.length === 0 ? (
+          <span className="text-xs text-gray-400">Немає категорій</span>
+        ) : (
+          <div className="flex items-center gap-2">
+            {categories.map((cat, idx) => {
+              const isSelected = selectedCategoryId === cat.id;
+              const colors = [
+                'bg-blue-100 text-blue-700 border-blue-300 hover:bg-blue-200',
+                'bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-200',
+                'bg-amber-100 text-amber-700 border-amber-300 hover:bg-amber-200',
+                'bg-rose-100 text-rose-700 border-rose-300 hover:bg-rose-200',
+                'bg-violet-100 text-violet-700 border-violet-300 hover:bg-violet-200',
+                'bg-cyan-100 text-cyan-700 border-cyan-300 hover:bg-cyan-200',
+                'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200',
+                'bg-teal-100 text-teal-700 border-teal-300 hover:bg-teal-200',
+                'bg-pink-100 text-pink-700 border-pink-300 hover:bg-pink-200',
+                'bg-indigo-100 text-indigo-700 border-indigo-300 hover:bg-indigo-200',
+              ];
+              const color = colors[idx % colors.length];
+              
+              return (
+                <button
+                  key={cat.id}
+                  onClick={() => handleCategoryClick(cat)}
+                  className={`
+                    flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all whitespace-nowrap
+                    ${isSelected 
+                      ? 'bg-primary-500 text-white border-primary-500 shadow-sm' 
+                      : color
+                    }
+                  `}
+                >
+                  {cat.name}
+                  {cat.children && cat.children.length > 0 && (
+                    <span className={`text-[10px] ${isSelected ? 'text-white/70' : 'opacity-60'}`}>
+                      {cat.children.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ===== Основний контент: пошук зліва + чек по центру ===== */}
+      <div className="flex flex-1 gap-4 min-h-0">
       <div className={`flex-1 transition-all duration-300 ease-in-out ${catalogCollapsed ? 'max-w-none' : ''}`}>
       <div className="flex-1 card flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-slate-700">
@@ -812,6 +936,7 @@ const PosPage: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
       </div>
       </div>
 
