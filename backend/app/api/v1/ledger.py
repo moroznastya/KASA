@@ -3,7 +3,7 @@ API роутер для роботи з журналом взаєморозра�
 
 Ендпоінти:
   - GET    /ledger/{supplier_id}        — історія операцій з постачальником
-  - GET    /ledger/{supplier_id}/balance — поточний баланс постачальника
+  - GET    /ledger/balance/{supplier_id} — поточний баланс постачальника
   - POST   /ledger                      — створити запис (оплата, коригування)
 """
 
@@ -25,6 +25,31 @@ router = APIRouter(
     prefix="/ledger",
     tags=["Взаєморозрахунки"],
 )
+
+
+# ⚠️ /balance/{supplier_id} МАЄ БУТИ ПЕРЕД /{supplier_id},
+#     інакше FastAPI сприйме "balance" як supplier_id (UUID) і буде 404
+@router.get("/balance/{supplier_id}", response_model=SupplierLedgerBalanceResponse)
+async def get_supplier_balance(
+    supplier_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Отримує поточний баланс постачальника.
+
+    Додатне значення — борг перед постачальником.
+    """
+    ledger_service = LedgerService(session)
+    balance, supplier_name, last_date = (
+        await ledger_service.get_supplier_balance_with_name(supplier_id)
+    )
+    return SupplierLedgerBalanceResponse(
+        supplier_id=supplier_id,
+        supplier_name=supplier_name,
+        current_balance=balance,
+        last_updated=last_date,
+    )
 
 
 @router.get("/{supplier_id}", response_model=dict)
@@ -52,29 +77,6 @@ async def get_supplier_ledger(
         "page": page,
         "size": size,
     }
-
-
-@router.get("/{supplier_id}/balance", response_model=SupplierLedgerBalanceResponse)
-async def get_supplier_balance(
-    supplier_id: UUID,
-    session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
-):
-    """
-    Отримує поточний баланс постачальника.
-
-    Додатне значення — борг перед постачальником.
-    """
-    ledger_service = LedgerService(session)
-    balance, supplier_name, last_date = (
-        await ledger_service.get_supplier_balance_with_name(supplier_id)
-    )
-    return SupplierLedgerBalanceResponse(
-        supplier_id=supplier_id,
-        supplier_name=supplier_name,
-        current_balance=balance,
-        last_updated=last_date,
-    )
 
 
 @router.post("", response_model=SupplierLedgerResponse, status_code=201)
