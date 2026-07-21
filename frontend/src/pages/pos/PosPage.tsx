@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, Layers, EyeOff, Settings2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/Input';
 import { formatCurrency, formatUnit } from '@/utils/format';
 import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
 import toast from 'react-hot-toast';
+import { CategoryBrowser } from '@/components/pos/CategoryBrowser';
 
 interface CartItem {
   product_id: string;
@@ -516,8 +517,12 @@ const PosPage: React.FC = () => {
   const isPartialPayment = showPayment && getPaidAmount() > 0 && getPaidAmount() < subtotal;
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* Left panel - Product search / Categories */}
+    <>
+      {/* Category browser - horizontal bar above search and cart */}
+      <CategoryBrowser onProductSelect={handleProductSelect} />
+
+      <div className="flex h-[calc(100vh-8rem)] gap-4">
+        {/* Left panel - Product search / Categories */}
       <div className="w-80 flex flex-col gap-4">
         {/* Unified search field */}
         <div className="card p-4">
@@ -1174,6 +1179,7 @@ const PosPage: React.FC = () => {
       </Modal>
 
     </div>
+    </>
   );
 };
 
