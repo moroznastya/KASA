@@ -2,6 +2,7 @@
 Pydantic схеми для моделі Supplier (Постачальник).
 """
 
+from decimal import Decimal
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -38,6 +39,7 @@ class SupplierResponse(BaseModel):
     email: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
+    current_balance: Decimal = Field(Decimal("0.00"), description="Поточний борг перед постачальником (грн)")
     created_at: datetime
     updated_at: datetime
 

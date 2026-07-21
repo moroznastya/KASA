@@ -2,7 +2,7 @@
 API роутер для роботи з постачальниками (Suppliers).
 
 Ендпоінти:
-  - GET    /suppliers          — список постачальників
+  - GET    /suppliers          — список постачальників з балансом
   - GET    /suppliers/all      — список всіх постачальників (без пагінації)
   - GET    /suppliers/{id}     — отримати постачальника за ID
   - POST   /suppliers          — створити постачальника
@@ -10,14 +10,16 @@ API роутер для роботи з постачальниками (Supplier
   - DELETE /suppliers/{id}     — видалити постачальника
 """
 
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.models.supplier import Supplier
+from app.models.supplier_ledger import SupplierLedger
 from app.schemas.supplier import (
     SupplierCreate,
     SupplierUpdate,
@@ -31,15 +33,33 @@ router = APIRouter(
 )
 
 
+async def _get_supplier_balance(session: AsyncSession, supplier_id: UUID) -> Decimal:
+    """Отримує поточний баланс постачальника."""
+    result = await session.execute(
+        select(func.coalesce(func.sum(SupplierLedger.amount), 0)).where(
+            SupplierLedger.supplier_id == supplier_id
+        )
+    )
+    return Decimal(str(result.scalar() or "0.00"))
+
+
+async def _supplier_to_response(session: AsyncSession, supplier: Supplier) -> SupplierResponse:
+    """Конвертує Supplier у SupplierResponse з балансом."""
+    balance = await _get_supplier_balance(session, supplier.id)
+    response = SupplierResponse.model_validate(supplier)
+    response.current_balance = balance
+    return response
+
+
 @router.get("", response_model=list[SupplierResponse])
 async def list_suppliers(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх постачальників."""
+    """Отримує список всіх постачальників з поточним балансом."""
     result = await session.execute(select(Supplier).order_by(Supplier.name))
     suppliers = result.scalars().all()
-    return [SupplierResponse.model_validate(s) for s in suppliers]
+    return [await _supplier_to_response(session, s) for s in suppliers]
 
 
 # ⚠️ /all МАЄ БУТИ ПЕРЕД /{supplier_id}, інакше FastAPI сприймає "all" як UUID
@@ -51,7 +71,7 @@ async def list_all_suppliers(
     """Отримує список всіх постачальників (без пагінації, для випадаючих списків)."""
     result = await session.execute(select(Supplier).order_by(Supplier.name))
     suppliers = result.scalars().all()
-    return [SupplierResponse.model_validate(s) for s in suppliers]
+    return [await _supplier_to_response(session, s) for s in suppliers]
 
 
 @router.get("/{supplier_id}", response_model=SupplierResponse)
@@ -60,7 +80,7 @@ async def get_supplier(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує постачальника за ID."""
+    """Отримує постачальника за ID з поточним балансом."""
     result = await session.execute(
         select(Supplier).where(Supplier.id == supplier_id)
     )
@@ -70,7 +90,7 @@ async def get_supplier(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Постачальника з ID '{supplier_id}' не знайдено",
         )
-    return SupplierResponse.model_validate(supplier)
+    return await _supplier_to_response(session, supplier)
 
 
 @router.post("", response_model=SupplierResponse, status_code=201)
@@ -91,7 +111,7 @@ async def create_supplier(
     session.add(supplier)
     await session.flush()
     await session.refresh(supplier)
-    return SupplierResponse.model_validate(supplier)
+    return await _supplier_to_response(session, supplier)
 
 
 @router.put("/{supplier_id}", response_model=SupplierResponse)
@@ -118,7 +138,7 @@ async def update_supplier(
 
     await session.flush()
     await session.refresh(supplier)
-    return SupplierResponse.model_validate(supplier)
+    return await _supplier_to_response(session, supplier)
 
 
 @router.delete("/{supplier_id}", status_code=204)

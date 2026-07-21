@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Edit, Trash2, Search, Phone, Mail } from 'lucide-react';
+import { Plus, Edit, Trash2, Search, Phone, Mail, DollarSign } from 'lucide-react';
 import { useSuppliers, useDeleteSupplier } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Supplier } from '@/types/supplier';
+import { formatCurrency } from '@/utils/format';
 
 const SupplierListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -62,6 +63,42 @@ const SupplierListPage: React.FC = () => {
         ),
     },
     {
+      key: 'current_balance',
+      header: 'Борг',
+      render: (item) => {
+        const balance = Number(item.current_balance);
+        const isDebt = balance > 0;
+        const isCredit = balance < 0;
+        return (
+          <div className="flex items-center gap-1.5">
+            <DollarSign className={`w-3.5 h-3.5 ${
+              isDebt ? 'text-danger-500' : isCredit ? 'text-success-500' : 'text-gray-400'
+            }`} />
+            <span className={`font-medium ${
+              isDebt
+                ? 'text-danger-600 dark:text-danger-400'
+                : isCredit
+                  ? 'text-success-600 dark:text-success-400'
+                  : 'text-gray-500 dark:text-gray-400'
+            }`}>
+              {isDebt
+                ? formatCurrency(balance)
+                : isCredit
+                  ? `-${formatCurrency(Math.abs(balance))}`
+                  : '0.00 грн'
+              }
+            </span>
+            {isDebt && (
+              <span className="text-xs text-danger-500 font-medium">(борг)</span>
+            )}
+            {isCredit && (
+              <span className="text-xs text-success-500 font-medium">(переплата)</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
       key: 'address',
       header: 'Адреса',
       render: (item) => item.address || '-',
@@ -110,7 +147,7 @@ const SupplierListPage: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Постачальники</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Управління постачальниками
+            Управління постачальниками та взаєморозрахунками
           </p>
         </div>
         <Button
