@@ -82,9 +82,9 @@ class LedgerService:
                 detail=f"Невідомий тип операції: '{operation_type}'",
             )
 
-        # Конвертуємо amount в Decimal, якщо прийшов рядком
-        if isinstance(amount, str):
-            amount = Decimal(amount)
+        # Конвертуємо amount в Decimal (може прийти як str, float, int)
+        if not isinstance(amount, Decimal):
+            amount = Decimal(str(amount))
 
         # Отримуємо поточний баланс
         current_balance = await self.get_supplier_balance(supplier_id)
