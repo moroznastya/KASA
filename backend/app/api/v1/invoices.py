@@ -82,6 +82,11 @@ async def create_invoice(
     # Виправлення: перетворюємо timezone-aware datetime в timezone-naive
     invoice_date = data.invoice_date.replace(tzinfo=None)
 
+    # Розраховуємо загальну суму з позицій, якщо не передана
+    total_amount = data.total_amount
+    if total_amount is None and data.items:
+        total_amount = sum(item.total for item in data.items)
+
     invoice = Invoice(
         number=data.number,
         supplier_id=data.supplier_id,
@@ -89,7 +94,7 @@ async def create_invoice(
         payment_method=data.payment_method,
         is_fiscal=data.is_fiscal,
         notes=data.notes,
-        total_amount=data.total_amount,
+        total_amount=total_amount,
         status=InvoiceStatus.DRAFT,
     )
     session.add(invoice)
@@ -166,6 +171,9 @@ async def update_invoice(
                 total=item_data.total,
             )
             session.add(item)
+
+        # Перераховуємо загальну суму
+        invoice.total_amount = sum(item_data.total for item_data in data.items)
 
     await session.flush()
 
