@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, FolderOpen } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, FolderOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
@@ -60,6 +60,9 @@ const PosPage: React.FC = () => {
   const debtorSearchRef = useRef<HTMLDivElement>(null);
   const debtorInputRef = useRef<HTMLInputElement>(null);
   const [panelMode, setPanelMode] = useState<'search' | 'categories'>('search');
+  
+  // Collapse/Expand для правої панелі каталогу
+  const [catalogCollapsed, setCatalogCollapsed] = useState(false);
   
   // Debtor modal for partial payment
   const [showDebtorModal, setShowDebtorModal] = useState(false);
@@ -519,8 +522,19 @@ const PosPage: React.FC = () => {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
+      {/* Кнопка collapse/expand для каталогу */}
+      <div className="flex">
+        <button
+          onClick={() => setCatalogCollapsed(!catalogCollapsed)}
+          className="self-start mt-2 p-2 rounded-lg border border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700 transition-all text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          title={catalogCollapsed ? 'Показати каталог' : 'Приховати каталог'}
+        >
+          {catalogCollapsed ? <PanelRightOpen className="w-5 h-5" /> : <PanelRightClose className="w-5 h-5" />}
+        </button>
+      </div>
+
       {/* Left panel - Product search / Categories */}
-      <div className="w-80 flex flex-col gap-4">
+      <div className={`${catalogCollapsed ? 'w-0 overflow-hidden opacity-0 p-0 m-0' : 'w-80'} flex flex-col gap-4 transition-all duration-300 ease-in-out`}>
         {/* Unified search field */}
         <div className="card p-4">
           <div className="relative">
@@ -641,6 +655,7 @@ const PosPage: React.FC = () => {
       </div>
 
       {/* Center - Cart */}
+      <div className={`flex-1 transition-all duration-300 ease-in-out ${catalogCollapsed ? 'max-w-none' : ''}`}>
       <div className="flex-1 card flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-slate-700">
           <div className="flex items-center gap-2">
@@ -787,6 +802,7 @@ const PosPage: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
       </div>
 
       {/* Quantity modal for weight products */}

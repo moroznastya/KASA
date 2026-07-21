@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { FolderOpen, Package, Loader2, Star, StarOff, ChevronRight, Grid3X3, ArrowLeft } from 'lucide-react';
+import { Package, Loader2, Star, StarOff, ArrowLeft, ChevronRight, Grid3X3, Heart } from 'lucide-react';
 import { categoryService } from '@/services/categoryService';
 import { productService } from '@/services/productService';
 import { Product } from '@/types/product';
@@ -18,6 +18,25 @@ interface CategoryNode {
   parent_id: string | null;
   children: CategoryNode[];
 }
+
+/** Палітра кольорів для плиток категорій */
+const CATEGORY_COLORS = [
+  { bg: 'bg-blue-50 dark:bg-blue-900/20', border: 'border-blue-200 dark:border-blue-800', text: 'text-blue-700 dark:text-blue-300', icon: 'text-blue-500' },
+  { bg: 'bg-emerald-50 dark:bg-emerald-900/20', border: 'border-emerald-200 dark:border-emerald-800', text: 'text-emerald-700 dark:text-emerald-300', icon: 'text-emerald-500' },
+  { bg: 'bg-amber-50 dark:bg-amber-900/20', border: 'border-amber-200 dark:border-amber-800', text: 'text-amber-700 dark:text-amber-300', icon: 'text-amber-500' },
+  { bg: 'bg-rose-50 dark:bg-rose-900/20', border: 'border-rose-200 dark:border-rose-800', text: 'text-rose-700 dark:text-rose-300', icon: 'text-rose-500' },
+  { bg: 'bg-violet-50 dark:bg-violet-900/20', border: 'border-violet-200 dark:border-violet-800', text: 'text-violet-700 dark:text-violet-300', icon: 'text-violet-500' },
+  { bg: 'bg-cyan-50 dark:bg-cyan-900/20', border: 'border-cyan-200 dark:border-cyan-800', text: 'text-cyan-700 dark:text-cyan-300', icon: 'text-cyan-500' },
+  { bg: 'bg-orange-50 dark:bg-orange-900/20', border: 'border-orange-200 dark:border-orange-800', text: 'text-orange-700 dark:text-orange-300', icon: 'text-orange-500' },
+  { bg: 'bg-teal-50 dark:bg-teal-900/20', border: 'border-teal-200 dark:border-teal-800', text: 'text-teal-700 dark:text-teal-300', icon: 'text-teal-500' },
+  { bg: 'bg-pink-50 dark:bg-pink-900/20', border: 'border-pink-200 dark:border-pink-800', text: 'text-pink-700 dark:text-pink-300', icon: 'text-pink-500' },
+  { bg: 'bg-indigo-50 dark:bg-indigo-900/20', border: 'border-indigo-200 dark:border-indigo-800', text: 'text-indigo-700 dark:text-indigo-300', icon: 'text-indigo-500' },
+  { bg: 'bg-lime-50 dark:bg-lime-900/20', border: 'border-lime-200 dark:border-lime-800', text: 'text-lime-700 dark:text-lime-300', icon: 'text-lime-500' },
+  { bg: 'bg-sky-50 dark:bg-sky-900/20', border: 'border-sky-200 dark:border-sky-800', text: 'text-sky-700 dark:text-sky-300', icon: 'text-sky-500' },
+];
+
+/** Отримати колір за індексом */
+const getColor = (index: number) => CATEGORY_COLORS[index % CATEGORY_COLORS.length];
 
 /** Отримати улюблені категорії з localStorage */
 const getFavoriteIds = (): Set<string> => {
@@ -46,55 +65,28 @@ const findNodeById = (nodes: CategoryNode[], id: string): CategoryNode | null =>
   return null;
 };
 
-/** Знайти шлях до категорії (для хлібних крихт) */
-const findPathToNode = (
-  nodes: CategoryNode[],
-  targetId: string,
-  path: { id: string; name: string }[] = []
-): { id: string; name: string }[] | null => {
+/** Зібрати всі категорії з дерева в плоский список (рекурсивно) */
+const flattenCategories = (nodes: CategoryNode[]): CategoryNode[] => {
+  const result: CategoryNode[] = [];
   for (const node of nodes) {
-    const newPath = [...path, { id: node.id, name: node.name }];
-    if (node.id === targetId) return newPath;
+    result.push(node);
     if (node.children && node.children.length > 0) {
-      const found = findPathToNode(node.children, targetId, newPath);
-      if (found) return found;
+      result.push(...flattenCategories(node.children));
     }
   }
-  return null;
-};
-
-/** Зібрати всі ID підкатегорій (рекурсивно) */
-const collectAllDescendantIds = (nodes: CategoryNode[]): string[] => {
-  const ids: string[] = [];
-  for (const node of nodes) {
-    ids.push(node.id);
-    if (node.children && node.children.length > 0) {
-      ids.push(...collectAllDescendantIds(node.children));
-    }
-  }
-  return ids;
+  return result;
 };
 
 export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect }) => {
   const [categories, setCategories] = useState<CategoryNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(getFavoriteIds);
-  const [viewMode, setViewMode] = useState<'all' | 'favorites'>('all');
 
-  // Навігація: стек історії (що було показано до цього)
-  // Кожен елемент стеку: { type: 'category', children: CategoryNode[] }
-  // Або { type: 'products', categoryId: string, categoryName: string }
-  type NavEntry = 
-    | { type: 'root'; children: CategoryNode[] }
-    | { type: 'category'; id: string; name: string; children: CategoryNode[] }
-    | { type: 'products'; id: string; name: string };
+  // Навігація: Рівень 1 (категорії) або Рівень 2 (товари)
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [selectedCategoryName, setSelectedCategoryName] = useState('');
 
-  const [navStack, setNavStack] = useState<NavEntry[]>([{ type: 'root', children: [] }]);
-
-  // Поточний стан навігації
-  const currentEntry = navStack[navStack.length - 1];
-
-  // Товари (коли дійшли до листка)
+  // Товари
   const [products, setProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState(false);
 
@@ -104,10 +96,7 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
       setLoading(true);
       try {
         const tree = await categoryService.getCategoryTree();
-        const nodes = tree as unknown as CategoryNode[];
-        setCategories(nodes);
-        // Ініціалізуємо кореневий стек
-        setNavStack([{ type: 'root', children: nodes }]);
+        setCategories(tree as unknown as CategoryNode[]);
       } catch (err) {
         console.error('Помилка завантаження категорій:', err);
       } finally {
@@ -117,18 +106,17 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
     load();
   }, []);
 
-  // Завантажуємо товари коли вибрана категорія-листок (без дітей)
+  // Завантажуємо товари при виборі категорії
   useEffect(() => {
-    if (currentEntry.type !== 'products') {
+    if (!selectedCategoryId) {
       setProducts([]);
       return;
     }
-
     const load = async () => {
       setProductsLoading(true);
       try {
         const response = await productService.getProducts({
-          category_id: currentEntry.id,
+          category_id: selectedCategoryId,
           size: 100,
         });
         setProducts(response.items);
@@ -140,32 +128,7 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
       }
     };
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentEntry.type]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const productsCategoryId = currentEntry.type === 'products' ? currentEntry.id : null;
-  useEffect(() => {
-    if (!productsCategoryId) {
-      setProducts([]);
-      return;
-    }
-    const load = async () => {
-      setProductsLoading(true);
-      try {
-        const response = await productService.getProducts({
-          category_id: productsCategoryId,
-          size: 100,
-        });
-        setProducts(response.items);
-      } catch (err) {
-        console.error('Помилка завантаження товарів:', err);
-        setProducts([]);
-      } finally {
-        setProductsLoading(false);
-      }
-    };
-    load();
-  }, [productsCategoryId]);
+  }, [selectedCategoryId]);
 
   const toggleFavorite = useCallback((catId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -181,157 +144,99 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
     });
   }, []);
 
-  /** Вхід в категорію (показуємо підкатегорії) */
+  /** Вхід в категорію (Рівень 2 — показуємо товари) */
   const enterCategory = useCallback((cat: CategoryNode) => {
-    if (cat.children && cat.children.length > 0) {
-      // Є підкатегорії — заходимо всередину
-      setNavStack(prev => [...prev, { type: 'category', id: cat.id, name: cat.name, children: cat.children }]);
-    } else {
-      // Немає підкатегорій — показуємо товари
-      setNavStack(prev => [...prev, { type: 'products', id: cat.id, name: cat.name }]);
-    }
+    setSelectedCategoryId(cat.id);
+    setSelectedCategoryName(cat.name);
   }, []);
 
-  /** Назад — логічний відкат по історії */
-  const goBack = useCallback(() => {
-    if (navStack.length <= 1) return; // Вже в корені
-    setNavStack(prev => prev.slice(0, -1));
-  }, [navStack]);
+  /** Назад до категорій (Рівень 1) */
+  const goBackToCategories = useCallback(() => {
+    setSelectedCategoryId(null);
+    setSelectedCategoryName('');
+    setProducts([]);
+  }, []);
 
-  /** Перехід на конкретний рівень (по кліку на хлібну крихту) */
-  const goToLevel = useCallback((level: number) => {
-    if (level < 0 || level >= navStack.length) return;
-    setNavStack(prev => prev.slice(0, level + 1));
-  }, [navStack]);
+  /** Отримати список обраних категорій (з усіх рівнів) */
+  const favoriteCategories = useMemo((): CategoryNode[] => {
+    if (favoriteIds.size === 0) return [];
+    const all = flattenCategories(categories);
+    return all.filter(cat => favoriteIds.has(cat.id));
+  }, [categories, favoriteIds]);
 
-  /** Отримати хлібні крихти */
-  const breadcrumbs = useMemo((): { id: string; name: string; level: number }[] => {
-    const crumbs: { id: string; name: string; level: number }[] = [];
-    for (let i = 0; i < navStack.length; i++) {
-      const entry = navStack[i];
-      if (entry.type === 'root') {
-        crumbs.push({ id: 'root', name: 'Категорії', level: i });
-      } else {
-        crumbs.push({ id: entry.id, name: entry.name, level: i });
-      }
-    }
-    return crumbs;
-  }, [navStack]);
+  /** Отримати категорії першого рівня */
+  const rootCategories = useMemo((): CategoryNode[] => {
+    return categories;
+  }, [categories]);
 
-  /** Отримати список категорій для поточного рівня */
-  const currentCategories = useMemo((): CategoryNode[] => {
-    if (currentEntry.type === 'root' || currentEntry.type === 'category') {
-      const children = currentEntry.children;
-      if (viewMode === 'favorites' && favoriteIds.size > 0) {
-        return children.filter(cat => favoriteIds.has(cat.id));
-      }
-      return children;
-    }
-    return [];
-  }, [currentEntry, viewMode, favoriteIds]);
-
-  /** Перевіряє, чи є хоч одна обрана категорія на поточному рівні */
-  const hasFavoritesOnLevel = useMemo(() => {
-    if (viewMode !== 'favorites') return true;
-    return currentCategories.length > 0;
-  }, [viewMode, currentCategories]);
-
-  /** Якщо в режимі "Обрані" і на поточному рівні немає обраних — показуємо всі */
-  const displayCategories = useMemo(() => {
-    if (currentEntry.type === 'products') return [];
-    if (viewMode === 'favorites' && favoriteIds.size > 0 && !hasFavoritesOnLevel) {
-      // На цьому рівні немає обраних, але є в інших — показуємо всі
-      return (currentEntry as { type: 'root' | 'category'; children: CategoryNode[] }).children;
-    }
-    return currentCategories;
-  }, [viewMode, favoriteIds, hasFavoritesOnLevel, currentCategories, currentEntry]);
-
-  const isRoot = navStack.length === 1 && currentEntry.type === 'root';
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
-      </div>
-    );
-  }
-
-  // ========== РЕЖИМ: ПОКАЗ ТОВАРІВ ==========
-  if (currentEntry.type === 'products') {
+  // ========== Рівень 2: ПОКАЗ ТОВАРІВ ==========
+  if (selectedCategoryId) {
     return (
       <div className="flex flex-col h-full">
-        {/* Хлібні крихти + Назад */}
-        <div className="flex items-center gap-1 px-4 py-3 bg-gray-50 dark:bg-slate-800/50 border-b border-gray-200 dark:border-slate-700">
-          <span
-            onClick={goBack}
-            className="flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 font-medium whitespace-nowrap cursor-pointer"
+        {/* Кнопка "← Назад до категорій" — завжди зверху, помітна */}
+        <div className="px-4 py-3 bg-white dark:bg-slate-800 border-b-2 border-primary-200 dark:border-primary-800">
+          <button
+            onClick={goBackToCategories}
+            className="flex items-center gap-2 w-full px-4 py-2.5 bg-primary-50 dark:bg-primary-900/30 hover:bg-primary-100 dark:hover:bg-primary-900/50 text-primary-700 dark:text-primary-300 font-semibold rounded-xl transition-all border border-primary-200 dark:border-primary-700 shadow-sm"
           >
-            <ArrowLeft className="w-4 h-4" />
-            Назад
-          </span>
-          {breadcrumbs.map((crumb, idx) => (
-            <React.Fragment key={crumb.id}>
-              <ChevronRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
-              <span
-                onClick={() => goToLevel(crumb.level)}
-                className={`text-sm whitespace-nowrap truncate max-w-[120px] cursor-pointer ${
-                  idx === breadcrumbs.length - 1
-                    ? 'text-gray-900 dark:text-gray-100 font-semibold'
-                    : 'text-gray-500 hover:text-primary-600'
-                }`}
-              >
-                {crumb.name}
-              </span>
-            </React.Fragment>
-          ))}
+            <ArrowLeft className="w-5 h-5" />
+            <span>← Назад до категорій</span>
+          </button>
+          <div className="flex items-center gap-1 mt-2 px-1">
+            <span className="text-xs text-gray-400">Категорії</span>
+            <ChevronRight className="w-3 h-3 text-gray-400" />
+            <span className="text-xs font-semibold text-gray-700 dark:text-gray-300 truncate">
+              {selectedCategoryName}
+            </span>
+          </div>
         </div>
 
-        {/* Товари */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Товари — плитки (grid) */}
+        <div className="flex-1 overflow-y-auto p-3">
           {productsLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
             </div>
           ) : products.length === 0 ? (
-            <div className="text-center py-12 text-gray-400 text-sm">
-              У цій категорії немає товарів
+            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+              <Package className="w-16 h-16 mb-3 opacity-30" />
+              <p className="text-sm font-medium">У цій категорії немає товарів</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-slate-700/50">
+            <div className="grid grid-cols-2 gap-3">
               {products.map((product) => {
                 const stock = parseFloat(product.stock) || 0;
                 const isOutOfStock = stock <= 0;
 
                 return (
-                  <div
+                  <button
                     key={product.id}
                     onClick={() => !isOutOfStock && onProductSelect(product)}
+                    disabled={isOutOfStock}
                     className={`
-                      w-full flex items-center justify-between px-4 py-3 cursor-pointer transition-all
+                      relative flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all text-center min-h-[120px]
                       ${isOutOfStock
-                        ? 'opacity-50 cursor-not-allowed'
-                        : 'hover:bg-gray-50 dark:hover:bg-slate-700/50 active:bg-gray-100 dark:active:bg-slate-700'
+                        ? 'border-gray-100 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50 opacity-50 cursor-not-allowed'
+                        : 'border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-primary-300 dark:hover:border-primary-600 hover:shadow-md active:scale-[0.98] cursor-pointer'
                       }
                     `}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <Package className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                          {product.title}
-                        </p>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {product.barcode || 'Без ШК'} · {product.stock} {formatUnit(product.unit)}
-                          {isOutOfStock && (
-                            <span className="ml-1 text-danger-500 font-medium">(немає)</span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                    <span className="font-bold text-primary-600 text-sm ml-3 flex-shrink-0">
+                    <Package className={`w-8 h-8 mb-2 ${isOutOfStock ? 'text-gray-300' : 'text-primary-500'}`} />
+                    <p className={`text-sm font-semibold leading-tight mb-1 ${isOutOfStock ? 'text-gray-400' : 'text-gray-900 dark:text-gray-100'}`}>
+                      {product.title}
+                    </p>
+                    <p className={`text-xs ${isOutOfStock ? 'text-gray-300' : 'text-gray-400'}`}>
+                      {product.stock} {formatUnit(product.unit)}
+                    </p>
+                    <p className={`text-sm font-bold mt-1 ${isOutOfStock ? 'text-gray-300' : 'text-primary-600 dark:text-primary-400'}`}>
                       {formatCurrency(product.price)}
-                    </span>
-                  </div>
+                    </p>
+                    {isOutOfStock && (
+                      <span className="absolute top-2 right-2 text-[10px] font-bold text-danger-500 bg-danger-50 dark:bg-danger-900/30 px-2 py-0.5 rounded-full">
+                        немає
+                      </span>
+                    )}
+                  </button>
                 );
               })}
             </div>
@@ -341,124 +246,127 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
     );
   }
 
-  // ========== РЕЖИМ: ПОКАЗ КАТЕГОРІЙ (корінь або підкатегорії) ==========
+  // ========== Рівень 1: ПОКАЗ КАТЕГОРІЙ ==========
   return (
     <div className="flex flex-col h-full">
-      {/* Хлібні крихти + Назад (якщо не в корені) */}
-      {!isRoot && (
-        <div className="flex items-center gap-1 px-4 py-3 bg-gray-50 dark:bg-slate-800/50 border-b border-gray-200 dark:border-slate-700">
-          <span
-            onClick={goBack}
-            className="flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700 font-medium whitespace-nowrap cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Назад
-          </span>
-          {breadcrumbs.map((crumb, idx) => (
-            <React.Fragment key={crumb.id}>
-              <ChevronRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
-              <span
-                onClick={() => goToLevel(crumb.level)}
-                className={`text-sm whitespace-nowrap truncate max-w-[120px] cursor-pointer ${
-                  idx === breadcrumbs.length - 1
-                    ? 'text-gray-900 dark:text-gray-100 font-semibold'
-                    : 'text-gray-500 hover:text-primary-600'
-                }`}
-              >
-                {crumb.name}
-              </span>
-            </React.Fragment>
-          ))}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
         </div>
-      )}
+      ) : (
+        <div className="flex-1 overflow-y-auto p-3 space-y-5">
+          {/* ===== БЛОК "ВИБРАНЕ" (закріплений зверху) ===== */}
+          {favoriteCategories.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Heart className="w-4 h-4 text-amber-500 fill-amber-500" />
+                <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                  Вибране
+                </h3>
+                <span className="text-xs text-gray-400">({favoriteCategories.length})</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {favoriteCategories.map((cat, idx) => {
+                  const color = getColor(idx);
+                  const hasChildren = cat.children && cat.children.length > 0;
 
-      {/* Перемикач: Всі / Обрані (тільки в корені) */}
-      {isRoot && (
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-200 dark:border-slate-700">
-          <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5">
-            <span
-              onClick={() => setViewMode('all')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer transition-all ${
-                viewMode === 'all'
-                  ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              <Grid3X3 className="w-3.5 h-3.5" />
-              Всі
-            </span>
-            <span
-              onClick={() => setViewMode('favorites')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer transition-all ${
-                viewMode === 'favorites'
-                  ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              }`}
-            >
-              <Star className="w-3.5 h-3.5" />
-              Обрані
-            </span>
-          </div>
-          {viewMode === 'favorites' && favoriteIds.size === 0 && (
-            <span className="text-xs text-gray-400 ml-auto">Оберіть категорії ★</span>
-          )}
-        </div>
-      )}
-
-      {/* Список категорій/підкатегорій */}
-      <div className="flex-1 overflow-y-auto">
-        {displayCategories.length === 0 ? (
-          <div className="text-center py-12 text-gray-400 text-sm">
-            {viewMode === 'favorites' && !isRoot
-              ? 'Немає обраних підкатегорій на цьому рівні. Натисніть ★ біля підкатегорії, щоб додати її сюди.'
-              : viewMode === 'favorites'
-              ? 'Немає обраних категорій. Натисніть ★ біля категорії, щоб додати її сюди.'
-              : 'Немає категорій'}
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-100 dark:divide-slate-700/50">
-            {displayCategories.map((node: CategoryNode) => {
-              const isFavorite = favoriteIds.has(node.id);
-              const hasChildren = node.children && node.children.length > 0;
-
-              return (
-                <div key={node.id} className="group">
-                  <div
-                    onClick={() => enterCategory(node)}
-                    className="w-full flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/50 active:bg-gray-100 dark:active:bg-slate-700 transition-all"
-                  >
-                    <FolderOpen className={`w-5 h-5 flex-shrink-0 ${
-                      isFavorite ? 'text-amber-500' : 'text-gray-400'
-                    }`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {node.name}
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => enterCategory(cat)}
+                      className={`
+                        relative flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all text-center min-h-[100px]
+                        ${color.bg} ${color.border}
+                        hover:shadow-md active:scale-[0.97] cursor-pointer
+                      `}
+                    >
+                      {/* Зірочка зверху-праворуч */}
+                      <span
+                        onClick={(e) => toggleFavorite(cat.id, e)}
+                        className="absolute top-2 right-2 p-1 rounded-full hover:bg-white/50 dark:hover:bg-black/20 transition-colors"
+                        title="Прибрати з вибраного"
+                      >
+                        <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                      </span>
+                      <p className={`text-sm font-bold ${color.text} leading-tight`}>
+                        {cat.name}
                       </p>
                       {hasChildren && (
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {node.children.length} підкатегорій
+                        <p className={`text-xs mt-1 opacity-70 ${color.text}`}>
+                          {cat.children.length} підкатегорій
                         </p>
                       )}
-                    </div>
-                    <span
-                      onClick={(e) => toggleFavorite(node.id, e)}
-                      className="flex-shrink-0 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-slate-600 transition-all cursor-pointer"
-                      title={isFavorite ? 'Прибрати з обраних' : 'Додати в обрані'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ===== ВСІ КАТЕГОРІЇ ===== */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <Grid3X3 className="w-4 h-4 text-gray-500" />
+              <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                {favoriteCategories.length > 0 ? 'Всі категорії' : 'Категорії'}
+              </h3>
+            </div>
+            {rootCategories.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                <Grid3X3 className="w-12 h-12 mb-2 opacity-30" />
+                <p className="text-sm">Немає категорій</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {rootCategories.map((cat, idx) => {
+                  const color = getColor(idx);
+                  const isFavorite = favoriteIds.has(cat.id);
+                  const hasChildren = cat.children && cat.children.length > 0;
+
+                  return (
+                    <button
+                      key={cat.id}
+                      onClick={() => enterCategory(cat)}
+                      className={`
+                        relative flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all text-center min-h-[100px]
+                        ${isFavorite ? color.bg : 'bg-gray-50 dark:bg-slate-800/50'}
+                        ${isFavorite ? color.border : 'border-gray-200 dark:border-slate-700'}
+                        hover:shadow-md active:scale-[0.97] cursor-pointer
+                        ${isFavorite ? '' : 'hover:border-gray-300 dark:hover:border-slate-600'}
+                      `}
                     >
-                      {isFavorite ? (
-                        <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                      ) : (
-                        <StarOff className="w-4 h-4 text-gray-400" />
+                      {/* Зірочка для додавання в обране */}
+                      <span
+                        onClick={(e) => toggleFavorite(cat.id, e)}
+                        className={`absolute top-2 right-2 p-1 rounded-full transition-colors ${
+                          isFavorite
+                            ? 'opacity-100'
+                            : 'opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-slate-600'
+                        }`}
+                        title={isFavorite ? 'Прибрати з вибраного' : 'Додати у вибране'}
+                      >
+                        {isFavorite ? (
+                          <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                        ) : (
+                          <StarOff className="w-4 h-4 text-gray-400" />
+                        )}
+                      </span>
+                      <p className={`text-sm font-bold leading-tight ${isFavorite ? color.text : 'text-gray-800 dark:text-gray-200'}`}>
+                        {cat.name}
+                      </p>
+                      {hasChildren && (
+                        <p className={`text-xs mt-1 ${isFavorite ? `opacity-70 ${color.text}` : 'text-gray-400'}`}>
+                          {cat.children.length} підкатегорій
+                        </p>
                       )}
-                    </span>
-                    <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                  </div>
-                </div>
-              );
-            })}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
