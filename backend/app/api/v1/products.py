@@ -36,6 +36,7 @@ router = APIRouter(
 @router.get("", response_model=ProductListResponse)
 async def list_products(
     query: str = Query(None, description="Пошуковий запит"),
+    search: str = Query(None, description="Аліас для query (сумісність)"),
     barcode: str = Query(None, description="Штрих-код"),
     category_id: UUID = Query(None, description="ID категорії"),
     supplier_id: UUID = Query(None, description="ID постачальника"),
@@ -54,10 +55,16 @@ async def list_products(
     - Пошук за назвою, штрих-кодом, артикулом
     - Фільтрацію за категорією, постачальником, ціною
     - Пагінацію
+
+    Параметри пошуку:
+    - `query` — основний пошуковий запит
+    - `search` — аліас для `query` (для сумісності з фронтендом)
     """
     service = ProductService(session)
+    # Якщо query не передано, але передано search — використовуємо search
+    effective_query = query or search
     params = ProductSearchParams(
-        query=query,
+        query=effective_query,
         barcode=barcode,
         category_id=category_id,
         supplier_id=supplier_id,
