@@ -64,7 +64,8 @@ class DocumentService:
         При підтвердженні:
         1. Змінює статус на CONFIRMED
         2. Збільшує залишки товарів на складі
-        3. Створює запис у SupplierLedger (збільшення боргу)
+        3. Якщо обрано спосіб оплати "в борг" (credit) — створює запис
+           у SupplierLedger (збільшення боргу перед постачальником)
 
         Args:
             invoice_id: UUID накладної.
@@ -99,23 +100,32 @@ class DocumentService:
                 quantity_change=item.quantity,
             )
 
-        # Створюємо запис у SupplierLedger
+        # Створюємо запис у SupplierLedger ТІЛЬКИ якщо обрано "в борг" (credit)
+        # Або якщо спосіб оплати не вказано (для зворотної сумісності)
         if invoice.total_amount and invoice.total_amount > 0:
-            # Додаємо інформацію про спосіб оплати в нотатки
-            notes = f"Прибуткова накладна №{invoice.number}"
-            if invoice.payment_method:
-                method_label = PAYMENT_METHOD_LABELS.get(invoice.payment_method, invoice.payment_method.value)
-                notes += f" ({method_label})"
-
-            await self.ledger_service.create_ledger_entry(
-                supplier_id=invoice.supplier_id,
-                operation_type="invoice",
-                document_id=invoice.id,
-                document_number=invoice.number,
-                amount=invoice.total_amount,
-                operation_date=invoice.invoice_date,
-                notes=notes,
+            should_create_debt = (
+                invoice.payment_method is None or
+                invoice.payment_method == PaymentMethod.CREDIT
             )
+
+            if should_create_debt:
+                # Додаємо інформацію про спосіб оплати в нотатки
+                notes = f"Прибуткова накладна №{invoice.number}"
+                if invoice.payment_method:
+                    method_label = PAYMENT_METHOD_LABELS.get(
+                        invoice.payment_method, invoice.payment_method.value
+                    )
+                    notes += f" ({method_label})"
+
+                await self.ledger_service.create_ledger_entry(
+                    supplier_id=invoice.supplier_id,
+                    operation_type="invoice",
+                    document_id=invoice.id,
+                    document_number=invoice.number,
+                    amount=invoice.total_amount,
+                    operation_date=invoice.invoice_date,
+                    notes=notes,
+                )
 
         # Змінюємо статус
         invoice.status = InvoiceStatus.CONFIRMED
