@@ -122,7 +122,7 @@ async def update_invoice(
     invoice_id: UUID,
     data: InvoiceUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює прибуткову накладну."""
     result = await session.execute(
@@ -182,7 +182,7 @@ async def update_invoice(
 async def delete_invoice(
     invoice_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє прибуткову накладну (тільки чернетку)."""
     result = await session.execute(
@@ -208,7 +208,7 @@ async def confirm_invoice(
     invoice_id: UUID,
     data: InvoiceConfirmRequest,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """
     Підтверджує або скасовує прибуткову накладну.

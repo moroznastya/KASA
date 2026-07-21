@@ -77,7 +77,7 @@ async def get_supplier(
 async def create_supplier(
     data: SupplierCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює нового постачальника."""
     supplier = Supplier(
@@ -99,7 +99,7 @@ async def update_supplier(
     supplier_id: UUID,
     data: SupplierUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює дані постачальника."""
     result = await session.execute(
@@ -125,7 +125,7 @@ async def update_supplier(
 async def delete_supplier(
     supplier_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє постачальника."""
     result = await session.execute(

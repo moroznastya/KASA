@@ -81,7 +81,7 @@ async def get_supplier_balance(
 async def create_ledger_entry(
     data: SupplierLedgerCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """
     Створює новий запис у журналі взаєморозрахунків.

@@ -75,7 +75,7 @@ async def get_transfer(
 async def create_transfer(
     data: TransferCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове переміщення."""
     transfer = Transfer(
@@ -113,7 +113,7 @@ async def update_transfer(
     transfer_id: UUID,
     data: TransferUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює переміщення."""
     result = await session.execute(
@@ -164,7 +164,7 @@ async def update_transfer(
 async def delete_transfer(
     transfer_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє переміщення (тільки чернетку)."""
     result = await session.execute(
@@ -190,7 +190,7 @@ async def confirm_transfer(
     transfer_id: UUID,
     data: TransferConfirmRequest,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Підтверджує або скасовує переміщення."""
     doc_service = DocumentService(session)

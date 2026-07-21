@@ -43,6 +43,8 @@ class ReceiptCreate(BaseModel):
     receipt_type: ReceiptType = Field(ReceiptType.SALE, description="Тип чеку: sale або return")
     cashier_id: Optional[UUID] = Field(None, description="ID касира")
     total_amount: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума чеку (грн)")
+    paid_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Фактично сплачена сума (грн)")
+    debtor_id: Optional[UUID] = Field(None, description="ID боржника (якщо покупка в борг)")
     is_return: bool = Field(False, description="Чи є поверненням")
     notes: Optional[str] = Field(None, description="Нотатки до чеку")
     items: list[ReceiptItemCreate] = Field(default_factory=list, description="Позиції чеку")
@@ -55,6 +57,8 @@ class ReceiptResponse(BaseModel):
     receipt_type: ReceiptType
     cashier_id: UUID
     total_amount: Decimal
+    paid_amount: Optional[Decimal] = Field(None, description="Фактично сплачена сума")
+    debtor_id: Optional[UUID] = Field(None, description="ID боржника")
     is_return: bool
     notes: Optional[str] = None
     created_at: datetime

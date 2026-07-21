@@ -73,7 +73,7 @@ async def get_write_off(
 async def create_write_off(
     data: WriteOffCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове списання."""
     write_off = WriteOff(
@@ -113,7 +113,7 @@ async def update_write_off(
     write_off_id: UUID,
     data: WriteOffUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює списання."""
     result = await session.execute(
@@ -158,7 +158,7 @@ async def update_write_off(
 async def delete_write_off(
     write_off_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє списання."""
     result = await session.execute(
@@ -178,7 +178,7 @@ async def delete_write_off(
 async def confirm_write_off(
     write_off_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Підтверджує списання (оновлює залишки товарів)."""
     doc_service = DocumentService(session)

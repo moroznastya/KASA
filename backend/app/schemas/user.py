@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.models.user import UserRole
+from app.models.permission import Permission
 
 
 class UserCreate(BaseModel):
@@ -21,6 +22,10 @@ class UserCreate(BaseModel):
     pin_code: Optional[str] = Field(None, min_length=4, max_length=10, description="PIN-код для каси")
     role: UserRole = Field(UserRole.CASHIER, description="Роль користувача")
     is_active: bool = Field(True, description="Активний користувач")
+    permissions: Optional[list[str]] = Field(
+        None,
+        description="Список прав доступу. Якщо None — використовуються права за замовчуванням для ролі.",
+    )
 
 
 class UserUpdate(BaseModel):
@@ -31,6 +36,18 @@ class UserUpdate(BaseModel):
     pin_code: Optional[str] = Field(None, min_length=4, max_length=10, description="PIN-код для каси")
     role: Optional[UserRole] = Field(None, description="Роль користувача")
     is_active: Optional[bool] = Field(None, description="Активний користувач")
+    permissions: Optional[list[str]] = Field(
+        None,
+        description="Список прав доступу. Якщо None — використовуються права за замовчуванням для ролі.",
+    )
+
+
+class UserPermissionsUpdate(BaseModel):
+    """Схема оновлення тільки прав доступу користувача."""
+    permissions: list[str] = Field(
+        ...,
+        description="Новий список прав доступу для користувача",
+    )
 
 
 class UserResponse(BaseModel):
@@ -40,6 +57,7 @@ class UserResponse(BaseModel):
     login: str
     role: UserRole
     is_active: bool
+    permissions: Optional[list[str]] = None
     created_at: datetime
     updated_at: datetime
 

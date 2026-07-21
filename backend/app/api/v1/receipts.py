@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.receipt import Receipt, ReceiptItem, ReceiptType
 from app.models.product import Product
+from app.models.debtor import Debtor
 from app.schemas.receipt import (
     ReceiptCreate,
     ReceiptResponse,
@@ -106,7 +107,7 @@ def _normalize_date_to(dt: datetime | None) -> datetime | None:
 @router.get("/stats/today")
 async def get_today_stats(
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """
     Повертає статистику чеків за сьогодні (в UTC):
@@ -310,6 +311,7 @@ async def create_receipt(
     - Для SALE: зменшує залишки товарів на складі
     - Для RETURN: збільшує залишки товарів на складі
     - Зберігає purchase_price (собівартість) для кожного товару
+    - Якщо вказано debtor_id та paid_amount < total_amount — різниця додається до боргу
     """
     product_service = ProductService(session)
 
@@ -329,12 +331,32 @@ async def create_receipt(
 
     cashier_id = data.cashier_id or current_user.id
 
+    # Визначаємо paid_amount
+    paid_amount = data.paid_amount
+    if paid_amount is None:
+        paid_amount = data.total_amount  # за замовчуванням — повна оплата
+
+    # Якщо є debtor_id — перевіряємо чи існує боржник
+    debtor = None
+    if data.debtor_id:
+        result = await session.execute(
+            select(Debtor).where(Debtor.id == data.debtor_id)
+        )
+        debtor = result.scalar_one_or_none()
+        if not debtor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Боржника з ID '{data.debtor_id}' не знайдено",
+            )
+
     # Створюємо чек
     receipt = Receipt(
         receipt_number=data.receipt_number,
         receipt_type=data.receipt_type,
         cashier_id=cashier_id,
         total_amount=data.total_amount,
+        paid_amount=paid_amount,
+        debtor_id=data.debtor_id,
         is_return=data.is_return,
         notes=data.notes,
     )
@@ -376,7 +398,17 @@ async def create_receipt(
                 quantity_change=item_data.quantity,
             )
 
-    await session.flush()
+    # Якщо є боржник і paid_amount < total_amount — додаємо різницю до боргу
+    if debtor and paid_amount < data.total_amount:
+        debt_amount = data.total_amount - paid_amount
+        debtor.total_debt += debt_amount
+
+    # Якщо борг став 0 або менше — автоматично видаляємо боржника
+    if debtor and float(debtor.total_debt) <= 0:
+        await session.delete(debtor)
+        await session.commit()
+    else:
+        await session.flush()
 
     # Повертаємо з позиціями та назвами товарів
     result = await session.execute(

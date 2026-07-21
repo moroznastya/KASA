@@ -11,6 +11,8 @@ API роутер для роботи з користувачами (Users) та 
   - POST   /users               — створити користувача (admin)
   - PUT    /users/{id}          — оновити користувача (admin)
   - DELETE /users/{id}          — видалити користувача (admin)
+  - PUT    /users/{id}/permissions — оновити права доступу користувача (admin)
+  - GET    /users/permissions/list — отримати список всіх доступних прав
 """
 
 from datetime import timedelta
@@ -24,10 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.models.user import User
+from app.models.permission import Permission, PERMISSION_GROUPS, PERMISSION_LABELS
 from app.schemas.user import (
     UserCreate,
     UserUpdate,
     UserResponse,
+    UserPermissionsUpdate,
     UserLoginRequest,
     UserPinLoginRequest,
     UserTokenResponse,
@@ -126,19 +130,12 @@ async def refresh_token(
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Недійсний refresh_token: відсутній ідентифікатор користувача",
+            detail="Недійсний refresh_token",
         )
 
-    # Перевіряємо, що це саме refresh токен (має поле type=refresh)
-    if payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Недійсний refresh_token: невірний тип токена",
-        )
-
-    # Шукаємо користувача в БД
+    # Отримуємо користувача з БД
     result = await session.execute(
-        select(User).where(User.id == user_id)
+        select(User).where(User.id == UUID(user_id))
     )
     user = result.scalar_one_or_none()
 
@@ -151,36 +148,34 @@ async def refresh_token(
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Користувач деактивований",
+            detail="Користувача деактивовано",
         )
 
-    # Генеруємо нову пару токенів
-    new_access_token = AuthService.create_access_token(user.id, user.role)
+    # Створюємо нову пару токенів
+    access_token = AuthService.create_access_token(user.id, user.role)
     new_refresh_token = AuthService.create_refresh_token(user.id, user.role)
 
     return UserTokenResponse(
-        access_token=new_access_token,
+        access_token=access_token,
         refresh_token=new_refresh_token,
         token_type="bearer",
         user=UserResponse.model_validate(user),
     )
 
 
-@auth_router.post("/logout", status_code=200)
+@auth_router.post("/logout")
 async def logout(
-    request: Request,
-    current_user = Depends(AuthService.get_current_user),
+    current_user: User = Depends(AuthService.get_current_user),
 ):
     """
     Вихід із системи.
 
-    В JWT-орієнтованій системі logout — це просто видалення токена на клієнті.
-    На сервері повертаємо 200 OK для сумісності з фронтендом.
+    На стороні клієнта потрібно видалити токени.
     """
     return {"message": "Успішний вихід із системи"}
 
 
-# ─── CRUD Користувачі ────────────────────────────────────────────────────────
+# ─── Управління користувачами ────────────────────────────────────────────────
 
 @users_router.get("", response_model=list[UserResponse])
 async def list_users(
@@ -188,7 +183,9 @@ async def list_users(
     current_user: User = Depends(AuthService.require_admin),
 ):
     """Отримує список всіх користувачів (тільки admin)."""
-    result = await session.execute(select(User).order_by(User.name))
+    result = await session.execute(
+        select(User).order_by(User.name)
+    )
     users = result.scalars().all()
     return [UserResponse.model_validate(u) for u in users]
 
@@ -242,6 +239,7 @@ async def create_user(
         pin_code=pin_hash,
         role=data.role,
         is_active=data.is_active,
+        permissions=data.permissions,
     )
     session.add(user)
     await session.flush()
@@ -300,6 +298,43 @@ async def update_user(
     return UserResponse.model_validate(user)
 
 
+@users_router.put("/{user_id}/permissions", response_model=UserResponse)
+async def update_user_permissions(
+    user_id: UUID,
+    data: UserPermissionsUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(AuthService.require_admin),
+):
+    """
+    Оновлює права доступу користувача (тільки admin).
+
+    Приймає масив рядків-пермішенів, які будуть встановлені користувачу.
+    """
+    result = await session.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Користувача з ID '{user_id}' не знайдено",
+        )
+
+    # Валідуємо, що всі передані права існують
+    valid_permissions = {p.value for p in Permission}
+    for perm in data.permissions:
+        if perm not in valid_permissions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Невідоме право доступу: '{perm}'. "
+                       f"Доступні права: {', '.join(sorted(valid_permissions))}",
+            )
+
+    user.permissions = data.permissions
+    await session.flush()
+    return UserResponse.model_validate(user)
+
+
 @users_router.delete("/{user_id}", status_code=204)
 async def delete_user(
     user_id: UUID,
@@ -318,3 +353,34 @@ async def delete_user(
         )
     await session.delete(user)
     await session.flush()
+
+
+# ─── Список доступних прав ───────────────────────────────────────────────────
+
+@users_router.get("/permissions/list")
+async def list_permissions(
+    current_user: User = Depends(AuthService.require_admin),
+):
+    """
+    Повертає список всіх доступних прав доступу, згрупованих за модулями.
+
+    Використовується на фронтенді для відображення галочок.
+    """
+    return {
+        "groups": [
+            {
+                "name": group_name,
+                "icon": group_data["icon"],
+                "permissions": [
+                    {
+                        "key": p.value,
+                        "label": PERMISSION_LABELS.get(p.value, p.value.split(":")[1].capitalize()),
+                        "description": PERMISSION_LABELS.get(p.value, p.value.split(":")[1].capitalize()),
+                    }
+                    for p in group_data["permissions"]
+                ],
+            }
+            for group_name, group_data in PERMISSION_GROUPS.items()
+        ],
+        "all_permissions": sorted([p.value for p in Permission]),
+    }

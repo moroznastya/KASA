@@ -38,4 +38,11 @@ export const productService = {
     });
     return response.data;
   },
+
+  async getProductsByCategory(categoryId: string): Promise<PaginatedResponse<Product>> {
+    const response = await api.get<PaginatedResponse<Product>>('/products', {
+      params: { category_id: categoryId, size: 100 },
+    });
+    return response.data;
+  },
 };

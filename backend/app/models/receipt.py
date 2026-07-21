@@ -59,6 +59,18 @@ class Receipt(Base):
         nullable=False,
         comment="Загальна сума чеку (грн)",
     )
+    paid_amount: Mapped[float | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment="Фактично сплачена сума (грн). Якщо менша за total_amount — різниця в борг",
+    )
+    debtor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("debtors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID боржника (якщо покупка в борг)",
+    )
     is_return: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -79,6 +91,10 @@ class Receipt(Base):
     # ── Зв'язки ─────────────────────────────────
     cashier: Mapped["User"] = relationship(
         "User",
+        back_populates="receipts",
+    )
+    debtor: Mapped["Debtor | None"] = relationship(
+        "Debtor",
         back_populates="receipts",
     )
     items: Mapped[list["ReceiptItem"]] = relationship(

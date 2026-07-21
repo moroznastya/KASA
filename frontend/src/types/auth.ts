@@ -9,6 +9,7 @@ export interface User {
   login: string;        // Логін для входу
   role: UserRole;
   is_active: boolean;
+  permissions?: string[] | null;  // Список прав доступу
   created_at: string;
   updated_at: string;
 }
@@ -42,4 +43,24 @@ export interface AuthState {
   refreshToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+}
+
+/**
+ * Структура групи прав для відображення на фронтенді.
+ */
+export interface PermissionGroup {
+  name: string;
+  icon: string;
+  permissions: PermissionItem[];
+}
+
+export interface PermissionItem {
+  key: string;
+  label: string;
+  description: string;
+}
+
+export interface PermissionsListResponse {
+  groups: PermissionGroup[];
+  all_permissions: string[];
 }

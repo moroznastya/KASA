@@ -109,7 +109,7 @@ async def get_product(
 async def create_product(
     data: ProductCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює новий товар."""
     service = ProductService(session)
@@ -122,7 +122,7 @@ async def update_product(
     product_id: UUID,
     data: ProductUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює дані товару."""
     service = ProductService(session)
@@ -134,7 +134,7 @@ async def update_product(
 async def delete_product(
     product_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє товар."""
     service = ProductService(session)

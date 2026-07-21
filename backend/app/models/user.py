@@ -11,7 +11,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import String, Boolean, Enum, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.database import Base
 
@@ -66,6 +66,13 @@ class User(Base):
         Boolean,
         default=True,
         comment="Чи активний користувач (може входити в систему)",
+    )
+    permissions: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Список прав доступу (масив рядків-пермішенів). "
+                "Якщо None — використовуються права за замовчуванням для ролі.",
     )
 
     # ── Timestamps ──────────────────────────────

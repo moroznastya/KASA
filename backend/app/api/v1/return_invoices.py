@@ -75,7 +75,7 @@ async def get_return_invoice(
 async def create_return_invoice(
     data: ReturnInvoiceCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове повернення постачальнику."""
     invoice = ReturnInvoice(
@@ -116,7 +116,7 @@ async def update_return_invoice(
     return_id: UUID,
     data: ReturnInvoiceUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює повернення постачальнику."""
     result = await session.execute(
@@ -169,7 +169,7 @@ async def update_return_invoice(
 async def delete_return_invoice(
     return_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє повернення (тільки чернетку)."""
     result = await session.execute(
@@ -195,7 +195,7 @@ async def confirm_return_invoice(
     return_id: UUID,
     data: ReturnInvoiceConfirmRequest,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Підтверджує або скасовує повернення постачальнику."""
     doc_service = DocumentService(session)

@@ -1,12 +1,14 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, FolderOpen } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
+import { debtorService, Debtor } from '@/services/debtorService';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
 import { formatCurrency, formatUnit } from '@/utils/format';
+import { CategoryPanel } from '@/components/pos/CategoryPanel';
 import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
 import toast from 'react-hot-toast';
 
@@ -18,23 +20,81 @@ interface CartItem {
   price: number;
   tax_rate: number;
   is_weight: boolean;
-  stock: number; // поточний залишок товару
-  unit: string; // одиниця виміру
+  stock: number;
+  unit: string;
 }
 
+interface PaymentOption {
+  value: PaymentMethod;
+  label: string;
+  icon: React.ReactNode;
+}
+
+const paymentOptions: PaymentOption[] = [
+  { value: 'cash', label: 'Готівка', icon: <Banknote className="w-5 h-5" /> },
+  { value: 'card', label: 'Картка', icon: <CreditCard className="w-5 h-5" /> },
+  { value: 'mixed', label: 'Змішаний', icon: <CreditCard className="w-5 h-5" /> },
+];
+
 const PosPage: React.FC = () => {
+  const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashAmount, setCashAmount] = useState('');
   const [cardAmount, setCardAmount] = useState('');
-  const [isDebt, setIsDebt] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showQuantityModal, setShowQuantityModal] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [quantityInput, setQuantityInput] = useState('1');
   const [quantityError, setQuantityError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Debtor state for payment
+  const [debtorQuery, setDebtorQuery] = useState('');
+  const [debtors, setDebtors] = useState<Debtor[]>([]);
+  const [selectedDebtor, setSelectedDebtor] = useState<Debtor | null>(null);
+  const [showDebtorField, setShowDebtorField] = useState(false);
+  const [isSearchingDebtors, setIsSearchingDebtors] = useState(false);
+  const [showDebtorDropdown, setShowDebtorDropdown] = useState(false);
+  const debtorSearchRef = useRef<HTMLDivElement>(null);
+  const debtorInputRef = useRef<HTMLInputElement>(null);
+  const [panelMode, setPanelMode] = useState<'search' | 'categories'>('search');
+
+  // Search debtors when query changes
+  useEffect(() => {
+    if (!debtorQuery.trim()) {
+      setDebtors([]);
+      setShowDebtorDropdown(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearchingDebtors(true);
+      try {
+        const results = await debtorService.search(debtorQuery);
+        setDebtors(results);
+        setShowDebtorDropdown(results.length > 0);
+      } catch {
+        // Ignore
+      } finally {
+        setIsSearchingDebtors(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [debtorQuery]);
+
+  // Close debtor dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (debtorSearchRef.current && !debtorSearchRef.current.contains(e.target as Node)) {
+        setShowDebtorDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleBarcodeFound = useCallback((product: any) => {
     const stock = parseFloat(product.stock) || 0;
@@ -64,7 +124,6 @@ const PosPage: React.FC = () => {
   const addToCart = useCallback((product: any, quantity: number = 1) => {
     const stock = parseFloat(product.stock) || 0;
 
-    // Перевірка: чи є товар в наявності
     if (stock <= 0) {
       toast.error(`Товар "${product.title}" відсутній на складі`);
       return;
@@ -75,7 +134,6 @@ const PosPage: React.FC = () => {
       const currentQtyInCart = existing ? existing.quantity : 0;
       const totalRequested = currentQtyInCart + quantity;
 
-      // Перевірка: чи не перевищує загальна кількість залишок
       if (totalRequested > stock) {
         toast.error(
           `Недостатньо товару "${product.title}" на складі. Доступно: ${stock} ${formatUnit(product.unit)}`
@@ -111,7 +169,6 @@ const PosPage: React.FC = () => {
   const handleProductSelect = (product: any) => {
     const stock = parseFloat(product.stock) || 0;
 
-    // Якщо товару нема в наявності — блокуємо
     if (stock <= 0) {
       toast.error(`Товар "${product.title}" відсутній на складі`);
       return;
@@ -133,13 +190,11 @@ const PosPage: React.FC = () => {
       if (qty > 0) {
         const stock = parseFloat(selectedProduct.stock) || 0;
 
-        // Перевірка чи є в наявності
         if (stock <= 0) {
           setQuantityError('Товар відсутній на складі');
           return;
         }
 
-        // Перевірка чи не перевищує залишок
         if (qty > stock) {
           setQuantityError(`Доступно лише ${stock} ${formatUnit(selectedProduct.unit)}`);
           return;
@@ -160,7 +215,6 @@ const PosPage: React.FC = () => {
 
       const newQty = item.quantity + delta;
 
-      // Перевірка: не більше ніж залишок
       if (newQty > item.stock) {
         toast.error(
           `Недостатньо товару "${item.product_title}" на складі. Доступно: ${item.stock} ${formatUnit(item.unit)}`
@@ -188,7 +242,6 @@ const PosPage: React.FC = () => {
       const item = prev.find((i) => i.product_id === productId);
       if (!item) return prev;
 
-      // Перевірка: не більше ніж залишок
       if (quantity > item.stock) {
         toast.error(
           `Недостатньо товару "${item.product_title}" на складі. Доступно: ${item.stock} ${formatUnit(item.unit)}`
@@ -232,11 +285,32 @@ const PosPage: React.FC = () => {
       }
     }
 
+    // Визначаємо фактично сплачену суму
+    let paidAmount: number;
+    if (paymentMethod === 'cash') {
+      paidAmount = parseFloat(cashAmount) || 0;
+    } else if (paymentMethod === 'card') {
+      paidAmount = subtotal; // карткою платять повну суму
+    } else {
+      // mixed
+      paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
+    }
+
+    // Якщо сума менша за чек — обов'язково потрібен боржник
+    const isPartialPayment = paidAmount < subtotal;
+    if (isPartialPayment && !selectedDebtor) {
+      setShowDebtorField(true);
+      toast.error('Сума оплати менша за суму чеку. Виберіть боржника для запису різниці в борг');
+      return;
+    }
+
     setIsProcessing(true);
     try {
       const receiptData: ReceiptCreate = {
         receipt_type: 'sale',
         total_amount: subtotal.toFixed(2),
+        paid_amount: paidAmount.toFixed(2),
+        debtor_id: selectedDebtor?.id || undefined,
         items: cart.map((item) => ({
           product_id: item.product_id,
           quantity: item.quantity,
@@ -245,13 +319,25 @@ const PosPage: React.FC = () => {
       };
 
       await receiptService.createReceipt(receiptData);
-      toast.success('Чек створено успішно');
+
+      if (isPartialPayment) {
+        const debtAmount = subtotal - paidAmount;
+        toast.success(
+          `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
+          `Борг ${formatCurrency(debtAmount)} записано на "${selectedDebtor!.name}"`
+        );
+      } else {
+        toast.success('Чек створено успішно');
+      }
+
       setCart([]);
       setShowPayment(false);
+      setShowDebtorField(false);
       setCashAmount('');
       setCardAmount('');
-      setIsDebt(false);
       setPaymentMethod('cash');
+      setSelectedDebtor(null);
+      setDebtorQuery('');
     } catch (error: any) {
       const errMsg = error?.response?.data?.detail;
       if (typeof errMsg === 'string') {
@@ -268,19 +354,48 @@ const PosPage: React.FC = () => {
     }
   };
 
+  const handleDebtorSelect = (debtor: Debtor) => {
+    setSelectedDebtor(debtor);
+    setDebtorQuery(debtor.name);
+    setShowDebtorDropdown(false);
+  };
+
+  const handleCreateAndSelectDebtor = async () => {
+    if (!debtorQuery.trim()) {
+      toast.error('Введіть ім\'я боржника');
+      return;
+    }
+    try {
+      const newDebtor = await debtorService.create({ name: debtorQuery.trim() });
+      setSelectedDebtor(newDebtor);
+      setDebtorQuery(newDebtor.name);
+      setShowDebtorDropdown(false);
+      toast.success(`Боржника "${newDebtor.name}" створено`);
+    } catch {
+      toast.error('Помилка створення боржника');
+    }
+  };
+
   const changeAmount =
     paymentMethod === 'cash' && parseFloat(cashAmount) >= subtotal
       ? parseFloat(cashAmount) - subtotal
       : 0;
 
+  // Визначаємо чи сума оплати менша за чек
+  const getPaidAmount = () => {
+    if (paymentMethod === 'cash') return parseFloat(cashAmount) || 0;
+    if (paymentMethod === 'card') return subtotal;
+    return (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
+  };
+  const isPartialPayment = showPayment && getPaidAmount() > 0 && getPaidAmount() < subtotal;
+
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* Left panel - Product search */}
+      {/* Left panel - Product search / Categories */}
       <div className="w-80 flex flex-col gap-4">
         {/* Unified search field */}
         <div className="card p-4">
           <div className="relative">
-            {/* Лупа — завжди зліва */}
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             <input
               ref={searchInputRef}
@@ -305,7 +420,6 @@ const PosPage: React.FC = () => {
               </button>
             )}
           </div>
-          {/* Error message (barcode not found) */}
           {error && query.length >= 8 && (
             <div className="mt-2 text-xs text-danger-500 bg-danger-50 dark:bg-danger-900/20 px-3 py-2 rounded-lg">
               {error}
@@ -313,8 +427,37 @@ const PosPage: React.FC = () => {
           )}
         </div>
 
-        {/* Search results */}
-        <div className="flex-1 overflow-y-auto space-y-2">
+        {/* Перемикач режимів */}
+        <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5">
+          <span
+            onClick={() => setPanelMode('search')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md cursor-pointer transition-all ${
+              panelMode === 'search'
+                ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            <Search className="w-3.5 h-3.5" />
+            Пошук
+          </span>
+          <span
+            onClick={() => setPanelMode('categories')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md cursor-pointer transition-all ${
+              panelMode === 'categories'
+                ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            }`}
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            Категорії
+          </span>
+        </div>
+
+        {/* Контент: пошук або категорії */}
+        {panelMode === 'search' ? (
+          <>
+            {/* Search results */}
+            <div className="flex-1 overflow-y-auto space-y-2">
           {results.map((result) => {
             const stock = parseFloat(result.product.stock) || 0;
             const isOutOfStock = stock <= 0;
@@ -361,6 +504,12 @@ const PosPage: React.FC = () => {
             </div>
           )}
         </div>
+          </>
+        ) : (
+          <div className="flex-1 overflow-y-auto">
+            <CategoryPanel onProductSelect={handleProductSelect} />
+          </div>
+        )}
       </div>
 
       {/* Center - Cart */}
@@ -463,7 +612,6 @@ const PosPage: React.FC = () => {
                         </span>
                       </div>
                     </div>
-                    {/* Показуємо залишок під позицією */}
                     <div className="flex justify-between mt-1">
                       <span className="text-xs text-gray-400">
                         Залишок: {item.stock} {formatUnit(item.unit)}
@@ -492,13 +640,23 @@ const PosPage: React.FC = () => {
               <span>До сплати</span>
               <span className="text-primary-600">{formatCurrency(subtotal)}</span>
             </div>
-            <Button
-              className="w-full mt-2"
-              size="lg"
-              onClick={() => setShowPayment(true)}
-            >
-              ОПЛАТА
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                size="lg"
+                onClick={() => setShowPayment(true)}
+              >
+                ОПЛАТА
+              </Button>
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={() => navigate('/debtors')}
+                title="Перейти до списку боржників"
+              >
+                <Users className="w-5 h-5" />
+              </Button>
+            </div>
           </div>
         )}
       </div>
@@ -564,7 +722,12 @@ const PosPage: React.FC = () => {
       {/* Payment modal */}
       <Modal
         isOpen={showPayment}
-        onClose={() => setShowPayment(false)}
+        onClose={() => {
+          setShowPayment(false);
+          setShowDebtorField(false);
+          setSelectedDebtor(null);
+          setDebtorQuery('');
+        }}
         title="Оплата"
         size="lg"
       >
@@ -576,16 +739,31 @@ const PosPage: React.FC = () => {
             <p className="text-sm text-gray-500">Сума до сплати</p>
           </div>
 
-          <Select
-            label="Метод оплати"
-            options={[
-              { value: 'cash', label: 'Готівка' },
-              { value: 'card', label: 'Картка' },
-              { value: 'mixed', label: 'Змішаний' },
-            ]}
-            value={paymentMethod}
-            onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-          />
+          {/* Payment method buttons */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Спосіб оплати
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {paymentOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => setPaymentMethod(option.value)}
+                  className={`
+                    flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border-2 transition-all
+                    ${
+                      paymentMethod === option.value
+                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-400'
+                        : 'border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-slate-500'
+                    }
+                  `}
+                >
+                  {option.icon}
+                  <span className="text-xs font-medium">{option.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
           {paymentMethod === 'cash' && (
             <Input
@@ -640,22 +818,115 @@ const PosPage: React.FC = () => {
             </div>
           )}
 
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isDebt}
-              onChange={(e) => setIsDebt(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-              id="is-debt"
-              name="is-debt"
-            />
-            <span className="text-sm text-gray-700 dark:text-gray-300">
-              Оплата в борг
-            </span>
-          </label>
+          {/* Partial payment warning + debtor selection */}
+          {isPartialPayment && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-700">
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                Недостатня сума оплати
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                Сума до сплати: {formatCurrency(subtotal)} | 
+                Внесено: {formatCurrency(getPaidAmount())} | 
+                <span className="font-bold"> Борг: {formatCurrency(subtotal - getPaidAmount())}</span>
+              </p>
+            </div>
+          )}
+
+          {/* Debtor selection — показано коли сума менша за чек */}
+          {(showDebtorField || selectedDebtor) && (
+            <div ref={debtorSearchRef} className="relative">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {isPartialPayment ? 'Боржник (обов\'язково)' : 'Боржник (необов\'язково)'}
+              </label>
+              <div className="relative">
+                <input
+                  ref={debtorInputRef}
+                  type="text"
+                  value={debtorQuery}
+                  onChange={(e) => {
+                    setDebtorQuery(e.target.value);
+                    setSelectedDebtor(null);
+                  }}
+                  placeholder="Введіть ім'я боржника..."
+                  className="input-field pl-10 pr-10"
+                  autoFocus={isPartialPayment}
+                  id="debtor-name"
+                  name="debtor-name"
+                  autoComplete="off"
+                />
+                <UserPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                {isSearchingDebtors && (
+                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-500 animate-spin" />
+                )}
+              </div>
+
+              {/* Debtor dropdown */}
+              {showDebtorDropdown && debtors.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg shadow-lg overflow-hidden">
+                  {debtors.map((debtor) => (
+                    <button
+                      key={debtor.id}
+                      onClick={() => handleDebtorSelect(debtor)}
+                      className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors flex items-center justify-between"
+                    >
+                      <span className="font-medium text-gray-900 dark:text-gray-100">
+                        {debtor.name}
+                      </span>
+                      {debtor.total_debt > 0 && (
+                        <span className="text-xs text-danger-500 font-medium">
+                          Борг: {formatCurrency(debtor.total_debt)}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Create new debtor hint */}
+              {debtorQuery.trim() && !selectedDebtor && !isSearchingDebtors && (
+                <button
+                  onClick={handleCreateAndSelectDebtor}
+                  className="mt-1 w-full px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors flex items-center gap-2"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Створити боржника &quot;{debtorQuery.trim()}&quot;</span>
+                </button>
+              )}
+
+              {selectedDebtor && (
+                <div className="mt-2 px-3 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-lg flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-primary-700 dark:text-primary-400">
+                      {selectedDebtor.name}
+                    </p>
+                    {selectedDebtor.total_debt > 0 && (
+                      <p className="text-xs text-danger-500">
+                        Поточний борг: {formatCurrency(selectedDebtor.total_debt)}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedDebtor(null);
+                      setDebtorQuery('');
+                      debtorInputRef.current?.focus();
+                    }}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    Змінити
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
-            <Button variant="secondary" onClick={() => setShowPayment(false)}>
+            <Button variant="secondary" onClick={() => {
+              setShowPayment(false);
+              setShowDebtorField(false);
+              setSelectedDebtor(null);
+              setDebtorQuery('');
+            }}>
               Скасувати
             </Button>
             <Button
@@ -663,11 +934,12 @@ const PosPage: React.FC = () => {
               isLoading={isProcessing}
               size="lg"
             >
-              {isDebt ? 'Оформити борг' : 'Сплатити'}
+              {isPartialPayment ? `Сплатити ${formatCurrency(getPaidAmount())} (борг ${formatCurrency(subtotal - getPaidAmount())})` : 'Сплатити'}
             </Button>
           </div>
         </div>
       </Modal>
+
     </div>
   );
 };

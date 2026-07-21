@@ -40,6 +40,8 @@ export interface ReceiptCreate {
   receipt_type: 'sale' | 'return';
   cashier_id?: string;
   total_amount: string;
+  paid_amount?: string;
+  debtor_id?: string;
   items: ReceiptItemCreate[];
   payment_method?: PaymentMethod;
   cash_amount?: number;

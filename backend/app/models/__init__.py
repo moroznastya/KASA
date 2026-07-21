@@ -10,6 +10,7 @@
 from app.models.user import User, UserRole  # noqa: F401
 from app.models.category import Category  # noqa: F401
 from app.models.supplier import Supplier  # noqa: F401
+from app.models.debtor import Debtor  # noqa: F401
 
 # ── Товари ─────────────────────────────────────
 from app.models.product import Product  # noqa: F401
@@ -34,6 +35,7 @@ __all__ = [
     "User", "UserRole",
     "Category",
     "Supplier",
+    "Debtor",
     # Товари
     "Product",
     "Barcode",

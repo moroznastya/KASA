@@ -7,6 +7,7 @@
   - Генерацію JWT токенів (через python-jose)
   - Верифікацію токенів
   - Оновлення токенів (refresh)
+  - Перевірку прав доступу (permissions)
 """
 
 from datetime import datetime, timedelta
@@ -23,12 +24,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_session
 from app.models.user import User, UserRole
+from app.models.permission import Permission, ADMIN_PERMISSIONS, CASHIER_PERMISSIONS
 
 # Схема Bearer токена для Swagger
 security_scheme = HTTPBearer()
 
 # Контекст хешування паролів (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def get_default_permissions(role: UserRole) -> list[str]:
+    """
+    Повертає набір прав за замовчуванням для вказаної ролі.
+
+    Args:
+        role: Роль користувача.
+
+    Returns:
+        Список рядків-пермішенів.
+    """
+    if role == UserRole.ADMIN:
+        return ADMIN_PERMISSIONS
+    return CASHIER_PERMISSIONS
 
 
 class AuthService:
@@ -78,6 +95,7 @@ class AuthService:
     def create_access_token(
         user_id: UUID,
         role: UserRole,
+        permissions: Optional[list[str]] = None,
         expires_delta: Optional[timedelta] = None,
     ) -> str:
         """
@@ -86,14 +104,20 @@ class AuthService:
         Args:
             user_id: ID користувача.
             role: Роль користувача.
+            permissions: Список прав доступу. Якщо None — використовуються
+                         права за замовчуванням для ролі.
             expires_delta: Час дії токена (за замовчуванням з конфігу).
 
         Returns:
             JWT токен у вигляді рядка.
         """
+        if permissions is None:
+            permissions = get_default_permissions(role)
+
         to_encode = {
             "sub": str(user_id),
             "role": role.value if hasattr(role, "value") else role,
+            "permissions": permissions,
             "type": "access",
             "iat": datetime.utcnow(),
         }
@@ -215,8 +239,11 @@ class AuthService:
                 detail="Невірний логін або пароль",
             )
 
-        # Генеруємо токен
-        token = self.create_access_token(user.id, user.role)
+        # Отримуємо права доступу
+        permissions = user.permissions if user.permissions is not None else get_default_permissions(user.role)
+
+        # Генеруємо токен з правами
+        token = self.create_access_token(user.id, user.role, permissions)
         return user, token
 
     async def login_by_pin(self, login: str, pin_code: str) -> tuple[User, str]:
@@ -268,8 +295,11 @@ class AuthService:
                 detail="Невірний логін або PIN-код",
             )
 
-        # Генеруємо токен
-        token = self.create_access_token(user.id, user.role)
+        # Отримуємо права доступу
+        permissions = user.permissions if user.permissions is not None else get_default_permissions(user.role)
+
+        # Генеруємо токен з правами
+        token = self.create_access_token(user.id, user.role, permissions)
         return user, token
 
     # ─── Отримання поточного користувача ─────────────────────────────────────
@@ -344,3 +374,49 @@ class AuthService:
                 detail="Доступ заборонено: потрібна роль адміністратора",
             )
         return user
+
+    # ─── Перевірка прав доступу ──────────────────────────────────────────────
+
+    @staticmethod
+    def require_permission(permission: Permission):
+        """
+        Dependency factory: Перевіряє, що користувач має конкретне право доступу.
+
+        Використання:
+            @router.get("/products")
+            async def list_products(
+                user: User = Depends(AuthService.require_permission(Permission.PRODUCTS_VIEW)),
+            ):
+                ...
+
+        Args:
+            permission: Право доступу, яке перевіряється.
+
+        Returns:
+            Dependency функція, яка повертає User, якщо право є.
+        """
+        async def _check_permission(
+            credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+            session: AsyncSession = Depends(get_session),
+        ) -> User:
+            # Спочатку отримуємо користувача
+            user = await AuthService.get_current_user(credentials, session)
+
+            # Отримуємо права з токена або з БД
+            payload = AuthService.decode_access_token(credentials.credentials)
+            token_permissions = payload.get("permissions", [])
+
+            # Якщо в токені немає прав, беремо з БД
+            if not token_permissions:
+                token_permissions = user.permissions if user.permissions is not None else get_default_permissions(user.role)
+
+            # Перевіряємо наявність права
+            if permission.value not in token_permissions:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Доступ заборонено: потрібне право '{permission.value}'",
+                )
+
+            return user
+
+        return _check_permission

@@ -101,7 +101,7 @@ async def get_category(
 async def create_category(
     data: CategoryCreate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Створює нову категорію."""
     # Перевіряємо, чи існує батьківська категорія
@@ -130,7 +130,7 @@ async def update_category(
     category_id: UUID,
     data: CategoryUpdate,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Оновлює категорію."""
     result = await session.execute(
@@ -171,7 +171,7 @@ async def update_category(
 async def delete_category(
     category_id: UUID,
     session: AsyncSession = Depends(get_session),
-    current_user = Depends(AuthService.get_current_user),
+    current_user = Depends(AuthService.require_admin),
 ):
     """Видаляє категорію."""
     result = await session.execute(
