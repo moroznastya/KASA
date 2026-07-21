@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, FolderOpen } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency, formatUnit } from '@/utils/format';
-import { CategoryPanel } from '@/components/pos/CategoryPanel';
 import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
 import toast from 'react-hot-toast';
 
@@ -59,7 +58,6 @@ const PosPage: React.FC = () => {
   const [showDebtorDropdown, setShowDebtorDropdown] = useState(false);
   const debtorSearchRef = useRef<HTMLDivElement>(null);
   const debtorInputRef = useRef<HTMLInputElement>(null);
-  const [panelMode, setPanelMode] = useState<'search' | 'categories'>('search');
   
   // Debtor modal for partial payment
   const [showDebtorModal, setShowDebtorModal] = useState(false);
@@ -555,37 +553,8 @@ const PosPage: React.FC = () => {
           )}
         </div>
 
-        {/* Перемикач режимів */}
-        <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5">
-          <span
-            onClick={() => setPanelMode('search')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md cursor-pointer transition-all ${
-              panelMode === 'search'
-                ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <Search className="w-3.5 h-3.5" />
-            Пошук
-          </span>
-          <span
-            onClick={() => setPanelMode('categories')}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md cursor-pointer transition-all ${
-              panelMode === 'categories'
-                ? 'bg-white dark:bg-slate-600 text-primary-600 dark:text-primary-400 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            Категорії
-          </span>
-        </div>
-
-        {/* Контент: пошук або категорії */}
-        {panelMode === 'search' ? (
-          <>
-            {/* Search results */}
-            <div className="flex-1 overflow-y-auto space-y-2">
+        {/* Search results */}
+        <div className="flex-1 overflow-y-auto space-y-2">
           {results.map((result) => {
             const stock = parseFloat(result.product.stock) || 0;
             const isOutOfStock = stock <= 0;
@@ -632,12 +601,6 @@ const PosPage: React.FC = () => {
             </div>
           )}
         </div>
-          </>
-        ) : (
-          <div className="flex-1 overflow-y-auto">
-            <CategoryPanel onProductSelect={handleProductSelect} />
-          </div>
-        )}
       </div>
 
       {/* Center - Cart */}
