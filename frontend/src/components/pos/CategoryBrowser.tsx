@@ -1,40 +1,86 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Package, Layers, Eye, EyeOff, Settings2, Check } from 'lucide-react';
+import { ChevronDown, ChevronRight, Package, Layers, Eye, EyeOff, Settings2 } from 'lucide-react';
 import { useCategoryTree } from '@/hooks/useCategories';
 import { productService } from '@/services/productService';
 import { formatCurrency, formatUnit } from '@/utils/format';
 import { Product } from '@/types/product';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { useAuthStore } from '@/store/authStore';
 
 interface CategoryBrowserProps {
   onProductSelect: (product: Product) => void;
 }
 
+const STORAGE_PREFIX = 'pos_categories_';
+
+interface StoredSettings {
+  visibleIds: string[];
+  isCollapsed: boolean;
+}
+
+function loadSettings(userId: string): StoredSettings | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + userId);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return null;
+}
+
+function saveSettings(userId: string, settings: StoredSettings) {
+  try {
+    localStorage.setItem(STORAGE_PREFIX + userId, JSON.stringify(settings));
+  } catch { /* ignore */ }
+}
+
 export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelect }) => {
+  const user = useAuthStore((s) => s.user);
+  const userId = user?.id || 'anonymous';
+
   const { data: categoryTree, isLoading } = useCategoryTree();
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoadingProducts, setIsLoadingProducts] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true); // <-- за замовчуванням приховано
   const [showSettings, setShowSettings] = useState(false);
   const [visibleCategories, setVisibleCategories] = useState<Set<string>>(new Set());
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Ініціалізація видимих категорій (всі видимі за замовчуванням)
+  // Завантаження збережених налаштувань для користувача
   useEffect(() => {
-    if (categoryTree && categoryTree.length > 0) {
-      const allIds = new Set<string>();
-      const collectIds = (cats: any[]) => {
-        cats.forEach((cat: any) => {
-          allIds.add(cat.id);
-          if (cat.children) collectIds(cat.children);
-        });
-      };
-      collectIds(categoryTree);
+    if (!categoryTree || categoryTree.length === 0 || isInitialized) return;
+
+    const saved = loadSettings(userId);
+    const allIds = new Set<string>();
+    const collectIds = (cats: any[]) => {
+      cats.forEach((cat: any) => {
+        allIds.add(cat.id);
+        if (cat.children) collectIds(cat.children);
+      });
+    };
+    collectIds(categoryTree);
+
+    if (saved) {
+      // Відновлюємо тільки ті ID, які досі існують
+      const restored = new Set(saved.visibleIds.filter((id) => allIds.has(id)));
+      setVisibleCategories(restored.size > 0 ? restored : allIds);
+      setIsCollapsed(saved.isCollapsed ?? true);
+    } else {
       setVisibleCategories(allIds);
+      setIsCollapsed(true);
     }
-  }, [categoryTree]);
+    setIsInitialized(true);
+  }, [categoryTree, userId, isInitialized]);
+
+  // Автоматичне збереження при зміні налаштувань
+  useEffect(() => {
+    if (!isInitialized) return;
+    saveSettings(userId, {
+      visibleIds: Array.from(visibleCategories),
+      isCollapsed,
+    });
+  }, [visibleCategories, isCollapsed, userId, isInitialized]);
 
   // Завантаження товарів при виборі категорії/підкатегорії
   useEffect(() => {
@@ -154,11 +200,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
     return (
       <div key={category.id} className="select-none">
         <label
-          className={`
-            flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all
-            hover:bg-gray-50 dark:hover:bg-slate-700
-            ${depth > 0 ? 'ml-' + (depth * 4) : ''}
-          `}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all hover:bg-gray-50 dark:hover:bg-slate-700"
           style={{ marginLeft: depth > 0 ? `${depth * 16}px` : '0' }}
         >
           <input
@@ -183,6 +225,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
     );
   };
 
+  // --- СТАН ПРИХОВАНО ---
   if (isCollapsed) {
     return (
       <div className="flex items-center gap-2">
@@ -198,6 +241,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
     );
   }
 
+  // --- СТАН РОЗГОРНУТО ---
   return (
     <div className="card p-3">
       <div className="flex items-center justify-between mb-2">
@@ -206,6 +250,14 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
           <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
             Категорії
           </span>
+          {/* Кнопка приховати біля "Категорії" */}
+          <button
+            onClick={() => setIsCollapsed(true)}
+            className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-all"
+            title="Приховати категорії"
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+          </button>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -214,13 +266,6 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
             title="Налаштування категорій"
           >
             <Settings2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setIsCollapsed(true)}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-all"
-            title="Приховати категорії"
-          >
-            <EyeOff className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -315,7 +360,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
       >
         <div className="space-y-4">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Оберіть категорії, які будуть відображатись на панелі кас
+            Оберіть категорії, які будуть відображатись на панелі каси
           </p>
 
           <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-slate-700 rounded-lg">
