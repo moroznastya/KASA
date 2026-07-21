@@ -33,6 +33,7 @@ export const documentService = {
           number: invoiceData.number,
           supplier_id: invoiceData.supplier_id,
           invoice_date: invoiceData.invoice_date,
+          payment_method: invoiceData.payment_method || undefined,
           is_fiscal: invoiceData.is_fiscal,
           notes: invoiceData.notes,
           items: invoiceData.items.map(item => ({
