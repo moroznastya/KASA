@@ -66,7 +66,16 @@ const LedgerPage: React.FC = () => {
       setPaymentForm({ amount: '', payment_method: 'cash', notes: '' });
     },
     onError: (error: any) => {
-      toast.error(error?.response?.data?.detail || 'Помилка створення платежу');
+      // Помилка 422 (Pydantic validation) повертає масив {type, loc, msg, input}
+      const detail = error?.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        const messages = detail.map((e: any) => e.msg).join('; ');
+        toast.error(messages || 'Помилка валідації даних');
+      } else if (typeof detail === 'string') {
+        toast.error(detail);
+      } else {
+        toast.error('Помилка створення платежу');
+      }
     },
   });
 

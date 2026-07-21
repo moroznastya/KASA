@@ -19,7 +19,7 @@ class SupplierLedgerCreate(BaseModel):
     document_id: Optional[UUID] = Field(None, description="ID документа")
     document_number: Optional[str] = Field(None, max_length=50, description="Номер документа")
     amount: Decimal = Field(..., max_digits=12, decimal_places=2, description="Сума операції (грн)")
-    balance_after: Decimal = Field(..., max_digits=12, decimal_places=2, description="Баланс після операції (грн)")
+    balance_after: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Баланс після операції (грн). Якщо не вказано, розраховується автоматично.")
     operation_date: datetime = Field(..., description="Дата операції")
     notes: Optional[str] = Field(None, description="Нотатки")
 
