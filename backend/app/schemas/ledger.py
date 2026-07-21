@@ -45,4 +45,4 @@ class SupplierLedgerBalanceResponse(BaseModel):
     supplier_id: UUID = Field(..., description="ID постачальника")
     supplier_name: str = Field(..., description="Назва постачальника")
     current_balance: Decimal = Field(..., description="Поточний баланс (грн)")
-    last_updated: datetime = Field(..., description="Дата останньої операції")
+    last_updated: Optional[datetime] = Field(None, description="Дата останньої операції")
