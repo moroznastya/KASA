@@ -522,21 +522,31 @@ const PosPage: React.FC = () => {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* Кнопка collapse/expand для каталогу */}
-      <div className="flex">
-        <button
-          onClick={() => setCatalogCollapsed(!catalogCollapsed)}
-          className="self-start mt-2 p-2 rounded-lg border border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700 transition-all text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-          title={catalogCollapsed ? 'Показати каталог' : 'Приховати каталог'}
-        >
-          {catalogCollapsed ? <PanelRightOpen className="w-5 h-5" /> : <PanelRightClose className="w-5 h-5" />}
-        </button>
-      </div>
+      {/* Кнопка collapse/expand — інтегрована в ліву панель */}
+      {catalogCollapsed && (
+        <div className="flex flex-col items-center pt-2">
+          <button
+            onClick={() => setCatalogCollapsed(false)}
+            className="p-2 rounded-lg border border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700 transition-all text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            title="Показати каталог"
+          >
+            <PanelRightOpen className="w-5 h-5" />
+          </button>
+        </div>
+      )}
 
       {/* Left panel - Product search / Categories */}
       <div className={`${catalogCollapsed ? 'w-0 overflow-hidden opacity-0 p-0 m-0' : 'w-80'} flex flex-col gap-4 transition-all duration-300 ease-in-out`}>
         {/* Unified search field */}
-        <div className="card p-4">
+        <div className="card p-4 relative">
+          {/* Кнопка collapse всередині панелі */}
+          <button
+            onClick={() => setCatalogCollapsed(true)}
+            className="absolute -right-3 top-4 w-6 h-6 rounded-full bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:border-gray-300 transition-all shadow-sm z-10"
+            title="Приховати каталог"
+          >
+            <PanelRightClose className="w-3.5 h-3.5" />
+          </button>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             <input
