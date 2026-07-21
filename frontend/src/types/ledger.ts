@@ -1,21 +1,21 @@
 export interface SupplierLedgerEntry {
   id: string;
   supplier_id: string;
-  supplier_name: string;
-  document_type: string;
-  document_id: string;
-  document_number: string;
-  debit: string;
-  credit: string;
-  balance: string;
-  description: string | null;
+  operation_type: 'invoice' | 'payment' | 'return' | 'correction';
+  document_id: string | null;
+  document_number: string | null;
+  amount: string;
+  balance_after: string;
+  operation_date: string;
+  notes: string | null;
   created_at: string;
 }
 
 export interface BalanceResponse {
   supplier_id: string;
   supplier_name: string;
-  balance: string;
+  current_balance: string;
+  last_updated: string | null;
 }
 
 export interface PaymentCreate {

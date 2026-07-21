@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, DollarSign, Banknote, CreditCard } from 'lucide-react';
+import { BookOpen, DollarSign, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
 import { ledgerService } from '@/services/ledgerService';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
@@ -9,9 +9,23 @@ import { Select } from '@/components/ui/Select';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
-import { formatCurrency, formatDateTime, formatPaymentMethod } from '@/utils/format';
+import { formatCurrency, formatDateTime } from '@/utils/format';
 import { SupplierLedgerEntry, Payment, PaymentMethod } from '@/types/ledger';
 import toast from 'react-hot-toast';
+
+const OPERATION_TYPE_LABELS: Record<string, string> = {
+  invoice: 'Прибуткова накладна',
+  payment: 'Оплата',
+  return: 'Повернення',
+  correction: 'Коригування',
+};
+
+const OPERATION_TYPE_VARIANTS: Record<string, 'info' | 'success' | 'danger' | 'warning'> = {
+  invoice: 'info',
+  payment: 'success',
+  return: 'danger',
+  correction: 'warning',
+};
 
 const LedgerPage: React.FC = () => {
   const queryClient = useQueryClient();
@@ -66,10 +80,21 @@ const LedgerPage: React.FC = () => {
 
   const ledgerColumns: Column<SupplierLedgerEntry>[] = [
     {
-      key: 'created_at',
+      key: 'operation_date',
       header: 'Дата',
       render: (item) => (
-        <span className="text-gray-500">{formatDateTime(item.created_at)}</span>
+        <span className="text-gray-500 text-sm">
+          {formatDateTime(item.operation_date)}
+        </span>
+      ),
+    },
+    {
+      key: 'operation_type',
+      header: 'Тип',
+      render: (item) => (
+        <Badge variant={OPERATION_TYPE_VARIANTS[item.operation_type] || 'default'}>
+          {OPERATION_TYPE_LABELS[item.operation_type] || item.operation_type}
+        </Badge>
       ),
     },
     {
@@ -77,51 +102,65 @@ const LedgerPage: React.FC = () => {
       header: 'Документ',
       render: (item) => (
         <span className="font-medium text-gray-900 dark:text-gray-100">
-          {item.document_number}
+          {item.document_number || '-'}
         </span>
       ),
     },
     {
-      key: 'description',
+      key: 'notes',
       header: 'Опис',
-      render: (item) => item.description || '-',
-    },
-    {
-      key: 'debit',
-      header: 'Дебет',
-      render: (item) =>
-        parseFloat(item.debit) > 0 ? (
-          <span className="font-medium text-danger-600">{formatCurrency(item.debit)}</span>
-        ) : (
-          <span className="text-gray-400">-</span>
-        ),
-    },
-    {
-      key: 'credit',
-      header: 'Кредит',
-      render: (item) =>
-        parseFloat(item.credit) > 0 ? (
-          <span className="font-medium text-success-600">{formatCurrency(item.credit)}</span>
-        ) : (
-          <span className="text-gray-400">-</span>
-        ),
-    },
-    {
-      key: 'balance',
-      header: 'Баланс',
       render: (item) => (
-        <span
-          className={`font-medium ${
-            parseFloat(item.balance) > 0
-              ? 'text-danger-600'
-              : parseFloat(item.balance) < 0
-              ? 'text-success-600'
-              : ''
-          }`}
-        >
-          {formatCurrency(item.balance)}
+        <span className="text-gray-600 dark:text-gray-400 text-sm">
+          {item.notes || '-'}
         </span>
       ),
+    },
+    {
+      key: 'amount',
+      header: 'Сума',
+      render: (item) => {
+        const amount = parseFloat(item.amount);
+        const isPositive = amount > 0;
+        const isNegative = amount < 0;
+        return (
+          <div className="flex items-center gap-1.5">
+            {isPositive && <ArrowUpRight className="w-4 h-4 text-danger-500" />}
+            {isNegative && <ArrowDownLeft className="w-4 h-4 text-success-500" />}
+            <span
+              className={`font-medium ${
+                isPositive
+                  ? 'text-danger-600'
+                  : isNegative
+                  ? 'text-success-600'
+                  : 'text-gray-500'
+              }`}
+            >
+              {isPositive ? '+' : ''}
+              {formatCurrency(item.amount)}
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'balance_after',
+      header: 'Баланс',
+      render: (item) => {
+        const balance = parseFloat(item.balance_after);
+        return (
+          <span
+            className={`font-semibold ${
+              balance > 0
+                ? 'text-danger-600'
+                : balance < 0
+                ? 'text-success-600'
+                : 'text-gray-500'
+            }`}
+          >
+            {formatCurrency(item.balance_after)}
+          </span>
+        );
+      },
     },
   ];
 
@@ -133,7 +172,7 @@ const LedgerPage: React.FC = () => {
             Взаєморозрахунки
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Баланс та історія оплат постачальникам
+            Баланс та історія операцій з постачальниками
           </p>
         </div>
       </div>
@@ -166,11 +205,20 @@ const LedgerPage: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Баланс постачальника
+                  {parseFloat(balance.current_balance) > 0
+                    ? 'Борг перед постачальником'
+                    : parseFloat(balance.current_balance) < 0
+                    ? 'Переплата постачальнику'
+                    : 'Баланс постачальника'}
                 </p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 mt-1">
-                  {formatCurrency(balance.balance)}
+                  {formatCurrency(balance.current_balance)}
                 </p>
+                {balance.last_updated && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Остання операція: {formatDateTime(balance.last_updated)}
+                  </p>
+                )}
               </div>
               <div className="p-3 rounded-xl bg-primary-50 dark:bg-primary-900/20 text-primary-600">
                 <BookOpen className="w-6 h-6" />
