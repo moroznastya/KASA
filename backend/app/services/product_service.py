@@ -21,6 +21,36 @@ from app.models.barcode import Barcode
 from app.schemas.product import ProductCreate, ProductUpdate, ProductSearchParams
 
 
+def _relevance_sort_key(query: str):
+    """
+    Повертає функцію для сортування товарів за релевантністю до пошукового запиту.
+
+    Пріоритет:
+    0 - назва починається з запиту
+    1 - назва містить слово, що починається з запиту
+    2 - назва просто містить запит
+    3 - штрих-код або артикул містять запит
+    4 - інше
+    """
+    q = query.lower().strip()
+
+    def sort_key(product: Product) -> tuple:
+        title = product.title.lower()
+        barcode = (product.barcode or product.sku or "").lower()
+
+        if title.startswith(q):
+            return (0, title)
+        if f" {q}" in title:
+            return (1, title)
+        if q in title:
+            return (2, title)
+        if q in barcode:
+            return (3, title)
+        return (4, title)
+
+    return sort_key
+
+
 class ProductService:
     """
     Сервіс для управління товарами.
@@ -158,7 +188,7 @@ class ProductService:
         params: ProductSearchParams,
     ) -> tuple[list[Product], int]:
         """
-        Пошук товарів з фільтрацією та пагінацією.
+        Пошук товарів з фільтрацією, пагінацією та сортуванням за релевантністю.
 
         Args:
             params: Параметри пошуку та фільтрації.
@@ -220,15 +250,23 @@ class ProductService:
         total_result = await self.session.execute(count_query)
         total = total_result.scalar() or 0
 
-        # Пагінація
-        offset = (params.page - 1) * params.size
-        query = query.order_by(Product.title).offset(offset).limit(params.size)
-
-        # Виконуємо запит
+        # Отримуємо всі знайдені товари (без сортування в SQL)
         result = await self.session.execute(query)
         products = list(result.scalars().all())
 
-        return products, total
+        # Сортуємо за релевантністю на рівні Python
+        if params.query:
+            sort_key = _relevance_sort_key(params.query)
+            products.sort(key=sort_key)
+        else:
+            # Без пошукового запиту — за алфавітом
+            products.sort(key=lambda p: p.title.lower())
+
+        # Пагінація після сортування
+        offset = (params.page - 1) * params.size
+        page_products = products[offset : offset + params.size]
+
+        return page_products, total
 
     # ─── CRUD: Update ────────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    ForeignKey, String, Text, Numeric, Enum, DateTime, Boolean,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -60,6 +60,12 @@ class Invoice(Base):
         default=InvoiceStatus.DRAFT,
         nullable=False,
         comment="Статус накладної",
+    )
+    is_fiscal: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Фіскальна накладна (проведена через РРО)",
     )
     notes: Mapped[str | None] = mapped_column(
         Text,

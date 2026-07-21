@@ -1,8 +1,29 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { documentService } from '@/services/documentService';
-import { DocumentCreate, DocumentType } from '@/types/document';
+import { DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate } from '@/types/document';
 import { SearchParams } from '@/types/api';
 import toast from 'react-hot-toast';
+
+type DocumentCreateInput = DocumentCreate | InvoiceCreate | ReturnInvoiceCreate;
+
+/** Отримує текст помилки з response, підтримує Pydantic validation errors */
+function getErrorMessage(error: any): string {
+  if (error?.response?.data?.detail) {
+    const detail = error.response.data.detail;
+    // Якщо detail — масив (Pydantic validation errors), формуємо рядок
+    if (Array.isArray(detail)) {
+      return detail.map((err: any) => {
+        const field = err.loc?.slice(1).join('.') || 'field';
+        return `${field}: ${err.msg}`;
+      }).join('; ');
+    }
+    // Якщо detail — рядок
+    if (typeof detail === 'string') return detail;
+    // Якщо detail — об'єкт
+    return JSON.stringify(detail);
+  }
+  return error?.message || 'Невідома помилка';
+}
 
 export function useDocuments(params?: SearchParams & { document_type?: DocumentType }) {
   return useQuery({
@@ -23,13 +44,13 @@ export function useCreateDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: DocumentCreate) => documentService.createDocument(data),
+    mutationFn: (data: DocumentCreateInput) => documentService.createDocument(data as any),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       toast.success('Документ успішно створено');
     },
     onError: (error: any) => {
-      toast.error(error?.response?.data?.detail || 'Помилка при створенні документа');
+      toast.error(getErrorMessage(error));
     },
   });
 }
@@ -38,14 +59,15 @@ export function useConfirmDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: string) => documentService.confirmDocument(id),
+    mutationFn: ({ id, documentType }: { id: string; documentType?: DocumentType }) =>
+      documentService.confirmDocument(id, documentType),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['document'] });
       toast.success('Документ підтверджено');
     },
     onError: (error: any) => {
-      toast.error(error?.response?.data?.detail || 'Помилка при підтвердженні документа');
+      toast.error(getErrorMessage(error));
     },
   });
 }
@@ -54,14 +76,15 @@ export function useCancelDocument() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (id: string) => documentService.cancelDocument(id),
+    mutationFn: ({ id, documentType }: { id: string; documentType?: DocumentType }) =>
+      documentService.cancelDocument(id, documentType),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['document'] });
       toast.success('Документ скасовано');
     },
     onError: (error: any) => {
-      toast.error(error?.response?.data?.detail || 'Помилка при скасуванні документа');
+      toast.error(getErrorMessage(error));
     },
   });
 }

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/Spinner';
 import { ArrowLeft, Save } from 'lucide-react';
-import { SupplierCreate } from '@/types/supplier';
+import { SupplierCreate, SupplierUpdate } from '@/types/supplier';
 
 const SupplierFormPage: React.FC = () => {
   const navigate = useNavigate();
@@ -16,69 +16,51 @@ const SupplierFormPage: React.FC = () => {
   const createMutation = useCreateSupplier();
   const updateMutation = useUpdateSupplier();
 
-  const [form, setForm] = useState<SupplierCreate>({
-    name: '',
-    code: '',
-    contact_person: '',
-    phone: '',
-    email: '',
-    address: '',
-    edrpou: '',
-    is_active: true,
-  });
-
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [name, setName] = useState('');
+  const [edrpou, setEdrpou] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [address, setAddress] = useState('');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (isEdit && supplier) {
-      setForm({
-        name: supplier.name,
-        code: supplier.code,
-        contact_person: supplier.contact_person || '',
-        phone: supplier.phone || '',
-        email: supplier.email || '',
-        address: supplier.address || '',
-        edrpou: supplier.edrpou || '',
-        is_active: supplier.is_active,
-      });
+      setName(supplier.name || '');
+      setEdrpou(supplier.edrpou || '');
+      setPhone(supplier.phone || '');
+      setEmail(supplier.email || '');
+      setAddress(supplier.address || '');
+      setNotes(supplier.notes || '');
     }
   }, [isEdit, supplier]);
 
-  const validate = (): boolean => {
-    const newErrors: Record<string, string> = {};
-    if (!form.name.trim()) newErrors.name = 'Назва обов\'язкова';
-    if (!form.code.trim()) newErrors.code = 'Код обов\'язковий';
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Назва обов\'язкова');
+      return;
+    }
+
+    const data: SupplierCreate = {
+      name: trimmed,
+      edrpou: edrpou.trim() || null,
+      phone: phone.trim() || null,
+      email: email.trim() || null,
+      address: address.trim() || null,
+      notes: notes.trim() || null,
+    };
 
     try {
       if (isEdit && id) {
-        await updateMutation.mutateAsync({
-          id,
-          data: { ...form, id },
-        });
+        await updateMutation.mutateAsync({ id, data: data as SupplierUpdate });
       } else {
-        await createMutation.mutateAsync(form);
+        await createMutation.mutateAsync(data);
       }
       navigate('/suppliers');
     } catch {
-      // Error handled
-    }
-  };
-
-  const handleChange = (field: keyof SupplierCreate, value: any) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors[field];
-        return newErrors;
-      });
+      // Error handled by hook
     }
   };
 
@@ -91,7 +73,7 @@ const SupplierFormPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
         <button
           onClick={() => navigate('/suppliers')}
@@ -104,76 +86,65 @@ const SupplierFormPage: React.FC = () => {
             {isEdit ? 'Редагувати постачальника' : 'Новий постачальник'}
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            {isEdit ? 'Змініть дані постачальника' : 'Заповніть інформацію про постачальника'}
+            {isEdit ? 'Змініть дані постачальника' : 'Заповніть дані постачальника'}
           </p>
         </div>
       </div>
 
       <form onSubmit={handleSubmit} className="card p-6 space-y-5">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            label="Назва *"
-            value={form.name}
-            onChange={(e) => handleChange('name', e.target.value)}
-            error={errors.name}
-            placeholder="Назва постачальника"
-          />
-          <Input
-            label="Код *"
-            value={form.code}
-            onChange={(e) => handleChange('code', e.target.value)}
-            error={errors.code}
-            placeholder="Унікальний код"
-          />
-        </div>
+        <Input
+          label="Назва *"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            if (error) setError('');
+          }}
+          error={error}
+          placeholder="Введіть назву постачальника"
+          autoFocus
+        />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            label="Контактна особа"
-            value={form.contact_person || ''}
-            onChange={(e) => handleChange('contact_person', e.target.value)}
-            placeholder="ПІБ контактної особи"
-          />
-          <Input
-            label="Телефон"
-            value={form.phone || ''}
-            onChange={(e) => handleChange('phone', e.target.value)}
-            placeholder="+380501234567"
-          />
-        </div>
+        <Input
+          label="ЄДРПОУ"
+          value={edrpou}
+          onChange={(e) => setEdrpou(e.target.value)}
+          placeholder="Код ЄДРПОУ"
+        />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            label="Email"
-            type="email"
-            value={form.email || ''}
-            onChange={(e) => handleChange('email', e.target.value)}
-            placeholder="email@example.com"
-          />
-          <Input
-            label="ЄДРПОУ"
-            value={form.edrpou || ''}
-            onChange={(e) => handleChange('edrpou', e.target.value)}
-            placeholder="8 цифр"
-          />
-        </div>
+        <Input
+          label="Номер телефону"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="+380 (__) ___ __ __"
+        />
+
+        <Input
+          label="Email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="example@mail.com"
+        />
 
         <Input
           label="Адреса"
-          value={form.address || ''}
-          onChange={(e) => handleChange('address', e.target.value)}
-          placeholder="Юридична адреса"
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+          placeholder="Адреса постачальника"
         />
 
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.is_active}
-            onChange={(e) => handleChange('is_active', e.target.checked)}
-            className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Реквізити / Примітки
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Банківські реквізити, примітки..."
+            rows={4}
+            className="w-full rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors resize-none"
           />
-          <span className="text-sm text-gray-700 dark:text-gray-300">Активний постачальник</span>
-        </label>
+        </div>
 
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
           <Button variant="secondary" onClick={() => navigate('/suppliers')}>

@@ -82,6 +82,7 @@ async def create_return_invoice(
         number=data.number,
         supplier_id=data.supplier_id,
         return_date=data.return_date,
+        is_fiscal=data.is_fiscal,
         notes=data.notes,
         total_amount=data.total_amount,
         status=ReturnInvoiceStatus.DRAFT,

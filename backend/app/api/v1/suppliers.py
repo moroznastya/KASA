@@ -3,6 +3,7 @@ API роутер для роботи з постачальниками (Supplier
 
 Ендпоінти:
   - GET    /suppliers          — список постачальників
+  - GET    /suppliers/all      — список всіх постачальників (без пагінації)
   - GET    /suppliers/{id}     — отримати постачальника за ID
   - POST   /suppliers          — створити постачальника
   - PUT    /suppliers/{id}     — оновити постачальника
@@ -36,6 +37,18 @@ async def list_suppliers(
     current_user = Depends(AuthService.get_current_user),
 ):
     """Отримує список всіх постачальників."""
+    result = await session.execute(select(Supplier).order_by(Supplier.name))
+    suppliers = result.scalars().all()
+    return [SupplierResponse.model_validate(s) for s in suppliers]
+
+
+# ⚠️ /all МАЄ БУТИ ПЕРЕД /{supplier_id}, інакше FastAPI сприймає "all" як UUID
+@router.get("/all", response_model=list[SupplierResponse])
+async def list_all_suppliers(
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """Отримує список всіх постачальників (без пагінації, для випадаючих списків)."""
     result = await session.execute(select(Supplier).order_by(Supplier.name))
     suppliers = result.scalars().all()
     return [SupplierResponse.model_validate(s) for s in suppliers]
@@ -77,6 +90,7 @@ async def create_supplier(
     )
     session.add(supplier)
     await session.flush()
+    await session.refresh(supplier)
     return SupplierResponse.model_validate(supplier)
 
 
@@ -103,6 +117,7 @@ async def update_supplier(
         setattr(supplier, field, value)
 
     await session.flush()
+    await session.refresh(supplier)
     return SupplierResponse.model_validate(supplier)
 
 

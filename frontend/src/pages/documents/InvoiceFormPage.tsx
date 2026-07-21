@@ -1,9 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
+import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package } from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
-import { useSearchProducts } from '@/hooks/useProducts';
+import { useSearchProducts, useCreateProduct } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
@@ -15,7 +15,12 @@ interface CartItem {
   product_title: string;
   product_barcode: string | null;
   quantity: number;
+  /** Ціна продажу */
   price: number;
+  /** Собівартість */
+  cost_price: number;
+  /** Відсоток націнки (розраховується автоматично) */
+  markup_percent: number;
 }
 
 const InvoiceFormPage: React.FC = () => {
@@ -23,7 +28,11 @@ const InvoiceFormPage: React.FC = () => {
   const { data: suppliersData } = useAllSuppliers();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
+  const createProductMutation = useCreateProduct();
 
+  const [number, setNumber] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isFiscal, setIsFiscal] = useState(false);
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -31,13 +40,23 @@ const InvoiceFormPage: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
 
+  // Стан для модалки створення нового товару
+  const [showNewProductModal, setShowNewProductModal] = useState(false);
+  const [newProduct, setNewProduct] = useState({
+    title: '',
+    barcode: '',
+    price: '',
+    cost_price: '',
+    unit: 'pcs',
+  });
+
   const { data: searchData } = useSearchProducts(searchQuery);
 
   const handleSearch = useCallback(
     (query: string) => {
       setSearchQuery(query);
-      if (query.length >= 2 && searchData) {
-        setSearchResults(searchData);
+      if (query.length >= 2 && searchData?.items) {
+        setSearchResults(searchData.items);
         setShowSearch(true);
       } else {
         setSearchResults([]);
@@ -48,6 +67,10 @@ const InvoiceFormPage: React.FC = () => {
   );
 
   const addToCart = (product: any) => {
+    const price = parseFloat(product.price) || 0;
+    const costPrice = parseFloat(product.cost_price) || price;
+    const markup = costPrice > 0 ? Math.round(((price - costPrice) / costPrice) * 100) : 0;
+
     const existing = cart.find((item) => item.product_id === product.id);
     if (existing) {
       setCart((prev) =>
@@ -65,7 +88,9 @@ const InvoiceFormPage: React.FC = () => {
           product_title: product.title,
           product_barcode: product.barcode,
           quantity: 1,
-          price: parseFloat(product.price),
+          price,
+          cost_price: costPrice,
+          markup_percent: markup,
         },
       ]);
     }
@@ -87,9 +112,36 @@ const InvoiceFormPage: React.FC = () => {
 
   const updatePrice = (productId: string, price: number) => {
     setCart((prev) =>
-      prev.map((item) =>
-        item.product_id === productId ? { ...item, price } : item
-      )
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        // Перераховуємо націнку на основі собівартості
+        const markup = item.cost_price > 0 ? Math.round(((price - item.cost_price) / item.cost_price) * 100) : 0;
+        return { ...item, price, markup_percent: markup };
+      })
+    );
+  };
+
+  const updateCostPrice = (productId: string, costPrice: number) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        // Перераховуємо націнку на основі нової собівартості
+        const markup = costPrice > 0 ? Math.round(((item.price - costPrice) / costPrice) * 100) : 0;
+        return { ...item, cost_price: costPrice, markup_percent: markup };
+      })
+    );
+  };
+
+  const updateMarkup = (productId: string, markupPercent: number) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        // Перераховуємо ціну на основі собівартості та націнки
+        const newPrice = item.cost_price > 0
+          ? Math.round(item.cost_price * (1 + markupPercent / 100) * 100) / 100
+          : item.price;
+        return { ...item, markup_percent: markupPercent, price: newPrice };
+      })
     );
   };
 
@@ -98,8 +150,14 @@ const InvoiceFormPage: React.FC = () => {
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
+  const totalMarkup = totalCost > 0 ? Math.round(((totalAmount - totalCost) / totalCost) * 100) : 0;
 
   const handleSave = async (andConfirm: boolean = false) => {
+    if (!number.trim()) {
+      toast.error('Введіть номер накладної');
+      return;
+    }
     if (!supplierId) {
       toast.error('Виберіть постачальника');
       return;
@@ -112,20 +170,50 @@ const InvoiceFormPage: React.FC = () => {
     try {
       const doc = await createMutation.mutateAsync({
         document_type: 'invoice',
+        number: number.trim(),
         supplier_id: supplierId,
+        invoice_date: new Date(invoiceDate).toISOString(),
+        is_fiscal: isFiscal,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
+          cost_price: item.cost_price,
+          markup_percent,
+          total: item.quantity * item.price,
         })),
       });
 
       if (andConfirm) {
-        await confirmMutation.mutateAsync(doc.id);
+        await confirmMutation.mutateAsync({ id: doc.id, documentType: 'invoice' });
       }
 
       navigate('/documents');
+    } catch {
+      // Error handled
+    }
+  };
+
+  // Створення нового товару
+  const handleCreateProduct = async () => {
+    if (!newProduct.title.trim()) {
+      toast.error('Введіть назву товару');
+      return;
+    }
+    try {
+      const product = await createProductMutation.mutateAsync({
+        title: newProduct.title.trim(),
+        barcode: newProduct.barcode.trim() || undefined,
+        price: parseFloat(newProduct.price) || 0,
+        cost_price: parseFloat(newProduct.cost_price) || 0,
+        unit: (newProduct.unit || 'pcs') as any,
+      });
+      // Додаємо новий товар одразу в кошик
+      addToCart(product);
+      setShowNewProductModal(false);
+      setNewProduct({ title: '', barcode: '', price: '', cost_price: '', unit: 'pcs' });
+      toast.success('Товар створено та додано до накладної');
     } catch {
       // Error handled
     }
@@ -140,7 +228,7 @@ const InvoiceFormPage: React.FC = () => {
   ];
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
         <button
           onClick={() => navigate('/documents')}
@@ -159,6 +247,35 @@ const InvoiceFormPage: React.FC = () => {
       </div>
 
       <div className="card p-6 space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Input
+            label="Номер накладної *"
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            placeholder="Наприклад: ПН-001"
+            autoFocus
+          />
+          <Input
+            label="Дата накладної"
+            type="date"
+            value={invoiceDate}
+            onChange={(e) => setInvoiceDate(e.target.value)}
+          />
+          <div className="flex items-end pb-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isFiscal}
+                onChange={(e) => setIsFiscal(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Фіскальна накладна
+              </span>
+            </label>
+          </div>
+        </div>
+
         <Select
           label="Постачальник *"
           options={supplierOptions}
@@ -166,51 +283,64 @@ const InvoiceFormPage: React.FC = () => {
           onChange={(e) => setSupplierId(e.target.value || null)}
         />
 
-        <div className="relative">
-          <Input
-            label="Додати товар"
-            value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            placeholder="Пошук за назвою або штрих-кодом..."
-            icon={<Search className="w-4 h-4" />}
-          />
-          {showSearch && searchResults.length > 0 && (
-            <div className="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
-              {searchResults.map((product) => (
-                <button
-                  key={product.id}
-                  onClick={() => addToCart(product)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-slate-700 text-left transition-colors"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {product.title}
-                    </p>
-                    {product.barcode && (
-                      <p className="text-xs text-gray-400">ШК: {product.barcode}</p>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {formatCurrency(product.price)}
-                    </p>
-                    <p className="text-xs text-gray-400">Залишок: {product.stock}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Пошук товару + кнопка додати новий */}
+        <div className="flex gap-3 items-end">
+          <div className="flex-1 relative">
+            <Input
+              label="Додати товар"
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              placeholder="Пошук за назвою або штрих-кодом..."
+              icon={<Search className="w-4 h-4" />}
+            />
+            {showSearch && searchResults.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                {searchResults.map((product) => (
+                  <button
+                    key={product.id}
+                    onClick={() => addToCart(product)}
+                    className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-slate-700 text-left transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        {product.title}
+                      </p>
+                      {product.barcode && (
+                        <p className="text-xs text-gray-400">ШК: {product.barcode}</p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        {formatCurrency(product.price)}
+                      </p>
+                      <p className="text-xs text-gray-400">Залишок: {product.stock}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => setShowNewProductModal(true)}
+            icon={<Package className="w-4 h-4" />}
+          >
+            Додати новий товар
+          </Button>
         </div>
 
+        {/* Таблиця товарів */}
         {cart.length > 0 && (
           <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="bg-gray-50 dark:bg-slate-800/50">
                   <th className="table-header">Товар</th>
-                  <th className="table-header">Кількість</th>
-                  <th className="table-header">Ціна</th>
-                  <th className="table-header">Сума</th>
+                  <th className="table-header w-24">Кількість</th>
+                  <th className="table-header w-28">Собівартість</th>
+                  <th className="table-header w-28">Ціна продажу</th>
+                  <th className="table-header w-28">Націнка</th>
+                  <th className="table-header w-28">Сума</th>
                   <th className="table-header w-16"></th>
                 </tr>
               </thead>
@@ -233,7 +363,19 @@ const InvoiceFormPage: React.FC = () => {
                         onChange={(e) =>
                           updateQuantity(item.product_id, parseInt(e.target.value) || 1)
                         }
-                        className="w-20 input-field text-center"
+                        className="w-20 input-field text-center px-3"
+                      />
+                    </td>
+                    <td className="table-cell">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={item.cost_price}
+                        onChange={(e) =>
+                          updateCostPrice(item.product_id, parseFloat(e.target.value) || 0)
+                        }
+                        className="w-24 input-field text-right px-3"
                       />
                     </td>
                     <td className="table-cell">
@@ -245,8 +387,23 @@ const InvoiceFormPage: React.FC = () => {
                         onChange={(e) =>
                           updatePrice(item.product_id, parseFloat(e.target.value) || 0)
                         }
-                        className="w-24 input-field text-right"
+                        className="w-24 input-field text-right px-3"
                       />
+                    </td>
+                    <td className="table-cell">
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={item.markup_percent}
+                          onChange={(e) =>
+                            updateMarkup(item.product_id, parseFloat(e.target.value) || 0)
+                          }
+                          className="w-28 input-field text-right px-3"
+                        />
+                        <span className="text-sm text-gray-400">%</span>
+                      </div>
                     </td>
                     <td className="table-cell font-medium">
                       {formatCurrency(item.quantity * item.price)}
@@ -263,12 +420,30 @@ const InvoiceFormPage: React.FC = () => {
                 ))}
               </tbody>
               <tfoot>
-                <tr className="bg-gray-50 dark:bg-slate-800/50">
-                  <td colSpan={3} className="px-4 py-3 text-right font-semibold text-gray-700 dark:text-gray-300">
-                    Загальна сума:
+                <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                  <td colSpan={4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                    Загальна собівартість:
                   </td>
-                  <td className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                  <td colSpan={2} className="px-4 py-3 text-gray-900 dark:text-gray-100">
+                    {formatCurrency(totalCost)}
+                  </td>
+                  <td></td>
+                </tr>
+                <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                  <td colSpan={4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                    Загальна сума продажу:
+                  </td>
+                  <td colSpan={2} className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
                     {formatCurrency(totalAmount)}
+                  </td>
+                  <td></td>
+                </tr>
+                <tr className="bg-gray-50 dark:bg-slate-800/50">
+                  <td colSpan={4} className="px-4 py-3 text-right text-sm text-gray-500 dark:text-gray-400">
+                    Середня націнка:
+                  </td>
+                  <td colSpan={2} className="px-4 py-3 text-sm font-medium text-green-600 dark:text-green-400">
+                    {totalMarkup}%
                   </td>
                   <td></td>
                 </tr>
@@ -305,6 +480,70 @@ const InvoiceFormPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* Модалка створення нового товару */}
+      {showNewProductModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Новий товар
+            </h3>
+            <Input
+              label="Назва товару *"
+              value={newProduct.title}
+              onChange={(e) => setNewProduct((p) => ({ ...p, title: e.target.value }))}
+              placeholder="Введіть назву"
+              autoFocus
+            />
+            <Input
+              label="Штрих-код"
+              value={newProduct.barcode}
+              onChange={(e) => setNewProduct((p) => ({ ...p, barcode: e.target.value }))}
+              placeholder="Опціонально"
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Собівартість"
+                type="number"
+                step="0.01"
+                min="0"
+                value={newProduct.cost_price}
+                onChange={(e) => setNewProduct((p) => ({ ...p, cost_price: e.target.value }))}
+                placeholder="0.00"
+              />
+              <Input
+                label="Ціна продажу"
+                type="number"
+                step="0.01"
+                min="0"
+                value={newProduct.price}
+                onChange={(e) => setNewProduct((p) => ({ ...p, price: e.target.value }))}
+                placeholder="0.00"
+              />
+            </div>
+            <Input
+              label="Одиниця виміру"
+              value={newProduct.unit}
+              onChange={(e) => setNewProduct((p) => ({ ...p, unit: e.target.value }))}
+              placeholder="шт"
+            />
+            <div className="flex justify-end gap-3 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setShowNewProductModal(false)}
+              >
+                Скасувати
+              </Button>
+              <Button
+                onClick={handleCreateProduct}
+                isLoading={createProductMutation.isPending}
+              >
+                Створити та додати
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

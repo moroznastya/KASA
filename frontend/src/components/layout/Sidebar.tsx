@@ -139,29 +139,25 @@ export const Sidebar: React.FC = () => {
         ))}
       </nav>
 
-      {/* User info & toggle */}
+      {/* Toggle button */}
       <div className="border-t border-gray-200 dark:border-slate-700 p-2">
-        {sidebarOpen && user && (
-          <div className="px-3 py-2 mb-2">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-              {user.name}
-            </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">
-              {user.role === 'admin'
-                ? 'Адміністратор'
-                : user.role === 'cashier'
-                ? 'Касир'
-                : user.role === 'manager'
-                ? 'Менеджер'
-                : 'Власник'}
-            </p>
-          </div>
-        )}
         <button
           onClick={toggleSidebar}
-          className="w-full flex items-center justify-center p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+          className={`
+            w-full flex items-center rounded-lg transition-all duration-200
+            text-white hover:text-white
+            hover:bg-gray-100 dark:hover:bg-slate-700
+            ${sidebarOpen
+              ? 'gap-3 px-3 py-2.5 justify-start'
+              : 'justify-center p-2'
+            }
+          `}
+          title={sidebarOpen ? 'Згорнути' : 'Розгорнути'}
         >
-          {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          <ChevronLeft className="w-4 h-4" />
+          {sidebarOpen && (
+            <span className="text-sm font-medium">Згорнути</span>
+          )}
         </button>
       </div>
     </aside>

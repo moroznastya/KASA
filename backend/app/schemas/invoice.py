@@ -38,6 +38,7 @@ class InvoiceCreate(BaseModel):
     number: str = Field(..., max_length=50, description="Номер накладної")
     supplier_id: UUID = Field(..., description="ID постачальника")
     invoice_date: datetime = Field(..., description="Дата накладної")
+    is_fiscal: bool = Field(False, description="Фіскальна накладна")
     notes: Optional[str] = Field(None, description="Нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: list[InvoiceItemCreate] = Field(default_factory=list, description="Позиції накладної")
@@ -48,6 +49,7 @@ class InvoiceUpdate(BaseModel):
     number: Optional[str] = Field(None, max_length=50, description="Номер накладної")
     supplier_id: Optional[UUID] = Field(None, description="ID постачальника")
     invoice_date: Optional[datetime] = Field(None, description="Дата накладної")
+    is_fiscal: Optional[bool] = Field(None, description="Фіскальна накладна")
     notes: Optional[str] = Field(None, description="Нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: Optional[list[InvoiceItemCreate]] = Field(None, description="Позиції накладної")
@@ -60,6 +62,7 @@ class InvoiceResponse(BaseModel):
     supplier_id: UUID
     invoice_date: datetime
     status: InvoiceStatus
+    is_fiscal: bool = False
     notes: Optional[str] = None
     total_amount: Optional[Decimal] = None
     created_at: datetime

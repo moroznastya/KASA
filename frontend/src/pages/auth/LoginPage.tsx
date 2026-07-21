@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { authService } from '@/services/authService';
@@ -16,6 +16,21 @@ const LoginPage: React.FC = () => {
   const [pin, setPin] = useState('');
   const [step, setStep] = useState<'username' | 'pin'>('username');
   const [isLoading, setIsLoading] = useState(false);
+  const hiddenInputRef = useRef<HTMLInputElement>(null);
+
+  // Always keep hidden input focused when on pin step
+  useEffect(() => {
+    if (step === 'pin' && hiddenInputRef.current) {
+      hiddenInputRef.current.focus();
+    }
+  }, [step]);
+
+  // Re-focus hidden input when clicking anywhere on the card
+  const handleCardClick = () => {
+    if (step === 'pin' && hiddenInputRef.current) {
+      hiddenInputRef.current.focus();
+    }
+  };
 
   const handleUsernameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,9 +50,23 @@ const LoginPage: React.FC = () => {
       } else if (pin.length < PIN_LENGTH) {
         setPin((prev) => prev + key);
       }
+      // Re-focus hidden input after any action
+      setTimeout(() => hiddenInputRef.current?.focus(), 0);
     },
     [pin]
   );
+
+  const handleHiddenInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/\D/g, '').slice(0, PIN_LENGTH);
+    setPin(value);
+  };
+
+  const handleHiddenInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && pin.length === PIN_LENGTH) {
+      handleLogin();
+    }
+    // Allow backspace to work naturally
+  };
 
   const handleLogin = async () => {
     if (pin.length !== PIN_LENGTH) {
@@ -47,7 +76,6 @@ const LoginPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      // Виправлено: передаємо login замість username
       const response = await authService.loginPin({
         login: username.trim(),
         pin_code: pin,
@@ -95,7 +123,7 @@ const LoginPage: React.FC = () => {
         </div>
 
         {/* Card */}
-        <div className="card p-6">
+        <div className="card p-6" onClick={handleCardClick}>
           {step === 'username' ? (
             <form onSubmit={handleUsernameSubmit}>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
@@ -134,6 +162,20 @@ const LoginPage: React.FC = () => {
 
               {/* PIN dots */}
               <div className="flex justify-center gap-3 mb-8">{pinDisplay}</div>
+
+              {/* Hidden input for physical keyboard - always present but invisible */}
+              <div className="sr-only" aria-hidden="true">
+                <input
+                  ref={hiddenInputRef}
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={PIN_LENGTH}
+                  value={pin}
+                  onChange={handleHiddenInputChange}
+                  onKeyDown={handleHiddenInputKeyDown}
+                  tabIndex={0}
+                />
+              </div>
 
               {/* PIN Keyboard */}
               <div className="grid grid-cols-3 gap-3 max-w-[220px] mx-auto">

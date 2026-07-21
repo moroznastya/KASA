@@ -38,6 +38,7 @@ class ReturnInvoiceCreate(BaseModel):
     number: str = Field(..., max_length=50, description="Номер документа")
     supplier_id: UUID = Field(..., description="ID постачальника")
     return_date: datetime = Field(..., description="Дата повернення")
+    is_fiscal: bool = Field(False, description="Фіскальний документ")
     notes: Optional[str] = Field(None, description="Причина повернення / нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: list[ReturnInvoiceItemCreate] = Field(default_factory=list, description="Позиції повернення")
@@ -48,6 +49,7 @@ class ReturnInvoiceUpdate(BaseModel):
     number: Optional[str] = Field(None, max_length=50, description="Номер документа")
     supplier_id: Optional[UUID] = Field(None, description="ID постачальника")
     return_date: Optional[datetime] = Field(None, description="Дата повернення")
+    is_fiscal: Optional[bool] = Field(None, description="Фіскальний документ")
     notes: Optional[str] = Field(None, description="Причина повернення / нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: Optional[list[ReturnInvoiceItemCreate]] = Field(None, description="Позиції повернення")
@@ -60,6 +62,7 @@ class ReturnInvoiceResponse(BaseModel):
     supplier_id: UUID
     return_date: datetime
     status: ReturnInvoiceStatus
+    is_fiscal: bool = False
     notes: Optional[str] = None
     total_amount: Optional[Decimal] = None
     created_at: datetime

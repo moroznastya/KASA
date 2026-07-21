@@ -79,10 +79,14 @@ async def create_invoice(
     current_user = Depends(AuthService.get_current_user),
 ):
     """Створює нову прибуткову накладну."""
+    # Виправлення: перетворюємо timezone-aware datetime в timezone-naive
+    invoice_date = data.invoice_date.replace(tzinfo=None)
+
     invoice = Invoice(
         number=data.number,
         supplier_id=data.supplier_id,
-        invoice_date=data.invoice_date,
+        invoice_date=invoice_date,
+        is_fiscal=data.is_fiscal,
         notes=data.notes,
         total_amount=data.total_amount,
         status=InvoiceStatus.DRAFT,
@@ -141,6 +145,9 @@ async def update_invoice(
 
     update_data = data.model_dump(exclude_unset=True, exclude={"items"})
     for field, value in update_data.items():
+        # Виправлення: перетворюємо timezone-aware datetime в timezone-naive
+        if field == "invoice_date" and value is not None:
+            value = value.replace(tzinfo=None)
         setattr(invoice, field, value)
 
     # Оновлюємо позиції, якщо передані

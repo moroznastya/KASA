@@ -6,8 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { Badge } from '@/components/ui/Badge';
-import { formatCurrency } from '@/utils/format';
 import { Supplier } from '@/types/supplier';
 
 const SupplierListPage: React.FC = () => {
@@ -31,14 +29,11 @@ const SupplierListPage: React.FC = () => {
       render: (item) => (
         <div>
           <p className="font-medium text-gray-900 dark:text-gray-100">{item.name}</p>
-          <p className="text-xs text-gray-400">Код: {item.code}</p>
+          {item.edrpou && (
+            <p className="text-xs text-gray-400">ЄДРПОУ: {item.edrpou}</p>
+          )}
         </div>
       ),
-    },
-    {
-      key: 'contact_person',
-      header: 'Контактна особа',
-      render: (item) => item.contact_person || '-',
     },
     {
       key: 'phone',
@@ -67,30 +62,9 @@ const SupplierListPage: React.FC = () => {
         ),
     },
     {
-      key: 'balance',
-      header: 'Баланс',
-      render: (item) => (
-        <span
-          className={`font-medium ${
-            parseFloat(item.balance) > 0
-              ? 'text-danger-600'
-              : parseFloat(item.balance) < 0
-              ? 'text-success-600'
-              : ''
-          }`}
-        >
-          {formatCurrency(item.balance)}
-        </span>
-      ),
-    },
-    {
-      key: 'is_active',
-      header: 'Статус',
-      render: (item) => (
-        <Badge variant={item.is_active ? 'success' : 'default'}>
-          {item.is_active ? 'Активний' : 'Неактивний'}
-        </Badge>
-      ),
+      key: 'address',
+      header: 'Адреса',
+      render: (item) => item.address || '-',
     },
     {
       key: 'actions',
@@ -153,7 +127,7 @@ const SupplierListPage: React.FC = () => {
           setSearch(v);
           setPage(1);
         }}
-        placeholder="Пошук за назвою або кодом..."
+        placeholder="Пошук за назвою..."
         className="max-w-md"
       />
 

@@ -1,8 +1,48 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { productService } from '@/services/productService';
-import { ProductCreate, ProductUpdate } from '@/types/product';
+import { ProductCreate, ProductUpdate, Product } from '@/types/product';
 import { SearchParams } from '@/types/api';
 import toast from 'react-hot-toast';
+
+/**
+ * Сортує товари за релевантністю до пошукового запиту.
+ * 
+ * Пріоритет:
+ * 1. Назва починається з запиту (без урахування регістру)
+ * 2. Назва містить запит як окреме слово (після пробілу)
+ * 3. Назва просто містить запит
+ * 4. Штрих-код або артикул містять запит
+ * 
+ * Всередині кожної групи — за алфавітом.
+ */
+function sortByRelevance(products: Product[], query: string): Product[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return products;
+
+  return [...products].sort((a, b) => {
+    const titleA = a.title.toLowerCase();
+    const titleB = b.title.toLowerCase();
+    const barcodeA = (a.barcode || '').toLowerCase();
+    const barcodeB = (b.barcode || '').toLowerCase();
+
+    // Функція визначення групи релевантності (0 = найкраща)
+    const getGroup = (title: string, barcode: string): number => {
+      if (title.startsWith(q)) return 0;           // Починається з запиту
+      if (title.includes(` ${q}`)) return 1;        // Слово починається з запиту
+      if (title.includes(q)) return 2;              // Містить запит
+      if (barcode.includes(q)) return 3;            // Штрих-код містить запит
+      return 4;                                      // Інше
+    };
+
+    const groupA = getGroup(titleA, barcodeA);
+    const groupB = getGroup(titleB, barcodeB);
+
+    if (groupA !== groupB) return groupA - groupB;
+
+    // В межах однієї групи — за алфавітом
+    return titleA.localeCompare(titleB, 'uk');
+  });
+}
 
 export function useProducts(params?: SearchParams) {
   return useQuery({
@@ -71,7 +111,14 @@ export function useSearchProducts(query: string) {
     queryKey: ['products-search', query],
     queryFn: () => productService.searchProducts(query),
     enabled: query.length >= 2,
-    select: (data) => data.items, // Extract items from paginated response
+    select: (data) => {
+      // Сортуємо за релевантністю на клієнтській стороні
+      const items = data.items || [];
+      return {
+        ...data,
+        items: sortByRelevance(items, query),
+      };
+    },
   });
 }
 

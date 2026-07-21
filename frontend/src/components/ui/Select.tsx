@@ -10,12 +10,14 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   error?: string;
   options: SelectOption[];
   placeholder?: string;
+  /** Клас для зовнішнього контейнера (div) */
+  containerClassName?: string;
 }
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
-  ({ label, error, options, placeholder, className = '', ...props }, ref) => {
+  ({ label, error, options, placeholder, className = '', containerClassName = '', ...props }, ref) => {
     return (
-      <div className="w-full">
+      <div className={`w-full ${containerClassName}`}>
         {label && (
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
             {label}
@@ -24,7 +26,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         <select
           ref={ref}
           className={`
-            input-field appearance-none
+            input-field appearance-none w-full px-3
             bg-no-repeat
             ${error ? 'border-danger-500 focus:ring-danger-500' : ''}
             ${className}

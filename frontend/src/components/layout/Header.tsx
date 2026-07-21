@@ -19,6 +19,7 @@ const moduleNames: Record<string, string> = {
 export const Header: React.FC = () => {
   const navigate = useNavigate();
   const { activeModule, theme, toggleTheme } = useUIStore();
+  const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const [currentTime, setCurrentTime] = useState(new Date());
 
@@ -73,14 +74,22 @@ export const Header: React.FC = () => {
           {theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
         </button>
 
-        {/* Logout */}
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors"
-        >
-          <LogOut className="w-4 h-4" />
-          <span className="hidden sm:inline">Вихід</span>
-        </button>
+        {/* User info + Logout */}
+        {user && (
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 pl-3 border-l border-gray-200 dark:border-slate-700 text-gray-600 dark:text-gray-400 hover:bg-danger-50 dark:hover:bg-danger-900/20 rounded-lg transition-colors py-1.5"
+            title="Вийти"
+          >
+            <div className="w-6 h-6 bg-primary-100 dark:bg-primary-900/30 rounded-full flex items-center justify-center">
+              <User className="w-3 h-3 text-primary-600 dark:text-primary-400" />
+            </div>
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {user.name}
+            </span>
+            <LogOut className="w-5 h-5 text-red-500" />
+          </button>
+        )}
       </div>
     </header>
   );

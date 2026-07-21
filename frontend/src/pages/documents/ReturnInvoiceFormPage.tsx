@@ -24,6 +24,9 @@ const ReturnInvoiceFormPage: React.FC = () => {
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
 
+  const [number, setNumber] = useState('');
+  const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isFiscal, setIsFiscal] = useState(false);
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -36,8 +39,8 @@ const ReturnInvoiceFormPage: React.FC = () => {
   const handleSearch = useCallback(
     (query: string) => {
       setSearchQuery(query);
-      if (query.length >= 2 && searchData) {
-        setSearchResults(searchData);
+      if (query.length >= 2 && searchData?.items) {
+        setSearchResults(searchData.items);
         setShowSearch(true);
       } else {
         setSearchResults([]);
@@ -100,6 +103,10 @@ const ReturnInvoiceFormPage: React.FC = () => {
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
   const handleSave = async (andConfirm: boolean = false) => {
+    if (!number.trim()) {
+      toast.error('Введіть номер документа');
+      return;
+    }
     if (!supplierId) {
       toast.error('Виберіть постачальника');
       return;
@@ -112,13 +119,21 @@ const ReturnInvoiceFormPage: React.FC = () => {
     try {
       const doc = await createMutation.mutateAsync({
         document_type: 'return_invoice',
+        number: number.trim(),
         supplier_id: supplierId,
+        return_date: new Date(returnDate).toISOString(),
+        is_fiscal: isFiscal,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => item),
+        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          price: item.price,
+          total: item.quantity * item.price,
+        })),
       });
 
       if (andConfirm) {
-        await confirmMutation.mutateAsync(doc.id);
+        await confirmMutation.mutateAsync({ id: doc.id, documentType: 'return_invoice' });
       }
 
       navigate('/documents');
@@ -155,6 +170,35 @@ const ReturnInvoiceFormPage: React.FC = () => {
       </div>
 
       <div className="card p-6 space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Input
+            label="Номер документа *"
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            placeholder="Наприклад: ПВ-001"
+            autoFocus
+          />
+          <Input
+            label="Дата повернення"
+            type="date"
+            value={returnDate}
+            onChange={(e) => setReturnDate(e.target.value)}
+          />
+          <div className="flex items-end pb-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isFiscal}
+                onChange={(e) => setIsFiscal(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Фіскальний документ
+              </span>
+            </label>
+          </div>
+        </div>
+
         <Select
           label="Постачальник *"
           options={supplierOptions}
@@ -226,7 +270,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
                         onChange={(e) =>
                           updateQuantity(item.product_id, parseInt(e.target.value) || 1)
                         }
-                        className="w-20 input-field text-center"
+                        className="w-20 input-field text-center px-3"
                       />
                     </td>
                     <td className="table-cell">
@@ -238,7 +282,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
                         onChange={(e) =>
                           updatePrice(item.product_id, parseFloat(e.target.value) || 0)
                         }
-                        className="w-24 input-field text-right"
+                        className="w-24 input-field text-right px-3"
                       />
                     </td>
                     <td className="table-cell font-medium">

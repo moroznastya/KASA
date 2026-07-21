@@ -45,9 +45,28 @@ export interface DocumentItemCreate {
   price?: number;
 }
 
-export interface InvoiceCreate extends DocumentCreate {
+/** Елемент товару в прибутковій накладній */
+export interface InvoiceItemInput {
+  product_id: string;
+  quantity: number;
+  /** Ціна продажу */
+  price: number;
+  /** Собівартість */
+  cost_price?: number;
+  /** Відсоток націнки (автоматично розраховується) */
+  markup_percent?: number;
+  /** Загальна сума */
+  total?: number;
+}
+
+export interface InvoiceCreate {
   document_type: 'invoice';
+  number: string;
   supplier_id: string;
+  invoice_date: string;
+  is_fiscal: boolean;
+  notes?: string | null;
+  items: InvoiceItemInput[];
 }
 
 export interface TransferCreate extends DocumentCreate {
@@ -61,7 +80,12 @@ export interface WriteOffCreate extends DocumentCreate {
   notes?: string;
 }
 
-export interface ReturnInvoiceCreate extends DocumentCreate {
+export interface ReturnInvoiceCreate {
   document_type: 'return_invoice';
+  number: string;
   supplier_id: string;
+  return_date: string;
+  is_fiscal: boolean;
+  notes?: string | null;
+  items: InvoiceItemInput[];
 }

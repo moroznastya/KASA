@@ -19,6 +19,7 @@ const InvoiceFormPage = lazy(() => import('@/pages/documents/InvoiceFormPage'));
 const TransferFormPage = lazy(() => import('@/pages/documents/TransferFormPage'));
 const WriteOffFormPage = lazy(() => import('@/pages/documents/WriteOffFormPage'));
 const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoiceFormPage'));
+const DocumentViewPage = lazy(() => import('@/pages/documents/DocumentViewPage'));
 const PosPage = lazy(() => import('@/pages/pos/PosPage'));
 const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'));
 const LedgerPage = lazy(() => import('@/pages/ledger/LedgerPage'));
@@ -81,10 +82,16 @@ const App: React.FC = () => {
             <Route path="suppliers/new" element={<SupplierFormPage />} />
             <Route path="suppliers/:id/edit" element={<SupplierFormPage />} />
             <Route path="documents" element={<DocumentListPage />} />
+            {/* Створення документів */}
             <Route path="documents/invoice/new" element={<InvoiceFormPage />} />
             <Route path="documents/transfer/new" element={<TransferFormPage />} />
             <Route path="documents/write-off/new" element={<WriteOffFormPage />} />
             <Route path="documents/return/new" element={<ReturnInvoiceFormPage />} />
+            {/* Перегляд документів (універсальна сторінка) */}
+            <Route path="documents/invoice/:id" element={<DocumentViewPage />} />
+            <Route path="documents/transfer/:id" element={<DocumentViewPage />} />
+            <Route path="documents/write-off/:id" element={<DocumentViewPage />} />
+            <Route path="documents/return/:id" element={<DocumentViewPage />} />
             <Route path="receipts" element={<ReceiptListPage />} />
             <Route path="receipts/:id" element={<ReceiptDetailPage />} />
             <Route path="reports" element={<ReportsPage />} />

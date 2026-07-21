@@ -32,8 +32,8 @@ const WriteOffFormPage: React.FC = () => {
   const handleSearch = useCallback(
     (query: string) => {
       setSearchQuery(query);
-      if (query.length >= 2 && searchData) {
-        setSearchResults(searchData);
+      if (query.length >= 2 && searchData?.items) {
+        setSearchResults(searchData.items);
         setShowSearch(true);
       } else {
         setSearchResults([]);
@@ -102,7 +102,7 @@ const WriteOffFormPage: React.FC = () => {
       });
 
       if (andConfirm) {
-        await confirmMutation.mutateAsync(doc.id);
+        await confirmMutation.mutateAsync({ id: doc.id, documentType: 'write_off' });
       }
 
       navigate('/documents');
@@ -188,7 +188,7 @@ const WriteOffFormPage: React.FC = () => {
                         onChange={(e) =>
                           updateQuantity(item.product_id, parseInt(e.target.value) || 1)
                         }
-                        className="w-20 input-field text-center"
+                        className="w-20 input-field text-center px-3"
                       />
                     </td>
                     <td className="table-cell">

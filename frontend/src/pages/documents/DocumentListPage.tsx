@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FileText, Search, CheckCircle, XCircle } from 'lucide-react';
+import { Plus, FileText, Search, CheckCircle, XCircle, Eye } from 'lucide-react';
 import { useDocuments, useConfirmDocument, useCancelDocument } from '@/hooks/useDocuments';
 import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
@@ -25,13 +25,21 @@ const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'war
   cancelled: 'danger',
 };
 
+/** Мапа типів документів -> шлях для перегляду */
+const documentViewPaths: Record<string, string> = {
+  invoice: '/documents/invoice',
+  transfer: '/documents/transfer',
+  write_off: '/documents/write-off',
+  return_invoice: '/documents/return',
+};
+
 const DocumentListPage: React.FC = () => {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [page, setPage] = useState(1);
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [cancelId, setCancelId] = useState<string | null>(null);
+  const [confirmItem, setConfirmItem] = useState<{ id: string; type?: DocumentType } | null>(null);
+  const [cancelItem, setCancelItem] = useState<{ id: string; type?: DocumentType } | null>(null);
 
   const { data, isLoading, error } = useDocuments({
     page,
@@ -43,12 +51,20 @@ const DocumentListPage: React.FC = () => {
   const confirmMutation = useConfirmDocument();
   const cancelMutation = useCancelDocument();
 
+  /** Навігація до перегляду документа */
+  const handleRowClick = (item: Document) => {
+    const basePath = documentViewPaths[item.document_type];
+    if (basePath) {
+      navigate(`${basePath}/${item.id}`);
+    }
+  };
+
   const columns: Column<Document>[] = [
     {
       key: 'document_number',
       header: '№',
       render: (item) => (
-        <span className="font-medium text-gray-900 dark:text-gray-100">
+        <span className="font-medium text-primary-600 dark:text-primary-400 hover:underline cursor-pointer">
           {item.document_number}
         </span>
       ),
@@ -93,12 +109,22 @@ const DocumentListPage: React.FC = () => {
       header: 'Дії',
       render: (item) => (
         <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleRowClick(item);
+            }}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors"
+            title="Переглянути"
+          >
+            <Eye className="w-4 h-4" />
+          </button>
           {item.status === 'draft' && (
             <>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setConfirmId(item.id);
+                  setConfirmItem({ id: item.id, type: item.document_type });
                 }}
                 className="p-1.5 rounded-lg text-gray-400 hover:text-success-600 hover:bg-success-50 dark:hover:bg-success-900/20 transition-colors"
                 title="Підтвердити"
@@ -108,7 +134,7 @@ const DocumentListPage: React.FC = () => {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setCancelId(item.id);
+                  setCancelItem({ id: item.id, type: item.document_type });
                 }}
                 className="p-1.5 rounded-lg text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors"
                 title="Скасувати"
@@ -123,20 +149,20 @@ const DocumentListPage: React.FC = () => {
   ];
 
   const handleConfirm = async () => {
-    if (!confirmId) return;
+    if (!confirmItem) return;
     try {
-      await confirmMutation.mutateAsync(confirmId);
-      setConfirmId(null);
+      await confirmMutation.mutateAsync({ id: confirmItem.id, documentType: confirmItem.type });
+      setConfirmItem(null);
     } catch {
       // Error handled
     }
   };
 
   const handleCancel = async () => {
-    if (!cancelId) return;
+    if (!cancelItem) return;
     try {
-      await cancelMutation.mutateAsync(cancelId);
-      setCancelId(null);
+      await cancelMutation.mutateAsync({ id: cancelItem.id, documentType: cancelItem.type });
+      setCancelItem(null);
     } catch {
       // Error handled
     }
@@ -183,6 +209,7 @@ const DocumentListPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Пошук і фільтр — однакової ширини */}
       <div className="flex flex-col sm:flex-row gap-4">
         <SearchInput
           value={search}
@@ -200,7 +227,7 @@ const DocumentListPage: React.FC = () => {
             setTypeFilter(e.target.value);
             setPage(1);
           }}
-          className="w-full sm:w-56"
+          containerClassName="flex-1"
         />
       </div>
 
@@ -213,14 +240,15 @@ const DocumentListPage: React.FC = () => {
         totalPages={data?.pages || 1}
         total={data?.total}
         onPageChange={setPage}
+        onRowClick={handleRowClick}
         keyExtractor={(item) => item.id}
         emptyMessage="Документів не знайдено"
         emptyIcon={<FileText className="w-12 h-12" />}
       />
 
       <ConfirmDialog
-        isOpen={confirmId !== null}
-        onClose={() => setConfirmId(null)}
+        isOpen={confirmItem !== null}
+        onClose={() => setConfirmItem(null)}
         onConfirm={handleConfirm}
         title="Підтвердити документ?"
         message="Після підтвердження документ вплине на залишки товарів."
@@ -230,8 +258,8 @@ const DocumentListPage: React.FC = () => {
       />
 
       <ConfirmDialog
-        isOpen={cancelId !== null}
-        onClose={() => setCancelId(null)}
+        isOpen={cancelItem !== null}
+        onClose={() => setCancelItem(null)}
         onConfirm={handleCancel}
         title="Скасувати документ?"
         message="Скасований документ не можна буде підтвердити."

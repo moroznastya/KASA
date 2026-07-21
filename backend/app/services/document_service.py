@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.models.transfer import Transfer, TransferItem, TransferStatus
@@ -62,9 +63,11 @@ class DocumentService:
         Returns:
             Оновлений об'єкт Invoice.
         """
-        # Отримуємо накладну з позиціями
+        # Отримуємо накладну з позиціями (обов'язково selectinload для async)
         result = await self.session.execute(
-            select(Invoice).where(Invoice.id == invoice_id)
+            select(Invoice)
+            .options(selectinload(Invoice.items))
+            .where(Invoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
 
@@ -116,7 +119,9 @@ class DocumentService:
             invoice_id: UUID накладної.
         """
         result = await self.session.execute(
-            select(Invoice).where(Invoice.id == invoice_id)
+            select(Invoice)
+            .options(selectinload(Invoice.items))
+            .where(Invoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
 
@@ -158,7 +163,9 @@ class DocumentService:
             transfer_id: UUID переміщення.
         """
         result = await self.session.execute(
-            select(Transfer).where(Transfer.id == transfer_id)
+            select(Transfer)
+            .options(selectinload(Transfer.items))
+            .where(Transfer.id == transfer_id)
         )
         transfer = result.scalar_one_or_none()
 
@@ -175,8 +182,6 @@ class DocumentService:
             )
 
         # Оновлюємо залишки: зменшуємо на from_location, збільшуємо на to_location
-        # Примітка: в поточній моделі немає окремих складів, тому
-        # переміщення просто зменшує загальний stock (товар вибуває)
         for item in transfer.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
@@ -195,7 +200,9 @@ class DocumentService:
             transfer_id: UUID переміщення.
         """
         result = await self.session.execute(
-            select(Transfer).where(Transfer.id == transfer_id)
+            select(Transfer)
+            .options(selectinload(Transfer.items))
+            .where(Transfer.id == transfer_id)
         )
         transfer = result.scalar_one_or_none()
 
@@ -234,7 +241,9 @@ class DocumentService:
             write_off_id: UUID списання.
         """
         result = await self.session.execute(
-            select(WriteOff).where(WriteOff.id == write_off_id)
+            select(WriteOff)
+            .options(selectinload(WriteOff.items))
+            .where(WriteOff.id == write_off_id)
         )
         write_off = result.scalar_one_or_none()
 
@@ -244,8 +253,6 @@ class DocumentService:
                 detail=f"Списання з ID '{write_off_id}' не знайдено",
             )
 
-        # Списання завжди підтверджене (немає статусу DRAFT в моделі)
-        # Але ми просто зменшуємо залишки
         for item in write_off.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
@@ -270,7 +277,9 @@ class DocumentService:
             return_id: UUID повернення.
         """
         result = await self.session.execute(
-            select(ReturnInvoice).where(ReturnInvoice.id == return_id)
+            select(ReturnInvoice)
+            .options(selectinload(ReturnInvoice.items))
+            .where(ReturnInvoice.id == return_id)
         )
         return_invoice = result.scalar_one_or_none()
 
@@ -300,7 +309,7 @@ class DocumentService:
                 operation_type="return",
                 document_id=return_invoice.id,
                 document_number=return_invoice.number,
-                amount=-return_invoice.total_amount,  # Від'ємна сума — зменшення боргу
+                amount=-return_invoice.total_amount,
                 operation_date=return_invoice.return_date,
                 notes=f"Повернення постачальнику №{return_invoice.number}",
             )
@@ -317,7 +326,9 @@ class DocumentService:
             return_id: UUID повернення.
         """
         result = await self.session.execute(
-            select(ReturnInvoice).where(ReturnInvoice.id == return_id)
+            select(ReturnInvoice)
+            .options(selectinload(ReturnInvoice.items))
+            .where(ReturnInvoice.id == return_id)
         )
         return_invoice = result.scalar_one_or_none()
 

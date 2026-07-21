@@ -17,7 +17,6 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   className = '',
 }) => {
   const [localValue, setLocalValue] = useState(value);
-  const [isFocused, setIsFocused] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -50,23 +49,15 @@ export const SearchInput: React.FC<SearchInputProps> = ({
     };
   }, []);
 
-  // Лупа показується тільки коли поле пусте І не у фокусі
-  const showIcon = !localValue && !isFocused;
-  // Плейсхолдер зникає при фокусі (як у POS при новому чеку)
-  const showPlaceholder = !isFocused;
-
   return (
     <div className={`relative ${className}`}>
-      {showIcon && (
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-      )}
+      {/* Іконка лінзи завжди зліва */}
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
       <input
         type="text"
         value={localValue}
         onChange={handleChange}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        placeholder={showPlaceholder ? placeholder : ''}
+        placeholder={placeholder}
         className="input-field pl-10 pr-8"
       />
       {localValue && (
