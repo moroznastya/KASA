@@ -1,6 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package } from 'lucide-react';
+import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package, ImageUp, Loader2 } from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts, useCreateProduct } from '@/hooks/useProducts';
@@ -11,6 +11,7 @@ import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import api from '@/services/api';
 /** Спосіб оплати з постачальником */
 type PaymentMethod = 'credit' | 'bank_transfer' | 'cash' | 'other';
 
@@ -54,6 +55,9 @@ const InvoiceFormPage: React.FC = () => {
   const [showSearch, setShowSearch] = useState(false);
 
   // Стан для модалки створення нового товару
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [showNewProductModal, setShowNewProductModal] = useState(false);
   const [newProduct, setNewProduct] = useState({
     title: '',
@@ -209,6 +213,65 @@ const InvoiceFormPage: React.FC = () => {
     }
   };
 
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsAnalyzing(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await api.post('/api/v1/ocr/invoice', formData);
+      const result = response.data;
+
+      if (result.success) {
+        const data = result.data;
+
+        // Заповнити поля форми
+        if (data.document_number) setNumber(data.document_number);
+        if (data.invoice_date) setInvoiceDate(data.invoice_date);
+        if (data.is_fiscal !== null) setIsFiscal(data.is_fiscal);
+        if (data.supplier_name) {
+          // Знайти постачальника за назвою серед suppliersData
+          const supplier = suppliersData?.find(
+            s => s.name.toLowerCase().includes(data.supplier_name.toLowerCase())
+          );
+          if (supplier) setSupplierId(String(supplier.id));
+        }
+        if (data.payment_method) setPaymentMethod(data.payment_method);
+
+        // Додати товари
+        if (data.items && data.items.length > 0) {
+          const newCart: CartItem[] = data.items.map((item: any) => ({
+            product_id: '',  // буде заповнено після пошуку
+            product_title: item.product_name,
+            product_barcode: null,
+            quantity: item.quantity,
+            price: item.price,
+            cost_price: item.cost_price,
+            markup_percent: item.cost_price > 0
+              ? Math.round(((item.price - item.cost_price) / item.cost_price) * 100)
+              : 0,
+          }));
+          setCart(newCart);
+          toast.success(`Знайдено ${data.items.length} товарів`);
+        }
+
+        toast.success('Накладну розпізнано!');
+      } else {
+        toast.error(result.error || 'Помилка аналізу накладної');
+      }
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.response?.data?.error || "Помилка з'єднання";
+      toast.error(detail);
+    } finally {
+      setIsAnalyzing(false);
+      // Скинути input, щоб можна було вибрати той самий файл повторно
+      e.target.value = '';
+    }
+  };
+
   // Створення нового товару
   const handleCreateProduct = async () => {
     if (!newProduct.title.trim()) {
@@ -251,22 +314,53 @@ const InvoiceFormPage: React.FC = () => {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center gap-4">
-        <button
-          onClick={goBack}
-          className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Прибуткова накладна
-          </h2>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Створення прибуткової накладної
-          </p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={goBack}
+            className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+              Прибуткова накладна
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Створення прибуткової накладної
+            </p>
+          </div>
+        </div>
+
+        {/* Кнопка завантаження зображення */}
+        <div className="relative">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isAnalyzing}
+            className="p-2.5 rounded-xl bg-primary-50 dark:bg-primary-900/20
+                       text-primary-600 dark:text-primary-400
+                       hover:bg-primary-100 dark:hover:bg-primary-900/30
+                       disabled:opacity-50 disabled:cursor-not-allowed
+                       transition-all duration-200 shadow-sm hover:shadow-md"
+            title="Завантажити зображення накладної для автоматичного заповнення"
+          >
+            {isAnalyzing ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <ImageUp className="w-5 h-5" />
+            )}
+          </button>
         </div>
       </div>
+
+      {/* Прихований input для вибору файлу */}
+      <input
+        type="file"
+        accept="image/*"
+        className="hidden"
+        ref={fileInputRef}
+        onChange={handleImageUpload}
+      />
 
       <div className="card p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

@@ -19,6 +19,7 @@ from app.api.v1.receipts import router as receipts_router
 from app.api.v1.ledger import router as ledger_router
 from app.api.v1.documents import router as documents_router
 from app.api.v1.debtors import router as debtors_router
+from app.api.v1.ocr import router as ocr_router
 
 # Головний роутер v1 API
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -38,5 +39,6 @@ api_v1_router.include_router(receipts_router)
 api_v1_router.include_router(ledger_router)
 api_v1_router.include_router(documents_router)
 api_v1_router.include_router(debtors_router)
+api_v1_router.include_router(ocr_router)
 
 __all__ = ["api_v1_router"]
