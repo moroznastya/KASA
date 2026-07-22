@@ -347,11 +347,96 @@ const PosPage: React.FC = () => {
       paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
     }
 
-    // Якщо сума менша за чек — показуємо модалку боржника
+    // Якщо сума менша за чек — створюємо боржника або показуємо модалку
     const isPartialPayment = paidAmount < subtotal;
     if (isPartialPayment) {
-      setShowDebtorModal(true);
-      return;
+      // Якщо боржника не вибрано, але ім'я введено — створюємо автоматично
+      if (!selectedDebtor && debtorQuery.trim()) {
+        try {
+          const newDebtor = await debtorService.create({ name: debtorQuery.trim() });
+          setSelectedDebtor(newDebtor);
+          // Продовжуємо з newDebtor
+          const receiptData: ReceiptCreate = {
+            receipt_type: 'sale',
+            total_amount: subtotal.toFixed(2),
+            paid_amount: paidAmount.toFixed(2),
+            debtor_id: newDebtor.id,
+            items: cart.map((item) => ({
+              product_id: item.product_id,
+              quantity: item.quantity,
+              price: item.price,
+            })),
+          };
+          await receiptService.createReceipt(receiptData);
+          const debtAmount = subtotal - paidAmount;
+          toast.success(
+            `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
+            `Борг ${formatCurrency(debtAmount)} записано на "${newDebtor.name}"`
+          );
+          setCart([]);
+          setShowPayment(false);
+          setShowDebtorField(false);
+          setCashAmount('');
+          setCardAmount('');
+          setPaymentMethod('cash');
+          setSelectedDebtor(null);
+          setDebtorQuery('');
+          return;
+        } catch {
+          toast.error('Помилка створення боржника');
+          return;
+        }
+      }
+      
+      if (!selectedDebtor) {
+        toast.error('Введіть ім\'я боржника');
+        return;
+      }
+      
+      // Якщо боржника вибрано — створюємо чек одразу
+      setIsProcessing(true);
+      try {
+        const receiptData: ReceiptCreate = {
+          receipt_type: 'sale',
+          total_amount: subtotal.toFixed(2),
+          paid_amount: paidAmount.toFixed(2),
+          debtor_id: selectedDebtor.id,
+          items: cart.map((item) => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            price: item.price,
+          })),
+        };
+        await receiptService.createReceipt(receiptData);
+        const debtAmount = subtotal - paidAmount;
+        toast.success(
+          `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
+          `Борг ${formatCurrency(debtAmount)} записано на "${selectedDebtor.name}"`
+        );
+        setCart([]);
+        setShowPayment(false);
+        setShowDebtorField(false);
+        setCashAmount('');
+        setCardAmount('');
+        setPaymentMethod('cash');
+        setSelectedDebtor(null);
+        setDebtorQuery('');
+        return;
+      } catch (error: any) {
+        const errMsg = error?.response?.data?.detail;
+        if (typeof errMsg === 'string') {
+          toast.error(errMsg);
+        } else if (Array.isArray(errMsg)) {
+          toast.error(errMsg.map((e: any) => e.msg || JSON.stringify(e)).join(', '));
+        } else if (errMsg && typeof errMsg === 'object') {
+          toast.error(JSON.stringify(errMsg));
+        } else {
+          toast.error('Помилка створення чеку');
+        }
+        return;
+      } finally {
+        setIsProcessing(false);
+      }
     }
 
     setIsProcessing(true);
@@ -433,8 +518,19 @@ const PosPage: React.FC = () => {
   };
 
   const handleConfirmDebtorModal = async () => {
-    if (!debtorModalDebtor) {
-      toast.error('Оберіть або створіть боржника');
+    let debtor = debtorModalDebtor;
+    if (!debtor && debtorModalQuery.trim()) {
+      try {
+        debtor = await debtorService.create({ name: debtorModalQuery.trim() });
+        setDebtorModalDebtor(debtor);
+      } catch {
+        toast.error('Помилка створення боржника');
+        return;
+      }
+    }
+
+    if (!debtor) {
+      toast.error('Введіть ім\'я боржника');
       return;
     }
     
@@ -454,7 +550,7 @@ const PosPage: React.FC = () => {
         receipt_type: 'sale',
         total_amount: subtotal.toFixed(2),
         paid_amount: paidAmount.toFixed(2),
-        debtor_id: debtorModalDebtor.id,
+        debtor_id: debtor.id,
         items: cart.map((item) => ({
           product_id: item.product_id,
           quantity: item.quantity,
@@ -467,7 +563,7 @@ const PosPage: React.FC = () => {
       const debtAmount = subtotal - paidAmount;
       toast.success(
         `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
-        `Борг ${formatCurrency(debtAmount)} записано на "${debtorModalDebtor.name}"`
+        `Борг ${formatCurrency(debtAmount)} записано на "${debtor.name}"`
       );
 
       setCart([]);
@@ -1208,7 +1304,7 @@ const PosPage: React.FC = () => {
             <Button
               onClick={handleConfirmDebtorModal}
               isLoading={isProcessing}
-              disabled={!debtorModalDebtor}
+              disabled={!debtorModalQuery.trim() && !debtorModalDebtor}
             >
               {debtorModalDebtor
                 ? `Створити чек (борг на ${debtorModalDebtor.name})`
