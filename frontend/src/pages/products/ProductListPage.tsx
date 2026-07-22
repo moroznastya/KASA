@@ -13,11 +13,15 @@ import { formatCurrency, formatUnit } from '@/utils/format';
 import { Product } from '@/types/product';
 import toast from 'react-hot-toast';
 
+import { usePageState } from '@/hooks/usePageState';
 const ProductListPage: React.FC = () => {
   const navigate = useNavigate();
-  const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [page, setPage] = useState(1);
+  const [pageState, setPageState] = usePageState('product_list', {
+    search: '',
+    categoryFilter: '',
+    page: 1,
+  });
+  const { search, categoryFilter, page } = pageState;
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useProducts({
@@ -141,8 +145,7 @@ const ProductListPage: React.FC = () => {
           <SearchInput
             value={search}
             onChange={(v) => {
-              setSearch(v);
-              setPage(1);
+              setPageState({ search: v, page: 1 });
             }}
             placeholder="Пошук за назвою або штрих-кодом..."
             className="w-full"
@@ -153,8 +156,7 @@ const ProductListPage: React.FC = () => {
             options={categoryOptions}
             value={categoryFilter}
             onChange={(e) => {
-              setCategoryFilter(e.target.value);
-              setPage(1);
+              setPageState({ categoryFilter: e.target.value, page: 1 });
             }}
             className="w-full"
           />
@@ -170,7 +172,7 @@ const ProductListPage: React.FC = () => {
         page={page}
         totalPages={data?.pages || 1}
         total={data?.total}
-        onPageChange={setPage}
+        onPageChange={(n) => setPageState({ page: n })}
         onRowClick={(item) => navigate(`/products/${item.id}/edit`)}
         keyExtractor={(item) => item.id}
         emptyMessage="Товари не знайдено"

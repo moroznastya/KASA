@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, Layers, EyeOff, Settings2 } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
@@ -38,7 +38,14 @@ const paymentOptions: PaymentOption[] = [
 
 const PosPage: React.FC = () => {
   const navigate = useNavigate();
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      const saved = sessionStorage.getItem('pos_cart');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const cartEndRef = useRef<HTMLDivElement>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
@@ -70,6 +77,15 @@ const PosPage: React.FC = () => {
   const [showDebtorModalDropdown, setShowDebtorModalDropdown] = useState(false);
   const debtorModalRef = useRef<HTMLDivElement>(null);
   const debtorModalInputRef = useRef<HTMLInputElement>(null);
+  // Save cart to sessionStorage on change
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('pos_cart', JSON.stringify(cart));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [cart]);
+
   
   // Debtor payment method
 
@@ -162,10 +178,35 @@ const PosPage: React.FC = () => {
   } = useUnifiedSearch({
     onBarcodeFound: handleBarcodeFound,
   });
+  const [debtorSearchResults, setDebtorSearchResults] = useState<Debtor[]>([]);
+  const [isSearchingDebtorsUnified, setIsSearchingDebtorsUnified] = useState(false);
+
 
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+  // Search debtors in unified search
+  useEffect(() => {
+    if (!query.trim() || query.trim().length < 2) {
+      setDebtorSearchResults([]);
+      return;
+    }
+    
+    const timer = setTimeout(async () => {
+      setIsSearchingDebtorsUnified(true);
+      try {
+        const results = await debtorService.search(query.trim());
+        setDebtorSearchResults(results);
+      } catch {
+        setDebtorSearchResults([]);
+      } finally {
+        setIsSearchingDebtorsUnified(false);
+      }
+    }, 400);
+    
+    return () => clearTimeout(timer);
+  }, [query]);
+
 
   const addToCart = useCallback((product: any, quantity: number = 1) => {
     const stock = parseFloat(product.stock) || 0;
@@ -307,6 +348,7 @@ const PosPage: React.FC = () => {
 
   const clearCart = () => {
     setCart([]);
+      sessionStorage.removeItem('pos_cart');
   };
 
     // Автопрокрутка до останньої позиції при додаванні товару
@@ -381,6 +423,7 @@ const PosPage: React.FC = () => {
       }
 
       setCart([]);
+      sessionStorage.removeItem('pos_cart');
       setShowPayment(false);
       setShowDebtorField(false);
       setCashAmount('');
@@ -467,6 +510,7 @@ const PosPage: React.FC = () => {
       );
 
       setCart([]);
+      sessionStorage.removeItem('pos_cart');
       setShowPayment(false);
       setShowDebtorModal(false);
       setCashAmount('');
@@ -591,6 +635,42 @@ const PosPage: React.FC = () => {
               </button>
             );
           })}
+          {/* Debtor results */}
+          {debtorSearchResults.length > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center gap-2 px-1 mb-2">
+                <Users className="w-4 h-4 text-gray-400" />
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                  Боржники
+                </span>
+              </div>
+              <div className="space-y-1">
+                {debtorSearchResults.map((debtor) => (
+                  <button
+                    key={debtor.id}
+                    onClick={() => navigate(`/debtors/${debtor.id}`)}
+                    className="w-full card p-3 text-left transition-all hover:border-danger-300 dark:hover:border-danger-600 group"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <User className="w-4 h-4 text-danger-400" />
+                        <span className="font-medium text-sm text-gray-900 dark:text-gray-100 group-hover:text-danger-600">
+                          {debtor.name}
+                        </span>
+                      </div>
+                      <span className="text-sm font-semibold text-danger-600">
+                        {formatCurrency(debtor.total_debt)}
+                      </span>
+                    </div>
+                    {debtor.phone && (
+                      <p className="text-xs text-gray-400 mt-0.5 ml-6">{debtor.phone}</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {query.length >= 2 && results.length === 0 && !isSearching && !error && (
             <div className="text-center py-8 text-gray-400 text-sm">
               Товари не знайдено

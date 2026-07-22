@@ -229,13 +229,13 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
                     <td className="py-2 text-gray-500 dark:text-gray-400">
                       {formatDate(entry.date)}
                     </td>
-                    <td className="py-2 text-right text-gray-900 dark:text-white">
+                    <td className="py-2 text-right text-red-600 dark:text-red-400">
                       {entry.type === 'receipt' ? formatCurrency(entry.totalAmount!) : '-'}
                     </td>
-                    <td className="py-2 text-right text-gray-900 dark:text-white">
+                    <td className={`py-2 text-right ${entry.type === 'receipt' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
                       {entry.type === 'receipt' ? formatCurrency(entry.paidAmount!) : formatCurrency(entry.paymentAmount!)}
                     </td>
-                    <td className="py-2 text-right text-danger-600 font-medium">
+                    <td className="py-2 text-right text-red-600 dark:text-red-400 font-medium">
                       {formatCurrency(entry.runningBalance)}
                     </td>
                   </tr>

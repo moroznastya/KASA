@@ -6,12 +6,16 @@ import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/Spinner';
 import { Search, ChevronLeft, ChevronRight, Receipt } from 'lucide-react';
 
+import { usePageState } from '@/hooks/usePageState';
 const ReceiptListPage: React.FC = () => {
   const navigate = useNavigate();
-  const [page, setPage] = useState(1);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [pageState, setPageState] = usePageState('receipt_list', {
+    page: 1,
+    searchQuery: '',
+    dateFrom: '',
+    dateTo: '',
+  });
+  const { page, searchQuery, dateFrom, dateTo } = pageState;
 
   const { data, isLoading } = useReceipts({
     page,
@@ -64,7 +68,7 @@ const ReceiptListPage: React.FC = () => {
               type="text"
               placeholder="Пошук за номером..."
               value={searchQuery}
-              onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
+              onChange={(e) => { setPageState({ searchQuery: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             />
           </div>
@@ -72,7 +76,7 @@ const ReceiptListPage: React.FC = () => {
             <input
               type="date"
               value={dateFrom}
-              onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+              onChange={(e) => { setPageState({ dateFrom: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="Від дати"
             />
@@ -81,7 +85,7 @@ const ReceiptListPage: React.FC = () => {
             <input
               type="date"
               value={dateTo}
-              onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+              onChange={(e) => { setPageState({ dateTo: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="До дати"
             />
@@ -176,7 +180,7 @@ const ReceiptListPage: React.FC = () => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => setPageState((prev) => ({ page: Math.max(1, prev.page - 1) }))}
               disabled={page <= 1}
             >
               <ChevronLeft className="w-4 h-4" />
@@ -184,7 +188,7 @@ const ReceiptListPage: React.FC = () => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => setPageState((prev) => ({ page: Math.min(totalPages, prev.page + 1) }))}
               disabled={page >= totalPages}
             >
               <ChevronRight className="w-4 h-4" />
