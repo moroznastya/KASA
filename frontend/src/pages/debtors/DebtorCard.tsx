@@ -155,8 +155,7 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
           </div>
           <p className="text-lg font-semibold text-green-600 dark:text-green-400">
             {formatCurrency(
-              receipts.reduce((sum, r) => sum + (r.paid_amount ? parseFloat(r.paid_amount) : 0), 0) +
-              payments.reduce((sum, p) => sum + p.amount, 0)
+              receipts.reduce((sum, r) => sum + parseFloat(r.total_amount), 0) - debtor.total_debt
             )}
           </p>
         </div>
