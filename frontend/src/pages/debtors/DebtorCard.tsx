@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Phone, DollarSign, Receipt, CalendarDays } from 'lucide-react';
+import { Phone, DollarSign, Receipt, CalendarDays, FileText, CreditCard, ShoppingBag, TrendingDown } from 'lucide-react';
 import { Debtor, DebtorPayment } from '@/services/debtorService';
 import { Receipt as ReceiptType } from '@/types/receipt';
 import { formatCurrency } from '@/utils/format';
@@ -99,6 +99,12 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
               <span>{debtor.phone}</span>
             </div>
           )}
+          {debtor.notes && (
+            <div className="flex items-start gap-1.5 text-sm text-gray-500 dark:text-gray-400 mt-2">
+              <FileText className="w-4 h-4 mt-0.5 shrink-0" />
+              <span className="italic">{debtor.notes}</span>
+            </div>
+          )}
         </div>
         <div className="text-right">
           <p className="text-2xl font-bold text-danger-600">
@@ -110,6 +116,49 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
               <span>{formatDate(lastReceipt.created_at)}</span>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 mb-1">
+            <ShoppingBag className="w-3.5 h-3.5" />
+            <span>Чеків</span>
+          </div>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">
+            {receipts.length}
+          </p>
+        </div>
+        <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 mb-1">
+            <CreditCard className="w-3.5 h-3.5" />
+            <span>Оплат</span>
+          </div>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">
+            {payments.length}
+          </p>
+        </div>
+        <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 mb-1">
+            <DollarSign className="w-3.5 h-3.5" />
+            <span>Всього на суму</span>
+          </div>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">
+            {formatCurrency(receipts.reduce((sum, r) => sum + parseFloat(r.total_amount), 0))}
+          </p>
+        </div>
+        <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400 mb-1">
+            <TrendingDown className="w-3.5 h-3.5" />
+            <span>Всього сплачено</span>
+          </div>
+          <p className="text-lg font-semibold text-green-600 dark:text-green-400">
+            {formatCurrency(
+              receipts.reduce((sum, r) => sum + (r.paid_amount ? parseFloat(r.paid_amount) : 0), 0) +
+              payments.reduce((sum, p) => sum + p.amount, 0)
+            )}
+          </p>
         </div>
       </div>
 
