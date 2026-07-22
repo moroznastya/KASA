@@ -18,6 +18,7 @@ export interface DebtorCreate {
 
 export interface DebtorPayRequest {
   amount: number;
+  payment_method?: string;
 }
 
 export const debtorService = {

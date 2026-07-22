@@ -39,6 +39,7 @@ const paymentOptions: PaymentOption[] = [
 const PosPage: React.FC = () => {
   const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>([]);
+  const cartEndRef = useRef<HTMLDivElement>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashAmount, setCashAmount] = useState('');
@@ -69,6 +70,9 @@ const PosPage: React.FC = () => {
   const [showDebtorModalDropdown, setShowDebtorModalDropdown] = useState(false);
   const debtorModalRef = useRef<HTMLDivElement>(null);
   const debtorModalInputRef = useRef<HTMLInputElement>(null);
+  
+  // Debtor payment method
+
 
   // Search debtors when query changes
   useEffect(() => {
@@ -267,7 +271,7 @@ const PosPage: React.FC = () => {
       return prev
         .map((i) =>
           i.product_id === productId
-            ? { ...i, quantity: Math.max(0.001, newQty) }
+            ? { ...i, quantity: Math.max(0, newQty) }
             : i
         )
         .filter((i) => i.quantity > 0);
@@ -304,6 +308,11 @@ const PosPage: React.FC = () => {
   const clearCart = () => {
     setCart([]);
   };
+
+    // Автопрокрутка до останньої позиції при додаванні товару
+  useEffect(() => {
+    cartEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [cart.length]);
 
   const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
   const vatAmount = cart.reduce(
@@ -467,6 +476,7 @@ const PosPage: React.FC = () => {
       setCashAmount('');
       setCardAmount('');
       setPaymentMethod('cash');
+
       setDebtorModalDebtor(null);
       setDebtorModalQuery('');
       setSelectedDebtor(null);
@@ -650,27 +660,32 @@ const PosPage: React.FC = () => {
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                        <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate">
                           {item.product_title}
                         </p>
-                        <p className="text-xs text-gray-400">
+                        <p className="text-sm text-gray-400">
                           {formatCurrency(item.price)} / шт
                         </p>
                       </div>
                       <button
                         onClick={() => removeFromCart(item.product_id)}
-                        className="p-1 text-gray-300 hover:text-danger-500 transition-colors"
+                        className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                        title="Видалити позицію"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-6 h-6" />
                       </button>
                     </div>
                     <div className="flex items-center justify-between mt-2">
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => updateQuantity(item.product_id, -1)}
-                          className="w-7 h-7 rounded-lg border border-gray-200 dark:border-slate-600 flex items-center justify-center text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700"
+                          className="w-12 h-12 rounded-lg flex items-center justify-center text-2xl font-bold
+                            text-white bg-red-500 hover:bg-red-600
+                            dark:bg-red-600 dark:hover:bg-red-700
+                            transition-colors shadow-sm"
+                          title="Зменшити"
                         >
-                          <Minus className="w-3 h-3" />
+                          &minus;
                         </button>
                         <input
                           type="number"
@@ -678,7 +693,7 @@ const PosPage: React.FC = () => {
                           onChange={(e) =>
                             setItemQuantity(item.product_id, parseFloat(e.target.value) || 0)
                           }
-                          className="w-16 text-center input-field text-sm py-1 px-3"
+                          className="w-24 h-12 text-center input-field !w-24 text-base font-semibold no-spinner"
                           min="0"
                           max={item.stock}
                           step={item.is_weight ? '0.1' : '1'}
@@ -689,21 +704,23 @@ const PosPage: React.FC = () => {
                           onClick={() => updateQuantity(item.product_id, 1)}
                           disabled={item.quantity >= item.stock}
                           className={`
-                            w-7 h-7 rounded-lg border flex items-center justify-center
+                            w-12 h-12 rounded-lg flex items-center justify-center text-2xl font-bold
+                            transition-colors shadow-sm
                             ${item.quantity >= item.stock
-                              ? 'border-gray-100 dark:border-slate-700 text-gray-300 cursor-not-allowed'
-                              : 'border-gray-200 dark:border-slate-600 text-gray-500 hover:bg-gray-100 dark:hover:bg-slate-700'
+                              ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 cursor-not-allowed'
+                              : 'text-white bg-green-500 hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-700'
                             }
                           `}
+                          title="Збільшити"
                         >
-                          <Plus className="w-3 h-3" />
+                          +
                         </button>
                       </div>
                       <div className="flex items-center gap-2">
                         {isOverStock && (
                           <AlertTriangle className="w-4 h-4 text-danger-500" aria-label="Перевищує залишок" />
                         )}
-                        <span className="font-semibold text-gray-900 dark:text-gray-100">
+                        <span className="font-bold text-xl text-gray-900 dark:text-gray-100">
                           {formatCurrency(item.quantity * item.price)}
                         </span>
                       </div>
@@ -721,6 +738,7 @@ const PosPage: React.FC = () => {
                   </div>
                 );
               })}
+              <div ref={cartEndRef} />
             </div>
           )}
         </div>
@@ -732,7 +750,7 @@ const PosPage: React.FC = () => {
               <span>ПДВ</span>
               <span>{formatCurrency(vatAmount)}</span>
             </div>
-            <div className="flex justify-between text-lg font-bold text-gray-900 dark:text-gray-100">
+            <div className="flex justify-between text-3xl font-bold text-gray-900 dark:text-gray-100">
               <span>До сплати</span>
               <span className="text-primary-600">{formatCurrency(subtotal)}</span>
             </div>
@@ -825,7 +843,7 @@ const PosPage: React.FC = () => {
           setDebtorQuery('');
         }}
         title="Оплата"
-        size="lg"
+        size="4xl"
       >
         <div className="space-y-6">
           <div className="text-center">
@@ -884,7 +902,18 @@ const PosPage: React.FC = () => {
                 step="0.01"
                 min="0"
                 value={cashAmount}
-                onChange={(e) => setCashAmount(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCashAmount(val);
+                  // Автоматично розраховуємо картку: сума до сплати - готівка
+                  const cash = parseFloat(val) || 0;
+                  const remaining = subtotal - cash;
+                  if (remaining >= 0) {
+                    setCardAmount(remaining.toFixed(2));
+                  } else {
+                    setCardAmount('0');
+                  }
+                }}
                 icon={<Banknote className="w-4 h-4" />}
                 id="mixed-cash"
                 name="mixed-cash"
@@ -895,7 +924,18 @@ const PosPage: React.FC = () => {
                 step="0.01"
                 min="0"
                 value={cardAmount}
-                onChange={(e) => setCardAmount(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCardAmount(val);
+                  // Автоматично розраховуємо готівку: сума до сплати - картка
+                  const card = parseFloat(val) || 0;
+                  const remaining = subtotal - card;
+                  if (remaining >= 0) {
+                    setCashAmount(remaining.toFixed(2));
+                  } else {
+                    setCashAmount('0');
+                  }
+                }}
                 icon={<CreditCard className="w-4 h-4" />}
                 id="mixed-card"
                 name="mixed-card"

@@ -1,5 +1,5 @@
 import api from './api';
-import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate } from '@/types/document';
+import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate } from '@/types/document';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 /** Отримує правильний ендпоінт для типу документа */
@@ -7,6 +7,7 @@ function getEndpointForType(type: DocumentType): string {
   switch (type) {
     case 'invoice': return '/invoices';
     case 'return_invoice': return '/return-invoices';
+    case 'purchase_order': return '/purchase-orders';
     case 'transfer': return '/transfers';
     case 'write_off': return '/write-offs';
     default: return '/documents';
@@ -48,12 +49,32 @@ export const documentService = {
       case 'return_invoice': {
         const returnData = data as ReturnInvoiceCreate;
         const response = await api.post<Document>('/return-invoices', {
-          number: returnData.number,
+          // Якщо number не вказано, бекенд згенерує автоматично
+          number: returnData.number || undefined,
           supplier_id: returnData.supplier_id,
           return_date: returnData.return_date,
+          return_action: returnData.return_action || 'deduct_from_debt',
           is_fiscal: returnData.is_fiscal,
           notes: returnData.notes,
           items: returnData.items.map(item => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            price: item.price,
+            total: item.total ?? (item.quantity * item.price),
+          })),
+        });
+        return response.data;
+      }
+      case 'purchase_order': {
+        const orderData = data as PurchaseOrderCreate;
+        const response = await api.post<Document>('/purchase-orders', {
+          number: orderData.number || undefined,
+          supplier_id: orderData.supplier_id,
+          order_date: orderData.order_date,
+          expected_date: orderData.expected_date || undefined,
+          is_fiscal: orderData.is_fiscal,
+          notes: orderData.notes,
+          items: orderData.items.map(item => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,

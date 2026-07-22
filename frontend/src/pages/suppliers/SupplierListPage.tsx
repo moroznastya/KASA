@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Edit, Trash2, Search, Phone, Mail, DollarSign } from 'lucide-react';
+import { Plus, Edit, Trash2, Search, Phone, Mail, DollarSign, Package } from 'lucide-react';
 import { useSuppliers, useDeleteSupplier } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
@@ -111,9 +111,20 @@ const SupplierListPage: React.FC = () => {
           <button
             onClick={(e) => {
               e.stopPropagation();
+              navigate(`/suppliers/${item.id}/products`);
+            }}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors"
+            title="Товари та рух"
+          >
+            <Package className="w-4 h-4" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
               navigate(`/suppliers/${item.id}/edit`);
             }}
             className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors"
+            title="Редагувати"
           >
             <Edit className="w-4 h-4" />
           </button>
@@ -123,6 +134,7 @@ const SupplierListPage: React.FC = () => {
               setDeleteId(item.id);
             }}
             className="p-1.5 rounded-lg text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors"
+            title="Видалити"
           >
             <Trash2 className="w-4 h-4" />
           </button>

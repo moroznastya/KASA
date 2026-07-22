@@ -8,7 +8,7 @@
 """
 
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -18,6 +18,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.supplier_ledger import SupplierLedger, LedgerOperationType
 from app.models.supplier import Supplier
+
+
+def _naive_dt(dt: datetime) -> datetime:
+    """
+    Конвертує datetime в offset-naive (без часового поясу).
+    
+    - Якщо dt з часовим поясом (offset-aware) — конвертує в UTC і прибирає tzinfo.
+    - Якщо dt вже offset-naive — повертає як є.
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class LedgerService:
@@ -85,6 +97,9 @@ class LedgerService:
         # Конвертуємо amount в Decimal (може прийти як str, float, int)
         if not isinstance(amount, Decimal):
             amount = Decimal(str(amount))
+
+        # Конвертуємо operation_date в offset-naive (БД очікує TIMESTAMP WITHOUT TIME ZONE)
+        operation_date = _naive_dt(operation_date)
 
         # Отримуємо поточний баланс
         current_balance = await self.get_supplier_balance(supplier_id)

@@ -2,18 +2,20 @@
 API роутер для роботи з постачальниками (Suppliers).
 
 Ендпоінти:
-  - GET    /suppliers          — список постачальників з балансом
-  - GET    /suppliers/all      — список всіх постачальників (без пагінації)
-  - GET    /suppliers/{id}     — отримати постачальника за ID
-  - POST   /suppliers          — створити постачальника
-  - PUT    /suppliers/{id}     — оновити постачальника
-  - DELETE /suppliers/{id}     — видалити постачальника
+  - GET    /suppliers                  — список постачальників з балансом
+  - GET    /suppliers/all              — список всіх постачальників (без пагінації)
+  - GET    /suppliers/{id}             — отримати постачальника за ID
+  - POST   /suppliers                  — створити постачальника
+  - PUT    /suppliers/{id}             — оновити постачальника
+  - DELETE /suppliers/{id}             — видалити постачальника
+  - GET    /suppliers/{id}/products    — товари постачальника з залишками
+  - GET    /suppliers/{id}/products/{product_id}/movements — рух товару
 """
 
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +27,12 @@ from app.schemas.supplier import (
     SupplierUpdate,
     SupplierResponse,
 )
+from app.schemas.supplier_products import (
+    SupplierProductsResponse,
+    SupplierProductMovementsResponse,
+)
 from app.services.auth_service import AuthService
+from app.services.supplier_product_service import SupplierProductService
 
 router = APIRouter(
     prefix="/suppliers",
@@ -159,3 +166,65 @@ async def delete_supplier(
         )
     await session.delete(supplier)
     await session.flush()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Товари постачальника
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/{supplier_id}/products", response_model=SupplierProductsResponse)
+async def get_supplier_products(
+    supplier_id: UUID,
+    search: str = Query(None, description="Пошук товару за назвою, штрих-кодом або артикулом"),
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Отримує список товарів постачальника з поточними залишками.
+
+    Показує:
+    - Всі товари, які прив'язані до цього постачальника
+    - Поточний залишок кожного товару
+    - Загальну вартість залишків (за собівартістю)
+    """
+    service = SupplierProductService(session)
+    try:
+        return await service.get_supplier_products(supplier_id, search=search)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{supplier_id}/products/{product_id}/movements",
+    response_model=SupplierProductMovementsResponse,
+)
+async def get_supplier_product_movements(
+    supplier_id: UUID,
+    product_id: UUID,
+    limit: int = Query(100, ge=1, le=500, description="Максимальна кількість записів руху"),
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Отримує історію руху конкретного товару від постачальника.
+
+    Включає:
+    - Прибуткові накладні (прихід)
+    - Повернення постачальнику (витрата)
+    - Продажі (чеки) (витрата)
+    - Списання (витрата)
+    - Переміщення (витрата)
+
+    Дані сортуються від найновіших до найстаріших.
+    """
+    service = SupplierProductService(session)
+    try:
+        return await service.get_product_movements(supplier_id, product_id, limit=limit)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )

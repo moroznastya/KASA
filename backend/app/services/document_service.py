@@ -5,6 +5,7 @@
   - Підтвердження документів (зміна статусу)
   - Оновлення залишків товарів при підтвердженні
   - Відміну підтвердження (повернення залишків)
+  - Автоматичне створення прибуткової накладної при обміні товару
 """
 
 from decimal import Decimal
@@ -12,14 +13,14 @@ from typing import Union
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
 from app.models.transfer import Transfer, TransferItem, TransferStatus
 from app.models.write_off import WriteOff, WriteOffItem
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
 from app.models.product import Product
 from app.services.product_service import ProductService
 from app.services.ledger_service import LedgerService
@@ -37,6 +38,37 @@ PAYMENT_METHOD_LABELS: dict[PaymentMethod, str] = {
     PaymentMethod.OTHER: "інший спосіб",
 }
 
+# Мапа для відображення типу дії повернення в текст
+RETURN_ACTION_LABELS: dict[ReturnActionType, str] = {
+    ReturnActionType.DEDUCT_FROM_DEBT: "списано з боргу постачальника",
+    ReturnActionType.ADD_TO_CASH: "зачислено в касу",
+    ReturnActionType.EXCHANGE: "обмін на інший товар",
+}
+
+
+async def generate_invoice_number(session: AsyncSession) -> str:
+    """
+    Генерує автоматичний номер для прибуткової накладної.
+    Формат: ПН-{YYYYMMDD}-{XXX}, де XXX — порядковий номер за день.
+    """
+    from datetime import datetime
+    today = datetime.utcnow().strftime("%Y%m%d")
+    prefix = f"ПН-{today}-"
+
+    result = await session.execute(
+        select(func.max(Invoice.number))
+        .where(Invoice.number.like(f"{prefix}%"))
+    )
+    max_number = result.scalar()
+
+    if max_number:
+        last_seq = int(max_number[-3:])
+        new_seq = last_seq + 1
+    else:
+        new_seq = 1
+
+    return f"{prefix}{new_seq:03d}"
+
 
 class DocumentService:
     """
@@ -47,6 +79,7 @@ class DocumentService:
     - Оновлення залишків товарів при підтвердженні
     - Скасування документів (зміна статусу на CANCELLED)
     - Відкат залишків при скасуванні
+    - Автоматичне створення прибуткової накладної при обміні
     """
 
     def __init__(self, session: AsyncSession):
@@ -76,7 +109,7 @@ class DocumentService:
         # Отримуємо накладну з позиціями (обов'язково selectinload для async)
         result = await self.session.execute(
             select(Invoice)
-            .options(selectinload(Invoice.items))
+            .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
             .where(Invoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
@@ -145,7 +178,7 @@ class DocumentService:
         """
         result = await self.session.execute(
             select(Invoice)
-            .options(selectinload(Invoice.items))
+            .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
             .where(Invoice.id == invoice_id)
         )
         invoice = result.scalar_one_or_none()
@@ -289,21 +322,38 @@ class DocumentService:
 
     # ─── Повернення постачальнику (ReturnInvoice) ────────────────────────────
 
-    async def confirm_return_invoice(self, return_id: UUID) -> ReturnInvoice:
+    async def confirm_return_invoice(
+        self,
+        return_id: UUID,
+        exchange_items: list[dict] | None = None,
+    ) -> ReturnInvoice:
         """
         Підтверджує повернення товару постачальнику.
 
         При підтвердженні:
         1. Змінює статус на CONFIRMED
         2. Зменшує залишки товарів на складі
-        3. Створює запис у SupplierLedger (зменшення боргу)
+        3. Виконує дію згідно з return_action:
+           - deduct_from_debt: зменшує борг постачальника (SupplierLedger)
+           - add_to_cash: зачислює суму в касу (створює запис у CashRegister)
+           - exchange: створює прибуткову накладну на новий товар
+                        та збільшує його залишок
 
         Args:
             return_id: UUID повернення.
+            exchange_items: Список товарів для обміну (якщо return_action = exchange).
+                            Кожен елемент: {"product_id": UUID, "quantity": Decimal,
+                                             "price": Decimal, "total": Decimal}
+
+        Returns:
+            Оновлений об'єкт ReturnInvoice з посиланням на прибуткову накладну.
         """
         result = await self.session.execute(
             select(ReturnInvoice)
-            .options(selectinload(ReturnInvoice.items))
+            .options(
+                selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+                selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            )
             .where(ReturnInvoice.id == return_id)
         )
         return_invoice = result.scalar_one_or_none()
@@ -320,24 +370,111 @@ class DocumentService:
                 detail=f"Повернення вже має статус '{return_invoice.status.value}'",
             )
 
-        # Зменшуємо залишки
+        # Зменшуємо залишки повернутих товарів
         for item in return_invoice.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
                 quantity_change=-item.quantity,
             )
 
-        # Створюємо запис у SupplierLedger (зменшення боргу)
+        # Виконуємо дію згідно з return_action
+        action_label = RETURN_ACTION_LABELS.get(
+            return_invoice.return_action,
+            return_invoice.return_action.value
+        )
+        notes = f"Повернення постачальнику №{return_invoice.number} ({action_label})"
+
         if return_invoice.total_amount and return_invoice.total_amount > 0:
-            await self.ledger_service.create_ledger_entry(
-                supplier_id=return_invoice.supplier_id,
-                operation_type="return",
-                document_id=return_invoice.id,
-                document_number=return_invoice.number,
-                amount=-return_invoice.total_amount,
-                operation_date=return_invoice.return_date,
-                notes=f"Повернення постачальнику №{return_invoice.number}",
-            )
+            if return_invoice.return_action == ReturnActionType.DEDUCT_FROM_DEBT:
+                # Списуємо з боргу постачальника (від'ємна сума = зменшення боргу)
+                await self.ledger_service.create_ledger_entry(
+                    supplier_id=return_invoice.supplier_id,
+                    operation_type="return",
+                    document_id=return_invoice.id,
+                    document_number=return_invoice.number,
+                    amount=-return_invoice.total_amount,
+                    operation_date=return_invoice.return_date,
+                    notes=notes,
+                )
+
+            elif return_invoice.return_action == ReturnActionType.ADD_TO_CASH:
+                # Зачислюємо в касу (тут має бути логіка CashRegister)
+                # Поки що створюємо запис у ledger з позначкою "в касу"
+                await self.ledger_service.create_ledger_entry(
+                    supplier_id=return_invoice.supplier_id,
+                    operation_type="return",
+                    document_id=return_invoice.id,
+                    document_number=return_invoice.number,
+                    amount=Decimal("0.00"),  # Не змінюємо борг
+                    operation_date=return_invoice.return_date,
+                    notes=notes + " (сума зачислена в касу)",
+                )
+
+            elif return_invoice.return_action == ReturnActionType.EXCHANGE:
+                # Обмін на інший товар — створюємо прибуткову накладну
+                if not exchange_items:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Для обміну (exchange) необхідно вказати exchange_items — "
+                               "список товарів, на які відбувається обмін",
+                    )
+
+                # Генеруємо номер для нової прибуткової накладної
+                invoice_number = await generate_invoice_number(self.session)
+
+                # Розраховуємо загальну суму нової накладної
+                exchange_total = sum(
+                    Decimal(str(item["total"])) for item in exchange_items
+                )
+
+                # Створюємо прибуткову накладну
+                new_invoice = Invoice(
+                    number=invoice_number,
+                    supplier_id=return_invoice.supplier_id,
+                    invoice_date=return_invoice.return_date,
+                    payment_method=PaymentMethod.CREDIT,  # Обмін — це фактично кредит
+                    is_fiscal=return_invoice.is_fiscal,
+                    notes=f"Автоматично створено при обміні з повернення №{return_invoice.number}",
+                    total_amount=exchange_total,
+                    status=InvoiceStatus.DRAFT,
+                )
+                self.session.add(new_invoice)
+                await self.session.flush()
+
+                # Додаємо позиції нової накладної
+                for exch_item in exchange_items:
+                    item = InvoiceItem(
+                        invoice_id=new_invoice.id,
+                        product_id=exch_item["product_id"],
+                        quantity=exch_item["quantity"],
+                        price=exch_item["price"],
+                        total=exch_item["total"],
+                    )
+                    self.session.add(item)
+
+                # Збільшуємо залишки нових товарів
+                for exch_item in exchange_items:
+                    await self.product_service.update_stock(
+                        product_id=exch_item["product_id"],
+                        quantity_change=exch_item["quantity"],
+                    )
+
+                # Підтверджуємо нову накладну (щоб товар одразу оприбуткувався)
+                new_invoice.status = InvoiceStatus.CONFIRMED
+
+                # Зв'язуємо повернення з новою накладною
+                return_invoice.exchange_invoice_id = new_invoice.id
+
+                # Створюємо запис у ledger для обміну
+                await self.ledger_service.create_ledger_entry(
+                    supplier_id=return_invoice.supplier_id,
+                    operation_type="return",
+                    document_id=return_invoice.id,
+                    document_number=return_invoice.number,
+                    amount=Decimal("0.00"),  # Не змінюємо борг — це обмін
+                    operation_date=return_invoice.return_date,
+                    notes=notes + f" (створено прибуткову накладну №{invoice_number})",
+                )
 
         return_invoice.status = ReturnInvoiceStatus.CONFIRMED
         await self.session.flush()
@@ -347,12 +484,21 @@ class DocumentService:
         """
         Скасовує повернення постачальнику.
 
+        При скасуванні:
+        1. Змінює статус на CANCELLED
+        2. Відкатує залишки повернутих товарів
+        3. Якщо був обмін (exchange_invoice_id) — скасовує прибуткову накладну
+           та відкатує залишки нових товарів
+
         Args:
             return_id: UUID повернення.
         """
         result = await self.session.execute(
             select(ReturnInvoice)
-            .options(selectinload(ReturnInvoice.items))
+            .options(
+                selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+                selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            )
             .where(ReturnInvoice.id == return_id)
         )
         return_invoice = result.scalar_one_or_none()
@@ -369,7 +515,19 @@ class DocumentService:
                 detail="Скасувати можна лише підтверджене повернення",
             )
 
-        # Відкатуємо залишки
+        # Якщо був обмін — скасовуємо прибуткову накладну
+        if return_invoice.exchange_invoice_id and return_invoice.exchange_invoice:
+            exchange_inv = return_invoice.exchange_invoice
+            if exchange_inv.status == InvoiceStatus.CONFIRMED:
+                # Відкатуємо залишки нових товарів
+                for item in exchange_inv.items:
+                    await self.product_service.update_stock(
+                        product_id=item.product_id,
+                        quantity_change=-item.quantity,
+                    )
+                exchange_inv.status = InvoiceStatus.CANCELLED
+
+        # Відкатуємо залишки повернутих товарів
         for item in return_invoice.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,

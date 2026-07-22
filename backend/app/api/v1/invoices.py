@@ -44,7 +44,7 @@ async def list_invoices(
     """Отримує список всіх прибуткових накладних."""
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .order_by(desc(Invoice.created_at))
     )
     invoices = result.scalars().all()
@@ -60,7 +60,7 @@ async def get_invoice(
     """Отримує прибуткову накладну за ID."""
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
@@ -116,7 +116,7 @@ async def create_invoice(
     # Повертаємо з позиціями
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()
@@ -133,7 +133,7 @@ async def update_invoice(
     """Оновлює прибуткову накладну."""
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
@@ -180,7 +180,7 @@ async def update_invoice(
     # Повертаємо оновлену накладну
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()
@@ -244,7 +244,7 @@ async def confirm_invoice(
     # Повертаємо з позиціями
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()

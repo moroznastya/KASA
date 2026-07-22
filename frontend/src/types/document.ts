@@ -1,5 +1,8 @@
-export type DocumentType = 'invoice' | 'transfer' | 'write_off' | 'return_invoice';
+export type DocumentType = 'invoice' | 'transfer' | 'write_off' | 'return_invoice' | 'purchase_order';
 export type DocumentStatus = 'draft' | 'confirmed' | 'cancelled';
+
+/** Тип дії при підтвердженні повернення постачальнику */
+export type ReturnActionType = 'deduct_from_debt' | 'add_to_cash' | 'exchange';
 
 export interface DocumentItem {
   id: string;
@@ -83,9 +86,26 @@ export interface WriteOffCreate extends DocumentCreate {
 
 export interface ReturnInvoiceCreate {
   document_type: 'return_invoice';
-  number: string;
+  /** Номер документа (якщо не вказано, генерується автоматично) */
+  number?: string;
   supplier_id: string;
   return_date: string;
+  /** Дія при підтвердженні (за замовчуванням deduct_from_debt) */
+  return_action?: ReturnActionType;
+  is_fiscal: boolean;
+  notes?: string | null;
+  items: InvoiceItemInput[];
+}
+
+/** Замовлення постачальнику */
+export interface PurchaseOrderCreate {
+  document_type: 'purchase_order';
+  /** Номер замовлення (якщо не вказано, генерується автоматично) */
+  number?: string;
+  supplier_id: string;
+  order_date: string;
+  /** Очікувана дата поставки */
+  expected_date?: string | null;
   is_fiscal: boolean;
   notes?: string | null;
   items: InvoiceItemInput[];

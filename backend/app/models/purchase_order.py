@@ -1,9 +1,14 @@
 """
-Моделі ReturnInvoice та ReturnInvoiceItem (Повернення постачальнику).
+Моделі PurchaseOrder та PurchaseOrderItem (Замовлення постачальнику).
 
-Фіксує повернення товару постачальнику (брак, пересортиця тощо).
-При обміні (exchange) автоматично створюється прибуткова накладна
-на новий товар, і посилання на неї зберігається в exchange_invoice_id.
+Документ, який фіксує замовлення товарів у постачальника.
+При підтвердженні автоматично створюється прибуткова накладна (Invoice),
+яка оприбутковує товари на склад.
+
+Статуси:
+  - draft      — чернетка (замовлення створено, але ще не відправлено)
+  - confirmed  — підтверджено (товари замовлено, створено прибуткову накладну)
+  - cancelled  — скасовано (замовлення не актуальне)
 """
 
 import uuid
@@ -19,37 +24,30 @@ from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
 
 
-class ReturnInvoiceStatus(str, PyEnum):
-    """Статус повернення постачальнику."""
-    DRAFT = "draft"
-    CONFIRMED = "confirmed"   # Товар повернуто
-    CANCELLED = "cancelled"
+class PurchaseOrderStatus(str, PyEnum):
+    """Статус замовлення постачальнику."""
+    DRAFT = "draft"           # Чернетка
+    CONFIRMED = "confirmed"   # Підтверджено (створено прибуткову накладну)
+    CANCELLED = "cancelled"   # Скасовано
 
 
-class ReturnActionType(str, PyEnum):
-    """Тип дії при підтвердженні повернення постачальнику."""
-    DEDUCT_FROM_DEBT = "deduct_from_debt"   # Списати з боргу постачальника (за замовчуванням)
-    ADD_TO_CASH = "add_to_cash"             # Зачислити суму в касу
-    EXCHANGE = "exchange"                   # Обмін на інший товар
+class PurchaseOrder(Base):
+    """Замовлення постачальнику."""
 
-
-class ReturnInvoice(Base):
-    """Повернення товару постачальнику."""
-
-    __tablename__ = "return_invoices"
+    __tablename__ = "purchase_orders"
 
     # ── Поля ────────────────────────────────────
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
-        comment="Унікальний ідентифікатор повернення",
+        comment="Унікальний ідентифікатор замовлення",
     )
     number: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
         index=True,
-        comment="Номер документа повернення",
+        comment="Номер замовлення",
     )
     supplier_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -58,47 +56,46 @@ class ReturnInvoice(Base):
         index=True,
         comment="Ідентифікатор постачальника",
     )
-    return_date: Mapped[datetime] = mapped_column(
+    order_date: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        comment="Дата повернення",
+        comment="Дата замовлення",
     )
-    status: Mapped[ReturnInvoiceStatus] = mapped_column(
-        Enum(ReturnInvoiceStatus, name="return_invoice_status", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
-        default=ReturnInvoiceStatus.DRAFT,
-        nullable=False,
-        comment="Статус повернення",
+    expected_date: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="Очікувана дата поставки",
     )
-    return_action: Mapped[ReturnActionType] = mapped_column(
-        Enum(ReturnActionType, name="return_action_type", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
-        default=ReturnActionType.DEDUCT_FROM_DEBT,
+    status: Mapped[PurchaseOrderStatus] = mapped_column(
+        Enum(PurchaseOrderStatus, name="purchase_order_status", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
+        default=PurchaseOrderStatus.DRAFT,
         nullable=False,
-        comment="Дія при підтвердженні: списати з боргу / в касу / на обмін",
+        comment="Статус замовлення",
     )
     is_fiscal: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
-        comment="Фіскальний документ (проведений через РРО)",
+        comment="Фіскальний документ",
     )
     notes: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
-        comment="Причина повернення / додаткові нотатки",
+        comment="Додаткові нотатки до замовлення",
     )
     total_amount: Mapped[float | None] = mapped_column(
         Numeric(12, 2),
         default=0.00,
-        comment="Загальна сума повернення (грн)",
+        comment="Загальна сума замовлення (грн)",
     )
 
-    # ── Зв'язок з прибутковою накладною при обміні ──
-    exchange_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+    # ── Зв'язок з прибутковою накладною ──
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("invoices.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
-        comment="ID прибуткової накладної, створеної при обміні на інший товар",
+        comment="ID прибуткової накладної, створеної при підтвердженні замовлення",
     )
 
     # ── Timestamps ──────────────────────────────
@@ -116,25 +113,25 @@ class ReturnInvoice(Base):
     supplier: Mapped["Supplier"] = relationship(
         "Supplier",
     )
-    items: Mapped[list["ReturnInvoiceItem"]] = relationship(
-        "ReturnInvoiceItem",
-        back_populates="return_invoice",
+    items: Mapped[list["PurchaseOrderItem"]] = relationship(
+        "PurchaseOrderItem",
+        back_populates="purchase_order",
         cascade="all, delete-orphan",
     )
-    exchange_invoice: Mapped["Invoice | None"] = relationship(
+    invoice: Mapped["Invoice | None"] = relationship(
         "Invoice",
-        foreign_keys=[exchange_invoice_id],
+        foreign_keys=[invoice_id],
         post_update=True,
     )
 
     def __repr__(self) -> str:
-        return f"<ReturnInvoice {self.number}>"
+        return f"<PurchaseOrder {self.number}>"
 
 
-class ReturnInvoiceItem(Base):
-    """Позиція повернення постачальнику (один товар)."""
+class PurchaseOrderItem(Base):
+    """Позиція замовлення постачальнику (один товар)."""
 
-    __tablename__ = "return_invoice_items"
+    __tablename__ = "purchase_order_items"
 
     # ── Поля ────────────────────────────────────
     id: Mapped[uuid.UUID] = mapped_column(
@@ -143,12 +140,12 @@ class ReturnInvoiceItem(Base):
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор позиції",
     )
-    return_invoice_id: Mapped[uuid.UUID] = mapped_column(
+    purchase_order_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("return_invoices.id", ondelete="CASCADE"),
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
-        comment="Ідентифікатор повернення",
+        comment="Ідентифікатор замовлення",
     )
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -160,7 +157,7 @@ class ReturnInvoiceItem(Base):
     quantity: Mapped[float] = mapped_column(
         Numeric(10, 3),
         nullable=False,
-        comment="Кількість товару",
+        comment="Замовлена кількість",
     )
     price: Mapped[float] = mapped_column(
         Numeric(10, 2),
@@ -180,14 +177,13 @@ class ReturnInvoiceItem(Base):
     )
 
     # ── Зв'язки ─────────────────────────────────
-    return_invoice: Mapped["ReturnInvoice"] = relationship(
-        "ReturnInvoice",
+    purchase_order: Mapped["PurchaseOrder"] = relationship(
+        "PurchaseOrder",
         back_populates="items",
     )
     product: Mapped["Product"] = relationship(
         "Product",
-        back_populates="return_items",
     )
 
     def __repr__(self) -> str:
-        return f"<ReturnInvoiceItem {self.product_id} x{self.quantity}>"
+        return f"<PurchaseOrderItem {self.product_id} x{self.quantity}>"

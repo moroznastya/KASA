@@ -15,10 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, InvoiceItem
 from app.models.transfer import Transfer
 from app.models.write_off import WriteOff, WriteOffItem
 from app.models.return_invoice import ReturnInvoice
+from app.models.purchase_order import PurchaseOrder
 from app.services.auth_service import AuthService
 
 router = APIRouter(
@@ -32,7 +33,7 @@ async def list_documents(
     page: int = Query(1, ge=1, description="Сторінка"),
     size: int = Query(20, ge=1, le=100, description="Елементів на сторінці"),
     status: Optional[str] = Query(None, description="Фільтр за статусом (draft, confirmed, cancelled)"),
-    document_type: Optional[str] = Query(None, description="Фільтр за типом (invoice, transfer, write_off, return_invoice)"),
+    document_type: Optional[str] = Query(None, description="Фільтр за типом (invoice, transfer, write_off, return_invoice, purchase_order)"),
     search: Optional[str] = Query(None, description="Пошук за номером документа"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
@@ -43,6 +44,7 @@ async def list_documents(
     - Переміщення (Transfer)
     - Списання (WriteOff)
     - Повернення постачальнику (ReturnInvoice)
+    - Замовлення постачальнику (PurchaseOrder)
 
     Відсортовані за датою створення (від нових до старих).
     Підтримує фільтрацію за типом, статусом та пошук за номером.
@@ -55,7 +57,7 @@ async def list_documents(
         invoice_query = (
             select(Invoice)
             .options(
-                selectinload(Invoice.items),
+                selectinload(Invoice.items).selectinload(InvoiceItem.product),
                 selectinload(Invoice.supplier),
             )
             .order_by(desc(Invoice.created_at))
@@ -173,6 +175,37 @@ async def list_documents(
                 "supplier_name": supplier_name,
                 "supplier_id": str(ri.supplier_id) if ri.supplier_id else None,
                 "created_at": ri.created_at.isoformat() if ri.created_at else None,
+            })
+
+    # ─── Замовлення постачальнику ────────────────────────────────────────────
+    if not document_type or document_type == 'purchase_order':
+        orders_result = await session.execute(
+            select(PurchaseOrder)
+            .options(
+                selectinload(PurchaseOrder.items),
+                selectinload(PurchaseOrder.supplier),
+            )
+            .order_by(desc(PurchaseOrder.created_at))
+        )
+        orders = orders_result.scalars().all()
+
+        for po in orders:
+            po_status = po.status.value if hasattr(po.status, 'value') else str(po.status)
+            if status and po_status != status:
+                continue
+            if search and search.lower() not in (po.number or '').lower():
+                continue
+
+            supplier_name = po.supplier.name if po.supplier else ""
+            all_documents.append({
+                "id": str(po.id),
+                "document_type": "purchase_order",
+                "document_number": po.number,
+                "status": po_status,
+                "total_amount": float(po.total_amount) if po.total_amount else 0,
+                "supplier_name": supplier_name,
+                "supplier_id": str(po.supplier_id) if po.supplier_id else None,
+                "created_at": po.created_at.isoformat() if po.created_at else None,
             })
 
     # Сортуємо за датою (від нових до старих)

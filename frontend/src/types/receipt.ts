@@ -33,6 +33,7 @@ export interface ReceiptItem {
 }
 
 export type PaymentMethod = 'cash' | 'card' | 'mixed';
+export type DebtPaymentMethod = 'cash' | 'card' | 'transfer' | 'mixed';
 export type PaymentStatus = 'paid' | 'debt' | 'partially_paid';
 
 export interface ReceiptCreate {
@@ -47,6 +48,7 @@ export interface ReceiptCreate {
   cash_amount?: number;
   card_amount?: number;
   is_debt?: boolean;
+  debt_payment_method?: string;
 }
 
 export interface ReceiptItemCreate {

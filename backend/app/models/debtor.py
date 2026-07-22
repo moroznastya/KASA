@@ -7,7 +7,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Text, Numeric, DateTime
+from sqlalchemy import String, Text, Numeric, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -61,6 +61,52 @@ class Debtor(Base):
         "Receipt",
         back_populates="debtor",
     )
+    payments: Mapped[list["DebtorPayment"]] = relationship(
+        "DebtorPayment",
+        back_populates="debtor",
+        cascade="all, delete-orphan",
+        order_by="DebtorPayment.created_at.desc()",
+    )
 
     def __repr__(self) -> str:
         return f"<Debtor {self.name}>"
+
+
+class DebtorPayment(Base):
+    """Історія оплат боргу."""
+
+    __tablename__ = "debtor_payments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        comment="Унікальний ідентифікатор оплати",
+    )
+    debtor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("debtors.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="ID боржника",
+    )
+    amount: Mapped[float] = mapped_column(
+        Numeric(12, 2),
+        nullable=False,
+        comment="Сума оплати",
+    )
+    payment_method: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Спосіб оплати: cash, card, transfer, mixed",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow,
+        comment="Дата оплати",
+    )
+
+    # ── Зв'язки ─────────────────────────────────
+    debtor: Mapped["Debtor"] = relationship("Debtor", back_populates="payments")
+
+    def __repr__(self) -> str:
+        return f"<DebtorPayment {self.amount} for {self.debtor_id}>"

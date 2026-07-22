@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { BookOpen, DollarSign, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
+import { BookOpen, DollarSign, ArrowUpRight, ArrowDownLeft, FileText } from 'lucide-react';
 import { ledgerService } from '@/services/ledgerService';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
@@ -27,7 +28,14 @@ const OPERATION_TYPE_VARIANTS: Record<string, 'info' | 'success' | 'danger' | 'w
   correction: 'warning',
 };
 
+/** Мапа типів операцій на шляхи перегляду документа */
+const OPERATION_TYPE_ROUTES: Record<string, string> = {
+  invoice: '/documents/invoice',
+  return: '/documents/return',
+};
+
 const LedgerPage: React.FC = () => {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: suppliersData } = useAllSuppliers();
   const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
@@ -87,6 +95,15 @@ const LedgerPage: React.FC = () => {
     })) || []),
   ];
 
+  /** Обробник натискання на рядок таблиці */
+  const handleRowClick = (item: SupplierLedgerEntry) => {
+    // Відкриваємо документ тільки для накладних та повернень, якщо є document_id
+    if (item.document_id && OPERATION_TYPE_ROUTES[item.operation_type]) {
+      const route = `${OPERATION_TYPE_ROUTES[item.operation_type]}/${item.document_id}`;
+      navigate(route);
+    }
+  };
+
   const ledgerColumns: Column<SupplierLedgerEntry>[] = [
     {
       key: 'operation_date',
@@ -109,11 +126,20 @@ const LedgerPage: React.FC = () => {
     {
       key: 'document_number',
       header: 'Документ',
-      render: (item) => (
-        <span className="font-medium text-gray-900 dark:text-gray-100">
-          {item.document_number || '-'}
-        </span>
-      ),
+      render: (item) => {
+        const isClickable = !!item.document_id && !!OPERATION_TYPE_ROUTES[item.operation_type];
+        return (
+          <span
+            className={`font-medium ${
+              isClickable
+                ? 'text-primary-600 dark:text-primary-400 hover:underline'
+                : 'text-gray-900 dark:text-gray-100'
+            }`}
+          >
+            {item.document_number || '-'}
+          </span>
+        );
+      },
     },
     {
       key: 'notes',
@@ -244,11 +270,15 @@ const LedgerPage: React.FC = () => {
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
               Історія операцій
             </h3>
+            <p className="text-xs text-gray-400 mt-1">
+              Натисніть на рядок з накладною або поверненням, щоб відкрити документ
+            </p>
           </div>
           <Table
             columns={ledgerColumns}
             data={ledgerData?.items || []}
             isLoading={isLedgerLoading}
+            onRowClick={handleRowClick}
             keyExtractor={(item) => item.id}
             emptyMessage="Немає операцій"
             emptyIcon={<BookOpen className="w-12 h-12" />}

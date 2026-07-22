@@ -121,17 +121,48 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
     setSelectedCategoryId(categoryId);
   }, [toggleExpand]);
 
+  // Допоміжна: зібрати всі ID категорії та її підкатегорій рекурсивно
+  const collectCategoryAndChildrenIds = useCallback((cat: any): string[] => {
+    const ids = [cat.id];
+    if (cat.children) {
+      cat.children.forEach((child: any) => {
+        ids.push(...collectCategoryAndChildrenIds(child));
+      });
+    }
+    return ids;
+  }, []);
+
+  // Допоміжна: знайти категорію в дереві за ID
+  const findCategoryById = useCallback((cats: any[], id: string): any | null => {
+    for (const cat of cats) {
+      if (cat.id === id) return cat;
+      if (cat.children) {
+        const found = findCategoryById(cat.children, id);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
   const toggleCategoryVisibility = useCallback((categoryId: string) => {
+    if (!categoryTree) return;
+    const category = findCategoryById(categoryTree, categoryId);
+    if (!category) return;
+
+    const allIds = collectCategoryAndChildrenIds(category);
+
     setVisibleCategories((prev) => {
       const next = new Set(prev);
+      // Якщо категорія зараз видима - скасовуємо всі (категорію + підкатегорії)
       if (next.has(categoryId)) {
-        next.delete(categoryId);
+        allIds.forEach((id) => next.delete(id));
       } else {
-        next.add(categoryId);
+        // Якщо не видима - вибираємо всі (категорію + підкатегорії)
+        allIds.forEach((id) => next.add(id));
       }
       return next;
     });
-  }, []);
+  }, [categoryTree, collectCategoryAndChildrenIds, findCategoryById]);
 
   const selectAllCategories = useCallback(() => {
     if (!categoryTree) return;
@@ -283,7 +314,16 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
           {categoryTree
             .filter((cat) => visibleCategories.has(cat.id))
-            .map((category) => renderCategoryItem(category))}
+            .flatMap((category) => {
+              // Якщо є підкатегорії - показуємо тільки видимі підкатегорії
+              if (category.children && category.children.length > 0) {
+                return category.children
+                  .filter((child: any) => visibleCategories.has(child.id))
+                  .map((child: any) => renderCategoryItem(child));
+              }
+              // Якщо немає підкатегорій - показуємо саму категорію
+              return [renderCategoryItem(category)];
+            })}
         </div>
       ) : (
         <p className="text-xs text-gray-400 py-1">Немає категорій</p>

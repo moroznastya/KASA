@@ -15,8 +15,10 @@ const ProductFormPage = lazy(() => import('@/pages/products/ProductFormPage'));
 const CategoryListPage = lazy(() => import('@/pages/categories/CategoryListPage'));
 const SupplierListPage = lazy(() => import('@/pages/suppliers/SupplierListPage'));
 const SupplierFormPage = lazy(() => import('@/pages/suppliers/SupplierFormPage'));
+const SupplierProductsPage = lazy(() => import('@/pages/suppliers/SupplierProductsPage'));
 const DocumentListPage = lazy(() => import('@/pages/documents/DocumentListPage'));
 const InvoiceFormPage = lazy(() => import('@/pages/documents/InvoiceFormPage'));
+const PurchaseOrderFormPage = lazy(() => import('@/pages/documents/PurchaseOrderFormPage'));
 const TransferFormPage = lazy(() => import('@/pages/documents/TransferFormPage'));
 const WriteOffFormPage = lazy(() => import('@/pages/documents/WriteOffFormPage'));
 const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoiceFormPage'));
@@ -118,10 +120,20 @@ const App: React.FC = () => {
                 <SupplierFormPage />
               </RoleRoute>
             } />
+            <Route path="suppliers/:id/products" element={
+              <RoleRoute roles={['admin']}>
+                <SupplierProductsPage />
+              </RoleRoute>
+            } />
 
             {/* Документи — касир може переглядати та створювати накладні */}
             <Route path="documents" element={<DocumentListPage />} />
             <Route path="documents/invoice/new" element={<InvoiceFormPage />} />
+            <Route path="documents/purchase-order/new" element={
+              <RoleRoute roles={['admin']}>
+                <PurchaseOrderFormPage />
+              </RoleRoute>
+            } />
             <Route path="documents/transfer/new" element={
               <RoleRoute roles={['admin']}>
                 <TransferFormPage />
@@ -138,6 +150,11 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
             <Route path="documents/invoice/:id" element={<DocumentViewPage />} />
+            <Route path="documents/purchase-order/:id" element={
+              <RoleRoute roles={['admin']}>
+                <DocumentViewPage />
+              </RoleRoute>
+            } />
             <Route path="documents/transfer/:id" element={
               <RoleRoute roles={['admin']}>
                 <DocumentViewPage />

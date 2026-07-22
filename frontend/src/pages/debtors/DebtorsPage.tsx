@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, ArrowLeft, CheckCircle } from 'lucide-react';
+import { Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, ArrowLeft, CheckCircle, Banknote } from 'lucide-react';
 import { debtorService, Debtor } from '@/services/debtorService';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -16,10 +16,21 @@ const DebtorsPage: React.FC = () => {
   const [newDebtorPhone, setNewDebtorPhone] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
+type DebtPaymentMethod = 'cash' | 'card' | 'transfer' | 'mixed';
+
+const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React.ReactNode }[] = [
+  { value: 'cash', label: 'Готівка', icon: <Banknote className="w-5 h-5" /> },
+  { value: 'card', label: 'Картка', icon: <CreditCard className="w-5 h-5" /> },
+  { value: 'mixed', label: 'Змішаний', icon: <CreditCard className="w-5 h-5" /> },
+];
+
   // Pay debt modal
   const [selectedDebtor, setSelectedDebtor] = useState<Debtor | null>(null);
   const [payAmount, setPayAmount] = useState('');
   const [isPaying, setIsPaying] = useState(false);
+  const [debtPaymentMethod, setDebtPaymentMethod] = useState<DebtPaymentMethod>('cash');
+  const [debtCashAmount, setDebtCashAmount] = useState('');
+  const [debtCardAmount, setDebtCardAmount] = useState('');
 
   const loadDebtors = async () => {
     setIsLoading(true);
@@ -83,14 +94,21 @@ const DebtorsPage: React.FC = () => {
     }
     setIsPaying(true);
     try {
-      const updated = await debtorService.payDebt(selectedDebtor.id, { amount });
+      const methodLabel = debtPaymentOptions.find(o => o.value === debtPaymentMethod)?.label || debtPaymentMethod;
+      const updated = await debtorService.payDebt(selectedDebtor.id, { 
+        amount,
+        payment_method: debtPaymentMethod 
+      });
       if (updated.total_debt <= 0) {
-        toast.success(`Борг ${formatCurrency(amount)} сплачено повністю. Боржника видалено`);
+        toast.success(`Борг ${formatCurrency(amount)} сплачено повністю (${methodLabel}). Боржника видалено`);
       } else {
-        toast.success(`Оплачено ${formatCurrency(amount)}. Залишок боргу: ${formatCurrency(updated.total_debt)}`);
+        toast.success(`Оплачено ${formatCurrency(amount)} (${methodLabel}). Залишок боргу: ${formatCurrency(updated.total_debt)}`);
       }
       setSelectedDebtor(null);
       setPayAmount('');
+      setDebtPaymentMethod('cash');
+      setDebtCashAmount('');
+      setDebtCardAmount('');
       loadDebtors();
     } catch {
       toast.error('Помилка оплати боргу');
@@ -274,9 +292,12 @@ const DebtorsPage: React.FC = () => {
         onClose={() => {
           setSelectedDebtor(null);
           setPayAmount('');
+          setDebtPaymentMethod('cash');
+          setDebtCashAmount('');
+          setDebtCardAmount('');
         }}
         title={`Сплата боргу — ${selectedDebtor?.name || ''}`}
-        size="sm"
+        size="md"
       >
         {selectedDebtor && (
           <div className="space-y-4">
@@ -313,12 +334,82 @@ const DebtorsPage: React.FC = () => {
               </div>
             )}
 
+            {/* Спосіб оплати */}
+            <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                Спосіб оплати
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {debtPaymentOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => setDebtPaymentMethod(option.value)}
+                    className={`
+                      flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all
+                      ${debtPaymentMethod === option.value
+                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-400 ring-1 ring-primary-500'
+                        : 'border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-600 dark:text-gray-300 hover:border-gray-300 dark:hover:border-slate-500'
+                      }
+                    `}
+                  >
+                    {option.icon}
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {debtPaymentMethod === 'mixed' && (
+                <div className="grid grid-cols-2 gap-4 mt-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Готівка</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={debtCashAmount}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDebtCashAmount(val);
+                        const cash = parseFloat(val) || 0;
+                        const debtAmount = selectedDebtor.total_debt;
+                        const remaining = debtAmount - cash;
+                        setDebtCardAmount(remaining >= 0 ? remaining.toFixed(2) : '0');
+                      }}
+                      className="input-field"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Картка</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={debtCardAmount}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDebtCardAmount(val);
+                        const card = parseFloat(val) || 0;
+                        const debtAmount = selectedDebtor.total_debt;
+                        const remaining = debtAmount - card;
+                        setDebtCashAmount(remaining >= 0 ? remaining.toFixed(2) : '0');
+                      }}
+                      className="input-field"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-end gap-3 pt-2">
               <Button
                 variant="secondary"
                 onClick={() => {
                   setSelectedDebtor(null);
                   setPayAmount('');
+                  setDebtPaymentMethod('cash');
+                  setDebtCashAmount('');
+                  setDebtCardAmount('');
                 }}
               >
                 Скасувати

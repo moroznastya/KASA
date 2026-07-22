@@ -1,6 +1,6 @@
 import React from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
@@ -14,9 +14,29 @@ const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'war
   cancelled: 'danger',
 };
 
+/** Мапа типів дій повернення на мітки */
+const RETURN_ACTION_LABELS: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
+  deduct_from_debt: {
+    label: 'Списано з боргу',
+    icon: <BookOpen className="w-3.5 h-3.5" />,
+    color: 'text-blue-600 bg-blue-50 dark:bg-blue-900/20',
+  },
+  add_to_cash: {
+    label: 'Зачислено в касу',
+    icon: <Banknote className="w-3.5 h-3.5" />,
+    color: 'text-green-600 bg-green-50 dark:bg-green-900/20',
+  },
+  exchange: {
+    label: 'Обмін на інший товар',
+    icon: <RefreshCw className="w-3.5 h-3.5" />,
+    color: 'text-purple-600 bg-purple-50 dark:bg-purple-900/20',
+  },
+};
+
 /** Визначає тип документа з URL шляху */
 function getDocumentTypeFromPath(pathname: string): string {
   if (pathname.includes('/invoice/')) return 'invoice';
+  if (pathname.includes('/purchase-order/')) return 'purchase_order';
   if (pathname.includes('/transfer/')) return 'transfer';
   if (pathname.includes('/write-off/')) return 'write_off';
   if (pathname.includes('/return/')) return 'return_invoice';
@@ -27,6 +47,7 @@ function getDocumentTypeFromPath(pathname: string): string {
 function getApiEndpoint(type: string, id: string): string {
   switch (type) {
     case 'invoice': return `/invoices/${id}`;
+    case 'purchase_order': return `/purchase-orders/${id}`;
     case 'transfer': return `/transfers/${id}`;
     case 'write_off': return `/write-offs/${id}`;
     case 'return_invoice': return `/return-invoices/${id}`;
@@ -38,6 +59,7 @@ function getApiEndpoint(type: string, id: string): string {
 function getDocumentTitle(type: string): string {
   switch (type) {
     case 'invoice': return 'Прибуткова накладна';
+    case 'purchase_order': return 'Замовлення постачальнику';
     case 'transfer': return 'Переміщення';
     case 'write_off': return 'Списання';
     case 'return_invoice': return 'Повернення';
@@ -138,6 +160,30 @@ const DocumentViewPage: React.FC = () => {
             </>
           )}
 
+          {/* Для purchase_order показуємо дати та постачальника */}
+          {docType === 'purchase_order' && (
+            <>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Дата замовлення</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.order_date ? new Date(doc.order_date).toLocaleDateString('uk-UA') : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Очікувана поставка</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.expected_date ? new Date(doc.expected_date).toLocaleDateString('uk-UA') : 'Не вказано'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Постачальник</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.supplier?.name || doc.supplier_name || '-'}
+                </p>
+              </div>
+            </>
+          )}
+
           {/* Для write_off показуємо причину та дату списання */}
           {docType === 'write_off' && (
             <>
@@ -177,7 +223,7 @@ const DocumentViewPage: React.FC = () => {
             </>
           )}
 
-          {/* Для return_invoice показуємо постачальника та дату */}
+          {/* Для return_invoice показуємо постачальника, дату та дію */}
           {docType === 'return_invoice' && (
             <>
               <div>
@@ -192,6 +238,17 @@ const DocumentViewPage: React.FC = () => {
                   {doc.supplier?.name || doc.supplier_name || '-'}
                 </p>
               </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Дія</p>
+                {doc.return_action && RETURN_ACTION_LABELS[doc.return_action] ? (
+                  <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium mt-0.5 ${RETURN_ACTION_LABELS[doc.return_action].color}`}>
+                    {RETURN_ACTION_LABELS[doc.return_action].icon}
+                    {RETURN_ACTION_LABELS[doc.return_action].label}
+                  </div>
+                ) : (
+                  <p className="font-medium text-gray-900 dark:text-gray-100">-</p>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -203,10 +260,12 @@ const DocumentViewPage: React.FC = () => {
           </div>
         )}
 
-        {/* Items table */}
+        {/* ─── Товари ─────────────────────────────────── */}
         {doc.items && doc.items.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">Товари</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">
+              {docType === 'return_invoice' ? 'Повернуті товари' : 'Товари'}
+            </h3>
             <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-hidden">
               <table className="w-full">
                 <thead>
@@ -245,6 +304,105 @@ const DocumentViewPage: React.FC = () => {
                   </tr>
                 </tfoot>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Прибуткова накладна при обміні (return_invoice) ── */}
+        {docType === 'return_invoice' && doc.exchange_invoice && (
+          <div className="border-t border-gray-200 dark:border-slate-700 pt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-purple-500" />
+                Обмін — прибуткова накладна
+              </h3>
+              <button
+                onClick={() => navigate(`/documents/invoice/${doc.exchange_invoice.id}`)}
+                className="inline-flex items-center gap-1.5 text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 font-medium"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Відкрити накладну
+              </button>
+            </div>
+            <div className="bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Номер накладної</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {doc.exchange_invoice.number}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Сума</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {formatCurrency(Number(doc.exchange_invoice.total_amount))}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-slate-800/50">
+                    <th className="table-header">Новий товар</th>
+                    <th className="table-header w-24 text-right">Кількість</th>
+                    <th className="table-header w-28 text-right">Ціна</th>
+                    <th className="table-header w-28 text-right">Сума</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                  {doc.exchange_invoice.items?.map((item: any) => (
+                    <tr key={item.id}>
+                      <td className="table-cell">
+                        <p className="font-medium text-gray-900 dark:text-gray-100">
+                          {item.product?.title || item.product_name || '-'}
+                        </p>
+                        {item.product?.barcode && (
+                          <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
+                        )}
+                      </td>
+                      <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
+                      <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
+                      <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Прибуткова накладна із замовлення (purchase_order) ── */}
+        {docType === 'purchase_order' && doc.invoice && (
+          <div className="border-t border-gray-200 dark:border-slate-700 pt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                <ShoppingCart className="w-5 h-5 text-green-500" />
+                Створена прибуткова накладна
+              </h3>
+              <button
+                onClick={() => navigate(`/documents/invoice/${doc.invoice.id}`)}
+                className="inline-flex items-center gap-1.5 text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 font-medium"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Відкрити накладну
+              </button>
+            </div>
+            <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Номер накладної</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {doc.invoice.number}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Сума</p>
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {formatCurrency(Number(doc.invoice.total_amount))}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}

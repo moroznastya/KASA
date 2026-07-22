@@ -26,6 +26,8 @@ from app.middleware.auth_middleware import AuthMiddleware
 from app.api.v1.users import limiter
 
 # ─── Інфраструктурні компоненти ─────────────────────────────────────────────
+import logging
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 from app.infrastructure.di import DIContainer, register_all_services
 from app.infrastructure.event_bus import LocalEventBus
 

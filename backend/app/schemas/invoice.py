@@ -12,6 +12,15 @@ from pydantic import BaseModel, Field, ConfigDict
 from app.models.invoice import InvoiceStatus, PaymentMethod
 
 
+class ProductBrief(BaseModel):
+    """Скорочена інформація про товар для відображення в позиціях."""
+    id: UUID
+    title: str
+    barcode: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InvoiceItemCreate(BaseModel):
     """Схема створення позиції накладної."""
     product_id: UUID = Field(..., description="ID товару")
@@ -25,6 +34,7 @@ class InvoiceItemResponse(BaseModel):
     id: UUID
     invoice_id: UUID
     product_id: UUID
+    product: Optional[ProductBrief] = Field(None, description="Інформація про товар")
     quantity: Decimal
     price: Decimal
     total: Decimal

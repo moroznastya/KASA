@@ -14,6 +14,7 @@ from app.api.v1.invoices import router as invoices_router
 from app.api.v1.transfers import router as transfers_router
 from app.api.v1.write_offs import router as write_offs_router
 from app.api.v1.return_invoices import router as return_invoices_router
+from app.api.v1.purchase_orders import router as purchase_orders_router
 from app.api.v1.receipts import router as receipts_router
 from app.api.v1.ledger import router as ledger_router
 from app.api.v1.documents import router as documents_router
@@ -32,6 +33,7 @@ api_v1_router.include_router(invoices_router)
 api_v1_router.include_router(transfers_router)
 api_v1_router.include_router(write_offs_router)
 api_v1_router.include_router(return_invoices_router)
+api_v1_router.include_router(purchase_orders_router)
 api_v1_router.include_router(receipts_router)
 api_v1_router.include_router(ledger_router)
 api_v1_router.include_router(documents_router)

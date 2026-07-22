@@ -27,8 +27,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             value={value}
             onChange={onChange}
             placeholder={placeholder}
+            onWheel={(e) => (e.target as HTMLInputElement).blur()}
             className={`
               input-field
+              [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none
               ${icon ? 'pl-10' : 'px-3'}
               ${error ? 'border-danger-500 focus:ring-danger-500' : ''}
               ${className}

@@ -18,7 +18,7 @@ from sqlalchemy import select, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.debtor import Debtor
+from app.models.debtor import Debtor, DebtorPayment
 from app.schemas.debtor import (
     DebtorCreate,
     DebtorUpdate,
@@ -178,6 +178,14 @@ async def pay_debt(
         )
 
     debtor.total_debt -= data.amount
+    
+    # Створюємо запис про оплату
+    payment = DebtorPayment(
+        debtor_id=debtor.id,
+        amount=data.amount,
+        payment_method=data.payment_method,
+    )
+    session.add(payment)
     
     # Якщо борг став 0 — автоматично видаляємо боржника
     if float(debtor.total_debt) <= 0:

@@ -12,14 +12,16 @@ API роутер для роботи з поверненнями постача�
 """
 
 from uuid import UUID
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
+from app.models.invoice import Invoice, InvoiceItem
 from app.schemas.return_invoice import (
     ReturnInvoiceCreate,
     ReturnInvoiceUpdate,
@@ -35,6 +37,31 @@ router = APIRouter(
 )
 
 
+async def generate_return_number(session: AsyncSession) -> str:
+    """
+    Генерує автоматичний номер для повернення постачальнику.
+    Формат: ПВ-{YYYYMMDD}-{XXX}, де XXX — порядковий номер за день.
+    """
+    today = datetime.utcnow().strftime("%Y%m%d")
+    prefix = f"ПВ-{today}-"
+
+    # Знаходимо максимальний номер за сьогодні
+    result = await session.execute(
+        select(func.max(ReturnInvoice.number))
+        .where(ReturnInvoice.number.like(f"{prefix}%"))
+    )
+    max_number = result.scalar()
+
+    if max_number:
+        # Беремо останні 3 символи як номер
+        last_seq = int(max_number[-3:])
+        new_seq = last_seq + 1
+    else:
+        new_seq = 1
+
+    return f"{prefix}{new_seq:03d}"
+
+
 @router.get("", response_model=list[ReturnInvoiceResponse])
 async def list_return_invoices(
     session: AsyncSession = Depends(get_session),
@@ -43,7 +70,10 @@ async def list_return_invoices(
     """Отримує список всіх повернень постачальнику."""
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .order_by(desc(ReturnInvoice.created_at))
     )
     invoices = result.scalars().all()
@@ -59,7 +89,10 @@ async def get_return_invoice(
     """Отримує повернення за ID."""
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .where(ReturnInvoice.id == return_id)
     )
     invoice = result.scalar_one_or_none()
@@ -78,13 +111,32 @@ async def create_return_invoice(
     current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове повернення постачальнику."""
+    # Автоматична генерація номера, якщо не вказано
+    number = data.number
+    if not number:
+        number = await generate_return_number(session)
+
+    # Розраховуємо загальну суму з позицій, якщо не передана
+    total_amount = data.total_amount
+    if total_amount is None and data.items:
+        total_amount = sum(item.total for item in data.items)
+
+    # Валідація: якщо return_action = exchange, exchange_items обов'язкові
+    if data.return_action == ReturnActionType.EXCHANGE and not data.exchange_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Для обміну (exchange) необхідно вказати exchange_items — "
+                   "список товарів, на які відбувається обмін",
+        )
+
     invoice = ReturnInvoice(
-        number=data.number,
+        number=number,
         supplier_id=data.supplier_id,
-        return_date=data.return_date,
+        return_date=data.return_date.replace(tzinfo=None) if data.return_date.tzinfo else data.return_date,
+        return_action=data.return_action,
         is_fiscal=data.is_fiscal,
         notes=data.notes,
-        total_amount=data.total_amount,
+        total_amount=total_amount,
         status=ReturnInvoiceStatus.DRAFT,
     )
     session.add(invoice)
@@ -104,7 +156,10 @@ async def create_return_invoice(
 
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()
@@ -121,7 +176,10 @@ async def update_return_invoice(
     """Оновлює повернення постачальнику."""
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .where(ReturnInvoice.id == return_id)
     )
     invoice = result.scalar_one_or_none()
@@ -137,7 +195,7 @@ async def update_return_invoice(
             detail="Можна редагувати тільки чернетки",
         )
 
-    update_data = data.model_dump(exclude_unset=True, exclude={"items"})
+    update_data = data.model_dump(exclude_unset=True, exclude={"items", "exchange_items"})
     for field, value in update_data.items():
         setattr(invoice, field, value)
 
@@ -158,7 +216,10 @@ async def update_return_invoice(
 
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()
@@ -197,11 +258,48 @@ async def confirm_return_invoice(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.require_admin),
 ):
-    """Підтверджує або скасовує повернення постачальнику."""
+    """
+    Підтверджує або скасовує повернення постачальнику.
+
+    При підтвердженні з return_action = exchange:
+    - Зменшує залишок повернутого товару
+    - Створює прибуткову накладну на новий товар
+    - Збільшує залишок нового товару
+    - Зв'язує повернення з новою накладною
+
+    exchange_items передаються в тілі запиту як частина ReturnInvoiceConfirmRequest.
+    """
     doc_service = DocumentService(session)
 
     if data.status == ReturnInvoiceStatus.CONFIRMED:
-        invoice = await doc_service.confirm_return_invoice(return_id)
+        # Отримуємо повернення, щоб дізнатися return_action
+        result = await session.execute(
+            select(ReturnInvoice).where(ReturnInvoice.id == return_id)
+        )
+        return_invoice = result.scalar_one_or_none()
+        if not return_invoice:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Повернення з ID '{return_id}' не знайдено",
+            )
+
+        # Конвертуємо exchange_items з Pydantic моделей в dict
+        exchange_items = None
+        if data.exchange_items:
+            exchange_items = [
+                {
+                    "product_id": item.product_id,
+                    "quantity": item.quantity,
+                    "price": item.price,
+                    "total": item.total,
+                }
+                for item in data.exchange_items
+            ]
+
+        invoice = await doc_service.confirm_return_invoice(
+            return_id,
+            exchange_items=exchange_items,
+        )
     elif data.status == ReturnInvoiceStatus.CANCELLED:
         invoice = await doc_service.cancel_return_invoice(return_id)
     else:
@@ -212,7 +310,10 @@ async def confirm_return_invoice(
 
     result = await session.execute(
         select(ReturnInvoice)
-        .options(selectinload(ReturnInvoice.items))
+        .options(
+            selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
+            selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()

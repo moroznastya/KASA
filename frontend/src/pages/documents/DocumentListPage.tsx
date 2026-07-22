@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FileText, Search, CheckCircle, XCircle, Eye } from 'lucide-react';
+import { Plus, FileText, Search, CheckCircle, XCircle, Eye, ShoppingCart } from 'lucide-react';
 import { useDocuments, useConfirmDocument, useCancelDocument } from '@/hooks/useDocuments';
 import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
@@ -14,6 +14,7 @@ import { Document, DocumentType } from '@/types/document';
 const documentTypeOptions = [
   { value: '', label: 'Всі типи' },
   { value: 'invoice', label: 'Прибуткові накладні' },
+  { value: 'purchase_order', label: 'Замовлення постачальнику' },
   { value: 'transfer', label: 'Переміщення' },
   { value: 'write_off', label: 'Списання' },
   { value: 'return_invoice', label: 'Повернення' },
@@ -28,6 +29,7 @@ const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'war
 /** Мапа типів документів -> шлях для перегляду */
 const documentViewPaths: Record<string, string> = {
   invoice: '/documents/invoice',
+  purchase_order: '/documents/purchase-order',
   transfer: '/documents/transfer',
   write_off: '/documents/write-off',
   return_invoice: '/documents/return',
@@ -177,13 +179,20 @@ const DocumentListPage: React.FC = () => {
             Управління документами
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="secondary"
             onClick={() => navigate('/documents/invoice/new')}
             icon={<Plus className="w-4 h-4" />}
           >
             Накладна
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => navigate('/documents/purchase-order/new')}
+            icon={<ShoppingCart className="w-4 h-4" />}
+          >
+            Замовлення
           </Button>
           <Button
             variant="secondary"

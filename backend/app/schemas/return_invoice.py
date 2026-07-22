@@ -9,7 +9,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.return_invoice import ReturnInvoiceStatus
+from app.models.return_invoice import ReturnInvoiceStatus, ReturnActionType
+
+
+class ProductBrief(BaseModel):
+    """Скорочена інформація про товар для відображення в позиціях."""
+    id: UUID
+    title: str
+    barcode: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReturnInvoiceItemCreate(BaseModel):
@@ -20,11 +29,20 @@ class ReturnInvoiceItemCreate(BaseModel):
     total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
 
 
+class ExchangeItemCreate(BaseModel):
+    """Схема створення позиції обміну (новий товар замість повернутого)."""
+    product_id: UUID = Field(..., description="ID нового товару")
+    quantity: Decimal = Field(..., max_digits=10, decimal_places=3, description="Кількість")
+    price: Decimal = Field(..., max_digits=10, decimal_places=2, description="Ціна за одиницю (грн)")
+    total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
+
+
 class ReturnInvoiceItemResponse(BaseModel):
     """Схема відповіді з даними позиції повернення."""
     id: UUID
     return_invoice_id: UUID
     product_id: UUID
+    product: Optional[ProductBrief] = Field(None, description="Інформація про товар")
     quantity: Decimal
     price: Decimal
     total: Decimal
@@ -33,15 +51,46 @@ class ReturnInvoiceItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExchangeInvoiceItemBrief(BaseModel):
+    """Скорочена інформація про позицію прибуткової накладної при обміні."""
+    id: UUID
+    product_id: UUID
+    product: Optional[ProductBrief] = Field(None, description="Інформація про товар")
+    quantity: Decimal
+    price: Decimal
+    total: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExchangeInvoiceBrief(BaseModel):
+    """Скорочена інформація про прибуткову накладну, створену при обміні."""
+    id: UUID
+    number: str
+    total_amount: Optional[Decimal] = None
+    items: list[ExchangeInvoiceItemBrief] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ReturnInvoiceCreate(BaseModel):
     """Схема створення нового повернення постачальнику."""
-    number: str = Field(..., max_length=50, description="Номер документа")
+    number: Optional[str] = Field(None, max_length=50, description="Номер документа (якщо не вказано, генерується автоматично)")
     supplier_id: UUID = Field(..., description="ID постачальника")
     return_date: datetime = Field(..., description="Дата повернення")
+    return_action: ReturnActionType = Field(
+        ReturnActionType.DEDUCT_FROM_DEBT,
+        description="Дія при підтвердженні: deduct_from_debt / add_to_cash / exchange",
+    )
     is_fiscal: bool = Field(False, description="Фіскальний документ")
     notes: Optional[str] = Field(None, description="Причина повернення / нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: list[ReturnInvoiceItemCreate] = Field(default_factory=list, description="Позиції повернення")
+    # Поля для обміну на інший товар
+    exchange_items: Optional[list[ExchangeItemCreate]] = Field(
+        None,
+        description="Товари для обміну (обов'язково, якщо return_action = exchange)",
+    )
 
 
 class ReturnInvoiceUpdate(BaseModel):
@@ -49,10 +98,15 @@ class ReturnInvoiceUpdate(BaseModel):
     number: Optional[str] = Field(None, max_length=50, description="Номер документа")
     supplier_id: Optional[UUID] = Field(None, description="ID постачальника")
     return_date: Optional[datetime] = Field(None, description="Дата повернення")
+    return_action: Optional[ReturnActionType] = Field(None, description="Дія при підтвердженні")
     is_fiscal: Optional[bool] = Field(None, description="Фіскальний документ")
     notes: Optional[str] = Field(None, description="Причина повернення / нотатки")
     total_amount: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Загальна сума")
     items: Optional[list[ReturnInvoiceItemCreate]] = Field(None, description="Позиції повернення")
+    exchange_items: Optional[list[ExchangeItemCreate]] = Field(
+        None,
+        description="Товари для обміну (обов'язково, якщо return_action = exchange)",
+    )
 
 
 class ReturnInvoiceResponse(BaseModel):
@@ -62,9 +116,12 @@ class ReturnInvoiceResponse(BaseModel):
     supplier_id: UUID
     return_date: datetime
     status: ReturnInvoiceStatus
+    return_action: ReturnActionType = ReturnActionType.DEDUCT_FROM_DEBT
     is_fiscal: bool = False
     notes: Optional[str] = None
     total_amount: Optional[Decimal] = None
+    exchange_invoice_id: Optional[UUID] = Field(None, description="ID прибуткової накладної при обміні")
+    exchange_invoice: Optional[ExchangeInvoiceBrief] = Field(None, description="Прибуткова накладна при обміні")
     created_at: datetime
     updated_at: datetime
     items: list[ReturnInvoiceItemResponse] = []
@@ -75,3 +132,7 @@ class ReturnInvoiceResponse(BaseModel):
 class ReturnInvoiceConfirmRequest(BaseModel):
     """Схема підтвердження повернення (зміна статусу)."""
     status: ReturnInvoiceStatus = Field(..., description="Новий статус (confirmed / cancelled)")
+    exchange_items: Optional[list[ExchangeItemCreate]] = Field(
+        None,
+        description="Товари для обміну (обов'язково, якщо return_action = exchange)",
+    )

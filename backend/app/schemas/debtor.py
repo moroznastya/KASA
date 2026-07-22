@@ -27,6 +27,7 @@ class DebtorUpdate(BaseModel):
 class DebtorPayRequest(BaseModel):
     """Схема запиту на погашення боргу."""
     amount: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2, description="Сума для погашення")
+    payment_method: Optional[str] = Field(None, description="Спосіб оплати: cash, card, transfer, mixed")
 
 
 class DebtorResponse(BaseModel):
@@ -38,6 +39,17 @@ class DebtorResponse(BaseModel):
     total_debt: Decimal = Decimal("0.00")
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DebtorPaymentResponse(BaseModel):
+    """Схема відповіді з даними оплати боргу."""
+    id: UUID
+    debtor_id: UUID
+    amount: Decimal
+    payment_method: Optional[str] = None
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

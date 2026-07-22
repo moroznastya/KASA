@@ -22,6 +22,7 @@ from app.models.invoice import Invoice, InvoiceItem  # noqa: F401
 from app.models.transfer import Transfer, TransferItem  # noqa: F401
 from app.models.write_off import WriteOff, WriteOffItem  # noqa: F401
 from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem  # noqa: F401
+from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem  # noqa: F401
 
 # ── Продажі ────────────────────────────────────
 from app.models.receipt import Receipt, ReceiptItem  # noqa: F401
@@ -45,6 +46,7 @@ __all__ = [
     "Transfer", "TransferItem",
     "WriteOff", "WriteOffItem",
     "ReturnInvoice", "ReturnInvoiceItem",
+    "PurchaseOrder", "PurchaseOrderItem",
     # Продажі
     "Receipt", "ReceiptItem",
     # Взаєморозрахунки

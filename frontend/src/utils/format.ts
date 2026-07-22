@@ -90,7 +90,8 @@ export function formatDocumentType(type: string): string {
     invoice: 'Прибуткова накладна',
     transfer: 'Переміщення',
     write_off: 'Списання',
-    return_invoice: 'Повернення постачальнику',
+    return_invoice: "Повернення постачальнику",
+    purchase_order: "Замовлення постачальнику",
   };
   return types[type] || type;
 }
