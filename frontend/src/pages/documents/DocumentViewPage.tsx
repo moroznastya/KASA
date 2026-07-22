@@ -155,9 +155,18 @@ const DocumentViewPage: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Постачальник</p>
-                <p className="font-medium text-gray-900 dark:text-gray-100">
-                  {doc.supplier?.name || doc.supplier_name || '-'}
-                </p>
+                {doc.supplier?.id ? (
+                  <button
+                    onClick={() => navigate(`/suppliers/${doc.supplier.id}/edit`)}
+                    className="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 hover:underline text-left"
+                  >
+                    {doc.supplier.name}
+                  </button>
+                ) : (
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {doc.supplier?.name || doc.supplier_name || '-'}
+                  </p>
+                )}
               </div>
             </>
           )}
@@ -179,9 +188,18 @@ const DocumentViewPage: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Постачальник</p>
-                <p className="font-medium text-gray-900 dark:text-gray-100">
-                  {doc.supplier?.name || doc.supplier_name || '-'}
-                </p>
+                {doc.supplier?.id ? (
+                  <button
+                    onClick={() => navigate(`/suppliers/${doc.supplier.id}/edit`)}
+                    className="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 hover:underline text-left"
+                  >
+                    {doc.supplier.name}
+                  </button>
+                ) : (
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {doc.supplier?.name || doc.supplier_name || '-'}
+                  </p>
+                )}
               </div>
             </>
           )}
@@ -236,9 +254,18 @@ const DocumentViewPage: React.FC = () => {
               </div>
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Постачальник</p>
-                <p className="font-medium text-gray-900 dark:text-gray-100">
-                  {doc.supplier?.name || doc.supplier_name || '-'}
-                </p>
+                {doc.supplier?.id ? (
+                  <button
+                    onClick={() => navigate(`/suppliers/${doc.supplier.id}/edit`)}
+                    className="font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 hover:underline text-left"
+                  >
+                    {doc.supplier.name}
+                  </button>
+                ) : (
+                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                    {doc.supplier?.name || doc.supplier_name || '-'}
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Дія</p>
@@ -279,21 +306,38 @@ const DocumentViewPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                  {doc.items.map((item: any) => (
-                    <tr key={item.id}>
-                      <td className="table-cell">
-                        <p className="font-medium text-gray-900 dark:text-gray-100">
-                          {item.product?.title || item.product_name || '-'}
-                        </p>
-                        {item.product?.barcode && (
-                          <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
-                        )}
-                      </td>
-                      <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
-                      <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
-                      <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
-                    </tr>
-                  ))}
+                  {doc.items.map((item: any) => {
+                    const productId = item.product?.id || item.product_id;
+                    return (
+                      <tr
+                        key={item.id}
+                        className={`group cursor-pointer transition-colors ${
+                          productId
+                            ? 'hover:bg-primary-50 dark:hover:bg-primary-900/10'
+                            : ''
+                        }`}
+                        onClick={() => {
+                          if (productId) navigate(`/products/${productId}/edit`);
+                        }}
+                        title={productId ? 'Відкрити картку товару' : undefined}
+                      >
+                        <td className="table-cell">
+                          <p className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
+                            {item.product?.title || item.product_name || '-'}
+                            {productId && (
+                              <ExternalLink className="w-3 h-3 text-gray-300 group-hover:text-primary-500 transition-colors opacity-0 group-hover:opacity-100" />
+                            )}
+                          </p>
+                          {item.product?.barcode && (
+                            <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
+                          )}
+                        </td>
+                        <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
+                        <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
+                        <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
@@ -326,11 +370,15 @@ const DocumentViewPage: React.FC = () => {
                 Відкрити накладну
               </button>
             </div>
-            <div className="bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-3">
+            <div
+              className="bg-purple-50 dark:bg-purple-900/10 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-3 cursor-pointer hover:bg-purple-100 dark:hover:bg-purple-900/20 transition-colors"
+              onClick={() => navigate(`/documents/invoice/${doc.exchange_invoice.id}`)}
+              title="Відкрити накладну"
+            >
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Номер накладної</p>
-                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                  <p className="font-medium text-primary-600 dark:text-primary-400 hover:underline">
                     {doc.exchange_invoice.number}
                   </p>
                 </div>
@@ -353,21 +401,38 @@ const DocumentViewPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                  {doc.exchange_invoice.items?.map((item: any) => (
-                    <tr key={item.id}>
-                      <td className="table-cell">
-                        <p className="font-medium text-gray-900 dark:text-gray-100">
-                          {item.product?.title || item.product_name || '-'}
-                        </p>
-                        {item.product?.barcode && (
-                          <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
-                        )}
-                      </td>
-                      <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
-                      <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
-                      <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
-                    </tr>
-                  ))}
+                  {doc.exchange_invoice.items?.map((item: any) => {
+                    const productId = item.product?.id || item.product_id;
+                    return (
+                      <tr
+                        key={item.id}
+                        className={`group cursor-pointer transition-colors ${
+                          productId
+                            ? 'hover:bg-primary-50 dark:hover:bg-primary-900/10'
+                            : ''
+                        }`}
+                        onClick={() => {
+                          if (productId) navigate(`/products/${productId}/edit`);
+                        }}
+                        title={productId ? 'Відкрити картку товару' : undefined}
+                      >
+                        <td className="table-cell">
+                          <p className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
+                            {item.product?.title || item.product_name || '-'}
+                            {productId && (
+                              <ExternalLink className="w-3 h-3 text-gray-300 group-hover:text-primary-500 transition-colors opacity-0 group-hover:opacity-100" />
+                            )}
+                          </p>
+                          {item.product?.barcode && (
+                            <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
+                          )}
+                        </td>
+                        <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
+                        <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
+                        <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -390,11 +455,15 @@ const DocumentViewPage: React.FC = () => {
                 Відкрити накладну
               </button>
             </div>
-            <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-4">
+            <div
+              className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-4 cursor-pointer hover:bg-green-100 dark:hover:bg-green-900/20 transition-colors"
+              onClick={() => navigate(`/documents/invoice/${doc.invoice.id}`)}
+              title="Відкрити накладну"
+            >
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Номер накладної</p>
-                  <p className="font-medium text-gray-900 dark:text-gray-100">
+                  <p className="font-medium text-primary-600 dark:text-primary-400 hover:underline">
                     {doc.invoice.number}
                   </p>
                 </div>

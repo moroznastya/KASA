@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft, Package, Search, TrendingUp, TrendingDown,
   DollarSign, Box, BarChart3, ShoppingCart, Plus, Minus,
-  Trash2, Check, X, FileText, AlertCircle
+  Trash2, Check, X, FileText, AlertCircle, ExternalLink
 } from 'lucide-react';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
@@ -63,6 +63,15 @@ const DOCUMENT_TYPE_COLORS: Record<string, string> = {
   transfer: 'text-purple-600 bg-purple-50 dark:bg-purple-900/20 border-purple-200',
 };
 
+
+/** Мапа типів документів на шляхи перегляду */
+const DOCUMENT_TYPE_ROUTES: Record<string, string> = {
+  invoice: "/documents/invoice",
+  return_invoice: "/documents/return",
+  receipt: "/receipts",
+  write_off: "/documents/write-off",
+  transfer: "/documents/transfer",
+};
 const SupplierProductsPage: React.FC = () => {
   const { id: supplierId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -540,7 +549,14 @@ const SupplierProductsPage: React.FC = () => {
                       return (
                         <div
                           key={movement.id}
-                          className="flex items-center justify-between p-3 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors"
+                          className="flex items-center justify-between p-3 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-primary-50 dark:hover:bg-primary-900/10 cursor-pointer transition-colors group"
+                          onClick={() => {
+                            const route = DOCUMENT_TYPE_ROUTES[movement.document_type];
+                            if (route && movement.document_id) {
+                              navigate(`${route}/${movement.document_id}`);
+                            }
+                          }}
+                          title={movement.document_id ? 'Відкрити документ' : undefined}
                         >
                           <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
@@ -560,8 +576,9 @@ const SupplierProductsPage: React.FC = () => {
                                 <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border ${typeColor}`}>
                                   {typeLabel}
                                 </span>
-                                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                <span className="text-sm font-medium text-primary-600 dark:text-primary-400 group-hover:underline flex items-center gap-1">
                                   №{movement.document_number}
+                                  <ExternalLink className="w-3 h-3 text-gray-300 group-hover:text-primary-500 transition-colors opacity-0 group-hover:opacity-100" />
                                 </span>
                               </div>
                               <p className="text-xs text-gray-400 mt-0.5">
