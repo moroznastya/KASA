@@ -23,6 +23,7 @@ interface CombinedEntry {
   paymentAmount?: number;
   paymentMethod?: string | null;
   receiptId?: string;
+  runningBalance: number;
 }
 
 const getCombinedEntries = (receipts: ReceiptType[], payments: DebtorPayment[]): CombinedEntry[] => {
@@ -40,6 +41,7 @@ const getCombinedEntries = (receipts: ReceiptType[], payments: DebtorPayment[]):
       paidAmount: paid >= total ? total : paid,
       debtAmount: Math.max(0, total - paid),
       receiptId: r.id,
+      runningBalance: 0, // буде обчислено нижче
     });
   }
 
@@ -50,11 +52,26 @@ const getCombinedEntries = (receipts: ReceiptType[], payments: DebtorPayment[]):
       date: p.created_at,
       paymentAmount: p.amount,
       paymentMethod: p.payment_method,
+      runningBalance: 0, // буде обчислено нижче
     });
   }
 
-  // Сортуємо за датою (найновіші зверху)
-  entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Сортуємо від найстаріших до найновіших для розрахунку балансу
+  entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  // Розраховуємо runningBalance
+  let balance = 0;
+  for (const entry of entries) {
+    if (entry.type === 'receipt') {
+      balance += entry.debtAmount!; // додаємо борг по чеку
+    } else {
+      balance -= entry.paymentAmount!; // віднімаємо оплату
+    }
+    entry.runningBalance = Math.max(0, balance); // залишок не може бути менше 0
+  }
+
+  // Розвертаємо — найновіші зверху
+  entries.reverse();
 
   return entries;
 };
@@ -128,7 +145,7 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
                   <th className="text-left py-2 text-gray-500 dark:text-gray-400 font-medium">Дата</th>
                   <th className="text-right py-2 text-gray-500 dark:text-gray-400 font-medium">Сума</th>
                   <th className="text-right py-2 text-gray-500 dark:text-gray-400 font-medium">Сплачено</th>
-                  <th className="text-right py-2 text-gray-500 dark:text-gray-400 font-medium">Борг</th>
+                  <th className="text-right py-2 text-gray-500 dark:text-gray-400 font-medium">Залишок боргу</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-slate-700">
@@ -171,7 +188,7 @@ const DebtorCard: React.FC<DebtorCardProps> = ({ debtor, receipts, payments, onP
                       {entry.type === 'receipt' ? formatCurrency(entry.paidAmount!) : formatCurrency(entry.paymentAmount!)}
                     </td>
                     <td className="py-2 text-right text-danger-600 font-medium">
-                      {entry.type === 'receipt' ? formatCurrency(entry.debtAmount!) : '0.00'}
+                      {formatCurrency(entry.runningBalance)}
                     </td>
                   </tr>
                 ))}
