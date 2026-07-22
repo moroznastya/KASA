@@ -1175,7 +1175,9 @@ const PosPage: React.FC = () => {
             >
               {debtorModalDebtor
                 ? `Створити чек (борг на ${debtorModalDebtor.name})`
-                : 'Оберіть боржника'}
+                : debtorModalQuery.trim()
+                  ? `Створити боржника "${debtorModalQuery.trim()}"`
+                  : 'Оберіть боржника'}
             </Button>
           </div>
         </div>
