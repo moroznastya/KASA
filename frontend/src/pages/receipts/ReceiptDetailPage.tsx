@@ -31,8 +31,9 @@ const ReceiptDetailPage: React.FC = () => {
   };
 
   const handleProductClick = (productId: string) => {
-    // Відкриваємо картку товару в новій вкладці
-    window.open(`/products/${productId}/edit`, '_blank');
+    // Відкриваємо картку товару в поточній вкладці
+    // goBack() потім поверне назад в чек
+    navigate(`/products/${productId}/edit`);
   };
 
   if (isLoading) {
