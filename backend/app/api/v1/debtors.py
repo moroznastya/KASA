@@ -9,6 +9,7 @@ API роутер для роботи з боржниками (Debtors).
   - PUT    /debtors/{id}                   — оновити боржника
   - POST   /debtors/{id}/pay               — погашення боргу (внесення оплати)
   - GET    /debtors/{debtor_id}/receipts   — список чеків боржника
+  - GET    /debtors/{debtor_id}/payments   — список оплат боргу
 """
 
 from decimal import Decimal
@@ -27,6 +28,7 @@ from app.schemas.debtor import (
     DebtorUpdate,
     DebtorResponse,
     DebtorPayRequest,
+    DebtorPaymentResponse,
 )
 from app.schemas.receipt import ReceiptResponse
 from app.services.auth_service import AuthService
@@ -246,3 +248,34 @@ async def get_debtor_receipts(
                 item.product_name = ""
 
     return [ReceiptResponse.model_validate(r) for r in receipts]
+
+
+@router.get("/{debtor_id}/payments", response_model=list[DebtorPaymentResponse])
+async def get_debtor_payments(
+    debtor_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Повертає список оплат боргу для боржника, відсортованих за датою (найновіші зверху).
+
+    Якщо боржника з вказаним ID не знайдено — повертає 404.
+    """
+    # Перевіряємо, чи існує боржник
+    debtor_result = await session.execute(
+        select(Debtor).where(Debtor.id == debtor_id)
+    )
+    debtor = debtor_result.scalar_one_or_none()
+    if not debtor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Боржника з ID '{debtor_id}' не знайдено",
+        )
+
+    result = await session.execute(
+        select(DebtorPayment)
+        .where(DebtorPayment.debtor_id == debtor_id)
+        .order_by(desc(DebtorPayment.created_at))
+    )
+    payments = list(result.scalars().all())
+    return [DebtorPaymentResponse.model_validate(p) for p in payments]

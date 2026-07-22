@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, ArrowLeft, CheckCircle, Banknote } from 'lucide-react';
-import { debtorService, Debtor } from '@/services/debtorService';
+import { debtorService, Debtor, DebtorPayment } from '@/services/debtorService';
 import { Receipt } from '@/types/receipt';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -22,6 +22,7 @@ const DebtorsPage: React.FC = () => {
   // Debtor card modal state
   const [selectedDebtorForCard, setSelectedDebtorForCard] = useState<Debtor | null>(null);
   const [selectedDebtorReceipts, setSelectedDebtorReceipts] = useState<Receipt[]>([]);
+  const [selectedDebtorPayments, setSelectedDebtorPayments] = useState<DebtorPayment[]>([]);
   const [isCardModalOpen, setIsCardModalOpen] = useState(false);
   const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
 
@@ -72,10 +73,15 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
     setIsCardModalOpen(true);
     setIsLoadingReceipts(true);
     try {
-      const receipts = await debtorService.getDebtorReceipts(debtor.id);
+      const [receipts, payments] = await Promise.all([
+        debtorService.getDebtorReceipts(debtor.id),
+        debtorService.getDebtorPayments(debtor.id),
+      ]);
       setSelectedDebtorReceipts(receipts);
+      setSelectedDebtorPayments(payments);
     } catch {
       setSelectedDebtorReceipts([]);
+      setSelectedDebtorPayments([]);
     } finally {
       setIsLoadingReceipts(false);
     }
@@ -224,6 +230,7 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
           setIsCardModalOpen(false);
           setSelectedDebtorForCard(null);
           setSelectedDebtorReceipts([]);
+          setSelectedDebtorPayments([]);
         }}
         title={selectedDebtorForCard?.name || 'Картка боржника'}
         size="lg"
@@ -236,6 +243,7 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
           <DebtorCard
             debtor={selectedDebtorForCard}
             receipts={selectedDebtorReceipts}
+            payments={selectedDebtorPayments}
             onPay={(debtor) => {
               setIsCardModalOpen(false);
               setSelectedDebtor(debtor);

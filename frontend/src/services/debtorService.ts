@@ -22,6 +22,14 @@ export interface DebtorPayRequest {
   payment_method?: string;
 }
 
+export interface DebtorPayment {
+  id: string;
+  debtor_id: string;
+  amount: number;
+  payment_method: string | null;
+  created_at: string;
+}
+
 export const debtorService = {
   async list(): Promise<Debtor[]> {
     const response = await api.get<Debtor[]>('/debtors');
@@ -57,6 +65,11 @@ export const debtorService = {
 
   async getDebtorReceipts(debtorId: string): Promise<Receipt[]> {
     const response = await api.get<Receipt[]>(`/debtors/${debtorId}/receipts`);
+    return response.data;
+  },
+
+  async getDebtorPayments(debtorId: string): Promise<DebtorPayment[]> {
+    const response = await api.get<DebtorPayment[]>(`/debtors/${debtorId}/payments`);
     return response.data;
   },
 };
