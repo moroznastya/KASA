@@ -233,7 +233,7 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
           setSelectedDebtorPayments([]);
         }}
         title={selectedDebtorForCard?.name || 'Картка боржника'}
-        size="lg"
+        size="4xl"
       >
         {isLoadingReceipts ? (
           <div className="flex justify-center py-10">
