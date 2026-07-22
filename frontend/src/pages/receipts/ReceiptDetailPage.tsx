@@ -5,8 +5,10 @@ import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { ArrowLeft, Printer, Receipt, ExternalLink } from 'lucide-react';
 
+import { useBackNavigation } from '@/hooks/useBackNavigation';
 const ReceiptDetailPage: React.FC = () => {
   const navigate = useNavigate();
+  const { goBack } = useBackNavigation();
   const { id } = useParams<{ id: string }>();
   const { data: receipt, isLoading } = useReceipt(id || '');
 
@@ -45,7 +47,7 @@ const ReceiptDetailPage: React.FC = () => {
     return (
       <div className="text-center py-12">
         <p className="text-gray-500 dark:text-gray-400">Чек не знайдено</p>
-        <Button variant="secondary" className="mt-4" onClick={() => navigate('/receipts')}>
+        <Button variant="secondary" className="mt-4" onClick={goBack}>
           Назад до списку
         </Button>
       </div>
@@ -57,7 +59,7 @@ const ReceiptDetailPage: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => navigate('/receipts')}>
+          <Button variant="ghost" onClick={goBack}>
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <div>

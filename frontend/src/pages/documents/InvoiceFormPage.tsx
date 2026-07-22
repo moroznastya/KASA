@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
+import { useBackNavigation } from '@/hooks/useBackNavigation';
 /** Спосіб оплати з постачальником */
 type PaymentMethod = 'credit' | 'bank_transfer' | 'cash' | 'other';
 
@@ -35,6 +36,7 @@ interface CartItem {
 
 const InvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const { goBack } = useBackNavigation();
   const { data: suppliersData } = useAllSuppliers();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
@@ -251,7 +253,7 @@ const InvoiceFormPage: React.FC = () => {
     <div className="max-w-5xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
         <button
-          onClick={() => navigate('/documents')}
+          onClick={goBack}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -488,7 +490,7 @@ const InvoiceFormPage: React.FC = () => {
         />
 
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
-          <Button variant="secondary" onClick={() => navigate('/documents')}>
+          <Button variant="secondary" onClick={goBack}>
             Скасувати
           </Button>
           <Button

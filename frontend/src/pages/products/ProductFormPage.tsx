@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { ArrowLeft, Save, Percent, DollarSign, Plus, Hash } from 'lucide-react';
 import { ProductCreate, VatRate, UnitOfMeasure } from '@/types/product';
 
+import { useBackNavigation } from '@/hooks/useBackNavigation';
 const taxRateOptions = [
   { value: 0, label: '0%' },
   { value: 5, label: '5%' },
@@ -68,6 +69,7 @@ function calcMarkupFromCostAndPrice(cost: number | null, price: number): number 
 
 const ProductFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const { goBack } = useBackNavigation();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
 
@@ -265,7 +267,7 @@ const ProductFormPage: React.FC = () => {
     <div className="max-w-2xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
         <button
-          onClick={() => navigate('/products')}
+          onClick={goBack}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -502,7 +504,7 @@ const ProductFormPage: React.FC = () => {
           <Button
             type="button"
             variant="secondary"
-            onClick={() => navigate('/products')}
+            onClick={goBack}
           >
             Скасувати
           </Button>

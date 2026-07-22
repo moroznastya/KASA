@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/Input';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
+import { useBackNavigation } from '@/hooks/useBackNavigation';
 interface ProductItem {
   id: string;
   barcode: string | null;
@@ -65,6 +66,7 @@ const DOCUMENT_TYPE_COLORS: Record<string, string> = {
 const SupplierProductsPage: React.FC = () => {
   const { id: supplierId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { goBack } = useBackNavigation();
   const [search, setSearch] = useState('');
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
 
@@ -177,7 +179,7 @@ const SupplierProductsPage: React.FC = () => {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => navigate('/suppliers')}
+            onClick={goBack}
             className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
