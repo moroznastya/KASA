@@ -312,6 +312,8 @@ async def create_receipt(
     - Для RETURN: збільшує залишки товарів на складі
     - Зберігає purchase_price (собівартість) для кожного товару
     - Якщо вказано debtor_id та paid_amount < total_amount — різниця додається до боргу
+    - Якщо debtor_id вказано, але paid_amount >= total_amount — борг не створюється
+    - Якщо debtor_id не вказано — звичайний чек без боргу
     """
     product_service = ProductService(session)
 
@@ -331,10 +333,24 @@ async def create_receipt(
 
     cashier_id = data.cashier_id or current_user.id
 
-    # Визначаємо paid_amount
+    # Визначаємо paid_amount: якщо не передано — повна оплата
     paid_amount = data.paid_amount
     if paid_amount is None:
-        paid_amount = data.total_amount  # за замовчуванням — повна оплата
+        paid_amount = data.total_amount
+
+    # Валідація: paid_amount не може бути від'ємним
+    if paid_amount < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сума оплати (paid_amount) не може бути від'ємною",
+        )
+
+    # Валідація: paid_amount не може перевищувати total_amount
+    if paid_amount > data.total_amount:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сума оплати (paid_amount) не може перевищувати загальну суму чеку (total_amount)",
+        )
 
     # Якщо є debtor_id — перевіряємо чи існує боржник
     debtor = None
@@ -398,10 +414,17 @@ async def create_receipt(
                 quantity_change=item_data.quantity,
             )
 
-    # Якщо є боржник і paid_amount < total_amount — додаємо різницю до боргу
+    # ─── Логіка боргу ──────────────────────────────────────────────
+    # Якщо є debtor_id і paid_amount < total_amount — додаємо різницю до боргу
     if debtor and paid_amount < data.total_amount:
         debt_amount = data.total_amount - paid_amount
         debtor.total_debt += debt_amount
+
+    # Якщо debtor_id є, але paid_amount >= total_amount — борг не створюється
+    # (нічого не робимо, debtor_id просто зберігається в чеку для історії)
+
+    # Якщо debtor_id немає — все працює як звичайний чек (нічого не робимо)
+    # ────────────────────────────────────────────────────────────────
 
     # Якщо борг став 0 або менше — автоматично видаляємо боржника
     if debtor and float(debtor.total_debt) <= 0:

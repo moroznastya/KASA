@@ -4,6 +4,7 @@ export interface Receipt {
   receipt_type: 'sale' | 'return';
   items: ReceiptItem[];
   total_amount: string;
+  paid_amount?: string;
   vat_amount: string;
   payment_method: PaymentMethod;
   payment_status: PaymentStatus;

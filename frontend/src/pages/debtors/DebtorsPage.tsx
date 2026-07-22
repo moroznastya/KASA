@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, ArrowLeft, CheckCircle, Banknote } from 'lucide-react';
 import { debtorService, Debtor } from '@/services/debtorService';
+import { Receipt } from '@/types/receipt';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency } from '@/utils/format';
+import DebtorListItem from './DebtorListItem';
+import DebtorCard from './DebtorCard';
 import toast from 'react-hot-toast';
 
 const DebtorsPage: React.FC = () => {
@@ -15,6 +18,12 @@ const DebtorsPage: React.FC = () => {
   const [newDebtorName, setNewDebtorName] = useState('');
   const [newDebtorPhone, setNewDebtorPhone] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+
+  // Debtor card modal state
+  const [selectedDebtorForCard, setSelectedDebtorForCard] = useState<Debtor | null>(null);
+  const [selectedDebtorReceipts, setSelectedDebtorReceipts] = useState<Receipt[]>([]);
+  const [isCardModalOpen, setIsCardModalOpen] = useState(false);
+  const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
 
 type DebtPaymentMethod = 'cash' | 'card' | 'transfer' | 'mixed';
 
@@ -57,6 +66,20 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  const handleDebtorClick = async (debtor: Debtor) => {
+    setSelectedDebtorForCard(debtor);
+    setIsCardModalOpen(true);
+    setIsLoadingReceipts(true);
+    try {
+      const receipts = await debtorService.getDebtorReceipts(debtor.id);
+      setSelectedDebtorReceipts(receipts);
+    } catch {
+      setSelectedDebtorReceipts([]);
+    } finally {
+      setIsLoadingReceipts(false);
+    }
+  };
 
   const handleCreateDebtor = async () => {
     if (!newDebtorName.trim()) {
@@ -183,57 +206,43 @@ const debtPaymentOptions: { value: DebtPaymentMethod; label: string; icon: React
           )}
         </div>
       ) : (
-        <div className="grid gap-4">
+        <div className="space-y-3">
           {filteredDebtors.map((debtor) => (
-            <div
+            <DebtorListItem
               key={debtor.id}
-              className="card p-5 flex items-center justify-between hover:border-primary-300 dark:hover:border-primary-600 transition-all"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center flex-shrink-0">
-                    <span className="text-primary-700 dark:text-primary-400 font-bold text-lg">
-                      {debtor.name.charAt(0).toUpperCase()}
-                    </span>
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900 dark:text-gray-100">
-                      {debtor.name}
-                    </h3>
-                    {debtor.phone && (
-                      <p className="text-sm text-gray-500 flex items-center gap-1 mt-0.5">
-                        <Phone className="w-3 h-3" />
-                        {debtor.phone}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-6">
-                <div className="text-right">
-                  <p className="text-xs text-gray-400">Поточний борг</p>
-                  <p className={`text-xl font-bold ${debtor.total_debt > 0 ? 'text-danger-600' : 'text-success-600'}`}>
-                    {debtor.total_debt > 0 ? formatCurrency(debtor.total_debt) : '0.00 грн'}
-                  </p>
-                </div>
-                {debtor.total_debt > 0 && (
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setSelectedDebtor(debtor);
-                      setPayAmount('');
-                    }}
-                  >
-                    <CreditCard className="w-4 h-4 mr-2" />
-                    Сплатити
-                  </Button>
-                )}
-              </div>
-            </div>
+              debtor={debtor}
+              onClick={handleDebtorClick}
+            />
           ))}
         </div>
       )}
+
+      {/* Debtor card modal */}
+      <Modal
+        isOpen={isCardModalOpen}
+        onClose={() => {
+          setIsCardModalOpen(false);
+          setSelectedDebtorForCard(null);
+          setSelectedDebtorReceipts([]);
+        }}
+        title={selectedDebtorForCard?.name || 'Картка боржника'}
+        size="lg"
+      >
+        {isLoadingReceipts ? (
+          <div className="flex justify-center py-10">
+            <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
+          </div>
+        ) : selectedDebtorForCard ? (
+          <DebtorCard
+            debtor={selectedDebtorForCard}
+            receipts={selectedDebtorReceipts}
+            onPay={(debtor) => {
+              setIsCardModalOpen(false);
+              setSelectedDebtor(debtor);
+            }}
+          />
+        ) : null}
+      </Modal>
 
       {/* Create debtor modal */}
       <Modal

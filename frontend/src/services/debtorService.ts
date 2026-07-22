@@ -1,4 +1,5 @@
 import api from './api';
+import { Receipt } from '@/types/receipt';
 
 export interface Debtor {
   id: string;
@@ -51,6 +52,11 @@ export const debtorService = {
 
   async payDebt(id: string, data: DebtorPayRequest): Promise<Debtor> {
     const response = await api.post<Debtor>(`/debtors/${id}/pay`, data);
+    return response.data;
+  },
+
+  async getDebtorReceipts(debtorId: string): Promise<Receipt[]> {
+    const response = await api.get<Receipt[]>(`/debtors/${debtorId}/receipts`);
     return response.data;
   },
 };

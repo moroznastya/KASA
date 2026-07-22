@@ -2,12 +2,13 @@
 API роутер для роботи з боржниками (Debtors).
 
 Ендпоінти:
-  - GET    /debtors/search?query=...  — пошук боржників за ім'ям
-  - POST   /debtors                   — створити нового боржника
-  - GET    /debtors                   — список всіх боржників
-  - GET    /debtors/{id}              — отримати боржника за ID
-  - PUT    /debtors/{id}              — оновити боржника
-  - POST   /debtors/{id}/pay          — погашення боргу (внесення оплати)
+  - GET    /debtors/search?query=...       — пошук боржників за ім'ям
+  - POST   /debtors                        — створити нового боржника
+  - GET    /debtors                        — список всіх боржників
+  - GET    /debtors/{id}                   — отримати боржника за ID
+  - PUT    /debtors/{id}                   — оновити боржника
+  - POST   /debtors/{id}/pay               — погашення боргу (внесення оплати)
+  - GET    /debtors/{debtor_id}/receipts   — список чеків боржника
 """
 
 from decimal import Decimal
@@ -16,15 +17,18 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.models.debtor import Debtor, DebtorPayment
+from app.models.receipt import Receipt, ReceiptItem
 from app.schemas.debtor import (
     DebtorCreate,
     DebtorUpdate,
     DebtorResponse,
     DebtorPayRequest,
 )
+from app.schemas.receipt import ReceiptResponse
 from app.services.auth_service import AuthService
 
 router = APIRouter(
@@ -198,3 +202,47 @@ async def pay_debt(
     await session.flush()
     await session.refresh(debtor)
     return DebtorResponse.model_validate(debtor)
+
+
+@router.get("/{debtor_id}/receipts", response_model=list[ReceiptResponse])
+async def get_debtor_receipts(
+    debtor_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Повертає список чеків боржника, відсортованих за датою (найновіші зверху).
+
+    Якщо боржника з вказаним ID не знайдено — повертає 404.
+    """
+    # Перевіряємо, чи існує боржник
+    debtor_result = await session.execute(
+        select(Debtor).where(Debtor.id == debtor_id)
+    )
+    debtor = debtor_result.scalar_one_or_none()
+    if not debtor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Боржника з ID '{debtor_id}' не знайдено",
+        )
+
+    # Отримуємо чеки боржника з позиціями та товарами
+    result = await session.execute(
+        select(Receipt)
+        .options(
+            selectinload(Receipt.items).selectinload(ReceiptItem.product)
+        )
+        .where(Receipt.debtor_id == debtor_id)
+        .order_by(desc(Receipt.created_at))
+    )
+    receipts = list(result.scalars().all())
+
+    # Заповнюємо назви товарів для кожного item
+    for receipt in receipts:
+        for item in receipt.items:
+            if item.product:
+                item.product_name = item.product.title
+            else:
+                item.product_name = ""
+
+    return [ReceiptResponse.model_validate(r) for r in receipts]
