@@ -222,7 +222,7 @@ const InvoiceFormPage: React.FC = () => {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await api.post('/api/v1/ocr/invoice', formData);
+      const response = await api.post('/ocr/invoice', formData);
       const result = response.data;
 
       if (result.success) {
