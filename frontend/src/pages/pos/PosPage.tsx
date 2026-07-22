@@ -416,21 +416,6 @@ const PosPage: React.FC = () => {
     setShowDebtorModalDropdown(false);
   };
 
-  const handleCreateAndSelectDebtorModal = async () => {
-    if (!debtorModalQuery.trim()) {
-      toast.error("Введіть ім'я боржника");
-      return;
-    }
-    try {
-      const newDebtor = await debtorService.create({ name: debtorModalQuery.trim() });
-      setDebtorModalDebtor(newDebtor);
-      setDebtorModalQuery(newDebtor.name);
-      setShowDebtorModalDropdown(false);
-      toast.success(`Боржника "${newDebtor.name}" створено`);
-    } catch {
-      toast.error('Помилка створення боржника');
-    }
-  };
 
   const handleConfirmDebtorModal = async () => {
     let debtor = debtorModalDebtor;
@@ -508,21 +493,6 @@ const PosPage: React.FC = () => {
     }
   };
 
-  const handleCreateAndSelectDebtor = async () => {
-    if (!debtorQuery.trim()) {
-      toast.error('Введіть ім\'я боржника');
-      return;
-    }
-    try {
-      const newDebtor = await debtorService.create({ name: debtorQuery.trim() });
-      setSelectedDebtor(newDebtor);
-      setDebtorQuery(newDebtor.name);
-      setShowDebtorDropdown(false);
-      toast.success(`Боржника "${newDebtor.name}" створено`);
-    } catch {
-      toast.error('Помилка створення боржника');
-    }
-  };
 
   const changeAmount =
     paymentMethod === 'cash' && parseFloat(cashAmount) >= subtotal
@@ -1029,16 +999,7 @@ const PosPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Create new debtor hint */}
-              {debtorQuery.trim() && !selectedDebtor && !isSearchingDebtors && (
-                <button
-                  onClick={handleCreateAndSelectDebtor}
-                  className="mt-1 w-full px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors flex items-center gap-2"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Створити боржника &quot;{debtorQuery.trim()}&quot;</span>
-                </button>
-              )}
+
 
               {selectedDebtor && (
                 <div className="mt-2 px-3 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-lg flex items-center justify-between">
@@ -1170,16 +1131,7 @@ const PosPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Create new debtor */}
-              {debtorModalQuery.trim() && !debtorModalDebtor && !isSearchingDebtorModal && (
-                <button
-                  onClick={handleCreateAndSelectDebtorModal}
-                  className="mt-1 w-full px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors flex items-center gap-2"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Створити боржника &quot;{debtorModalQuery.trim()}&quot;</span>
-                </button>
-              )}
+
 
               {debtorModalDebtor && (
                 <div className="mt-2 px-3 py-2 bg-primary-50 dark:bg-primary-900/20 rounded-lg flex items-center justify-between">
