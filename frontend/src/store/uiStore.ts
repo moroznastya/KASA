@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 type Theme = 'light' | 'dark';
-type ActiveModule = 'pos' | 'products' | 'categories' | 'suppliers' | 'documents' | 'reports' | 'ledger' | 'dashboard' | 'receipts';
+type ActiveModule = 'pos' | 'products' | 'categories' | 'suppliers' | 'documents' | 'reports' | 'ledger' | 'dashboard' | 'receipts' | 'settings';
 
 interface UIStore {
   sidebarOpen: boolean;

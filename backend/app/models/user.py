@@ -8,12 +8,16 @@
 import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
+from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Boolean, Enum, Text
+from sqlalchemy import String, Boolean, Enum, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.work_session import WorkSession
 
 
 class UserRole(str, PyEnum):
@@ -74,6 +78,12 @@ class User(Base):
         comment="Список прав доступу (масив рядків-пермішенів). "
                 "Якщо None — використовуються права за замовчуванням для ролі.",
     )
+    hourly_rate: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=None,
+        comment="Ставка за годину роботи (грн). Використовується для розрахунку зарплати",
+    )
 
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -90,6 +100,10 @@ class User(Base):
     receipts: Mapped[list["Receipt"]] = relationship(
         "Receipt",
         back_populates="cashier",
+    )
+    work_sessions: Mapped[list["WorkSession"]] = relationship(
+        "WorkSession",
+        back_populates="user",
     )
 
     def __repr__(self) -> str:

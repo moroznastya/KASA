@@ -91,6 +91,18 @@ class Invoice(Base):
         comment="Загальна сума накладної (грн)",
     )
 
+    # ── Користувач, який створив ─────────────────
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Ідентифікатор користувача, який створив накладну",
+    )
+    creator: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[created_by_id],
+    )
+
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,
@@ -157,6 +169,18 @@ class InvoiceItem(Base):
         Numeric(12, 2),
         nullable=False,
         comment="Загальна сума позиції (грн)",
+    )
+    cost_price: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=0,
+        comment="Собівартість за одиницю (з ПДВ з накладної)",
+    )
+    markup_percent: Mapped[float | None] = mapped_column(
+        Numeric(5, 1),
+        nullable=True,
+        default=0,
+        comment="Відсоток націнки",
     )
 
     # ── Timestamps ──────────────────────────────

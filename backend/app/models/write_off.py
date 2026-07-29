@@ -72,6 +72,18 @@ class WriteOff(Base):
         comment="Загальна сума списання (грн)",
     )
 
+    # ── Користувач, який створив ─────────────────
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Ідентифікатор користувача, який створив списання",
+    )
+    creator: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[created_by_id],
+    )
+
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,

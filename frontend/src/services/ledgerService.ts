@@ -1,5 +1,5 @@
 import api from './api';
-import { SupplierLedgerEntry, BalanceResponse, PaymentCreate, Payment } from '@/types/ledger';
+import { SupplierLedgerEntry, BalanceResponse, PaymentCreate, Payment, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 export const ledgerService = {
@@ -19,14 +19,34 @@ export const ledgerService = {
   },
 
   async createPayment(data: PaymentCreate): Promise<SupplierLedgerEntry> {
-    // Використовуємо POST /ledger для створення запису про оплату
-    const response = await api.post<SupplierLedgerEntry>('/ledger', {
+    const payload: any = {
       supplier_id: data.supplier_id,
       operation_type: 'payment',
       amount: -Math.abs(data.amount), // оплата зменшує борг, тому від'ємна сума
       operation_date: new Date().toISOString(),
       notes: data.notes ? `Оплата: ${data.notes}` : 'Оплата постачальнику',
+    };
+    
+    // Якщо обрано накладну - передаємо її ID та номер
+    if (data.document_id) {
+      payload.document_id = data.document_id;
+      payload.document_number = data.document_number;
+      payload.notes = `Оплата по накладній №${data.document_number}`;
+    }
+    
+    const response = await api.post<SupplierLedgerEntry>('/ledger', payload);
+    return response.data;
+  },
+
+  async getSupplierInvoices(supplierId: string): Promise<InvoiceInfo[]> {
+    const response = await api.get<InvoiceInfo[]>('/invoices/', {
+      params: { supplier_id: supplierId, status: 'confirmed' }
     });
+    return response.data;
+  },
+
+  async getInvoicePaymentInfo(invoiceId: string): Promise<InvoicePaymentInfo> {
+    const response = await api.get<InvoicePaymentInfo>(`/invoices/${invoiceId}/payment-info`);
     return response.data;
   },
 

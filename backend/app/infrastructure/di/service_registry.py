@@ -44,6 +44,9 @@ from app.services.document_service import DocumentService
 from app.services.ledger_service import LedgerService
 from app.services.auth_service import AuthService
 
+# ─── Application Services ────────────────────────────────────────────────────
+from app.application.services.settings_service import SettingsService
+
 if TYPE_CHECKING:
     from app.infrastructure.di.container import DIContainer
 
@@ -146,7 +149,17 @@ def register_all_services(container: DIContainer) -> None:
     )
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 6. Сервіси (старі, для зворотної сумісності з API v1)
+    # 6. Application Services (transient)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    container.register(
+        "settings_service",
+        lambda c: SettingsService(session=None),  # session буде передано через dependency
+        singleton=False,
+    )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 7. Сервіси (старі, для зворотної сумісності з API v1)
     # ═══════════════════════════════════════════════════════════════════════
 
     container.register("product_service", lambda c: ProductService(session=None), singleton=False)

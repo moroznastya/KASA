@@ -27,6 +27,7 @@ class ReturnInvoiceItemCreate(BaseModel):
     quantity: Decimal = Field(..., max_digits=10, decimal_places=3, description="Кількість")
     price: Decimal = Field(..., max_digits=10, decimal_places=2, description="Ціна за одиницю (грн)")
     total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
+    cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість одиниці (грн)")
 
 
 class ExchangeItemCreate(BaseModel):
@@ -45,6 +46,8 @@ class ReturnInvoiceItemResponse(BaseModel):
     product: Optional[ProductBrief] = Field(None, description="Інформація про товар")
     quantity: Decimal
     price: Decimal
+    cost_price: Optional[Decimal] = Field(None, description="Собівартість одиниці на момент повернення (грн)")
+    markup_percent: Optional[Decimal] = Field(None, description="Відсоток націнки на момент повернення")
     total: Decimal
     created_at: datetime
 
@@ -91,6 +94,11 @@ class ReturnInvoiceCreate(BaseModel):
         None,
         description="Товари для обміну (обов'язково, якщо return_action = exchange)",
     )
+    # Опціональна прив'язка до прибуткової накладної
+    source_invoice_id: Optional[UUID] = Field(
+        None,
+        description="ID прибуткової накладної, до якої відноситься повернення (опціонально)",
+    )
 
 
 class ReturnInvoiceUpdate(BaseModel):
@@ -107,6 +115,10 @@ class ReturnInvoiceUpdate(BaseModel):
         None,
         description="Товари для обміну (обов'язково, якщо return_action = exchange)",
     )
+    source_invoice_id: Optional[UUID] = Field(
+        None,
+        description="ID прибуткової накладної, до якої відноситься повернення (опціонально)",
+    )
 
 
 class ReturnInvoiceResponse(BaseModel):
@@ -114,6 +126,7 @@ class ReturnInvoiceResponse(BaseModel):
     id: UUID
     number: str
     supplier_id: UUID
+    supplier_name: Optional[str] = Field(None, description="Назва постачальника")
     return_date: datetime
     status: ReturnInvoiceStatus
     return_action: ReturnActionType = ReturnActionType.DEDUCT_FROM_DEBT
@@ -122,6 +135,7 @@ class ReturnInvoiceResponse(BaseModel):
     total_amount: Optional[Decimal] = None
     exchange_invoice_id: Optional[UUID] = Field(None, description="ID прибуткової накладної при обміні")
     exchange_invoice: Optional[ExchangeInvoiceBrief] = Field(None, description="Прибуткова накладна при обміні")
+    source_invoice_id: Optional[UUID] = Field(None, description="ID прибуткової накладної, до якої відноситься повернення")
     created_at: datetime
     updated_at: datetime
     items: list[ReturnInvoiceItemResponse] = []

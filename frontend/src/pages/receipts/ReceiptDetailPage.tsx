@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useReceipt } from '@/hooks/useReceipts';
 import { Button } from '@/components/ui/Button';
@@ -6,9 +6,11 @@ import { Spinner } from '@/components/ui/Spinner';
 import { ArrowLeft, Printer, Receipt, ExternalLink } from 'lucide-react';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import PrintReceiptDialog from '@/components/pos/PrintReceiptDialog';
 const ReceiptDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const { goBack } = useBackNavigation();
+  const [showPrintDialog, setShowPrintDialog] = useState(false);
   const { id } = useParams<{ id: string }>();
   const { data: receipt, isLoading } = useReceipt(id || '');
 
@@ -56,7 +58,7 @@ const ReceiptDetailPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -72,7 +74,7 @@ const ReceiptDetailPage: React.FC = () => {
             </p>
           </div>
         </div>
-        <Button variant="secondary" onClick={() => window.print()}>
+        <Button variant="secondary" onClick={() => setShowPrintDialog(true)}>
           <Printer className="w-4 h-4 mr-2" />
           Друк
         </Button>
@@ -81,14 +83,14 @@ const ReceiptDetailPage: React.FC = () => {
       {/* Receipt Card */}
       <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
         {/* Receipt Header */}
-        <div className="border-b border-gray-200 dark:border-slate-700 px-6 py-4 text-center">
+        <div className="border-b border-gray-200 dark:border-slate-700 px-8 py-5 text-center">
           <Receipt className="w-8 h-8 mx-auto text-primary-600 mb-2" />
-          <h2 className="text-lg font-bold text-gray-900 dark:text-white">КАСА</h2>
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">КАСА</h2>
           <p className="text-sm text-gray-500">Фіскальний чек</p>
         </div>
 
         {/* Receipt Info */}
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-slate-700 space-y-1">
+        <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700 space-y-1.5">
           <div className="flex justify-between text-sm">
             <span className="text-gray-500 dark:text-gray-400">Номер:</span>
             <span className="font-medium text-gray-900 dark:text-white">{receipt.receipt_number}</span>
@@ -118,7 +120,7 @@ const ReceiptDetailPage: React.FC = () => {
         </div>
 
         {/* Items */}
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-slate-700">
+        <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700">
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
             Товари
           </h3>
@@ -169,15 +171,20 @@ const ReceiptDetailPage: React.FC = () => {
         </div>
 
         {/* Total */}
-        <div className="px-6 py-4">
+        <div className="px-8 py-5">
           <div className="flex justify-between items-center">
-            <span className="text-lg font-bold text-gray-900 dark:text-white">ВСЬОГО:</span>
-            <span className="text-xl font-bold text-primary-600">
+            <span className="text-xl font-bold text-gray-900 dark:text-white">ВСЬОГО:</span>
+            <span className="text-2xl font-bold text-primary-600">
               {formatAmount(receipt.total_amount)} грн
             </span>
           </div>
         </div>
       </div>
+      <PrintReceiptDialog
+        isOpen={showPrintDialog}
+        onClose={() => setShowPrintDialog(false)}
+        receipt={receipt}
+      />
     </div>
   );
 };

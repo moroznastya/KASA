@@ -1,6 +1,8 @@
 import React from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar, Edit } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
@@ -36,6 +38,7 @@ const RETURN_ACTION_LABELS: Record<string, { label: string; icon: React.ReactNod
 
 /** Визначає тип документа з URL шляху */
 function getDocumentTypeFromPath(pathname: string): string {
+  if (pathname.includes('/inventory/')) return 'inventory';
   if (pathname.includes('/invoice/')) return 'invoice';
   if (pathname.includes('/purchase-order/')) return 'purchase_order';
   if (pathname.includes('/transfer/')) return 'transfer';
@@ -52,6 +55,7 @@ function getApiEndpoint(type: string, id: string): string {
     case 'transfer': return `/transfers/${id}`;
     case 'write_off': return `/write-offs/${id}`;
     case 'return_invoice': return `/return-invoices/${id}`;
+    case 'inventory': return `/inventory/${id}`;
     default: return `/documents/${id}`;
   }
 }
@@ -64,8 +68,28 @@ function getDocumentTitle(type: string): string {
     case 'transfer': return 'Переміщення';
     case 'write_off': return 'Списання';
     case 'return_invoice': return 'Повернення';
+    case 'inventory': return 'Інвентаризація';
     default: return 'Документ';
   }
+}
+
+/** Повертає правильний префікс API для типу документа */
+function getDocumentTypeForApi(type: string): string {
+  switch (type) {
+    case 'invoice': return 'invoices';
+    case 'purchase_order': return 'purchase-orders';
+    case 'transfer': return 'transfers';
+    case 'write_off': return 'write-offs';
+    case 'return_invoice': return 'return-invoices';
+    case 'inventory': return 'inventory';
+    default: return 'documents';
+  }
+}
+
+/** Обчислює націнку у відсотках на основі ціни продажу та собівартості */
+function calcMarkupPercent(price: number, costPrice: number | null | undefined): number | null {
+  if (!costPrice || costPrice <= 0 || !price || price <= 0) return null;
+  return Math.round(((price - costPrice) / costPrice) * 100);
 }
 
 const DocumentViewPage: React.FC = () => {
@@ -74,6 +98,7 @@ const DocumentViewPage: React.FC = () => {
   const { goBack } = useBackNavigation();
   const location = useLocation();
 
+  const queryClient = useQueryClient();
   const docType = getDocumentTypeFromPath(location.pathname);
   const docTitle = getDocumentTitle(docType);
 
@@ -112,7 +137,7 @@ const DocumentViewPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -128,6 +153,9 @@ const DocumentViewPage: React.FC = () => {
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               Створено {formatDateTime(doc.created_at)}
+            </p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Оновлено {formatDateTime(doc.updated_at)}
             </p>
           </div>
         </div>
@@ -164,9 +192,29 @@ const DocumentViewPage: React.FC = () => {
                   </button>
                 ) : (
                   <p className="font-medium text-gray-900 dark:text-gray-100">
-                    {doc.supplier?.name || doc.supplier_name || '-'}
+                    {doc.supplier_name || '-'}
                   </p>
                 )}
+              </div>
+
+              {/* Спосіб оплати */}
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Спосіб оплати</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.payment_method === 'credit' ? 'В борг постачальнику' :
+                   doc.payment_method === 'bank_transfer' ? 'По перерахунку' :
+                   doc.payment_method === 'cash' ? 'Готівкою з каси' :
+                   doc.payment_method === 'other' ? 'Інший спосіб' :
+                   doc.payment_method || 'Не вказано'}
+                </p>
+              </div>
+
+              {/* Фіскальний */}
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Тип</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.is_fiscal ? 'Фіскальна' : 'Нефіскальна'}
+                </p>
               </div>
             </>
           )}
@@ -197,9 +245,17 @@ const DocumentViewPage: React.FC = () => {
                   </button>
                 ) : (
                   <p className="font-medium text-gray-900 dark:text-gray-100">
-                    {doc.supplier?.name || doc.supplier_name || '-'}
+                    {doc.supplier_name || '-'}
                   </p>
                 )}
+              </div>
+
+              {/* Фіскальний */}
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Тип</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.is_fiscal ? 'Фіскальний' : 'Нефіскальний'}
+                </p>
               </div>
             </>
           )}
@@ -263,7 +319,7 @@ const DocumentViewPage: React.FC = () => {
                   </button>
                 ) : (
                   <p className="font-medium text-gray-900 dark:text-gray-100">
-                    {doc.supplier?.name || doc.supplier_name || '-'}
+                    {doc.supplier_name || '-'}
                   </p>
                 )}
               </div>
@@ -277,6 +333,32 @@ const DocumentViewPage: React.FC = () => {
                 ) : (
                   <p className="font-medium text-gray-900 dark:text-gray-100">-</p>
                 )}
+              </div>
+
+              {/* Фіскальний */}
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Тип</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.is_fiscal ? 'Фіскальний' : 'Нефіскальний'}
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Для inventory показуємо дату, локацію та підсумки */}
+          {docType === 'inventory' && (
+            <>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Дата інвентаризації</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.inventory_date ? new Date(doc.inventory_date).toLocaleDateString('uk-UA') : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Місце проведення</p>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  {doc.location || '-'}
+                </p>
               </div>
             </>
           )}
@@ -300,14 +382,44 @@ const DocumentViewPage: React.FC = () => {
                 <thead>
                   <tr className="bg-gray-50 dark:bg-slate-800/50">
                     <th className="table-header">Товар</th>
-                    <th className="table-header w-24 text-right">Кількість</th>
-                    <th className="table-header w-28 text-right">Ціна</th>
-                    <th className="table-header w-28 text-right">Сума</th>
+                    {docType === 'inventory' ? (
+                      <>
+                        <th className="table-header w-24 text-right">Облікова к-сть</th>
+                        <th className="table-header w-24 text-right">Фактична к-сть</th>
+                        <th className="table-header w-24 text-right">Різниця</th>
+                        <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
+                        <th className="table-header w-28 text-right">Ціна продажу</th>
+                        <th className="table-header w-28 text-right">Націнка</th>
+                        <th className="table-header w-28 text-right">Сума собівартості</th>
+                        <th className="table-header w-28 text-right">Сума продажу</th>
+                        <th className="table-header w-28 text-right">Сума відхилення</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="table-header w-24 text-right">Кількість</th>
+                        <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
+                        <th className="table-header w-28 text-right">Ціна продажу</th>
+                        <th className="table-header w-24 text-right">Націнка</th>
+                        <th className="table-header w-28 text-right">Сума собівартості</th>
+                        <th className="table-header w-28 text-right">Сума продажу</th>
+                        {docType === 'return_invoice' && (
+                          <th className="table-header w-28 text-right">Сума відхилення</th>
+                        )}
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
                   {doc.items.map((item: any) => {
                     const productId = item.product?.id || item.product_id;
+                    const costPrice = Number(item.cost_price || 0);
+                    const sellPrice = Number(item.price || 0);
+                    const quantity = Number(item.quantity || 0);
+                    const markup = calcMarkupPercent(sellPrice, costPrice);
+                    // Для return_invoice: сума відхилення = sellPrice*quantity - costPrice*quantity
+                    const deviation = docType === 'return_invoice'
+                      ? sellPrice * quantity - costPrice * quantity
+                      : 0;
                     return (
                       <tr
                         key={item.id}
@@ -332,23 +444,148 @@ const DocumentViewPage: React.FC = () => {
                             <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
                           )}
                         </td>
-                        <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
-                        <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
-                        <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
+
+                        {docType === 'inventory' ? (
+                          <>
+                            <td className="table-cell text-right">{Number(item.accounting_quantity || 0).toFixed(3)}</td>
+                            <td className="table-cell text-right">{Number(item.actual_quantity || 0).toFixed(3)}</td>
+                            <td className="table-cell text-right">
+                              <span className={`font-medium ${
+                                Number(item.difference || 0) > 0
+                                  ? 'text-green-600 dark:text-green-400'
+                                  : Number(item.difference || 0) < 0
+                                  ? 'text-red-600 dark:text-red-400'
+                                  : ''
+                              }`}>
+                                {Number(item.difference || 0) > 0 ? '+' : ''}{Number(item.difference || 0).toFixed(3)}
+                              </span>
+                            </td>
+                            <td className="table-cell text-right">{formatCurrency(costPrice)}</td>
+                            <td className="table-cell text-right">{formatCurrency(sellPrice)}</td>
+                            <td className="table-cell text-right">
+                              {markup !== null ? (
+                                <span className="text-green-600 dark:text-green-400">{markup}%</span>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                            <td className="table-cell text-right font-medium">{formatCurrency(Number(item.actual_quantity || 0) * costPrice)}</td>
+                            <td className="table-cell text-right font-medium">{formatCurrency(Number(item.actual_quantity || 0) * sellPrice)}</td>
+                            <td className="table-cell text-right">
+                              <span className={`font-medium ${
+                                Number(item.difference || 0) * costPrice > 0
+                                  ? 'text-green-600 dark:text-green-400'
+                                  : Number(item.difference || 0) * costPrice < 0
+                                  ? 'text-red-600 dark:text-red-400'
+                                  : ''
+                              }`}>
+                                {formatCurrency(Number(item.difference || 0) * costPrice)}
+                              </span>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="table-cell text-right">{quantity.toFixed(3)}</td>
+                            <td className="table-cell text-right">{formatCurrency(costPrice || sellPrice)}</td>
+                            <td className="table-cell text-right">{formatCurrency(sellPrice)}</td>
+                            <td className="table-cell text-right">
+                              {markup !== null ? (
+                                <span className="text-green-600 dark:text-green-400">{markup}%</span>
+                              ) : (
+                                <span className="text-gray-400">-</span>
+                              )}
+                            </td>
+                            <td className="table-cell text-right font-medium">{formatCurrency((costPrice || sellPrice) * quantity)}</td>
+                            <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
+                            {docType === 'return_invoice' && (
+                              <td className="table-cell text-right">
+                                <span className={`font-medium ${
+                                  deviation > 0
+                                    ? 'text-green-600 dark:text-green-400'
+                                    : deviation < 0
+                                    ? 'text-red-600 dark:text-red-400'
+                                    : ''
+                                }`}>
+                                  {deviation > 0 ? '+' : ''}{formatCurrency(deviation)}
+                                </span>
+                              </td>
+                            )}
+                          </>
+                        )}
                       </tr>
                     );
                   })}
                 </tbody>
-                <tfoot>
-                  <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
-                    <td colSpan={3} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
-                      Загальна сума:
-                    </td>
-                    <td className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100 text-right">
-                      {formatCurrency(Number(doc.total_amount))}
-                    </td>
-                  </tr>
-                </tfoot>
+                {docType !== 'inventory' && (
+                  <tfoot>
+                    <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                      <td colSpan={docType === 'return_invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                        Закупівельна сума:
+                      </td>
+                      <td colSpan={docType === 'return_invoice' ? 3 : 2} className="px-4 py-3 font-bold text-xl text-gray-900 dark:text-gray-100 text-right">
+                        {(() => {
+                          const total = (doc.items || []).reduce((sum: number, item: any) =>
+                            sum + Number(item.cost_price || item.price || 0) * Number(item.quantity || 0), 0
+                          );
+                          return formatCurrency(total);
+                        })()}
+                      </td>
+                    </tr>
+                    <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                      <td colSpan={docType === 'return_invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                        Сума продажу:
+                      </td>
+                      <td colSpan={docType === 'return_invoice' ? 3 : 2} className="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 text-right">
+                        {formatCurrency(Number(doc.total_amount))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+                {docType === 'inventory' && (
+                  <tfoot>
+                    <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">Загалом:</td>
+                      <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100">
+                        {(doc.items || []).reduce((s: number, i: any) => s + Number(i.accounting_quantity || 0), 0).toFixed(3)}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100">
+                        {(doc.items || []).reduce((s: number, i: any) => s + Number(i.actual_quantity || 0), 0).toFixed(3)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {(() => {
+                          const totalDiff = (doc.items || []).reduce((s: number, i: any) => s + Number(i.difference || 0), 0);
+                          return (
+                            <span className={`font-bold text-lg ${
+                              totalDiff > 0 ? 'text-green-600 dark:text-green-400' :
+                              totalDiff < 0 ? 'text-red-600 dark:text-red-400' : ''
+                            }`}>
+                              {totalDiff > 0 ? '+' : ''}{totalDiff.toFixed(3)}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td className="px-4 py-3 text-right font-bold text-blue-700 dark:text-blue-400 text-lg">
+                        {formatCurrency((doc.items || []).reduce((s: number, i: any) => s + Number(i.actual_quantity || 0) * Number(i.cost_price || 0), 0))}
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold text-emerald-700 dark:text-emerald-400 text-lg">
+                        {formatCurrency((doc.items || []).reduce((s: number, i: any) => s + Number(i.actual_quantity || 0) * Number(i.price || 0), 0))}
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold text-lg"
+                        style={{
+                          color: (doc.items || []).reduce((s: number, i: any) => s + Number(i.difference || 0) * Number(i.cost_price || 0), 0) > 0
+                            ? '#16a34a'
+                            : (doc.items || []).reduce((s: number, i: any) => s + Number(i.difference || 0) * Number(i.cost_price || 0), 0) < 0
+                            ? '#dc2626'
+                            : 'inherit'
+                        }}>
+                        {formatCurrency((doc.items || []).reduce((s: number, i: any) => s + Number(i.difference || 0) * Number(i.cost_price || 0), 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>
@@ -396,13 +633,20 @@ const DocumentViewPage: React.FC = () => {
                   <tr className="bg-gray-50 dark:bg-slate-800/50">
                     <th className="table-header">Новий товар</th>
                     <th className="table-header w-24 text-right">Кількість</th>
-                    <th className="table-header w-28 text-right">Ціна</th>
-                    <th className="table-header w-28 text-right">Сума</th>
+                    <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
+                    <th className="table-header w-28 text-right">Ціна продажу</th>
+                    <th className="table-header w-24 text-right">Націнка</th>
+                    <th className="table-header w-28 text-right">Сума собівартості</th>
+                    <th className="table-header w-28 text-right">Сума продажу</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
                   {doc.exchange_invoice.items?.map((item: any) => {
                     const productId = item.product?.id || item.product_id;
+                    const costPrice = Number(item.cost_price || 0);
+                    const sellPrice = Number(item.price || 0);
+                    const quantity = Number(item.quantity || 0);
+                    const markup = calcMarkupPercent(sellPrice, costPrice);
                     return (
                       <tr
                         key={item.id}
@@ -427,8 +671,17 @@ const DocumentViewPage: React.FC = () => {
                             <p className="text-xs text-gray-400">ШК: {item.product.barcode}</p>
                           )}
                         </td>
-                        <td className="table-cell text-right">{Number(item.quantity).toFixed(3)}</td>
-                        <td className="table-cell text-right">{formatCurrency(Number(item.price))}</td>
+                        <td className="table-cell text-right">{quantity.toFixed(3)}</td>
+                        <td className="table-cell text-right">{formatCurrency(costPrice || sellPrice)}</td>
+                        <td className="table-cell text-right">{formatCurrency(sellPrice)}</td>
+                        <td className="table-cell text-right">
+                          {markup !== null ? (
+                            <span className="text-green-600 dark:text-green-400">{markup}%</span>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="table-cell text-right font-medium">{formatCurrency((costPrice || sellPrice) * quantity)}</td>
                         <td className="table-cell text-right font-medium">{formatCurrency(Number(item.total))}</td>
                       </tr>
                     );
@@ -487,6 +740,35 @@ const DocumentViewPage: React.FC = () => {
 
         {/* Actions */}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
+          {doc.status === 'draft' && (
+            <Button 
+              variant="primary"
+              onClick={async () => {
+                try {
+                  await api.post(`/${getDocumentTypeForApi(docType)}/${id}/confirm`, {
+                    status: 'confirmed'
+                  });
+                  toast.success('Накладну підтверджено');
+                  // Перезавантажуємо дані
+                  queryClient.invalidateQueries({ queryKey: ['document', docType, id] });
+                } catch (e: any) {
+                  toast.error(e?.response?.data?.detail || 'Помилка підтвердження');
+                }
+              }}
+              className="flex items-center gap-2"
+            >
+              <CheckCircle className="w-4 h-4" />
+              Провести
+            </Button>
+          )}
+          <Button 
+            variant="secondary"
+            onClick={() => navigate(docType === "return_invoice" ? `/documents/return/${id}/edit` : `/documents/${docType}/${id}/edit`)}
+            className="flex items-center gap-2"
+          >
+            <Edit className="w-4 h-4" />
+            Редагувати
+          </Button>
           <Button variant="secondary" onClick={goBack}>
             До списку
           </Button>

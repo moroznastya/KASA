@@ -13,6 +13,29 @@ from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict
 
 
+# ─── Супутні схеми ───────────────────────────────────────────────────────────
+
+class BarcodeResponse(BaseModel):
+    """Схема відповіді з даними штрих-коду."""
+    id: UUID
+    barcode: str
+    is_primary: bool = False
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProductImageResponse(BaseModel):
+    """Схема відповіді з даними зображення товару."""
+    id: UUID
+    url: str
+    is_main: bool = False
+    sort_order: int = 0
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ─── Create Schema ───────────────────────────────────────────────────────────
 class ProductCreate(BaseModel):
     """Схема створення нового товару."""
@@ -24,6 +47,7 @@ class ProductCreate(BaseModel):
     cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість (грн)")
     markup: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Націнка (%)")
     stock: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Початковий залишок")
+    recommended_qty: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Рекомендований залишок")
     uktzed: Optional[str] = Field(None, max_length=10, description="Код УКТЗЕД")
     scan_excise: bool = Field(False, description="Чи сканувати акцизну марку")
     tax_rate: Optional[Decimal] = Field(Decimal("0.00"), max_digits=5, decimal_places=2, description="Ставка ПДВ (%)")
@@ -44,6 +68,7 @@ class ProductUpdate(BaseModel):
     cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість (грн)")
     markup: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Націнка (%)")
     stock: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Залишок")
+    recommended_qty: Optional[Decimal] = Field(None, max_digits=10, decimal_places=3, description="Рекомендований залишок")
     uktzed: Optional[str] = Field(None, max_length=10, description="Код УКТЗЕД")
     scan_excise: Optional[bool] = Field(None, description="Чи сканувати акцизну марку")
     tax_rate: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Ставка ПДВ (%)")
@@ -65,6 +90,7 @@ class ProductResponse(BaseModel):
     cost_price: Optional[Decimal] = None
     markup: Optional[Decimal] = None
     stock: Optional[Decimal] = None
+    recommended_qty: Optional[Decimal] = None
     uktzed: Optional[str] = None
     scan_excise: bool = False
     tax_rate: Optional[Decimal] = None
@@ -73,6 +99,8 @@ class ProductResponse(BaseModel):
     unit: Optional[str] = None
     category_id: Optional[UUID] = None
     supplier_id: Optional[UUID] = None
+    images: list[ProductImageResponse] = Field(default_factory=list, description="Зображення товару")
+    barcodes: list[BarcodeResponse] = Field(default_factory=list, description="Штрих-коди товару")
     created_at: datetime
     updated_at: datetime
 

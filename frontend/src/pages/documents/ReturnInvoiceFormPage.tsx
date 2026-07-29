@@ -1,23 +1,41 @@
-import React, { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Banknote, RefreshCw, BookOpen, Package } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Banknote, RefreshCw, BookOpen, Package, FileText } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { Select } from '@/components/ui/Select';
+import { Select, SelectOption } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import { ReturnActionType } from '@/types/document';
+import { ledgerService } from '@/services/ledgerService';
+import api from '@/services/api';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+
+/** Заокруглення ціни продажу до гривні (без копійок) */
+const roundPrice = (value: number): number => Math.round(value);
+
+/** Розрахувати markup % з retail_price та cost_price */
+const calcMarkupPercent = (retailPrice: number, costPrice: number): number => {
+  if (costPrice <= 0) return 0;
+  return Math.round(((retailPrice - costPrice) / costPrice) * 100);
+};
+
 interface CartItem {
   product_id: string;
   product_title: string;
   product_barcode: string | null;
   quantity: number;
+  /** Ціна продажу = собівартість × (1 + націнка/100) */
   price: number;
+  /** Собівартість = ціна з ПДВ з накладної або карточки товару */
+  cost_price: number;
+  /** Націнка (%) — розраховується з price та cost_price */
+  markup_percent: number;
 }
 
 /** Мапа типів дій на їхні мітки та іконки */
@@ -44,17 +62,23 @@ const RETURN_ACTION_OPTIONS: { value: ReturnActionType; label: string; descripti
 
 const ReturnInvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const { id: editId } = useParams<{ id: string }>();
+  const isEdit = !!editId;
   const { goBack } = useBackNavigation();
   const { data: suppliersData } = useAllSuppliers();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
 
   // Основні поля
+  const [number, setNumber] = useState('');
   const [returnDate, setReturnDate] = useState(new Date().toISOString().split('T')[0]);
   const [isFiscal, setIsFiscal] = useState(false);
   const [supplierId, setSupplierId] = useState<string | null>(null);
   const [returnAction, setReturnAction] = useState<ReturnActionType>('deduct_from_debt');
   const [notes, setNotes] = useState('');
+
+  // Прив'язка до прибуткової накладної
+  const [sourceInvoiceId, setSourceInvoiceId] = useState<string | null>(null);
 
   // Товари на повернення
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -68,8 +92,85 @@ const ReturnInvoiceFormPage: React.FC = () => {
   const [exchangeSearchResults, setExchangeSearchResults] = useState<any[]>([]);
   const [showExchangeSearch, setShowExchangeSearch] = useState(false);
 
+  // Завантаження даних для редагування
+  const { data: editData } = useQuery({
+    queryKey: ['return-invoice', editId],
+    queryFn: async () => {
+      if (!editId) return null;
+      const response = await api.get(`/return-invoices/${editId}`);
+      return response.data;
+    },
+    enabled: isEdit,
+  });
+
+  // Заповнення форми при редагуванні
+  useEffect(() => {
+    if (!editData) return;
+    setNumber(editData.number || '');
+    setReturnDate(editData.return_date ? editData.return_date.split('T')[0] : '');
+    setIsFiscal(editData.is_fiscal || false);
+    setSupplierId(editData.supplier_id || null);
+    setReturnAction(editData.return_action || 'deduct_from_debt');
+    setNotes(editData.notes || '');
+    setSourceInvoiceId(editData.source_invoice_id || null);
+
+    if (editData.items && editData.items.length > 0) {
+      const cartItems: CartItem[] = editData.items.map((item: any) => {
+        // Актуальна собівартість з карточки товару
+        const currentCostPrice = parseFloat(item.product?.cost_price) || 0;
+        const savedCostPrice = Number(item.cost_price || item.price || 0);
+        const costPrice = currentCostPrice > 0 ? currentCostPrice : savedCostPrice;
+
+        // Актуальна ціна продажу з карточки товару
+        const currentRetailPrice = parseFloat(item.product?.price) || 0;
+        const savedPrice = Number(item.price || 0);
+        const retailPrice = currentRetailPrice > 0 ? currentRetailPrice : savedPrice;
+
+        // Актуальна націнка
+        const savedMarkup = parseFloat(item.markup_percent) || 0;
+        const markupPercent = retailPrice > 0 && costPrice > 0
+          ? calcMarkupPercent(retailPrice, costPrice)
+          : savedMarkup;
+
+        // Ціна продажу
+        const price = retailPrice > 0
+          ? roundPrice(retailPrice)
+          : costPrice > 0
+            ? roundPrice(costPrice * (1 + markupPercent / 100))
+            : roundPrice(savedPrice);
+
+        return {
+          product_id: item.product_id,
+          product_title: item.product?.title || item.product_name || '',
+          product_barcode: item.product?.barcode || null,
+          quantity: Number(item.quantity),
+          price,
+          cost_price: costPrice,
+          markup_percent: markupPercent,
+        };
+      });
+      setCart(cartItems);
+    }
+  }, [editData]);
+
   const { data: searchData } = useSearchProducts(searchQuery);
   const { data: exchangeSearchData } = useSearchProducts(exchangeSearchQuery);
+
+  // Отримуємо накладні постачальника для опціональної прив'язки
+  const { data: supplierInvoices } = useQuery({
+    queryKey: ['supplier-invoices', supplierId],
+    queryFn: () => ledgerService.getSupplierInvoices(supplierId!),
+    enabled: !!supplierId,
+  });
+
+  // Опції для вибору прибуткової накладної
+  const sourceInvoiceOptions: SelectOption[] = [
+    { value: '', label: '— Без прив\'язки до накладної —' },
+    ...(supplierInvoices?.map((inv: any) => ({
+      value: inv.id,
+      label: `${inv.number} — ${formatCurrency(inv.total_amount)}`,
+    })) || []),
+  ];
 
   // ─── Пошук товарів для повернення ──────────────────────────────
   const handleSearch = useCallback(
@@ -87,6 +188,21 @@ const ReturnInvoiceFormPage: React.FC = () => {
   );
 
   const addToCart = (product: any) => {
+    // Собівартість = ціна з ПДВ (з бази або 0)
+    const costPrice = parseFloat(product.cost_price) || 0;
+    // Ціна продажу = retail_price з карточки товару
+    const retailPrice = parseFloat(product.price) || 0;
+    // Націнка (%) — розраховуємо з retail_price та cost_price
+    const markupPercent = retailPrice > 0 && costPrice > 0
+      ? calcMarkupPercent(retailPrice, costPrice)
+      : parseFloat(product.markup) || 0;
+    // Ціна продажу
+    const price = retailPrice > 0
+      ? roundPrice(retailPrice)
+      : costPrice > 0
+        ? roundPrice(costPrice * (1 + markupPercent / 100))
+        : 0;
+
     const existing = cart.find((item) => item.product_id === product.id);
     if (existing) {
       setCart((prev) =>
@@ -102,9 +218,11 @@ const ReturnInvoiceFormPage: React.FC = () => {
         {
           product_id: product.id,
           product_title: product.title,
-          product_barcode: product.barcode,
+          product_barcode: product.barcode || null,
           quantity: 1,
-          price: parseFloat(product.price),
+          price,
+          cost_price: costPrice,
+          markup_percent: markupPercent,
         },
       ]);
     }
@@ -128,6 +246,17 @@ const ReturnInvoiceFormPage: React.FC = () => {
   );
 
   const addToExchangeCart = (product: any) => {
+    const costPrice = parseFloat(product.cost_price) || 0;
+    const retailPrice = parseFloat(product.price) || 0;
+    const markupPercent = retailPrice > 0 && costPrice > 0
+      ? calcMarkupPercent(retailPrice, costPrice)
+      : parseFloat(product.markup) || 0;
+    const price = retailPrice > 0
+      ? roundPrice(retailPrice)
+      : costPrice > 0
+        ? roundPrice(costPrice * (1 + markupPercent / 100))
+        : 0;
+
     const existing = exchangeCart.find((item) => item.product_id === product.id);
     if (existing) {
       setExchangeCart((prev) =>
@@ -143,9 +272,11 @@ const ReturnInvoiceFormPage: React.FC = () => {
         {
           product_id: product.id,
           product_title: product.title,
-          product_barcode: product.barcode,
+          product_barcode: product.barcode || null,
           quantity: 1,
-          price: parseFloat(product.price),
+          price,
+          cost_price: costPrice,
+          markup_percent: markupPercent,
         },
       ]);
     }
@@ -153,7 +284,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
     setShowExchangeSearch(false);
   };
 
-  // ─── Спільні функції для кошиків ───────────────────────────────
+  // ─── Оновлення кількості ───────────────────────────────────────
   const updateQuantity = (
     list: CartItem[],
     setList: React.Dispatch<React.SetStateAction<CartItem[]>>
@@ -169,17 +300,55 @@ const ReturnInvoiceFormPage: React.FC = () => {
     }
   };
 
+  // ─── Оновлення собівартості → перерахунок ціни продажу ─────────
+  const updateCostPrice = (
+    list: CartItem[],
+    setList: React.Dispatch<React.SetStateAction<CartItem[]>>
+  ) => (productId: string, costPrice: number) => {
+    setList((prev) =>
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        const newPrice = costPrice > 0
+          ? roundPrice(costPrice * (1 + item.markup_percent / 100))
+          : 0;
+        return { ...item, cost_price: costPrice, price: newPrice };
+      })
+    );
+  };
+
+  // ─── Оновлення націнки → перерахунок ціни продажу ──────────────
+  const updateMarkup = (
+    list: CartItem[],
+    setList: React.Dispatch<React.SetStateAction<CartItem[]>>
+  ) => (productId: string, markupPercent: number) => {
+    setList((prev) =>
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        const newPrice = item.cost_price > 0
+          ? roundPrice(item.cost_price * (1 + markupPercent / 100))
+          : item.price;
+        return { ...item, markup_percent: markupPercent, price: newPrice };
+      })
+    );
+  };
+
+  // ─── Оновлення ціни продажу → перерахунок націнки ──────────────
   const updatePrice = (
     list: CartItem[],
     setList: React.Dispatch<React.SetStateAction<CartItem[]>>
   ) => (productId: string, price: number) => {
     setList((prev) =>
-      prev.map((item) =>
-        item.product_id === productId ? { ...item, price } : item
-      )
+      prev.map((item) => {
+        if (item.product_id !== productId) return item;
+        const markup = item.cost_price > 0
+          ? Math.round(((price - item.cost_price) / item.cost_price) * 100)
+          : 0;
+        return { ...item, price, markup_percent: markup };
+      })
     );
   };
 
+  // ─── Видалення товару ──────────────────────────────────────────
   const removeFromCart = (
     setList: React.Dispatch<React.SetStateAction<CartItem[]>>
   ) => (productId: string) => {
@@ -187,6 +356,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
   const exchangeTotalAmount = exchangeCart.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
   // ─── Збереження ────────────────────────────────────────────────
@@ -205,50 +375,64 @@ const ReturnInvoiceFormPage: React.FC = () => {
     }
 
     try {
-      const payload: any = {
-        document_type: 'return_invoice',
+      // Спільні поля
+      const basePayload: any = {
         supplier_id: supplierId,
         return_date: new Date(returnDate).toISOString(),
         return_action: returnAction,
         is_fiscal: isFiscal,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        source_invoice_id: sourceInvoiceId || undefined,
+        total_amount: totalAmount,
+        items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
-          total: item.quantity * item.price,
+          cost_price: item.cost_price,
+          total: Number((item.quantity * item.price).toFixed(2)),
         })),
       };
 
       // Якщо обмін — додаємо exchange_items
       if (returnAction === 'exchange' && exchangeCart.length > 0) {
-        payload.exchange_items = exchangeCart.map(({ product_title, product_barcode, ...item }) => ({
+        basePayload.exchange_items = exchangeCart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
-          total: item.quantity * item.price,
+          total: Number((item.quantity * item.price).toFixed(2)),
         }));
       }
 
+      if (isEdit) {
+        // Редагування — PUT
+        await api.put(`/return-invoices/${editId}`, basePayload);
+        toast.success('Повернення оновлено');
+        navigate('/documents');
+        return;
+      }
+
+      // Створення — POST
+      const payload: any = { document_type: 'return_invoice', ...basePayload };
       const doc = await createMutation.mutateAsync(payload);
 
       if (andConfirm) {
-        // При підтвердженні з обміном передаємо exchange_items
-        const confirmPayload: any = { status: 'confirmed' };
+        // Для exchange передаємо exchange_items прямо в API
+        const confirmBody: any = { status: 'confirmed' };
         if (returnAction === 'exchange' && exchangeCart.length > 0) {
-          confirmPayload.exchange_items = exchangeCart.map(({ product_title, product_barcode, ...item }) => ({
+          confirmBody.exchange_items = exchangeCart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
-            total: item.quantity * item.price,
+            total: Number((item.quantity * item.price).toFixed(2)),
           }));
         }
-        await confirmMutation.mutateAsync({ id: doc.id, documentType: 'return_invoice', ...confirmPayload });
+        await api.post(`/return-invoices/${doc.id}/confirm`, confirmBody);
       }
 
       navigate('/documents');
-    } catch {
-      // Error handled
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || 'Помилка при збереженні';
+      toast.error(detail);
     }
   };
 
@@ -260,8 +444,10 @@ const ReturnInvoiceFormPage: React.FC = () => {
     })) || []),
   ];
 
+  const showColumns = ['product', 'quantity', 'cost_price', 'price', 'markup', 'cost_total', 'total', 'actions'] as const;
+
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
         <button
           onClick={goBack}
@@ -271,16 +457,22 @@ const ReturnInvoiceFormPage: React.FC = () => {
         </button>
         <div>
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Повернення постачальнику
+            {isEdit ? 'Редагування' : 'Нове'} повернення постачальнику
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Повернення товарів постачальнику (номер генерується автоматично)
+            {isEdit ? 'Редагування повернення' : 'Повернення товарів постачальнику (номер генерується автоматично)'}
           </p>
         </div>
       </div>
 
       <div className="card p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Input
+            label="Номер (якщо не вказано — автоматично)"
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            placeholder="Автоматично"
+          />
           <Input
             label="Дата повернення"
             type="date"
@@ -306,8 +498,22 @@ const ReturnInvoiceFormPage: React.FC = () => {
           label="Постачальник *"
           options={supplierOptions}
           value={String(supplierId || '')}
-          onChange={(e) => setSupplierId(e.target.value || null)}
+          onChange={(e) => {
+            setSupplierId(e.target.value || null);
+            setSourceInvoiceId(null);
+          }}
         />
+
+        {/* Опціональна прив'язка до прибуткової накладної */}
+        {supplierId && supplierInvoices && supplierInvoices.length > 0 && (
+          <Select
+            label="Прибуткова накладна (опціонально)"
+            options={sourceInvoiceOptions}
+            value={sourceInvoiceId || ''}
+            onChange={(e) => setSourceInvoiceId(e.target.value || null)}
+            containerClassName="[&_p]:text-xs [&_p]:text-gray-400 [&_p]:mb-2"
+          />
+        )}
 
         {/* Вибір дії при підтвердженні */}
         <div>
@@ -399,29 +605,36 @@ const ReturnInvoiceFormPage: React.FC = () => {
                 <thead>
                   <tr className="bg-gray-50 dark:bg-slate-800/50">
                     <th className="table-header">Товар</th>
-                    <th className="table-header">Кількість</th>
-                    <th className="table-header">Ціна</th>
-                    <th className="table-header">Сума</th>
+                    <th className="table-header w-24 text-right">Кількість</th>
+                    <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
+                    <th className="table-header w-28 text-right">Ціна продажу</th>
+                    <th className="table-header w-28 text-right">Націнка</th>
+                    <th className="table-header w-28 text-right">Сума собівартості</th>
+                    <th className="table-header w-28 text-right">Сума продажу</th>
                     <th className="table-header w-16"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                  {cart.map((item) => (
-                    <tr key={item.product_id}>
+                  {cart.map((item, index) => (
+                    <tr key={`${item.product_id}-${index}`}>
                       <td className="table-cell">
                         <p className="font-medium text-gray-900 dark:text-gray-100">
                           {item.product_title}
                         </p>
+                        {item.product_barcode && (
+                          <p className="text-xs text-gray-400">ШК: {item.product_barcode}</p>
+                        )}
                       </td>
                       <td className="table-cell">
                         <input
                           type="number"
                           min="1"
+                          step="1"
                           value={item.quantity}
                           onChange={(e) =>
                             updateQuantity(cart, setCart)(item.product_id, parseInt(e.target.value) || 1)
                           }
-                          className="w-20 input-field text-center px-3"
+                          className="w-20 input-field text-center px-3 no-spinner"
                         />
                       </td>
                       <td className="table-cell">
@@ -429,12 +642,44 @@ const ReturnInvoiceFormPage: React.FC = () => {
                           type="number"
                           step="0.01"
                           min="0"
+                          value={item.cost_price}
+                          onChange={(e) =>
+                            updateCostPrice(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
+                          }
+                          className="w-24 input-field text-right px-3 no-spinner"
+                          title="Собівартість = ціна з ПДВ з накладної"
+                        />
+                      </td>
+                      <td className="table-cell">
+                        <input
+                          type="number"
+                          step="1"
+                          min="0"
                           value={item.price}
                           onChange={(e) =>
                             updatePrice(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
                           }
-                          className="w-24 input-field text-right px-3"
+                          className="w-24 input-field text-right px-3 no-spinner"
+                          title="Ціна продажу заокруглена до гривні"
                         />
+                      </td>
+                      <td className="table-cell">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            value={item.markup_percent}
+                            onChange={(e) =>
+                              updateMarkup(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
+                            }
+                            className="w-20 input-field text-right px-3 no-spinner"
+                          />
+                          <span className="text-sm text-gray-400">%</span>
+                        </div>
+                      </td>
+                      <td className="table-cell font-medium">
+                        {formatCurrency(item.quantity * item.cost_price)}
                       </td>
                       <td className="table-cell font-medium">
                         {formatCurrency(item.quantity * item.price)}
@@ -452,13 +697,20 @@ const ReturnInvoiceFormPage: React.FC = () => {
                 </tbody>
                 <tfoot>
                   <tr className="bg-gray-50 dark:bg-slate-800/50">
-                    <td colSpan={3} className="px-4 py-3 text-right font-semibold text-gray-700 dark:text-gray-300">
+                    <td colSpan={5} className="px-4 py-3 text-right text-gray-500 dark:text-gray-400 text-sm">
+                      Закупівельна сума:
+                    </td>
+                    <td colSpan={3} className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                      {formatCurrency(totalCost)}
+                    </td>
+                  </tr>
+                  <tr className="bg-gray-100 dark:bg-slate-800 border-t border-gray-300 dark:border-slate-600">
+                    <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 text-sm">
                       Сума повернення:
                     </td>
-                    <td className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                    <td colSpan={3} className="px-4 py-2 font-bold text-lg text-gray-900 dark:text-gray-100">
                       {formatCurrency(totalAmount)}
                     </td>
-                    <td></td>
                   </tr>
                 </tfoot>
               </table>
@@ -519,19 +771,25 @@ const ReturnInvoiceFormPage: React.FC = () => {
                   <thead>
                     <tr className="bg-gray-50 dark:bg-slate-800/50">
                       <th className="table-header">Товар</th>
-                      <th className="table-header">Кількість</th>
-                      <th className="table-header">Ціна</th>
-                      <th className="table-header">Сума</th>
+                      <th className="table-header w-24 text-right">Кількість</th>
+                      <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
+                      <th className="table-header w-28 text-right">Ціна продажу</th>
+                      <th className="table-header w-28 text-right">Націнка</th>
+                      <th className="table-header w-28 text-right">Сума собівартості</th>
+                      <th className="table-header w-28 text-right">Сума продажу</th>
                       <th className="table-header w-16"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                    {exchangeCart.map((item) => (
-                      <tr key={item.product_id}>
+                    {exchangeCart.map((item, index) => (
+                      <tr key={`ex-${item.product_id}-${index}`}>
                         <td className="table-cell">
                           <p className="font-medium text-gray-900 dark:text-gray-100">
                             {item.product_title}
                           </p>
+                          {item.product_barcode && (
+                            <p className="text-xs text-gray-400">ШК: {item.product_barcode}</p>
+                          )}
                         </td>
                         <td className="table-cell">
                           <input
@@ -541,7 +799,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
                             onChange={(e) =>
                               updateQuantity(exchangeCart, setExchangeCart)(item.product_id, parseInt(e.target.value) || 1)
                             }
-                            className="w-20 input-field text-center px-3"
+                            className="w-20 input-field text-center px-3 no-spinner"
                           />
                         </td>
                         <td className="table-cell">
@@ -549,12 +807,42 @@ const ReturnInvoiceFormPage: React.FC = () => {
                             type="number"
                             step="0.01"
                             min="0"
+                            value={item.cost_price}
+                            onChange={(e) =>
+                              updateCostPrice(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
+                            }
+                            className="w-24 input-field text-right px-3 no-spinner"
+                          />
+                        </td>
+                        <td className="table-cell">
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
                             value={item.price}
                             onChange={(e) =>
                               updatePrice(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
                             }
-                            className="w-24 input-field text-right px-3"
+                            className="w-24 input-field text-right px-3 no-spinner"
                           />
+                        </td>
+                        <td className="table-cell">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              value={item.markup_percent}
+                              onChange={(e) =>
+                                updateMarkup(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
+                              }
+                              className="w-20 input-field text-right px-3 no-spinner"
+                            />
+                            <span className="text-sm text-gray-400">%</span>
+                          </div>
+                        </td>
+                        <td className="table-cell font-medium">
+                          {formatCurrency(item.quantity * item.cost_price)}
                         </td>
                         <td className="table-cell font-medium">
                           {formatCurrency(item.quantity * item.price)}
@@ -572,13 +860,20 @@ const ReturnInvoiceFormPage: React.FC = () => {
                   </tbody>
                   <tfoot>
                     <tr className="bg-gray-50 dark:bg-slate-800/50">
-                      <td colSpan={3} className="px-4 py-3 text-right font-semibold text-gray-700 dark:text-gray-300">
+                      <td colSpan={5} className="px-4 py-3 text-right text-gray-500 dark:text-gray-400 text-sm">
+                        Закупівельна сума:
+                      </td>
+                      <td colSpan={3} className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                        {formatCurrency(exchangeCart.reduce((s, i) => s + i.quantity * i.cost_price, 0))}
+                      </td>
+                    </tr>
+                    <tr className="bg-gray-100 dark:bg-slate-800 border-t border-gray-300 dark:border-slate-600">
+                      <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 text-sm">
                         Сума обміну:
                       </td>
-                      <td className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                      <td colSpan={3} className="px-4 py-2 font-bold text-lg text-gray-900 dark:text-gray-100">
                         {formatCurrency(exchangeTotalAmount)}
                       </td>
-                      <td></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -604,14 +899,14 @@ const ReturnInvoiceFormPage: React.FC = () => {
             icon={<Save className="w-4 h-4" />}
             isLoading={createMutation.isPending}
           >
-            Зберегти як чернетку
+            {isEdit ? 'Оновити чернетку' : 'Зберегти як чернетку'}
           </Button>
           <Button
             onClick={() => handleSave(true)}
             icon={<CheckCircle className="w-4 h-4" />}
             isLoading={createMutation.isPending || confirmMutation.isPending}
           >
-            Створити та підтвердити
+            {isEdit ? 'Оновити та підтвердити' : 'Створити та підтвердити'}
           </Button>
         </div>
       </div>

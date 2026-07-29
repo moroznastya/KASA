@@ -618,16 +618,23 @@ const ModuleSection: React.FC<{
               size="sm"
               onClick={async () => {
                 try {
-                  const response = await api.post('/print-templates/default/render', {
+                  // 1. Отримуємо ID дефолтного шаблону для receipt_58mm
+                  const templateRes = await api.get('/print-templates/default', {
+                    params: { type: values.default_template_type || 'receipt_58mm' },
+                  });
+                  const templateId = templateRes.data.id;
+
+                  // 2. Рендеримо шаблон з демо-даними
+                  const renderRes = await api.post(`/print-templates/${templateId}/render`, {
                     data: {
                       shop_name: values.company_name || 'Мій магазин',
-                      shop_address: values.company_address || '',
-                      tax_id: values.company_edrpou || '',
+                      shop_address: values.company_address || 'вул. Шевченка, 1',
+                      tax_id: values.company_edrpou || '12345678',
                       receipt_number: '0001',
                       date: new Date().toLocaleDateString('uk-UA'),
                       time: new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }),
                       cashier: 'Іван Петренко',
-                      items: '<div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Хліб білий</span><span>25.00</span></div><div style="display:flex;justify-content:space-between;"><span>2 × 25.00</span><span style="font-weight:bold;">50.00</span></div></div><div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Молоко 2.6%</span><span>38.50</span></div><div style="display:flex;justify-content:space-between;"><span>1 × 38.50</span><span style="font-weight:bold;">38.50</span></div></div><div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Яйця курячі (10шт)</span><span>65.00</span></div><div style="display:flex;justify-content:space-between;"><span>1 × 65.00</span><span style="font-weight:bold;">65.00</span></div></div>',
+                      items: '<div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Хліб білий</span><span>25.00</span></div><div style="display:flex;justify-content:space-between;font-size:10px;color:#666;"><span>2 × 25.00</span><span style="font-weight:bold;">50.00</span></div></div><div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Молоко 2.6%</span><span>38.50</span></div><div style="display:flex;justify-content:space-between;font-size:10px;color:#666;"><span>1 × 38.50</span><span style="font-weight:bold;">38.50</span></div></div><div style="margin-bottom:4px;"><div style="display:flex;justify-content:space-between;"><span>Яйця курячі (10шт)</span><span>65.00</span></div><div style="display:flex;justify-content:space-between;font-size:10px;color:#666;"><span>1 × 65.00</span><span style="font-weight:bold;">65.00</span></div></div>',
                       total: '153.50',
                       payment_method: 'Готівка',
                       paid: '200.00',
@@ -635,9 +642,10 @@ const ModuleSection: React.FC<{
                       footer: 'Дякуємо за покупку!',
                     },
                   });
-                  setPreviewReceiptHtml(response.data.html);
-                } catch {
-                  toast.error('Не вдалося згенерувати прев\'ю');
+                  setPreviewReceiptHtml(renderRes.data.html);
+                } catch (err) {
+                  const error = err as any;
+                  toast.error(`Не вдалося згенерувати прев'ю: ${error?.response?.data?.detail || error?.message || 'Невідома помилка'}`);
                 }
               }}
             >

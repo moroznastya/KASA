@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
 from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
+from app.models.supplier import Supplier
 from app.schemas.purchase_order import (
     PurchaseOrderCreate,
     PurchaseOrderUpdate,
@@ -94,11 +95,17 @@ async def list_purchase_orders(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .order_by(desc(PurchaseOrder.created_at))
     )
     orders = result.scalars().all()
-    return [PurchaseOrderResponse.model_validate(order) for order in orders]
+    response_list = []
+    for order in orders:
+        result_item = PurchaseOrderResponse.model_validate(order)
+        result_item.supplier_name = order.supplier.name if order.supplier else None
+        response_list.append(result_item)
+    return response_list
 
 
 @router.get("/{order_id}", response_model=PurchaseOrderResponse)
@@ -113,6 +120,7 @@ async def get_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order_id)
     )
@@ -122,7 +130,9 @@ async def get_purchase_order(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Замовлення з ID '{order_id}' не знайдено",
         )
-    return PurchaseOrderResponse.model_validate(order)
+    result_item = PurchaseOrderResponse.model_validate(order)
+    result_item.supplier_name = order.supplier.name if order.supplier else None
+    return result_item
 
 
 @router.post("", response_model=PurchaseOrderResponse, status_code=201)
@@ -151,6 +161,7 @@ async def create_purchase_order(
         notes=data.notes,
         total_amount=total_amount,
         status=PurchaseOrderStatus.DRAFT,
+        created_by_id=current_user.id,
     )
     session.add(order)
     await session.flush()
@@ -172,11 +183,14 @@ async def create_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order.id)
     )
     order = result.scalar_one()
-    return PurchaseOrderResponse.model_validate(order)
+    result_item = PurchaseOrderResponse.model_validate(order)
+    result_item.supplier_name = order.supplier.name if order.supplier else None
+    return result_item
 
 
 @router.put("/{order_id}", response_model=PurchaseOrderResponse)
@@ -192,6 +206,7 @@ async def update_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order_id)
     )
@@ -232,11 +247,14 @@ async def update_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order.id)
     )
     order = result.scalar_one()
-    return PurchaseOrderResponse.model_validate(order)
+    result_item = PurchaseOrderResponse.model_validate(order)
+    result_item.supplier_name = order.supplier.name if order.supplier else None
+    return result_item
 
 
 @router.delete("/{order_id}", status_code=204)
@@ -287,6 +305,7 @@ async def confirm_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order_id)
     )
@@ -317,6 +336,7 @@ async def confirm_purchase_order(
             notes=f"Автоматично створено із замовлення №{order.number}",
             total_amount=order.total_amount,
             status=InvoiceStatus.DRAFT,
+            created_by_id=current_user.id,
         )
         session.add(new_invoice)
         await session.flush()
@@ -355,8 +375,11 @@ async def confirm_purchase_order(
         .options(
             selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
             selectinload(PurchaseOrder.invoice),
+            selectinload(PurchaseOrder.supplier),
         )
         .where(PurchaseOrder.id == order.id)
     )
     order = result.scalar_one()
-    return PurchaseOrderResponse.model_validate(order)
+    result_item = PurchaseOrderResponse.model_validate(order)
+    result_item.supplier_name = order.supplier.name if order.supplier else None
+    return result_item

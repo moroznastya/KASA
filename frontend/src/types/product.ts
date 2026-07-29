@@ -16,6 +16,21 @@ export interface CategoryUpdate extends CategoryCreate {
   id: string;
 }
 
+export interface ProductImage {
+  id: string;
+  url: string;
+  is_main: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface Barcode {
+  id: string;
+  barcode: string;
+  is_primary: boolean;
+  created_at: string;
+}
+
 export interface Product {
   id: string;
   title: string;
@@ -26,6 +41,7 @@ export interface Product {
   cost_price: string | null;
   markup: string | null;
   stock: string;
+  recommended_qty: string | null;
   uktzed: string | null;
   scan_excise: boolean;
   tax_rate: string;
@@ -34,6 +50,8 @@ export interface Product {
   unit: string;
   category_id: string | null;
   supplier_id: string | null;
+  images: ProductImage[];
+  barcodes: Barcode[];
   created_at: string;
   updated_at: string;
 }
@@ -50,6 +68,7 @@ export interface ProductCreate {
   cost_price?: number | null;
   markup?: number | null;
   stock?: number;
+  recommended_qty?: number | null;
   category_id?: string | null;
   supplier_id?: string | null;
   tax_rate?: VatRate;

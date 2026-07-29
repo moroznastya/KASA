@@ -20,9 +20,16 @@ export function useUnifiedSearch(options: UseUnifiedSearchOptions = {}) {
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ✅ Фікс: зберігаємо onBarcodeFound в реф, щоб уникнути циклічної залежності
+  const onBarcodeFoundRef = useRef(onBarcodeFound);
+  useEffect(() => {
+    onBarcodeFoundRef.current = onBarcodeFound;
+  }, [onBarcodeFound]);
+
   const isBarcode = query.length >= 8 && /^\d+$/.test(query);
   const isNameSearch = query.length >= 2 && !isBarcode;
 
+  // ✅ Фікс: прибираємо onBarcodeFound з залежностей — використовуємо реф
   const performSearch = useCallback(async (searchQuery: string) => {
     const isBarcodeSearch = searchQuery.length >= 8 && /^\d+$/.test(searchQuery);
 
@@ -42,7 +49,8 @@ export function useUnifiedSearch(options: UseUnifiedSearchOptions = {}) {
         const product = await productService.searchByBarcode(searchQuery);
         setResults([{ type: 'barcode', product }]);
         setError(null);
-        onBarcodeFound?.(product);
+        // ✅ Використовуємо реф замість прямого виклику
+        onBarcodeFoundRef.current?.(product);
       } else {
         // Search by name
         const response = await productService.searchProducts(searchQuery);
@@ -66,7 +74,7 @@ export function useUnifiedSearch(options: UseUnifiedSearchOptions = {}) {
     } finally {
       setIsSearching(false);
     }
-  }, [onBarcodeFound]);
+  }, []); // ✅ Порожній масив залежностей — performSearch ніколи не змінюється
 
   useEffect(() => {
     if (timerRef.current) {

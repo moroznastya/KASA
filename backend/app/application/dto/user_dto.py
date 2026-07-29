@@ -28,8 +28,8 @@ class UserDTO:
 class UserCreateDTO:
     """DTO для створення нового користувача."""
     name: str
-    login: str
-    password: str
+    login: Optional[str] = None
+    password: str = ""
     role: str = "cashier"
     is_active: bool = True
     email: str = ""

@@ -1,4 +1,4 @@
-export type DocumentType = 'invoice' | 'transfer' | 'write_off' | 'return_invoice' | 'purchase_order';
+export type DocumentType = 'invoice' | 'transfer' | 'write_off' | 'return_invoice' | 'purchase_order' | 'inventory';
 export type DocumentStatus = 'draft' | 'confirmed' | 'cancelled';
 
 /** Тип дії при підтвердженні повернення постачальнику */
@@ -26,6 +26,7 @@ export interface Document {
   notes: string | null;
   items: DocumentItem[];
   total_amount: string;
+  purchase_total?: number;
   created_by: string;
   created_by_name?: string;
   created_at: string;
@@ -95,12 +96,16 @@ export interface ReturnInvoiceCreate {
   is_fiscal: boolean;
   notes?: string | null;
   items: InvoiceItemInput[];
+  /** Товари для обміну (обов'язково, якщо return_action = exchange) */
+  exchange_items?: InvoiceItemInput[];
+  /** Опціональна прив'язка до прибуткової накладної */
+  source_invoice_id?: string | null;
 }
 
 /** Замовлення постачальнику */
 export interface PurchaseOrderCreate {
   document_type: 'purchase_order';
-  /** Номер замовлення (якщо не вказано, генерується автоматично) */
+  /** Номер документа (якщо не вказано, генерується автоматично) */
   number?: string;
   supplier_id: string;
   order_date: string;
@@ -109,4 +114,51 @@ export interface PurchaseOrderCreate {
   is_fiscal: boolean;
   notes?: string | null;
   items: InvoiceItemInput[];
+}
+
+/** Фільтр для розширеного пошуку накладних */
+export interface DocumentFilterPreset {
+  name: string;
+  filters: {
+    search: string;
+    document_type: string;
+    status: string;
+    date_from: string;
+    date_to: string;
+    supplier_id: string;
+    amount_from: string;
+    amount_to: string;
+  };
+  created_at: string;
+}
+
+/** Запит на масове підтвердження документів */
+
+
+/** Елемент товару в накладній інвентаризації */
+export interface InventoryItemInput {
+  product_id: string;
+  /** Фактична кількість (вводить користувач) */
+  actual_quantity: number;
+  /** Облікова кількість (поточний залишок, підтягується з Product.stock) */
+  accounting_quantity: number;
+  /** Різниця = actual - accounting (розраховується автоматично) */
+  difference: number;
+}
+
+export interface InventoryCreate {
+  document_type: 'inventory';
+  /** Номер документа (якщо не вказано, генерується автоматично) */
+  number?: string;
+  location: string;
+  inventory_date: string;
+  notes?: string | null;
+  items: InventoryItemInput[];
+}
+
+export interface BatchConfirmRequest {
+  items: Array<{
+    id: string;
+    document_type: DocumentType;
+  }>;
 }

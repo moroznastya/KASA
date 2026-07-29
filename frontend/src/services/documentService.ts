@@ -1,5 +1,5 @@
 import api from './api';
-import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate } from '@/types/document';
+import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate, BatchConfirmRequest } from '@/types/document';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 /** Отримує правильний ендпоінт для типу документа */
@@ -10,6 +10,7 @@ function getEndpointForType(type: DocumentType): string {
     case 'purchase_order': return '/purchase-orders';
     case 'transfer': return '/transfers';
     case 'write_off': return '/write-offs';
+    case 'inventory': return '/inventory';
     default: return '/documents';
   }
 }
@@ -41,6 +42,8 @@ export const documentService = {
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
+            cost_price: item.cost_price ?? item.price,
+            markup_percent: item.markup_percent ?? 0,
             total: item.total ?? (item.quantity * item.price),
           })),
         });
@@ -60,8 +63,11 @@ export const documentService = {
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
+            cost_price: item.cost_price,
             total: item.total ?? (item.quantity * item.price),
           })),
+          // Опціональна прив'язка до прибуткової накладної
+          source_invoice_id: returnData.source_invoice_id || undefined,
         });
         return response.data;
       }
@@ -80,6 +86,17 @@ export const documentService = {
             price: item.price,
             total: item.total ?? (item.quantity * item.price),
           })),
+        });
+        return response.data;
+      }
+      case 'inventory': {
+        const invData = data as any;
+        const response = await api.post<Document>('/inventory', {
+          number: invData.number,
+          location: invData.location,
+          inventory_date: invData.inventory_date,
+          notes: invData.notes,
+          items: invData.items,
         });
         return response.data;
       }
@@ -111,7 +128,34 @@ export const documentService = {
     return response.data;
   },
 
-  async deleteDocument(id: string): Promise<void> {
-    await api.delete(`/documents/${id}`);
+  async deleteDocument(id: string, documentType: DocumentType): Promise<void> {
+    const endpoint = getEndpointForType(documentType);
+    await api.delete(`${endpoint}/${id}`);
+  },
+
+  /** Масове підтвердження документів */
+  async batchConfirm(items: Array<{ id: string; document_type: DocumentType }>): Promise<void> {
+    await api.post('/documents/batch-confirm', { items });
+  },
+
+  /** Копіювання документа */
+  async copyDocument(id: string, documentType: DocumentType): Promise<Document> {
+    const response = await api.post<Document>(`/documents/${id}/copy?document_type=${documentType}`);
+    return response.data;
+  },
+
+  /** Експорт документів */
+  async exportDocuments(params: SearchParams & { format?: 'excel' | 'csv' }): Promise<Blob> {
+    const response = await api.get<Blob>('/documents/export', {
+      params,
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
+  /** Друк документа */
+  async printDocument(id: string, documentType: DocumentType): Promise<any> {
+    const response = await api.get(`/documents/${id}/print?document_type=${documentType}`);
+    return response.data;
   },
 };

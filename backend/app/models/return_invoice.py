@@ -92,6 +92,18 @@ class ReturnInvoice(Base):
         comment="Загальна сума повернення (грн)",
     )
 
+    # ── Користувач, який створив ─────────────────
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Ідентифікатор користувача, який створив повернення",
+    )
+    creator: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[created_by_id],
+    )
+
     # ── Зв'язок з прибутковою накладною при обміні ──
     exchange_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -99,6 +111,15 @@ class ReturnInvoice(Base):
         nullable=True,
         index=True,
         comment="ID прибуткової накладної, створеної при обміні на інший товар",
+    )
+
+    # ── Опціональна прив'язка до прибуткової накладної ──
+    source_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID прибуткової накладної, до якої відноситься повернення (опціонально)",
     )
 
     # ── Timestamps ──────────────────────────────
@@ -124,6 +145,11 @@ class ReturnInvoice(Base):
     exchange_invoice: Mapped["Invoice | None"] = relationship(
         "Invoice",
         foreign_keys=[exchange_invoice_id],
+        post_update=True,
+    )
+    source_invoice: Mapped["Invoice | None"] = relationship(
+        "Invoice",
+        foreign_keys=[source_invoice_id],
         post_update=True,
     )
 
@@ -171,6 +197,17 @@ class ReturnInvoiceItem(Base):
         Numeric(12, 2),
         nullable=False,
         comment="Загальна сума позиції (грн)",
+    )
+
+    cost_price: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Собівартість одиниці товару на момент повернення (грн)",
+    )
+    markup_percent: Mapped[float | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        comment="Відсоток націнки товару на момент повернення",
     )
 
     # ── Timestamps ──────────────────────────────

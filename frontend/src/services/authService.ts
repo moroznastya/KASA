@@ -3,11 +3,9 @@ import { LoginRequest, LoginPinRequest, TokenResponse, User } from '@/types/auth
 
 export const authService = {
   async login(data: LoginRequest): Promise<TokenResponse> {
-    const formData = new FormData();
-    formData.append('username', data.username);
-    formData.append('password', data.password);
-    const response = await api.post<TokenResponse>('/auth/login', formData, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    const response = await api.post<TokenResponse>('/auth/login', {
+      login: data.login,
+      password: data.password,
     });
     return response.data;
   },

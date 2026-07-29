@@ -92,6 +92,7 @@ export function formatDocumentType(type: string): string {
     write_off: 'Списання',
     return_invoice: "Повернення постачальнику",
     purchase_order: "Замовлення постачальнику",
+    inventory: 'Інвентаризація',
   };
   return types[type] || type;
 }
@@ -111,7 +112,8 @@ export function formatDocumentStatus(status: string): string {
 /**
  * Format payment method to Ukrainian
  */
-export function formatPaymentMethod(method: string): string {
+export function formatPaymentMethod(method: string | null | undefined): string {
+  if (!method) return '—';
   const methods: Record<string, string> = {
     cash: 'Готівка',
     card: 'Картка',

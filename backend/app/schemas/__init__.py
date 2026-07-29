@@ -67,6 +67,7 @@ from app.schemas.receipt import (
     ReceiptItemCreate,
     ReceiptItemResponse,
     ReceiptHistoryParams,
+    DebtPaymentInfo,
 )
 from app.schemas.ledger import (
     SupplierLedgerCreate,
@@ -92,7 +93,7 @@ __all__ = [
     # ReturnInvoice
     "ReturnInvoiceCreate", "ReturnInvoiceUpdate", "ReturnInvoiceResponse", "ReturnInvoiceItemCreate", "ReturnInvoiceItemResponse", "ReturnInvoiceConfirmRequest",
     # Receipt
-    "ReceiptCreate", "ReceiptResponse", "ReceiptItemCreate", "ReceiptItemResponse", "ReceiptHistoryParams",
+    "ReceiptCreate", "ReceiptResponse", "ReceiptItemCreate", "ReceiptItemResponse", "ReceiptHistoryParams", "DebtPaymentInfo",
     # Ledger
     "SupplierLedgerCreate", "SupplierLedgerResponse", "SupplierLedgerBalanceResponse",
 ]

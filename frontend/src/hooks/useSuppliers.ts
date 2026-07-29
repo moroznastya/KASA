@@ -2,27 +2,36 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supplierService } from '@/services/supplierService';
 import { SupplierCreate, SupplierUpdate } from '@/types/supplier';
 import { SearchParams } from '@/types/api';
+import { useAuthStore } from '@/store/authStore';
 import toast from 'react-hot-toast';
 
 export function useSuppliers(params?: SearchParams) {
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+
   return useQuery({
     queryKey: ['suppliers', params],
     queryFn: () => supplierService.getSuppliers(params),
+    enabled: isAuthenticated,
   });
 }
 
 export function useAllSuppliers() {
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+
   return useQuery({
     queryKey: ['suppliers-all'],
     queryFn: () => supplierService.getAllSuppliers(),
+    enabled: isAuthenticated,
   });
 }
 
 export function useSupplier(id: string) {
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+
   return useQuery({
     queryKey: ['supplier', id],
     queryFn: () => supplierService.getSupplier(id),
-    enabled: !!id,
+    enabled: !!id && isAuthenticated,
   });
 }
 

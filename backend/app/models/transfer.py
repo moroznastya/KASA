@@ -52,6 +52,19 @@ class Transfer(Base):
         nullable=False,
         comment="Куди переміщуємо (склад/магазин)",
     )
+
+    # ── Користувач, який створив ─────────────────
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Ідентифікатор користувача, який створив переміщення",
+    )
+    creator: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[created_by_id],
+    )
+
     transfer_date: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,

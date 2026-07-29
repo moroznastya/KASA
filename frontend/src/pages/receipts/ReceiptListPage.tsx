@@ -1,12 +1,32 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useReceipts } from '@/hooks/useReceipts';
+import { useUsers } from '@/hooks/useUsers';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { Select, SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { Search, ChevronLeft, ChevronRight, Receipt } from 'lucide-react';
-
 import { usePageState } from '@/hooks/usePageState';
+
+const paymentMethodLabels: Record<string, string> = {
+  cash: 'Готівка',
+  card: 'Картка',
+  mixed: 'Готівка + Картка',
+};
+
+const paymentMethodColors: Record<string, string> = {
+  cash: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
+  card: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
+  mixed: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400',
+};
+
+const paymentMethodOptions: SelectOption[] = [
+  { value: '', label: 'Всі способи оплати' },
+  { value: 'cash', label: 'Готівка' },
+  { value: 'card', label: 'Картка' },
+  { value: 'mixed', label: 'Готівка + Картка' },
+];
+
 const ReceiptListPage: React.FC = () => {
   const navigate = useNavigate();
   const [pageState, setPageState] = usePageState('receipt_list', {
@@ -14,20 +34,32 @@ const ReceiptListPage: React.FC = () => {
     searchQuery: '',
     dateFrom: '',
     dateTo: '',
+    paymentMethod: '',
+    cashierFilter: '',
   });
-  const { page, searchQuery, dateFrom, dateTo } = pageState;
+  const { page, searchQuery, dateFrom, dateTo, paymentMethod, cashierFilter } = pageState;
 
   const { data, isLoading } = useReceipts({
     page,
     size: 20,
-    ...(searchQuery ? { query: searchQuery } : {}),
+    ...(searchQuery ? { search: searchQuery } : {}),
     ...(dateFrom ? { date_from: dateFrom } : {}),
     ...(dateTo ? { date_to: dateTo } : {}),
-  });
+    ...(paymentMethod ? { payment_method: paymentMethod } : {}),
+    ...(cashierFilter ? { cashier_id: cashierFilter } : {}),
+  } as any);
+
+  const { data: usersData } = useUsers({ page: 1, size: 100 });
+  const users = usersData?.items || [];
+
+  const cashierOptions: SelectOption[] = [
+    { value: '', label: 'Всі касири' },
+    ...users.map((u: any) => ({ value: u.id, label: u.name })),
+  ];
 
   const receipts = data?.items || [];
   const total = data?.total || 0;
-  const totalPages = Math.ceil(total / 20);
+  const totalPages = data?.pages || Math.ceil(total / 20);
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
@@ -61,14 +93,14 @@ const ReceiptListPage: React.FC = () => {
 
       {/* Filters */}
       <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-gray-200 dark:border-slate-700 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               type="text"
               placeholder="Пошук за номером..."
               value={searchQuery}
-              onChange={(e) => { setPageState({ searchQuery: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
+              onChange={(e) => { setPageState({ searchQuery: e.target.value, page: 1 }); }}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             />
           </div>
@@ -76,7 +108,7 @@ const ReceiptListPage: React.FC = () => {
             <input
               type="date"
               value={dateFrom}
-              onChange={(e) => { setPageState({ dateFrom: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
+              onChange={(e) => { setPageState({ dateFrom: e.target.value, page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="Від дати"
             />
@@ -85,9 +117,23 @@ const ReceiptListPage: React.FC = () => {
             <input
               type="date"
               value={dateTo}
-              onChange={(e) => { setPageState({ dateTo: e.target.value, page: 1 }); setPageState({ page: 1 }); }}
+              onChange={(e) => { setPageState({ dateTo: e.target.value, page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="До дати"
+            />
+          </div>
+          <div>
+            <Select
+              options={paymentMethodOptions}
+              value={paymentMethod}
+              onChange={(e) => { setPageState({ paymentMethod: e.target.value, page: 1 }); }}
+            />
+          </div>
+          <div>
+            <Select
+              options={cashierOptions}
+              value={cashierFilter}
+              onChange={(e) => { setPageState({ cashierFilter: e.target.value, page: 1 }); }}
             />
           </div>
           <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
@@ -125,6 +171,9 @@ const ReceiptListPage: React.FC = () => {
                     Сума
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                    Спосіб оплати
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
                     Касир
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -156,6 +205,15 @@ const ReceiptListPage: React.FC = () => {
                     <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">
                       {formatAmount(receipt.total_amount)} грн
                     </td>
+                    <td className="px-4 py-3">
+                      {receipt.payment_method ? (
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${paymentMethodColors[receipt.payment_method] || 'bg-gray-100 text-gray-800'}`}>
+                          {paymentMethodLabels[receipt.payment_method] || receipt.payment_method}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                       {receipt.cashier_name || 'Невідомо'}
                     </td>
@@ -180,7 +238,7 @@ const ReceiptListPage: React.FC = () => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPageState((prev) => ({ page: Math.max(1, prev.page - 1) }))}
+              onClick={() => setPageState((prev: any) => ({ page: Math.max(1, prev.page - 1) }))}
               disabled={page <= 1}
             >
               <ChevronLeft className="w-4 h-4" />
@@ -188,7 +246,7 @@ const ReceiptListPage: React.FC = () => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPageState((prev) => ({ page: Math.min(totalPages, prev.page + 1) }))}
+              onClick={() => setPageState((prev: any) => ({ page: Math.min(totalPages, prev.page + 1) }))}
               disabled={page >= totalPages}
             >
               <ChevronRight className="w-4 h-4" />

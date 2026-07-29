@@ -1,27 +1,37 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2 } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
 import { debtorService, Debtor } from '@/services/debtorService';
+import { settingsService } from '@/services/settingsService';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency, formatUnit } from '@/utils/format';
-import { ReceiptCreate, PaymentMethod } from '@/types/receipt';
+import { Receipt, ReceiptCreate, PaymentMethod } from '@/types/receipt';
 import toast from 'react-hot-toast';
 import { CategoryBrowser } from '@/components/pos/CategoryBrowser';
+import ProductCardModal from '@/components/pos/ProductCardModal';
+import PrintReceiptDialog from '@/components/pos/PrintReceiptDialog';
+import SearchReceiptModal from '@/components/pos/SearchReceiptModal';
+import SelectItemsFromReceipt from '@/components/pos/SelectItemsFromReceipt';
+import type { ReturnCartItem } from '@/components/pos/SelectItemsFromReceipt';
+import ReturnWithoutReceipt from '@/components/pos/ReturnWithoutReceipt';
+import type { ReceiptSearchResult } from '@/types/receipt';
 
 interface CartItem {
   product_id: string;
   product_title: string;
   product_barcode: string | null;
+  image_url: string | null;
   quantity: number;
   price: number;
   tax_rate: number;
   is_weight: boolean;
   stock: number;
   unit: string;
+  original_receipt_id?: string;  // ID оригінального чеку (для товарів повернення)
 }
 
 interface PaymentOption {
@@ -36,6 +46,8 @@ const paymentOptions: PaymentOption[] = [
   { value: 'mixed', label: 'Змішаний', icon: <CreditCard className="w-5 h-5" /> },
 ];
 
+const DEBT_PRODUCT_ID = 'c230fe32-78ef-4501-a21d-71467a668fc4';
+
 const PosPage: React.FC = () => {
   const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -46,16 +58,13 @@ const PosPage: React.FC = () => {
       return [];
     }
   });
+  const [editingQuantity, setEditingQuantity] = useState<Record<string, string>>({});
   const cartEndRef = useRef<HTMLDivElement>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashAmount, setCashAmount] = useState('');
   const [cardAmount, setCardAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showQuantityModal, setShowQuantityModal] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<any>(null);
-  const [quantityInput, setQuantityInput] = useState('1');
-  const [quantityError, setQuantityError] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Debtor state for payment
@@ -77,6 +86,44 @@ const PosPage: React.FC = () => {
   const [showDebtorModalDropdown, setShowDebtorModalDropdown] = useState(false);
   const debtorModalRef = useRef<HTMLDivElement>(null);
   const debtorModalInputRef = useRef<HTMLInputElement>(null);
+
+  // Debt payment state
+  const [showDebtPaymentSearch, setShowDebtPaymentSearch] = useState(false);
+  const [debtPaymentQuery, setDebtPaymentQuery] = useState('');
+  const [debtPaymentResults, setDebtPaymentResults] = useState<Debtor[]>([]);
+  const [isSearchingDebtPayment, setIsSearchingDebtPayment] = useState(false);
+  const [showDebtPaymentDropdown, setShowDebtPaymentDropdown] = useState(false);
+  const [selectedDebtPaymentDebtor, setSelectedDebtPaymentDebtor] = useState<Debtor | null>(null);
+  const [debtPaymentAmount, setDebtPaymentAmount] = useState('');
+  const [showDebtPaymentModal, setShowDebtPaymentModal] = useState(false);
+  const [returnMode, setReturnMode] = useState(false);
+  const [showPrintDialog, setShowPrintDialog] = useState(false);
+  const [lastReceipt, setLastReceipt] = useState<Receipt | null>(null);
+  const [autoPrintReceipt, setAutoPrintReceipt] = useState(true);
+  
+  // Стани для модалок повернення
+  const [showSearchReceiptModal, setShowSearchReceiptModal] = useState(false);
+  const [selectedSourceReceipt, setSelectedSourceReceipt] = useState<ReceiptSearchResult | null>(null);
+  const [showSelectItemsModal, setShowSelectItemsModal] = useState(false);
+  const [searchReceiptId, setSearchReceiptId] = useState(0);
+  const [showReturnWithoutReceipt, setShowReturnWithoutReceipt] = useState(false); // за замовчуванням друкуємо автоматично
+
+  // Settings
+  const [showCardOnScan, setShowCardOnScan] = useState(true);
+
+  // Product card modal
+  const [showProductCard, setShowProductCard] = useState(false);
+  const [productCardProduct, setProductCardProduct] = useState<any>(null);
+
+  const [heldReceipt, setHeldReceipt] = useState<CartItem[] | null>(() => {
+    try {
+      const saved = localStorage.getItem('pos_held_receipt');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   // Save cart to sessionStorage on change
   useEffect(() => {
     try {
@@ -85,10 +132,6 @@ const PosPage: React.FC = () => {
       // Ignore storage errors
     }
   }, [cart]);
-
-  
-  // Debtor payment method
-
 
   // Search debtors when query changes
   useEffect(() => {
@@ -136,6 +179,28 @@ const PosPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [debtorModalQuery]);
 
+  // Search debtors for debt payment
+  useEffect(() => {
+    if (!debtPaymentQuery.trim() || debtPaymentQuery.trim().length < 2) {
+      setDebtPaymentResults([]);
+      setShowDebtPaymentDropdown(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingDebtPayment(true);
+      try {
+        const results = await debtorService.search(debtPaymentQuery.trim());
+        setDebtPaymentResults(results);
+        setShowDebtPaymentDropdown(results.length > 0);
+      } catch {
+        setDebtPaymentResults([]);
+      } finally {
+        setIsSearchingDebtPayment(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [debtPaymentQuery]);
+
   // Close debtor modal dropdown on click outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -158,15 +223,8 @@ const PosPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleBarcodeFound = useCallback((product: any) => {
-    const stock = parseFloat(product.stock) || 0;
-    if (stock <= 0) {
-      toast.error(`Товар "${product.title}" відсутній на складі`);
-      return;
-    }
-    addToCart(product);
-    toast.success(`Додано: ${product.title}`);
-  }, []);
+  // Ref для handleBarcodeFound, щоб уникнути циклічної залежності
+  const handleBarcodeFoundRef = useRef<(product: any) => void>((_product: any) => {});
 
   const {
     query,
@@ -176,7 +234,7 @@ const PosPage: React.FC = () => {
     setQuery: handleSearchChange,
     reset: resetSearch,
   } = useUnifiedSearch({
-    onBarcodeFound: handleBarcodeFound,
+    onBarcodeFound: (product: any) => handleBarcodeFoundRef.current(product),
   });
   const [debtorSearchResults, setDebtorSearchResults] = useState<Debtor[]>([]);
   const [isSearchingDebtorsUnified, setIsSearchingDebtorsUnified] = useState(false);
@@ -185,6 +243,22 @@ const PosPage: React.FC = () => {
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  // Завантажуємо налаштування
+  useEffect(() => {
+    settingsService.getValue('show_product_card_on_scan').then((value) => {
+      setShowCardOnScan(value === 'true');
+    }).catch(() => {
+      setShowCardOnScan(true);
+    });
+
+    settingsService.getValue('auto_print_receipt').then((value) => {
+      setAutoPrintReceipt(value === 'true');
+    }).catch(() => {
+      setAutoPrintReceipt(true);
+    });
+  }, []);
+
   // Search debtors in unified search
   useEffect(() => {
     if (!query.trim() || query.trim().length < 2) {
@@ -235,12 +309,15 @@ const PosPage: React.FC = () => {
             : item
         );
       }
+      // Знайти головне зображення або перше зображення
+      const mainImage = product.images?.find((img: any) => img.is_main) || product.images?.[0];
       return [
         ...prev,
         {
           product_id: product.id,
           product_title: product.title,
           product_barcode: product.barcode,
+          image_url: mainImage?.url || null,
           quantity,
           price: parseFloat(product.price),
           tax_rate: parseFloat(product.tax_rate) || 20,
@@ -253,47 +330,77 @@ const PosPage: React.FC = () => {
     resetSearch();
   }, [resetSearch]);
 
-  const handleProductSelect = (product: any) => {
+  const handleBarcodeFound = useCallback((product: any) => {
     const stock = parseFloat(product.stock) || 0;
-
     if (stock <= 0) {
       toast.error(`Товар "${product.title}" відсутній на складі`);
       return;
     }
-
-    if (product.is_weight) {
-      setSelectedProduct(product);
-      setQuantityInput('1');
-      setQuantityError(null);
-      setShowQuantityModal(true);
+    if (showCardOnScan || product.is_weight) {
+      // Показуємо картку товару (для вагових — завжди, щоб ввести вагу)
+      setProductCardProduct(product);
+      setShowProductCard(true);
     } else {
+      // Додаємо напряму в кошик
+      addToCart(product);
+      toast.success(`Додано: ${product.title}`);
+    }
+  }, [showCardOnScan, addToCart]);
+
+  // Оновлюємо ref в useEffect, а не під час рендеру
+  useEffect(() => {
+    handleBarcodeFoundRef.current = handleBarcodeFound;
+  }, [handleBarcodeFound]);
+
+  const handleProductSelect = (product: any) => {
+    const stock = parseFloat(product.stock) || 0;
+    if (stock <= 0) {
+      toast.error(`Товар "${product.title}" відсутній на складі`);
+      return;
+    }
+    if (showCardOnScan || product.is_weight) {
+      // Показуємо картку товару (для вагових — завжди, щоб ввести вагу)
+      setProductCardProduct(product);
+      setShowProductCard(true);
+    } else {
+      // Додаємо напряму
       addToCart(product);
     }
   };
 
-  const handleQuantityConfirm = () => {
-    if (selectedProduct) {
-      const qty = parseFloat(quantityInput);
-      if (qty > 0) {
-        const stock = parseFloat(selectedProduct.stock) || 0;
-
-        if (stock <= 0) {
-          setQuantityError('Товар відсутній на складі');
-          return;
-        }
-
-        if (qty > stock) {
-          setQuantityError(`Доступно лише ${stock} ${formatUnit(selectedProduct.unit)}`);
-          return;
-        }
-
-        addToCart(selectedProduct, qty);
-        setShowQuantityModal(false);
-        setSelectedProduct(null);
-        setQuantityError(null);
-      }
+  const handleHoldReceipt = useCallback(() => {
+    if (cart.length === 0) {
+      toast.error('Кошик порожній');
+      return;
     }
-  };
+    localStorage.setItem('pos_held_receipt', JSON.stringify(cart));
+    setHeldReceipt(cart);
+    setCart([]);
+    sessionStorage.removeItem('pos_cart');
+    toast.success('Чек відкладено');
+  }, [cart]);
+
+  const handleRestoreHeldReceipt = useCallback(() => {
+    try {
+      const saved = localStorage.getItem('pos_held_receipt');
+      if (saved) {
+        const items: CartItem[] = JSON.parse(saved);
+        setCart(items);
+        localStorage.removeItem('pos_held_receipt');
+        setHeldReceipt(null);
+        toast.success('Відкладений чек відновлено');
+      }
+    } catch {
+      toast.error('Помилка відновлення чеку');
+    }
+  }, []);
+
+  const handleAddFromCard = useCallback((product: any, quantity: number) => {
+    addToCart(product, quantity);
+    toast.success(`Додано: ${product.title} × ${quantity}`);
+  }, [addToCart]);
+
+;
 
   const updateQuantity = (productId: string, delta: number) => {
     setCart((prev) => {
@@ -348,19 +455,108 @@ const PosPage: React.FC = () => {
 
   const clearCart = () => {
     setCart([]);
-      sessionStorage.removeItem('pos_cart');
+    sessionStorage.removeItem('pos_cart');
   };
 
-    // Автопрокрутка до останньої позиції при додаванні товару
+  // Автопрокрутка до останньої позиції при додаванні товару
   useEffect(() => {
     cartEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [cart.length]);
 
-  const subtotal = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  // Автофокус та виділення поля суми готівки при відкритті модалки оплати
+  useEffect(() => {
+    if (showPayment) {
+      setTimeout(() => {
+        const el = document.getElementById('cash-amount') as HTMLInputElement;
+        if (el) {
+          el.focus();
+          el.select();
+        }
+      }, 150);
+    }
+  }, [showPayment]);
+
+  const subtotal = cart.reduce(
+    (sum, item) => sum + (item.is_weight ? Math.ceil(item.quantity * item.price) : item.quantity * item.price),
+    0
+  );
   const vatAmount = cart.reduce(
     (sum, item) => sum + (item.quantity * item.price * item.tax_rate) / (100 + item.tax_rate),
     0
   );
+
+  const handleDebtPaymentSelect = (debtor: Debtor) => {
+    setSelectedDebtPaymentDebtor(debtor);
+    setDebtPaymentQuery(debtor.name);
+    setShowDebtPaymentDropdown(false);
+    // Default to full debt amount
+    setDebtPaymentAmount(debtor.total_debt.toString());
+  };
+  const handleUnifiedDebtorSelect = (debtor: Debtor) => {
+    // Set the debtor and pre-fill amount, skip debtor selection step
+    setSelectedDebtPaymentDebtor(debtor);
+    setDebtPaymentQuery(debtor.name);
+    setShowDebtPaymentDropdown(false);
+    setDebtPaymentAmount(debtor.total_debt.toString());
+    // Directly show the amount entry modal
+    setShowDebtPaymentModal(true);
+  };
+
+
+  const handleConfirmDebtPayment = () => {
+    if (!selectedDebtPaymentDebtor) return;
+    
+    const amount = parseFloat(debtPaymentAmount);
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Введіть коректну суму оплати');
+      return;
+    }
+    if (amount > selectedDebtPaymentDebtor.total_debt) {
+      toast.error('Сума оплати не може перевищувати борг');
+      return;
+    }
+
+    // Add the debt payment item to the cart
+    setCart((prev) => {
+      // Check if debt item already exists
+      const existing = prev.find(item => item.product_id === DEBT_PRODUCT_ID);
+      if (existing) {
+        toast.error('Платіж по боргу вже додано до кошику');
+        return prev;
+      }
+      
+      return [...prev, {
+        product_id: DEBT_PRODUCT_ID,
+        product_title: `Оплата боргу: ${selectedDebtPaymentDebtor.name}`,
+        product_barcode: 'DEBT-PAYMENT',
+        image_url: null,
+        quantity: 1,
+        price: amount,
+        tax_rate: 0,
+        is_weight: false,
+        stock: Infinity, // no stock limit
+        unit: 'шт',
+      }];
+    });
+
+    // Store debt payment info for later submission
+    sessionStorage.setItem('pos_debt_payment', JSON.stringify({
+      debtor_id: selectedDebtPaymentDebtor.id,
+      amount: amount,
+      debtor_name: selectedDebtPaymentDebtor.name,
+    }));
+
+    // Clear the unified search field
+    resetSearch();
+
+    setShowDebtPaymentModal(false);
+    setShowDebtPaymentSearch(false);
+    setSelectedDebtPaymentDebtor(null);
+    setDebtPaymentQuery('');
+    setDebtPaymentAmount('');
+    
+    toast.success(`Борг ${amount.toFixed(2)} грн додано до чеку`);
+  };
 
   const handlePayment = async () => {
     if (cart.length === 0) {
@@ -370,6 +566,7 @@ const PosPage: React.FC = () => {
 
     // Фінальна перевірка залишків перед оплатою
     for (const item of cart) {
+      if (item.product_id === DEBT_PRODUCT_ID) continue; // Skip debt item stock check
       if (item.quantity > item.stock) {
         toast.error(
           `Недостатньо товару "${item.product_title}" на складі. Доступно: ${item.stock} ${formatUnit(item.unit)}`
@@ -383,7 +580,7 @@ const PosPage: React.FC = () => {
     if (paymentMethod === 'cash') {
       paidAmount = parseFloat(cashAmount) || 0;
     } else if (paymentMethod === 'card') {
-      paidAmount = subtotal; // карткою платять повну суму
+      paidAmount = subtotal;
     } else {
       // mixed
       paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
@@ -398,32 +595,42 @@ const PosPage: React.FC = () => {
 
     setIsProcessing(true);
     try {
+      // Extract debt payment info from sessionStorage
+      const debtPaymentInfo = sessionStorage.getItem('pos_debt_payment');
+      let debtPayment: { debtor_id: string; amount: number } | undefined;
+      const hasDebtItem = cart.some(item => item.product_id === DEBT_PRODUCT_ID);
+      if (hasDebtItem && debtPaymentInfo) {
+        try {
+          debtPayment = JSON.parse(debtPaymentInfo);
+        } catch {}
+        sessionStorage.removeItem('pos_debt_payment');
+      }
+
       const receiptData: ReceiptCreate = {
-        receipt_type: 'sale',
+        receipt_type: returnMode ? 'return' as const : 'sale' as const,
         total_amount: subtotal.toFixed(2),
         paid_amount: paidAmount.toFixed(2),
-        debtor_id: selectedDebtor?.id || undefined,
+        debtor_id: selectedDebtor?.id || debtPayment?.debtor_id || undefined,
         items: cart.map((item) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
         })),
+        debt_payment: debtPayment ? {
+          debtor_id: debtPayment.debtor_id,
+          amount: debtPayment.amount.toFixed(2),
+        } : undefined,
       };
 
-      await receiptService.createReceipt(receiptData);
+      const response = await receiptService.createReceipt(receiptData);
 
-      if (isPartialPayment) {
-        const debtAmount = subtotal - paidAmount;
-        toast.success(
-          `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
-          `Борг ${formatCurrency(debtAmount)} записано на "${selectedDebtor!.name}"`
-        );
-      } else {
-        toast.success('Чек створено успішно');
-      }
-
+      // Очищуємо стан перед показом діалогу друку
       setCart([]);
       sessionStorage.removeItem('pos_cart');
+      sessionStorage.removeItem('pos_debt_payment');
+      localStorage.removeItem('pos_held_receipt');
+      setHeldReceipt(null);
+      setReturnMode(false);
       setShowPayment(false);
       setShowDebtorField(false);
       setCashAmount('');
@@ -431,6 +638,10 @@ const PosPage: React.FC = () => {
       setPaymentMethod('cash');
       setSelectedDebtor(null);
       setDebtorQuery('');
+
+      // Показуємо діалог друку (або друкуємо автоматично)
+      setLastReceipt(response);
+      setShowPrintDialog(true);
     } catch (error: any) {
       const errMsg = error?.response?.data?.detail;
       if (typeof errMsg === 'string') {
@@ -489,8 +700,19 @@ const PosPage: React.FC = () => {
     
     setIsProcessing(true);
     try {
+      // Extract debt payment info from sessionStorage
+      const debtPaymentInfo = sessionStorage.getItem('pos_debt_payment');
+      let debtPayment: { debtor_id: string; amount: number } | undefined;
+      const hasDebtItem = cart.some(item => item.product_id === DEBT_PRODUCT_ID);
+      if (hasDebtItem && debtPaymentInfo) {
+        try {
+          debtPayment = JSON.parse(debtPaymentInfo);
+        } catch {}
+        sessionStorage.removeItem('pos_debt_payment');
+      }
+
       const receiptData: ReceiptCreate = {
-        receipt_type: 'sale',
+        receipt_type: returnMode ? 'return' as const : 'sale' as const,
         total_amount: subtotal.toFixed(2),
         paid_amount: paidAmount.toFixed(2),
         debtor_id: debtor.id,
@@ -499,18 +721,21 @@ const PosPage: React.FC = () => {
           quantity: item.quantity,
           price: item.price,
         })),
+        debt_payment: debtPayment ? {
+          debtor_id: debtPayment.debtor_id,
+          amount: debtPayment.amount.toFixed(2),
+        } : undefined,
       };
 
-      await receiptService.createReceipt(receiptData);
+      const response = await receiptService.createReceipt(receiptData);
 
-      const debtAmount = subtotal - paidAmount;
-      toast.success(
-        `Чек створено. Сплачено ${formatCurrency(paidAmount)}. ` +
-        `Борг ${formatCurrency(debtAmount)} записано на "${debtor.name}"`
-      );
-
+      // Очищуємо стан перед показом діалогу друку
       setCart([]);
       sessionStorage.removeItem('pos_cart');
+      sessionStorage.removeItem('pos_debt_payment');
+      localStorage.removeItem('pos_held_receipt');
+      setHeldReceipt(null);
+      setReturnMode(false);
       setShowPayment(false);
       setShowDebtorModal(false);
       setCashAmount('');
@@ -521,6 +746,10 @@ const PosPage: React.FC = () => {
       setDebtorModalQuery('');
       setSelectedDebtor(null);
       setDebtorQuery('');
+
+      // Показуємо діалог друку (або друкуємо автоматично)
+      setLastReceipt(response);
+      setShowPrintDialog(true);
     } catch (error: any) {
       const errMsg = error?.response?.data?.detail;
       if (typeof errMsg === 'string') {
@@ -537,6 +766,94 @@ const PosPage: React.FC = () => {
     }
   };
 
+  // Пряме проведення повернення (без додавання до кошика)
+  const handleProcessReturn = useCallback(async (items: ReturnCartItem[]) => {
+    if (items.length === 0) {
+      toast.error('Виберіть хоча б один товар для повернення');
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      const totalAmount = items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      // В оригінальному чеку передаємо ID першого товару з original_receipt_id
+      const originalReceiptId = items.find(i => i.original_receipt_id)?.original_receipt_id;
+
+      const receiptData: ReceiptCreate = {
+        receipt_type: 'return' as const,
+        total_amount: totalAmount.toFixed(2),
+        paid_amount: totalAmount.toFixed(2),  // каса видає кошти
+        original_receipt_id: originalReceiptId || undefined,
+        items: items.map((item) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          price: item.price,
+        })),
+      };
+
+      const response = await receiptService.createReceipt(receiptData);
+
+      toast.success('Повернення оформлено');
+
+      // Показуємо діалог друку
+      setLastReceipt(response);
+      setShowPrintDialog(true);
+
+      // Закриваємо модалки
+      setShowSelectItemsModal(false);
+      setShowReturnWithoutReceipt(false);
+      setSelectedSourceReceipt(null);
+    } catch (error: any) {
+      const errMsg = error?.response?.data?.detail;
+      if (typeof errMsg === 'string') {
+        toast.error(errMsg);
+      } else if (Array.isArray(errMsg)) {
+        toast.error(errMsg.map((e: any) => e.msg || JSON.stringify(e)).join(', '));
+      } else if (errMsg && typeof errMsg === 'object') {
+        toast.error(JSON.stringify(errMsg));
+      } else {
+        toast.error('Помилка створення чеку повернення');
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  }, []);
+
+  // Додавання товарів повернення з модалок до кошика
+  const handleAddReturnItemsToCart = useCallback((items: ReturnCartItem[]) => {
+    setCart(prev => {
+      const existing = [...prev];
+      for (const newItem of items) {
+        // Перевіряємо чи товар вже є в кошику (за product_id та original_receipt_id)
+        const exists = existing.findIndex(
+          i => i.product_id === newItem.product_id
+            && (i as any).original_receipt_id === newItem.original_receipt_id
+        );
+        if (exists >= 0) {
+          existing[exists] = { ...existing[exists], quantity: existing[exists].quantity + newItem.quantity };
+        } else {
+          existing.push({
+            product_id: newItem.product_id,
+            product_title: newItem.product_title,
+            product_barcode: newItem.product_barcode,
+            image_url: newItem.image_url,
+            quantity: newItem.quantity,
+            price: newItem.price,
+            tax_rate: newItem.tax_rate || 20,
+            is_weight: false,
+            stock: 999999, // при поверненні не обмежуємо залишком
+            unit: newItem.unit || 'шт',
+            original_receipt_id: newItem.original_receipt_id,
+          });
+        }
+      }
+      return existing;
+    });
+    toast.success(`${items.reduce((s, i) => s + i.quantity, 0)} товарів додано до повернення`);
+    setShowSelectItemsModal(false);
+    setShowReturnWithoutReceipt(false);
+  }, []);
+
 
   const changeAmount =
     paymentMethod === 'cash' && parseFloat(cashAmount) >= subtotal
@@ -550,6 +867,21 @@ const PosPage: React.FC = () => {
     return (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
   };
   const isPartialPayment = showPayment && getPaidAmount() > 0 && getPaidAmount() < subtotal;
+
+  // Enter для кнопки "Сплатити" в модалці оплати
+  const handlePaymentKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Не виконувати, якщо йде обробка
+      if (isProcessing) return;
+      // Не виконувати, якщо кошик порожній
+      if (cart.length === 0) return;
+
+      handlePayment();
+    }
+  }, [isProcessing, cart.length, handlePayment]);
 
   return (
     <>
@@ -648,7 +980,7 @@ const PosPage: React.FC = () => {
                 {debtorSearchResults.map((debtor) => (
                   <button
                     key={debtor.id}
-                    onClick={() => navigate(`/debtors/${debtor.id}`)}
+                    onClick={() => handleUnifiedDebtorSelect(debtor)}
                     className="w-full card p-3 text-left transition-all hover:border-danger-300 dark:hover:border-danger-600 group"
                   >
                     <div className="flex items-center justify-between">
@@ -698,6 +1030,42 @@ const PosPage: React.FC = () => {
             </button>
           )}
         </div>
+        {returnMode && (
+          <div className="bg-danger-50 dark:bg-danger-900/20 border-b border-danger-200 dark:border-danger-700 px-5 py-3">
+            <div className="flex items-center gap-2">
+              <RotateCcw className="w-5 h-5 text-danger-600" />
+              <span className="text-sm font-medium text-danger-700 dark:text-danger-400">
+                РЕЖИМ ПОВЕРНЕННЯ
+              </span>
+              <button
+                onClick={() => setReturnMode(false)}
+                className="ml-auto text-danger-500 hover:text-danger-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Кнопки вибору способу повернення */}
+            <div className="flex gap-2 mt-2">
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  setSearchReceiptId(prev => prev + 1);
+                  setShowSearchReceiptModal(true);
+                }}
+              >
+                🔍 Знайти чек
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => setShowReturnWithoutReceipt(true)}
+              >
+                📦 Без чеку
+              </Button>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto">
           {cart.length === 0 ? (
@@ -710,19 +1078,41 @@ const PosPage: React.FC = () => {
             <div className="divide-y divide-gray-100 dark:divide-slate-700">
               {cart.map((item) => {
                 const isOverStock = item.quantity > item.stock;
+                const isDebtItem = item.product_id === DEBT_PRODUCT_ID;
 
                 return (
                   <div
                     key={item.product_id}
                     className={`
-                      p-4 hover:bg-gray-50 dark:hover:bg-slate-700/30
-                      ${isOverStock ? 'bg-danger-50 dark:bg-danger-900/10' : ''}
+                      p-4
+                      ${isDebtItem
+                        ? 'bg-success-50 dark:bg-success-900/10'
+                        : isOverStock
+                          ? 'bg-danger-50 dark:bg-danger-900/10'
+                          : 'hover:bg-gray-50 dark:hover:bg-slate-700/30'
+                      }
                     `}
                   >
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-start gap-3">
+                      {item.image_url && (
+                        <div className="flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden bg-gray-100 dark:bg-slate-700 border border-gray-200 dark:border-slate-600">
+                          <img
+                            src={item.image_url}
+                            alt={item.product_title}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        </div>
+                      )}
                       <div className="flex-1 min-w-0">
                         <p className="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate">
                           {item.product_title}
+                          {isDebtItem && (
+                            <span className="text-xs text-success-600 font-medium ml-1">(оплата боргу)</span>
+                          )}
                         </p>
                         <p className="text-sm text-gray-400">
                           {formatCurrency(item.price)} / шт
@@ -750,14 +1140,49 @@ const PosPage: React.FC = () => {
                         </button>
                         <input
                           type="number"
-                          value={item.quantity}
-                          onChange={(e) =>
-                            setItemQuantity(item.product_id, parseFloat(e.target.value) || 0)
-                          }
+                          value={editingQuantity[item.product_id] !== undefined ? editingQuantity[item.product_id] : item.quantity}
+                          onFocus={(e) => {
+                            setEditingQuantity((prev) => ({
+                              ...prev,
+                              [item.product_id]: String(item.quantity),
+                            }));
+                            e.target.select();
+                          }}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            // Дозволяємо порожнє поле або число
+                            if (val === '' || /^\d*\.?\d*$/.test(val)) {
+                              setEditingQuantity((prev) => ({
+                                ...prev,
+                                [item.product_id]: val,
+                              }));
+                            }
+                          }}
+                          onBlur={(e) => {
+                            const val = editingQuantity[item.product_id];
+                            if (val === undefined || val === '') {
+                              // Якщо поле порожнє — залишаємо поточну кількість
+                              setEditingQuantity((prev) => {
+                                const next = { ...prev };
+                                delete next[item.product_id];
+                                return next;
+                              });
+                              return;
+                            }
+                            const parsed = parseFloat(val);
+                            if (!isNaN(parsed) && parsed > 0) {
+                              setItemQuantity(item.product_id, parsed);
+                            }
+                            setEditingQuantity((prev) => {
+                              const next = { ...prev };
+                              delete next[item.product_id];
+                              return next;
+                            });
+                          }}
                           className="w-24 h-12 text-center input-field !w-24 text-base font-semibold no-spinner"
                           min="0"
                           max={item.stock}
-                          step={item.is_weight ? '0.1' : '1'}
+                          step={item.is_weight ? '0.001' : '1'}
                           id={`cart-qty-${item.product_id}`}
                           name={`cart-qty-${item.product_id}`}
                         />
@@ -782,13 +1207,16 @@ const PosPage: React.FC = () => {
                           <AlertTriangle className="w-4 h-4 text-danger-500" aria-label="Перевищує залишок" />
                         )}
                         <span className="font-bold text-xl text-gray-900 dark:text-gray-100">
-                          {formatCurrency(item.quantity * item.price)}
+                          {formatCurrency(item.is_weight ? Math.ceil(item.quantity * item.price) : item.quantity * item.price)}
                         </span>
                       </div>
                     </div>
                     <div className="flex justify-between mt-1">
                       <span className="text-xs text-gray-400">
-                        Залишок: {item.stock} {formatUnit(item.unit)}
+                        {isDebtItem
+                          ? 'Оплата боргу через касу'
+                          : `Залишок: ${item.stock} ${formatUnit(item.unit)}`
+                        }
                       </span>
                       {isOverStock && (
                         <span className="text-xs text-danger-500 font-medium">
@@ -804,7 +1232,7 @@ const PosPage: React.FC = () => {
           )}
         </div>
 
-        {/* Cart summary */}
+        {/* Cart summary — тільки сума і кнопка оплати (при наявності товарів) */}
         {cart.length > 0 && (
           <div className="border-t border-gray-200 dark:border-slate-700 p-4 space-y-2">
             <div className="flex justify-between text-sm text-gray-500">
@@ -823,76 +1251,87 @@ const PosPage: React.FC = () => {
               >
                 ОПЛАТА
               </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Нижня панель керування — завжди видна (Повернення, Борг, Відкласти) */}
+        <div className="border-t border-gray-200 dark:border-slate-700 p-4">
+          <div className="flex gap-2">
+            <Button
+              variant={returnMode ? 'danger' : 'secondary'}
+              size="lg"
+              onClick={() => setReturnMode(!returnMode)}
+              title={returnMode ? 'Вийти з режиму повернення' : 'Режим повернення'}
+            >
+              <RotateCcw className="w-5 h-5" />
+              {returnMode ? 'ПОВЕРНЕННЯ (ON)' : 'ПОВЕРНЕННЯ'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={() => setShowDebtPaymentSearch(true)}
+              title="Оплата боргу"
+            >
+              <BadgePercent className="w-5 h-5" />
+              БОРГ
+            </Button>
+            {!returnMode && (
               <Button
                 variant="secondary"
                 size="lg"
-                onClick={() => navigate('/debtors')}
-                title="Перейти до списку боржників"
+                onClick={handleHoldReceipt}
+                disabled={cart.length === 0}
+                title="Відкласти поточний чек"
               >
-                <Users className="w-5 h-5" />
+                <Clock className="w-5 h-5" />
+                ВІДКЛАСТИ
+              </Button>
+            )}
+            {heldReceipt && !returnMode && (
+              <Button
+                variant="warning"
+                size="lg"
+                onClick={handleRestoreHeldReceipt}
+                title="Відновити відкладений чек"
+              >
+                <Clock className="w-5 h-5" />
+                ВІДНОВИТИ
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={() => navigate('/debtors')}
+              title="Перейти до списку боржників"
+            >
+              <Users className="w-5 h-5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+
+        {/* Відновлення відкладеного чеку при порожньому кошику */}
+        {cart.length === 0 && heldReceipt && (
+          <div className="border-t border-gray-200 dark:border-slate-700 p-4">
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Є відкладений чек
+              </p>
+              <Button
+                variant="warning"
+                size="lg"
+                onClick={handleRestoreHeldReceipt}
+                className="w-full"
+              >
+                <Clock className="w-5 h-5" />
+                ВІДНОВИТИ ВІДКЛАДЕНИЙ ЧЕК
               </Button>
             </div>
           </div>
         )}
-      </div>
 
-      {/* Quantity modal for weight products */}
-      <Modal
-        isOpen={showQuantityModal}
-        onClose={() => {
-          setShowQuantityModal(false);
-          setSelectedProduct(null);
-          setQuantityError(null);
-        }}
-        title="Введіть кількість"
-        size="sm"
-      >
-        <div className="space-y-4">
-          {selectedProduct && (
-            <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                {selectedProduct.title}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                Доступно: {selectedProduct.stock} {formatUnit(selectedProduct.unit)}
-              </p>
-            </div>
-          )}
-          <Input
-            type="number"
-            step="0.1"
-            min="0.001"
-            max={selectedProduct ? parseFloat(selectedProduct.stock) || 0 : undefined}
-            value={quantityInput}
-            onChange={(e) => {
-              setQuantityInput(e.target.value);
-              setQuantityError(null);
-            }}
-            placeholder="Кількість"
-            autoFocus
-            id="weight-quantity"
-            name="weight-quantity"
-          />
-          {quantityError && (
-            <p className="text-xs text-danger-500 bg-danger-50 dark:bg-danger-900/20 px-3 py-2 rounded-lg">
-              {quantityError}
-            </p>
-          )}
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setShowQuantityModal(false);
-                setSelectedProduct(null);
-                setQuantityError(null);
-              }}
-            >
-              Скасувати
-            </Button>
-            <Button onClick={handleQuantityConfirm}>Додати</Button>
-          </div>
-        </div>
-      </Modal>
+
 
       {/* Payment modal */}
       <Modal
@@ -906,7 +1345,7 @@ const PosPage: React.FC = () => {
         title="Оплата"
         size="4xl"
       >
-        <div className="space-y-6">
+        <div className="space-y-6" onKeyDown={handlePaymentKeyDown}>
           <div className="text-center">
             <p className="text-3xl font-bold text-gray-900 dark:text-gray-100">
               {formatCurrency(subtotal)}
@@ -941,18 +1380,42 @@ const PosPage: React.FC = () => {
           </div>
 
           {paymentMethod === 'cash' && (
-            <Input
-              label="Сума готівки"
-              type="number"
-              step="0.01"
-              min="0"
-              value={cashAmount}
-              onChange={(e) => setCashAmount(e.target.value)}
-              placeholder="Введіть суму"
-              icon={<Banknote className="w-4 h-4" />}
-              id="cash-amount"
-              name="cash-amount"
-            />
+            <>
+              <Input
+                label="Сума готівки"
+                type="number"
+                step="0.01"
+                min="0"
+                value={cashAmount}
+                onChange={(e) => setCashAmount(e.target.value)}
+                placeholder="Введіть суму"
+                icon={<Banknote className="w-4 h-4" />}
+                id="cash-amount"
+                name="cash-amount"
+              />
+
+              {/* ⚡ Швидкі кнопки сум */}
+              <div className="flex flex-wrap gap-2 mt-2">
+                {[50, 100, 200, 500, 1000].map((amount) => {
+                  const isActive = parseFloat(cashAmount || '0') >= amount;
+                  return (
+                    <button
+                      key={amount}
+                      onClick={() => setCashAmount(amount.toString())}
+                      className={`
+                        px-4 py-2.5 rounded-lg text-sm font-bold transition-all border-2
+                        ${isActive
+                          ? 'bg-primary-50 border-primary-400 text-primary-700 dark:bg-primary-900/30 dark:border-primary-600 dark:text-primary-400'
+                          : 'bg-white border-gray-200 text-gray-700 hover:border-primary-300 hover:text-primary-600 dark:bg-slate-700 dark:border-slate-600 dark:text-gray-300 dark:hover:border-primary-500'
+                        }
+                      `}
+                    >
+                      {amount}₴
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
 
           {paymentMethod === 'mixed' && (
@@ -1263,7 +1726,225 @@ const PosPage: React.FC = () => {
         </div>
       </Modal>
 
+      {/* Modal: Search debtor for debt payment */}
+      <Modal
+        isOpen={showDebtPaymentSearch}
+        onClose={() => {
+          setShowDebtPaymentSearch(false);
+          setSelectedDebtPaymentDebtor(null);
+          setDebtPaymentQuery('');
+        }}
+        title="Оплата боргу"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Пошук боржника для оплати боргу через касу.
+          </p>
+          
+          <div className="relative">
+            <input
+              type="text"
+              value={debtPaymentQuery}
+              onChange={(e) => {
+                setDebtPaymentQuery(e.target.value);
+                setSelectedDebtPaymentDebtor(null);
+              }}
+              placeholder="Введіть ім'я боржника..."
+              className="input-field pl-10 pr-10"
+              autoFocus
+              id="debt-payment-search"
+              name="debt-payment-search"
+              autoComplete="off"
+            />
+            <Users className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            {isSearchingDebtPayment && (
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-primary-500 animate-spin" />
+            )}
+          </div>
+
+          {/* Dropdown */}
+          {showDebtPaymentDropdown && debtPaymentResults.length > 0 && (
+            <div className="max-h-48 overflow-y-auto bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg shadow-lg">
+              {debtPaymentResults.map((debtor) => (
+                <button
+                  key={debtor.id}
+                  onClick={() => handleDebtPaymentSelect(debtor)}
+                  className="w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-slate-600 transition-colors flex items-center justify-between"
+                >
+                  <span className="font-medium text-gray-900 dark:text-gray-100">{debtor.name}</span>
+                  <span className="text-sm font-semibold text-danger-600">
+                    Борг: {formatCurrency(debtor.total_debt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {selectedDebtPaymentDebtor && (
+            <div className="px-3 py-3 bg-primary-50 dark:bg-primary-900/20 rounded-lg">
+              <p className="text-sm font-medium text-primary-700 dark:text-primary-400">
+                {selectedDebtPaymentDebtor.name}
+              </p>
+              <p className="text-2xl font-bold text-danger-600 mt-1">
+                Борг: {formatCurrency(selectedDebtPaymentDebtor.total_debt)}
+              </p>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
+            <Button variant="secondary" onClick={() => {
+              setShowDebtPaymentSearch(false);
+              setSelectedDebtPaymentDebtor(null);
+              setDebtPaymentQuery('');
+            }}>
+              Скасувати
+            </Button>
+            <Button
+              onClick={() => {
+                if (selectedDebtPaymentDebtor) {
+                  setShowDebtPaymentSearch(false);
+                  setShowDebtPaymentModal(true);
+                } else if (debtPaymentQuery.trim()) {
+                  // Create new debtor and proceed
+                  debtorService.create({ name: debtPaymentQuery.trim() }).then((newDebtor) => {
+                    setSelectedDebtPaymentDebtor(newDebtor);
+                    setShowDebtPaymentSearch(false);
+                    setShowDebtPaymentModal(true);
+                  }).catch(() => toast.error('Помилка створення боржника'));
+                } else {
+                  toast.error('Введіть ім\'я боржника або оберіть існуючого');
+                }
+              }}
+              disabled={!debtPaymentQuery.trim() && !selectedDebtPaymentDebtor}
+            >
+              {selectedDebtPaymentDebtor ? `Обрати: ${selectedDebtPaymentDebtor.name}` : 'Далі'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: Enter debt payment amount */}
+      <Modal
+        isOpen={showDebtPaymentModal}
+        onClose={() => {
+          setShowDebtPaymentModal(false);
+          setShowDebtPaymentSearch(true);
+        }}
+        title="Введіть суму оплати боргу"
+        size="sm"
+      >
+        <div className="space-y-4">
+          {selectedDebtPaymentDebtor && (
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {selectedDebtPaymentDebtor.name}
+              </p>
+              <p className="text-xs text-danger-500 mt-1">
+                Поточний борг: {formatCurrency(selectedDebtPaymentDebtor.total_debt)}
+              </p>
+            </div>
+          )}
+
+          <Input
+            label="Сума оплати"
+            type="number"
+            step="0.01"
+            min="0.01"
+            max={selectedDebtPaymentDebtor?.total_debt || 0}
+            value={debtPaymentAmount}
+            onChange={(e) => setDebtPaymentAmount(e.target.value)}
+            placeholder="Введіть суму"
+            icon={<DollarSign className="w-4 h-4" />}
+            id="debt-payment-amount"
+            name="debt-payment-amount"
+            autoFocus
+          />
+
+          <p className="text-xs text-gray-400">
+            За замовчуванням — повна сума боргу. Ви можете ввести меншу суму для часткової оплати.
+          </p>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
+            <Button variant="secondary" onClick={() => {
+              setShowDebtPaymentModal(false);
+              setShowDebtPaymentSearch(true);
+            }}>
+              Назад
+            </Button>
+            <Button onClick={handleConfirmDebtPayment}>
+              Сплатити {debtPaymentAmount ? formatCurrency(parseFloat(debtPaymentAmount)) : ''}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
+
+      {/* ── Модалки повернення ────────────────────── */}
+
+      {/* Пошук оригінального чеку */}
+      <SearchReceiptModal
+        isOpen={showSearchReceiptModal}
+        onClose={() => setShowSearchReceiptModal(false)}
+        searchId={searchReceiptId}
+        onReceiptSelect={(receipt) => {
+          setSelectedSourceReceipt(receipt);
+          setShowSearchReceiptModal(false);
+          setShowSelectItemsModal(true);
+        }}
+      />
+
+      {/* Вибір товарів з обраного чеку */}
+      {selectedSourceReceipt && (
+        <SelectItemsFromReceipt
+          isOpen={showSelectItemsModal}
+          onClose={() => {
+            setShowSelectItemsModal(false);
+            // Повертаємо на крок назад — до пошуку чеку
+            setShowSearchReceiptModal(true);
+          }}
+          receipt={selectedSourceReceipt}
+          onProcessReturn={handleProcessReturn}
+        />
+      )}
+
+      {/* Повернення без чеку (за штрих-кодом) */}
+      <ReturnWithoutReceipt
+        isOpen={showReturnWithoutReceipt}
+        onClose={() => setShowReturnWithoutReceipt(false)}
+        onProcessReturn={handleProcessReturn}
+      />
+
+      {/* Product Card Modal */}
+      <ProductCardModal
+        isOpen={showProductCard}
+        onClose={() => {
+          setShowProductCard(false);
+          setProductCardProduct(null);
+        }}
+        product={productCardProduct}
+        onAdd={handleAddFromCard}
+      />
+
+      {/* ── Діалог друку чеку ───────────────────── */}
+
+      {showPrintDialog && lastReceipt && (
+        <PrintReceiptDialog
+          isOpen={showPrintDialog}
+          onClose={() => {
+            setShowPrintDialog(false);
+            setLastReceipt(null);
+          }}
+          receipt={lastReceipt}
+          // Для повернень — завжди питати, чи друкувати (autoPrint = false)
+          autoPrint={lastReceipt.receipt_type === 'return' ? false : autoPrintReceipt}
+          onPrinted={() => {
+            setShowPrintDialog(false);
+            setLastReceipt(null);
+          }}
+        />
+      )}
     </>
   );
 };

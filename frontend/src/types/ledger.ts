@@ -18,11 +18,31 @@ export interface BalanceResponse {
   last_updated: string | null;
 }
 
+export interface InvoiceInfo {
+  id: string;
+  number: string;
+  invoice_date: string;
+  total_amount: string;
+  supplier_id: string;
+  status: string;
+}
+
+export interface InvoicePaymentInfo {
+  invoice_id: string;
+  invoice_number: string;
+  invoice_date: string;
+  total_amount: string;
+  paid_amount: string;
+  remaining: string;
+}
+
 export interface PaymentCreate {
   supplier_id: string;
   amount: number;
   payment_method: PaymentMethod;
   notes?: string;
+  document_id?: string;
+  document_number?: string;
 }
 
 export type PaymentMethod = 'cash' | 'card' | 'bank_transfer';

@@ -14,7 +14,7 @@ API роутер для роботи з переміщеннями товару 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +27,27 @@ from app.schemas.transfer import (
     TransferConfirmRequest,
 )
 from app.services.auth_service import AuthService
+
+
+async def generate_transfer_number(session: AsyncSession) -> str:
+    """
+    Генерує автоматичний номер для переміщення.
+    Формат: ПМ-{YYYYMMDD}-{XXX}, де XXX — порядковий номер за день.
+    """
+    from datetime import datetime
+    today = datetime.utcnow().strftime("%Y%m%d")
+    prefix = f"ПМ-{today}-"
+
+    result = await session.execute(
+        select(func.max(Transfer.number))
+        .where(Transfer.number.like(f"{prefix}%"))
+    )
+    max_number = result.scalar()
+    last_seq = int(max_number[-3:]) if max_number else 0
+    return f"{prefix}{last_seq + 1:03d}"
+
+
+
 from app.services.document_service import DocumentService
 
 router = APIRouter(
@@ -78,13 +99,19 @@ async def create_transfer(
     current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове переміщення."""
+    # Автоматична генерація номера, якщо не вказано
+    number = data.number
+    if not number:
+        number = await generate_transfer_number(session)
+
     transfer = Transfer(
-        number=data.number,
+        number=number,
         from_location=data.from_location,
         to_location=data.to_location,
         transfer_date=data.transfer_date,
         notes=data.notes,
         status=TransferStatus.DRAFT,
+        created_by_id=current_user.id,
     )
     session.add(transfer)
     await session.flush()

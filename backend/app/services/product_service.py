@@ -6,6 +6,7 @@
   - Пошук за штрих-кодом, назвою, артикулом
   - Фільтрацію за категорією, постачальником, ціною
   - Оновлення залишків на складі
+  - Управління зображеннями та додатковими штрих-кодами
 """
 
 from decimal import Decimal
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
 from app.models.barcode import Barcode
+from app.models.product_image import ProductImage
 from app.schemas.product import ProductCreate, ProductUpdate, ProductSearchParams
 
 
@@ -99,6 +101,11 @@ class ProductService:
                     detail=f"Товар з артикулом '{data.sku}' вже існує",
                 )
 
+        # Автоматичний розрахунок націнки, якщо не задана
+        markup_value = data.markup
+        if markup_value is None and data.cost_price and data.price and data.cost_price > 0:
+            markup_value = round((data.price - data.cost_price) / data.cost_price * 100, 2)
+
         # Створюємо товар
         product = Product(
             barcode=data.barcode,
@@ -108,12 +115,13 @@ class ProductService:
             price=data.price,
             cost_price=data.cost_price,
             stock=data.stock if data.stock is not None else Decimal("0.000"),
+            recommended_qty=data.recommended_qty,
             uktzed=data.uktzed,
             scan_excise=data.scan_excise,
             tax_rate=data.tax_rate,
             tax_group=data.tax_group,
             is_weight=data.is_weight,
-            markup=data.markup,
+            markup=markup_value,
             unit=data.unit,
             category_id=data.category_id,
             supplier_id=data.supplier_id,
@@ -198,23 +206,34 @@ class ProductService:
         """
         # Базовий запит
         query = select(Product)
-        count_query = select(func.count(Product.id))
+        count_query = select(func.count(func.distinct(Product.id)))
 
         # Фільтр за текстовим пошуком (назва, штрих-код, артикул)
         if params.query:
             search_pattern = f"%{params.query}%"
-            query = query.where(
-                or_(
-                    Product.title.ilike(search_pattern),
-                    Product.barcode.ilike(search_pattern),
-                    Product.sku.ilike(search_pattern),
+            # Пошук за назвою, штрих-кодом, артикулом та додатковими кодами
+            query = (
+                query.outerjoin(Product.barcodes)
+                .where(
+                    or_(
+                        Product.title.ilike(search_pattern),
+                        Product.barcode.ilike(search_pattern),
+                        Product.sku.ilike(search_pattern),
+                        Barcode.barcode.ilike(search_pattern),
+                    )
                 )
+                .distinct()
             )
-            count_query = count_query.where(
-                or_(
-                    Product.title.ilike(search_pattern),
-                    Product.barcode.ilike(search_pattern),
-                    Product.sku.ilike(search_pattern),
+            # Для підрахунку — також JOIN, але з DISTINCT, щоб уникнути множення рядків
+            count_query = (
+                count_query.outerjoin(Product.barcodes)
+                .where(
+                    or_(
+                        Product.title.ilike(search_pattern),
+                        Product.barcode.ilike(search_pattern),
+                        Product.sku.ilike(search_pattern),
+                        Barcode.barcode.ilike(search_pattern),
+                    )
                 )
             )
 
@@ -313,6 +332,15 @@ class ProductService:
 
         # Оновлюємо тільки передані поля
         update_data = data.model_dump(exclude_unset=True)
+
+        # Автоматичний розрахунок націнки, якщо змінили ціну або собівартість
+        # і націнка не передана явно
+        if 'markup' not in update_data:
+            cost_price = update_data.get('cost_price', product.cost_price)
+            price = update_data.get('price', product.price)
+            if cost_price and price and cost_price > 0:
+                update_data['markup'] = round((price - cost_price) / cost_price * 100, 2)
+
         for field, value in update_data.items():
             setattr(product, field, value)
 
@@ -325,10 +353,27 @@ class ProductService:
         """
         Видаляє товар за ID.
 
+        Товар можна видалити тільки якщо його залишок (stock) дорівнює 0 або None.
+
         Args:
             product_id: UUID товару.
+
+        Raises:
+            HTTPException 400: Якщо товар має ненульовий залишок на складі.
         """
         product = await self.get_product_by_id(product_id)
+
+        # Перевірка: товар можна видалити тільки з нульовим залишком
+        if product.stock is not None and product.stock != 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Неможливо видалити товар '{product.title}': "
+                    f"залишок на складі {product.stock} шт. "
+                    f"Спочатку списати залишок до нуля."
+                ),
+            )
+
         await self.session.delete(product)
         await self.session.flush()
 
@@ -373,3 +418,85 @@ class ProductService:
 
         await self.session.flush()
         return product
+
+    # ─── Зображення ─────────────────────────────────────────────────────────
+
+    async def add_image(self, product_id: UUID, url: str, is_main: bool = False) -> ProductImage:
+        """Додає зображення до товару."""
+        # Якщо це головне зображення, знімаємо прапорець з інших
+        if is_main:
+            await self.session.execute(
+                ProductImage.__table__.update()
+                .where(ProductImage.product_id == product_id)
+                .values(is_main=False)
+            )
+
+        product = await self.get_product_by_id(product_id)
+        # Рахуємо кількість зображень окремим запитом (уникнення MissingGreenlet)
+        count_result = await self.session.execute(
+            select(func.count()).select_from(ProductImage).where(ProductImage.product_id == product_id)
+        )
+        sort_order = count_result.scalar() or 0
+
+        image = ProductImage(
+            product_id=product_id,
+            url=url,
+            is_main=is_main,
+            sort_order=sort_order,
+        )
+        self.session.add(image)
+        await self.session.flush()
+        return image
+
+    async def delete_image(self, image_id: UUID) -> None:
+        """Видаляє зображення товару."""
+        image = await self.session.get(ProductImage, image_id)
+        if not image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Зображення не знайдено",
+            )
+        await self.session.delete(image)
+        await self.session.flush()
+
+    # ─── Додаткові штрих-коди ───────────────────────────────────────────────
+
+    async def add_barcode(self, product_id: UUID, barcode: str, is_primary: bool = False) -> Barcode:
+        """Додає додатковий штрих-код до товару."""
+        # Перевірка унікальності
+        existing = await self.session.execute(
+            select(Barcode).where(Barcode.barcode == barcode)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Штрих-код '{barcode}' вже існує",
+            )
+
+        # Якщо це основний, знімаємо прапорець з інших
+        if is_primary:
+            await self.session.execute(
+                Barcode.__table__.update()
+                .where(Barcode.product_id == product_id)
+                .values(is_primary=False)
+            )
+
+        new_barcode = Barcode(
+            product_id=product_id,
+            barcode=barcode,
+            is_primary=is_primary,
+        )
+        self.session.add(new_barcode)
+        await self.session.flush()
+        return new_barcode
+
+    async def delete_barcode(self, barcode_id: UUID) -> None:
+        """Видаляє додатковий штрих-код."""
+        barcode_obj = await self.session.get(Barcode, barcode_id)
+        if not barcode_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Штрих-код не знайдено",
+            )
+        await self.session.delete(barcode_obj)
+        await self.session.flush()

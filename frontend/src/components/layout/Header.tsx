@@ -14,6 +14,7 @@ const moduleNames: Record<string, string> = {
   documents: 'Документи',
   reports: 'Звіти',
   ledger: 'Взаєморозрахунки',
+  'work-time': 'Робочий час',
 };
 
 export const Header: React.FC = () => {

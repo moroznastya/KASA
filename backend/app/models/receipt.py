@@ -23,6 +23,13 @@ class ReceiptType(str, PyEnum):
     RETURN = "return"       # Повернення
 
 
+class ReceiptPaymentMethod(str, PyEnum):
+    """Спосіб оплати в чеку."""
+    CASH = "cash"        # Готівка
+    CARD = "card"        # Картка
+    MIXED = "mixed"      # Готівка + картка
+
+
 class Receipt(Base):
     """Чек продажу або повернення."""
 
@@ -64,6 +71,12 @@ class Receipt(Base):
         nullable=True,
         comment="Фактично сплачена сума (грн). Якщо менша за total_amount — різниця в борг",
     )
+    change_amount: Mapped[float | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        default=0.00,
+        comment="Сума здачі (грн). Якщо paid_amount > total_amount",
+    )
     debtor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("debtors.id", ondelete="SET NULL"),
@@ -80,6 +93,29 @@ class Receipt(Base):
         Text,
         nullable=True,
         comment="Додаткові нотатки до чеку",
+    )
+    payment_method: Mapped[ReceiptPaymentMethod | None] = mapped_column(
+        Enum(
+            ReceiptPaymentMethod,
+            name="receipt_payment_method",
+            create_constraint=True,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=True,
+        default=None,
+        comment="Спосіб оплати: cash, card, mixed",
+    )
+    original_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("receipts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID оригінального чеку (для повернень)",
+    )
+    return_reason: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Причина повернення",
     )
 
     # ── Timestamps ──────────────────────────────

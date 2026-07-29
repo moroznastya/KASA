@@ -17,7 +17,7 @@ from app.models.permission import Permission
 class UserCreate(BaseModel):
     """Схема створення нового користувача."""
     name: str = Field(..., max_length=255, description="Повне ім'я користувача")
-    login: str = Field(..., max_length=100, description="Логін для входу")
+    login: Optional[str] = Field(None, max_length=100, description="Логін для входу (якщо не вказано — генерується з імені)")
     password: str = Field(..., min_length=4, max_length=100, description="Пароль")
     pin_code: Optional[str] = Field(None, min_length=4, max_length=10, description="PIN-код для каси")
     role: UserRole = Field(UserRole.CASHIER, description="Роль користувача")

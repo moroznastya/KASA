@@ -2,29 +2,71 @@
 API роутер для роботи з товарами (Products).
 
 Ендпоінти:
-  - GET    /products          — список товарів з пошуком та фільтрацією
-  - GET    /products/{id}     — отримати товар за ID
+  - GET    /products                — список товарів з пошуком та фільтрацією
+  - GET    /products/{id}           — отримати товар за ID (з зображеннями та штрих-кодами)
   - GET    /products/barcode/{barcode} — отримати товар за штрих-кодом
-  - POST   /products          — створити новий товар
-  - PUT    /products/{id}     — оновити товар
-  - DELETE /products/{id}     — видалити товар
+  - POST   /products                — створити новий товар
+  - PUT    /products/{id}           — оновити товар
+  - DELETE /products/{id}           — видалити товар
+  - POST   /products/{id}/images    — завантажити зображення товару
+  - DELETE /products/{id}/images/{image_id} — видалити зображення товару
+  - POST   /products/{id}/barcodes  — додати додатковий штрих-код
+  - DELETE /products/{id}/barcodes/{barcode_id} — видалити додатковий штрих-код
 """
 
+import os
+import shutil
+import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.models.product import Product
+from app.models.product_image import ProductImage
+from app.models.barcode import Barcode
 from app.schemas.product import (
     ProductCreate,
     ProductUpdate,
     ProductResponse,
     ProductListResponse,
     ProductSearchParams,
+    ProductImageResponse,
+    BarcodeResponse,
 )
 from app.services.product_service import ProductService
 from app.services.auth_service import AuthService
+
+
+# ─── Допоміжна функція: завантажити товар зі зв'язками ─────────────────────
+
+async def _get_product_with_relations(
+    session: AsyncSession,
+    product_id: UUID,
+) -> Product | None:
+    """
+    Отримує товар за ID з попередньо завантаженими images та barcodes.
+    Використовується для уникнення MissingGreenlet при lazy-loading.
+    """
+    result = await session.execute(
+        select(Product)
+        .options(
+            selectinload(Product.images).load_only(
+                ProductImage.id, ProductImage.url, ProductImage.is_main,
+                ProductImage.sort_order, ProductImage.created_at,
+            ),
+            selectinload(Product.barcodes).load_only(
+                Barcode.id, Barcode.barcode, Barcode.is_primary, Barcode.created_at,
+            ),
+        )
+        .where(Product.id == product_id)
+    )
+    return result.scalar_one_or_none()
+
 
 # Створюємо роутер з тегом "Товари"
 router = APIRouter(
@@ -55,13 +97,8 @@ async def list_products(
     - Пошук за назвою, штрих-кодом, артикулом
     - Фільтрацію за категорією, постачальником, ціною
     - Пагінацію
-
-    Параметри пошуку:
-    - `query` — основний пошуковий запит
-    - `search` — аліас для `query` (для сумісності з фронтендом)
     """
     service = ProductService(session)
-    # Якщо query не передано, але передано search — використовуємо search
     effective_query = query or search
     params = ProductSearchParams(
         query=effective_query,
@@ -75,8 +112,15 @@ async def list_products(
         size=size,
     )
     products, total = await service.search_products(params)
+
+    # Завантажуємо зв'язки для кожного товару в списку
+    items = []
+    for p in products:
+        full = await _get_product_with_relations(session, p.id)
+        items.append(ProductResponse.model_validate(full or p))
+
     return ProductListResponse(
-        items=[ProductResponse.model_validate(p) for p in products],
+        items=items,
         total=total,
         page=page,
         size=size,
@@ -97,7 +141,9 @@ async def get_product_by_barcode(
     """
     service = ProductService(session)
     product = await service.get_product_by_barcode(barcode)
-    return ProductResponse.model_validate(product)
+    # Перезавантажуємо зі зв'язками
+    full = await _get_product_with_relations(session, product.id)
+    return ProductResponse.model_validate(full or product)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
@@ -106,9 +152,20 @@ async def get_product(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує товар за ID."""
-    service = ProductService(session)
-    product = await service.get_product_by_id(product_id)
+    """
+    Отримує товар за ID з усіма зв'язаними даними.
+
+    Повертає:
+    - Основні поля товару
+    - images: список зображень
+    - barcodes: список додаткових штрих-кодів
+    """
+    product = await _get_product_with_relations(session, product_id)
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Товар з ID '{product_id}' не знайдено",
+        )
     return ProductResponse.model_validate(product)
 
 
@@ -121,7 +178,9 @@ async def create_product(
     """Створює новий товар."""
     service = ProductService(session)
     product = await service.create_product(data)
-    return ProductResponse.model_validate(product)
+    # Перезавантажуємо зі зв'язками для відповіді
+    full = await _get_product_with_relations(session, product.id)
+    return ProductResponse.model_validate(full or product)
 
 
 @router.put("/{product_id}", response_model=ProductResponse)
@@ -134,7 +193,9 @@ async def update_product(
     """Оновлює дані товару."""
     service = ProductService(session)
     product = await service.update_product(product_id, data)
-    return ProductResponse.model_validate(product)
+    # Перезавантажуємо зі зв'язками для відповіді
+    full = await _get_product_with_relations(session, product.id)
+    return ProductResponse.model_validate(full or product)
 
 
 @router.delete("/{product_id}", status_code=204)
@@ -146,3 +207,91 @@ async def delete_product(
     """Видаляє товар."""
     service = ProductService(session)
     await service.delete_product(product_id)
+
+
+# ─── Зображення товару ───────────────────────────────────────────────────────
+
+
+@router.post("/{product_id}/images", response_model=ProductImageResponse)
+async def upload_product_image(
+    product_id: UUID,
+    file: UploadFile = File(...),
+    is_main: bool = Form(False),
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """Завантажити зображення товару."""
+    service = ProductService(session)
+
+    # Перевіряємо, чи існує товар
+    await service.get_product_by_id(product_id)
+
+    # Зберігаємо файл
+    upload_dir = os.path.join("uploads", "products", str(product_id))
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # Генеруємо унікальне ім'я файлу
+    ext = os.path.splitext(file.filename or "image.jpg")[1]
+    filename = f"{uuid.uuid4()}{ext}"
+    filepath = os.path.join(upload_dir, filename)
+
+    with open(filepath, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    url = f"/uploads/products/{product_id}/{filename}"
+    image = await service.add_image(product_id, url, is_main)
+    return image
+
+
+@router.delete("/{product_id}/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_product_image(
+    product_id: UUID,
+    image_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """Видалити зображення товару."""
+    service = ProductService(session)
+    image = await session.get(ProductImage, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Зображення не знайдено")
+
+    # Видаляємо файл
+    if os.path.exists(image.url.lstrip("/")):
+        os.remove(image.url.lstrip("/"))
+
+    await service.delete_image(image_id)
+
+
+# ─── Додаткові штрих-коди ────────────────────────────────────────────────────
+
+
+class BarcodeCreate(BaseModel):
+    """Схема створення додаткового штрих-коду."""
+    barcode: str = Field(..., max_length=50, description="Штрих-код")
+    is_primary: bool = Field(False, description="Чи є основним")
+
+
+@router.post("/{product_id}/barcodes", response_model=BarcodeResponse)
+async def add_product_barcode(
+    product_id: UUID,
+    data: BarcodeCreate,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """Додати додатковий штрих-код до товару."""
+    service = ProductService(session)
+    barcode = await service.add_barcode(product_id, data.barcode, data.is_primary)
+    return barcode
+
+
+@router.delete("/{product_id}/barcodes/{barcode_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_product_barcode(
+    product_id: UUID,
+    barcode_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """Видалити додатковий штрих-код товару."""
+    service = ProductService(session)
+    await service.delete_barcode(barcode_id)

@@ -81,6 +81,7 @@ class PurchaseOrderResponse(BaseModel):
     id: UUID
     number: str
     supplier_id: UUID
+    supplier_name: Optional[str] = Field(None, description="Назва постачальника")
     order_date: datetime
     expected_date: Optional[datetime] = None
     status: PurchaseOrderStatus

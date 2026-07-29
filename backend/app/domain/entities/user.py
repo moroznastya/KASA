@@ -6,6 +6,7 @@ Domain Entity: User (Користувач).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -42,6 +43,43 @@ class User:
     phone: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_login_at: Optional[datetime] = None
+
+    @staticmethod
+    def generate_login_from_name(name: str) -> str:
+        """
+        Генерує логін з імені користувача (транслітерація + lower case).
+
+        Args:
+            name: Повне ім'я користувача (може містити кирилицю).
+
+        Returns:
+            Згенерований логін (транслітерований, lowercase, без спецсимволів).
+        """
+        translit_map = {
+            'а': 'a', 'б': 'b', 'в': 'v', 'г': 'h', 'ґ': 'g',
+            'д': 'd', 'е': 'e', 'є': 'ie', 'ж': 'zh', 'з': 'z',
+            'и': 'y', 'і': 'i', 'ї': 'i', 'й': 'i', 'к': 'k',
+            'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p',
+            'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f',
+            'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+            'ю': 'iu', 'я': 'ia',
+            'А': 'a', 'Б': 'b', 'В': 'v', 'Г': 'h', 'Ґ': 'g',
+            'Д': 'd', 'Е': 'e', 'Є': 'ie', 'Ж': 'zh', 'З': 'z',
+            'И': 'y', 'І': 'i', 'Ї': 'i', 'Й': 'i', 'К': 'k',
+            'Л': 'l', 'М': 'm', 'Н': 'n', 'О': 'o', 'П': 'p',
+            'Р': 'r', 'С': 's', 'Т': 't', 'У': 'u', 'Ф': 'f',
+            'Х': 'kh', 'Ц': 'ts', 'Ч': 'ch', 'Ш': 'sh', 'Щ': 'shch',
+            'Ю': 'iu', 'Я': 'ia',
+        }
+        # Transliterate
+        result = ''
+        for char in name:
+            result += translit_map.get(char, char)
+        # Replace non-alphanumeric with underscore, lowercase, strip
+        result = re.sub(r'[^a-zA-Z0-9]', '_', result).lower().strip('_')
+        # Remove consecutive underscores
+        result = re.sub(r'_+', '_', result)
+        return result
 
     def deactivate(self) -> None:
         """Деактивує користувача."""

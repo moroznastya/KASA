@@ -79,7 +79,7 @@ async def get_supplier_ledger(
     }
 
 
-@router.post("", response_model=SupplierLedgerResponse, status_code=201)
+@router.post("/", response_model=SupplierLedgerResponse, status_code=201)
 async def create_ledger_entry(
     data: SupplierLedgerCreate,
     session: AsyncSession = Depends(get_session),

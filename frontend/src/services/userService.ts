@@ -1,9 +1,10 @@
 import api from './api';
 import { User, PermissionsListResponse } from '@/types/auth';
+import { PaginatedResponse } from '@/types/api';
 
 export interface UserCreate {
   name: string;
-  login: string;
+  login?: string;
   password: string;
   pin_code?: string;
   role: 'admin' | 'cashier';
@@ -24,6 +25,11 @@ export interface UserUpdate {
 export const userService = {
   async list(): Promise<User[]> {
     const response = await api.get<User[]>('/users');
+    return response.data;
+  },
+
+  async getUsers(params?: { page?: number; size?: number }): Promise<PaginatedResponse<User>> {
+    const response = await api.get<PaginatedResponse<User>>('/users', { params });
     return response.data;
   },
 

@@ -22,6 +22,8 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
 from app.models.invoice import Invoice, InvoiceItem
+from app.models.supplier import Supplier
+from app.models.product import Product
 from app.schemas.return_invoice import (
     ReturnInvoiceCreate,
     ReturnInvoiceUpdate,
@@ -62,7 +64,31 @@ async def generate_return_number(session: AsyncSession) -> str:
     return f"{prefix}{new_seq:03d}"
 
 
-@router.get("", response_model=list[ReturnInvoiceResponse])
+def calc_markup_percent(price: float, cost_price: float | None) -> float | None:
+    """
+    Обчислює відсоток націнки на основі ціни продажу та собівартості.
+    Формула: ((price - cost_price) / cost_price) * 100
+    """
+    if cost_price and cost_price > 0 and price and price > 0:
+        return round(((price - cost_price) / cost_price) * 100, 2)
+    return None
+
+
+async def get_product_cost_info(session: AsyncSession, product_id: UUID):
+    """
+    Отримує інформацію про собівартість товару.
+    Повертає (cost_price, markup_percent).
+    """
+    result = await session.execute(
+        select(Product).where(Product.id == product_id)
+    )
+    product = result.scalar_one_or_none()
+    if product:
+        return product.cost_price, None
+    return None, None
+
+
+@router.get("/", response_model=list[ReturnInvoiceResponse])
 async def list_return_invoices(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
@@ -73,11 +99,18 @@ async def list_return_invoices(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .order_by(desc(ReturnInvoice.created_at))
     )
     invoices = result.scalars().all()
-    return [ReturnInvoiceResponse.model_validate(inv) for inv in invoices]
+    response_list = []
+    for inv in invoices:
+        result_item = ReturnInvoiceResponse.model_validate(inv)
+        result_item.supplier_name = inv.supplier.name if inv.supplier else None
+        response_list.append(result_item)
+    return response_list
 
 
 @router.get("/{return_id}", response_model=ReturnInvoiceResponse)
@@ -92,6 +125,8 @@ async def get_return_invoice(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .where(ReturnInvoice.id == return_id)
     )
@@ -101,10 +136,12 @@ async def get_return_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Повернення з ID '{return_id}' не знайдено",
         )
-    return ReturnInvoiceResponse.model_validate(invoice)
+    result_item = ReturnInvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
-@router.post("", response_model=ReturnInvoiceResponse, status_code=201)
+@router.post("/", response_model=ReturnInvoiceResponse, status_code=201)
 async def create_return_invoice(
     data: ReturnInvoiceCreate,
     session: AsyncSession = Depends(get_session),
@@ -137,17 +174,31 @@ async def create_return_invoice(
         is_fiscal=data.is_fiscal,
         notes=data.notes,
         total_amount=total_amount,
+        source_invoice_id=data.source_invoice_id,
         status=ReturnInvoiceStatus.DRAFT,
+        created_by_id=current_user.id,
     )
     session.add(invoice)
     await session.flush()
 
     for item_data in data.items:
+        # Якщо cost_price не передано — беремо з продукту
+        cost_price = item_data.cost_price
+        if cost_price is None:
+            cost_price, _ = await get_product_cost_info(session, item_data.product_id)
+        # Обчислюємо націнку автоматично
+        markup_percent = calc_markup_percent(
+            float(item_data.price),
+            float(cost_price) if cost_price else None,
+        )
+
         item = ReturnInvoiceItem(
             return_invoice_id=invoice.id,
             product_id=item_data.product_id,
             quantity=item_data.quantity,
             price=item_data.price,
+            cost_price=cost_price,
+            markup_percent=markup_percent,
             total=item_data.total,
         )
         session.add(item)
@@ -159,11 +210,15 @@ async def create_return_invoice(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return ReturnInvoiceResponse.model_validate(invoice)
+    result_item = ReturnInvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
 @router.put("/{return_id}", response_model=ReturnInvoiceResponse)
@@ -179,6 +234,8 @@ async def update_return_invoice(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .where(ReturnInvoice.id == return_id)
     )
@@ -203,11 +260,23 @@ async def update_return_invoice(
         for old_item in invoice.items:
             await session.delete(old_item)
         for item_data in data.items:
+            # Якщо cost_price не передано — беремо з продукту
+            cost_price = item_data.cost_price
+            if cost_price is None:
+                cost_price, _ = await get_product_cost_info(session, item_data.product_id)
+            # Обчислюємо націнку автоматично
+            markup_percent = calc_markup_percent(
+                float(item_data.price),
+                float(cost_price) if cost_price else None,
+            )
+
             item = ReturnInvoiceItem(
                 return_invoice_id=invoice.id,
                 product_id=item_data.product_id,
                 quantity=item_data.quantity,
                 price=item_data.price,
+                cost_price=cost_price,
+                markup_percent=markup_percent,
                 total=item_data.total,
             )
             session.add(item)
@@ -219,11 +288,15 @@ async def update_return_invoice(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return ReturnInvoiceResponse.model_validate(invoice)
+    result_item = ReturnInvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
 @router.delete("/{return_id}", status_code=204)
@@ -313,8 +386,12 @@ async def confirm_return_invoice(
         .options(
             selectinload(ReturnInvoice.items).selectinload(ReturnInvoiceItem.product),
             selectinload(ReturnInvoice.exchange_invoice).selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(ReturnInvoice.source_invoice),
+            selectinload(ReturnInvoice.supplier),
         )
         .where(ReturnInvoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return ReturnInvoiceResponse.model_validate(invoice)
+    result_item = ReturnInvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item

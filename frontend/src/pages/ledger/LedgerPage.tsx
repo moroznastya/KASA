@@ -6,12 +6,12 @@ import { ledgerService } from '@/services/ledgerService';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
-import { Select } from '@/components/ui/Select';
+import { Select, SelectOption } from '@/components/ui/Select';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { formatCurrency, formatDateTime } from '@/utils/format';
-import { SupplierLedgerEntry, Payment, PaymentMethod } from '@/types/ledger';
+import { SupplierLedgerEntry, Payment, PaymentMethod, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
 import toast from 'react-hot-toast';
 
 const OPERATION_TYPE_LABELS: Record<string, string> = {
@@ -45,11 +45,25 @@ const LedgerPage: React.FC = () => {
     payment_method: 'cash' as PaymentMethod,
     notes: '',
   });
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [invoicePaymentInfo, setInvoicePaymentInfo] = useState<InvoicePaymentInfo | null>(null);
 
   const { data: balance } = useQuery({
     queryKey: ['supplier-balance', selectedSupplierId],
     queryFn: () => ledgerService.getSupplierBalance(selectedSupplierId!),
     enabled: !!selectedSupplierId,
+  });
+
+  const { data: supplierInvoices } = useQuery({
+    queryKey: ['supplier-invoices', selectedSupplierId],
+    queryFn: () => ledgerService.getSupplierInvoices(selectedSupplierId!),
+    enabled: !!selectedSupplierId,
+  });
+
+  const { data: paymentInfo } = useQuery({
+    queryKey: ['invoice-payment-info', selectedInvoiceId],
+    queryFn: () => ledgerService.getInvoicePaymentInfo(selectedInvoiceId!),
+    enabled: !!selectedInvoiceId,
   });
 
   const { data: ledgerData, isLoading: isLedgerLoading } = useQuery({
@@ -59,19 +73,29 @@ const LedgerPage: React.FC = () => {
   });
 
   const paymentMutation = useMutation({
-    mutationFn: () =>
-      ledgerService.createPayment({
+    mutationFn: () => {
+      const selectedInv = selectedInvoiceId
+        ? supplierInvoices?.find(inv => inv.id === selectedInvoiceId)
+        : null;
+
+      return ledgerService.createPayment({
         supplier_id: selectedSupplierId!,
         amount: parseFloat(paymentForm.amount),
         payment_method: paymentForm.payment_method,
         notes: paymentForm.notes || undefined,
-      }),
+        document_id: selectedInvoiceId || undefined,
+        document_number: selectedInv?.number || undefined,
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['supplier-balance'] });
       queryClient.invalidateQueries({ queryKey: ['supplier-ledger'] });
+      queryClient.invalidateQueries({ queryKey: ['supplier-invoices'] });
       toast.success('Платіж створено');
       setShowPaymentModal(false);
       setPaymentForm({ amount: '', payment_method: 'cash', notes: '' });
+      setSelectedInvoiceId(null);
+      setInvoicePaymentInfo(null);
     },
     onError: (error: any) => {
       // Помилка 422 (Pydantic validation) повертає масив {type, loc, msg, input}
@@ -92,6 +116,15 @@ const LedgerPage: React.FC = () => {
     ...(suppliersData?.map((s) => ({
       value: String(s.id),
       label: s.name,
+    })) || []),
+  ];
+
+  /** Опції накладних для вибору в модалці */
+  const invoiceOptions: SelectOption[] = [
+    { value: '', label: '— Без прив\'язки до накладної —' },
+    ...(supplierInvoices?.map((inv) => ({
+      value: inv.id,
+      label: `${inv.number} — ${formatCurrency(inv.total_amount)}`,
     })) || []),
   ];
 
@@ -125,20 +158,24 @@ const LedgerPage: React.FC = () => {
     },
     {
       key: 'document_number',
-      header: 'Документ',
+      header: 'Накладна',
       render: (item) => {
-        const isClickable = !!item.document_id && !!OPERATION_TYPE_ROUTES[item.operation_type];
-        return (
-          <span
-            className={`font-medium ${
-              isClickable
-                ? 'text-primary-600 dark:text-primary-400 hover:underline'
-                : 'text-gray-900 dark:text-gray-100'
-            }`}
-          >
-            {item.document_number || '-'}
-          </span>
-        );
+        if (item.operation_type === 'payment' && item.document_number) {
+          return (
+            <span className="inline-flex items-center gap-1 text-xs text-primary-600">
+              <FileText className="w-3 h-3" />
+              Оплата по №{item.document_number}
+            </span>
+          );
+        }
+        if (item.operation_type === 'invoice' && item.document_number) {
+          return (
+            <span className="text-xs text-gray-600 dark:text-gray-400 font-medium">
+              {item.document_number}
+            </span>
+          );
+        }
+        return <span className="text-xs text-gray-400">—</span>;
       },
     },
     {
@@ -292,6 +329,8 @@ const LedgerPage: React.FC = () => {
         onClose={() => {
           setShowPaymentModal(false);
           setPaymentForm({ amount: '', payment_method: 'cash', notes: '' });
+          setSelectedInvoiceId(null);
+          setInvoicePaymentInfo(null);
         }}
         title="Створити платіж"
         size="sm"
@@ -331,12 +370,47 @@ const LedgerPage: React.FC = () => {
             }
             placeholder="Додаткова інформація"
           />
+
+          {/* Вибір накладної */}
+          <Select
+            label="Накладна (опціонально)"
+            options={invoiceOptions}
+            value={selectedInvoiceId || ''}
+            onChange={(e) => {
+              const invId = e.target.value || null;
+              setSelectedInvoiceId(invId);
+              setInvoicePaymentInfo(null);
+            }}
+          />
+
+          {/* Інформація про оплату вибраної накладної */}
+          {selectedInvoiceId && paymentInfo && (
+            <div className="bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3 space-y-1 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Сума накладної:</span>
+                <span className="font-medium">{formatCurrency(paymentInfo.total_amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Вже сплачено:</span>
+                <span className="font-medium text-green-600">{formatCurrency(paymentInfo.paid_amount)}</span>
+              </div>
+              <div className="flex justify-between border-t border-gray-200 dark:border-slate-600 pt-1">
+                <span className="text-gray-500">Залишок:</span>
+                <span className={`font-bold ${parseFloat(paymentInfo.remaining) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  {formatCurrency(paymentInfo.remaining)}
+                </span>
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-2">
             <Button
               variant="secondary"
               onClick={() => {
                 setShowPaymentModal(false);
                 setPaymentForm({ amount: '', payment_method: 'cash', notes: '' });
+                setSelectedInvoiceId(null);
+                setInvoicePaymentInfo(null);
               }}
             >
               Скасувати

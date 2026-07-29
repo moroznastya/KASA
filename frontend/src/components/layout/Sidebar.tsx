@@ -14,6 +14,10 @@ import {
   ChevronLeft,
   ChevronRight,
   UserCog,
+  Settings,
+  Clock,
+  Tag,
+  Printer,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
@@ -63,6 +67,20 @@ const navItems: NavItem[] = [
     roles: ['admin', 'cashier'],
   },
   {
+    path: '/printing/price-tags',
+    label: 'Друк цінників',
+    icon: <Tag className="w-5 h-5" />,
+    module: 'products',
+    roles: ['admin', 'cashier'],
+  },
+  {
+    path: '/printing/labels',
+    label: 'Друк етикеток',
+    icon: <Printer className="w-5 h-5" />,
+    module: 'products',
+    roles: ['admin', 'cashier'],
+  },
+  {
     path: '/categories',
     label: 'Категорії',
     icon: <Tags className="w-5 h-5" />,
@@ -78,7 +96,7 @@ const navItems: NavItem[] = [
   },
   {
     path: '/documents',
-    label: 'Документи',
+    label: 'Накладні',
     icon: <FileText className="w-5 h-5" />,
     module: 'documents',
     roles: ['admin', 'cashier'],
@@ -89,6 +107,13 @@ const navItems: NavItem[] = [
     icon: <BarChart3 className="w-5 h-5" />,
     module: 'reports',
     roles: ['admin'],
+  },
+  {
+    path: '/work-time',
+    label: 'Робочий час',
+    icon: <Clock className="w-5 h-5" />,
+    module: 'work-time',
+    roles: ['admin', 'cashier'],
   },
   {
     path: '/ledger',
@@ -102,6 +127,13 @@ const navItems: NavItem[] = [
     label: 'Користувачі',
     icon: <UserCog className="w-5 h-5" />,
     module: 'users',
+    roles: ['admin'],
+  },
+  {
+    path: '/settings',
+    label: 'Налаштування',
+    icon: <Settings className="w-5 h-5" />,
+    module: 'settings',
     roles: ['admin'],
   },
 ];
@@ -179,10 +211,7 @@ export const Sidebar: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                  {user.name}
-                </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">
-                  {user.role === 'admin' ? 'Адміністратор' : 'Касир'}
+                  {user.name} ({user.role === 'admin' ? 'Адміністратор' : 'Касир'})
                 </p>
               </div>
             </div>

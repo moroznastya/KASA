@@ -22,6 +22,7 @@ const PurchaseOrderFormPage = lazy(() => import('@/pages/documents/PurchaseOrder
 const TransferFormPage = lazy(() => import('@/pages/documents/TransferFormPage'));
 const WriteOffFormPage = lazy(() => import('@/pages/documents/WriteOffFormPage'));
 const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoiceFormPage'));
+const InventoryFormPage = lazy(() => import('@/pages/documents/InventoryFormPage'));
 const DocumentViewPage = lazy(() => import('@/pages/documents/DocumentViewPage'));
 const PosPage = lazy(() => import('@/pages/pos/PosPage'));
 const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'));
@@ -30,6 +31,11 @@ const ReceiptListPage = lazy(() => import('@/pages/receipts/ReceiptListPage'));
 const ReceiptDetailPage = lazy(() => import('@/pages/receipts/ReceiptDetailPage'));
 const DebtorsPage = lazy(() => import('@/pages/debtors/DebtorsPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
+const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
+const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
+const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
+const PrintPriceTagsPage = lazy(() => import('@/pages/printing/PrintPriceTagsPage'));
+const PrintLabelsPage = lazy(() => import('@/pages/printing/PrintLabelsPage'));
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -126,7 +132,7 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
 
-            {/* Документи — касир може переглядати та створювати накладні */}
+            {/* Накладні — касир може переглядати та створювати накладні */}
             <Route path="documents" element={<DocumentListPage />} />
             <Route path="documents/invoice/new" element={<InvoiceFormPage />} />
             <Route path="documents/purchase-order/new" element={
@@ -149,25 +155,73 @@ const App: React.FC = () => {
                 <ReturnInvoiceFormPage />
               </RoleRoute>
             } />
+            <Route path="documents/inventory/new" element={
+              <RoleRoute roles={['admin']}>
+                <InventoryFormPage />
+              </RoleRoute>
+            } />
+            {/* VIEW — інвентаризація */}
+            <Route path="documents/inventory/:id" element={
+              <RoleRoute roles={['admin']}>
+                <DocumentViewPage />
+              </RoleRoute>
+            } />
+            {/* EDIT — інвентаризація */}
+            <Route path="documents/inventory/:id/edit" element={
+              <RoleRoute roles={['admin']}>
+                <InventoryFormPage />
+              </RoleRoute>
+            } />
+            {/* VIEW */}
             <Route path="documents/invoice/:id" element={<DocumentViewPage />} />
+            {/* EDIT */}
+            <Route path="documents/invoice/:id/edit" element={<InvoiceFormPage />} />
+            {/* VIEW */}
             <Route path="documents/purchase-order/:id" element={
               <RoleRoute roles={['admin']}>
                 <DocumentViewPage />
               </RoleRoute>
             } />
+            {/* EDIT */}
+            <Route path="documents/purchase-order/:id/edit" element={
+              <RoleRoute roles={['admin']}>
+                <PurchaseOrderFormPage />
+              </RoleRoute>
+            } />
+            {/* VIEW */}
             <Route path="documents/transfer/:id" element={
               <RoleRoute roles={['admin']}>
                 <DocumentViewPage />
               </RoleRoute>
             } />
+            {/* EDIT */}
+            <Route path="documents/transfer/:id/edit" element={
+              <RoleRoute roles={['admin']}>
+                <TransferFormPage />
+              </RoleRoute>
+            } />
+            {/* VIEW */}
             <Route path="documents/write-off/:id" element={
               <RoleRoute roles={['admin']}>
                 <DocumentViewPage />
               </RoleRoute>
             } />
+            {/* EDIT */}
+            <Route path="documents/write-off/:id/edit" element={
+              <RoleRoute roles={['admin']}>
+                <WriteOffFormPage />
+              </RoleRoute>
+            } />
+            {/* VIEW */}
             <Route path="documents/return/:id" element={
               <RoleRoute roles={['admin']}>
                 <DocumentViewPage />
+              </RoleRoute>
+            } />
+            {/* EDIT */}
+            <Route path="documents/return/:id/edit" element={
+              <RoleRoute roles={['admin']}>
+                <ReturnInvoiceFormPage />
               </RoleRoute>
             } />
 
@@ -185,6 +239,19 @@ const App: React.FC = () => {
                 <UsersPage />
               </RoleRoute>
             } />
+            <Route path="settings" element={
+              <RoleRoute roles={['admin']}>
+                <SettingsPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/print-templates" element={
+              <RoleRoute roles={['admin']}>
+                <PrintTemplatesPage />
+              </RoleRoute>
+            } />
+            <Route path="work-time" element={<WorkTimePage />} />
+            <Route path="printing/price-tags" element={<PrintPriceTagsPage />} />
+            <Route path="printing/labels" element={<PrintLabelsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

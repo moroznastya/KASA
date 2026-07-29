@@ -1,0 +1,36 @@
+[package]
+name = "kasa-pos"
+version = "1.0.0"
+description = "Kasa POS — Enterprise POS-система для малого та середнього бізнесу"
+authors = ["Kasa Team"]
+edition = "2021"
+
+[lib]
+name = "kasa_pos_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+dirs-next = "2"
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+thiserror = "2"
+tempfile = "3"
+encoding_rs = "0.8"

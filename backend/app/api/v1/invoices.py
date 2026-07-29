@@ -12,23 +12,28 @@ API роутер для роботи з прибутковими накладн�
 """
 
 from uuid import UUID
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.services.document_service import generate_invoice_number
+from app.models.supplier import Supplier
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceUpdate,
     InvoiceResponse,
     InvoiceItemResponse,
     InvoiceConfirmRequest,
+    InvoicePaymentInfo,
 )
 from app.services.auth_service import AuthService
 from app.services.document_service import DocumentService
+from app.models.supplier_ledger import SupplierLedger, LedgerOperationType
 
 router = APIRouter(
     prefix="/invoices",
@@ -36,19 +41,37 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[InvoiceResponse])
+@router.get("/", response_model=list[InvoiceResponse])
 async def list_invoices(
+    supplier_id: UUID = Query(None, description="Фільтр за постачальником (повертає тільки підтверджені накладні для оплати)"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх прибуткових накладних."""
-    result = await session.execute(
-        select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
-        .order_by(desc(Invoice.created_at))
+    """
+    Отримує список прибуткових накладних.
+
+    Якщо передано `supplier_id`, повертає тільки підтверджені накладні
+    для цього постачальника (для вибору при оплаті).
+    """
+    query = select(Invoice).options(
+        selectinload(Invoice.items).selectinload(InvoiceItem.product),
+        selectinload(Invoice.supplier),
     )
+    
+    if supplier_id:
+        query = query.where(Invoice.supplier_id == supplier_id)
+        query = query.where(Invoice.status == InvoiceStatus.CONFIRMED)
+    
+    query = query.order_by(desc(Invoice.created_at))
+    
+    result = await session.execute(query)
     invoices = result.scalars().all()
-    return [InvoiceResponse.model_validate(inv) for inv in invoices]
+    response_list = []
+    for inv in invoices:
+        result_item = InvoiceResponse.model_validate(inv)
+        result_item.supplier_name = inv.supplier.name if inv.supplier else None
+        response_list.append(result_item)
+    return response_list
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
@@ -60,7 +83,10 @@ async def get_invoice(
     """Отримує прибуткову накладну за ID."""
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
@@ -69,10 +95,12 @@ async def get_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Накладну з ID '{invoice_id}' не знайдено",
         )
-    return InvoiceResponse.model_validate(invoice)
+    result_item = InvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
-@router.post("", response_model=InvoiceResponse, status_code=201)
+@router.post("/", response_model=InvoiceResponse, status_code=201)
 async def create_invoice(
     data: InvoiceCreate,
     session: AsyncSession = Depends(get_session),
@@ -87,8 +115,13 @@ async def create_invoice(
     if total_amount is None and data.items:
         total_amount = sum(item.total for item in data.items)
 
+    # Автоматична генерація номера, якщо не вказано
+    number = data.number
+    if not number:
+        number = await generate_invoice_number(session)
+
     invoice = Invoice(
-        number=data.number,
+        number=number,
         supplier_id=data.supplier_id,
         invoice_date=invoice_date,
         payment_method=data.payment_method,
@@ -96,6 +129,7 @@ async def create_invoice(
         notes=data.notes,
         total_amount=total_amount,
         status=InvoiceStatus.DRAFT,
+        created_by_id=current_user.id,
     )
     session.add(invoice)
     await session.flush()
@@ -108,6 +142,8 @@ async def create_invoice(
             quantity=item_data.quantity,
             price=item_data.price,
             total=item_data.total,
+            cost_price=item_data.cost_price or item_data.price,
+            markup_percent=item_data.markup_percent or 0,
         )
         session.add(item)
 
@@ -116,11 +152,16 @@ async def create_invoice(
     # Повертаємо з позиціями
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return InvoiceResponse.model_validate(invoice)
+    result_item = InvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
 @router.put("/{invoice_id}", response_model=InvoiceResponse)
@@ -133,7 +174,10 @@ async def update_invoice(
     """Оновлює прибуткову накладну."""
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
@@ -169,6 +213,8 @@ async def update_invoice(
                 quantity=item_data.quantity,
                 price=item_data.price,
                 total=item_data.total,
+                cost_price=item_data.cost_price or item_data.price,
+                markup_percent=item_data.markup_percent or 0,
             )
             session.add(item)
 
@@ -180,11 +226,16 @@ async def update_invoice(
     # Повертаємо оновлену накладну
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return InvoiceResponse.model_validate(invoice)
+    result_item = InvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item
 
 
 @router.delete("/{invoice_id}", status_code=204)
@@ -211,6 +262,71 @@ async def delete_invoice(
     await session.delete(invoice)
     await session.flush()
 
+
+
+
+@router.get("/{invoice_id}/payment-info", response_model=InvoicePaymentInfo)
+async def get_invoice_payment_info(
+    invoice_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(AuthService.get_current_user),
+):
+    """
+    Повертає інформацію про оплату накладної:
+    - total_amount: загальна сума накладної
+    - paid_amount: скільки вже сплачено/компенсовано (сума payment + return записів 
+                   у ledger з цим document_id)
+    - remaining: залишок до сплати
+
+    Враховано:
+    - PAYMENT запити (оплати) з цим document_id
+    - RETURN запити (повернення постачальнику) з цим document_id,
+      які зменшують суму боргу за накладну
+    """
+    # Отримуємо накладну
+    result = await session.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.supplier))
+        .where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Накладну з ID '{invoice_id}' не знайдено",
+        )
+
+    # Розраховуємо сплачену суму:
+    # 1. PAYMENT записи з цим document_id (оплати, що зменшують борг)
+    # 2. RETURN записи з цим document_id (повернення, що зменшують борг)
+    ledger_result = await session.execute(
+        select(SupplierLedger.amount)
+        .where(SupplierLedger.document_id == invoice_id)
+        .where(
+            SupplierLedger.operation_type.in_([
+                LedgerOperationType.PAYMENT,
+                LedgerOperationType.RETURN,
+            ])
+        )
+    )
+    ledger_rows = ledger_result.all()
+    
+    # PAYMENT та RETURN записи мають від'ємну суму (зменшують борг),
+    # тому беремо абсолютне значення
+    paid_amount = sum(abs(Decimal(str(row[0]))) for row in ledger_rows)
+    paid_amount = Decimal(str(paid_amount)).quantize(Decimal("0.01"))
+
+    total_amount = Decimal(str(invoice.total_amount or 0)).quantize(Decimal("0.01"))
+    remaining = (total_amount - paid_amount).quantize(Decimal("0.01"))
+
+    return InvoicePaymentInfo(
+        invoice_id=invoice.id,
+        invoice_number=invoice.number,
+        invoice_date=invoice.invoice_date,
+        total_amount=total_amount,
+        paid_amount=paid_amount,
+        remaining=remaining,
+    )
 
 @router.post("/{invoice_id}/confirm", response_model=InvoiceResponse)
 async def confirm_invoice(
@@ -244,8 +360,13 @@ async def confirm_invoice(
     # Повертаємо з позиціями
     result = await session.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items).selectinload(InvoiceItem.product))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice.id)
     )
     invoice = result.scalar_one()
-    return InvoiceResponse.model_validate(invoice)
+    result_item = InvoiceResponse.model_validate(invoice)
+    result_item.supplier_name = invoice.supplier.name if invoice.supplier else None
+    return result_item

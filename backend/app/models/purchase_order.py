@@ -89,6 +89,18 @@ class PurchaseOrder(Base):
         comment="Загальна сума замовлення (грн)",
     )
 
+    # ── Користувач, який створив ─────────────────
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Ідентифікатор користувача, який створив замовлення",
+    )
+    creator: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[created_by_id],
+    )
+
     # ── Зв'язок з прибутковою накладною ──
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

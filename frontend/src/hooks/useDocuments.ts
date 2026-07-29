@@ -25,7 +25,15 @@ function getErrorMessage(error: any): string {
   return error?.message || 'Невідома помилка';
 }
 
-export function useDocuments(params?: SearchParams & { document_type?: DocumentType }) {
+export function useDocuments(params?: SearchParams & {
+  document_type?: DocumentType;
+  date_from?: string;
+  date_to?: string;
+  supplier_id?: string;
+  amount_from?: string;
+  amount_to?: string;
+  status?: string;
+}) {
   return useQuery({
     queryKey: ['documents', params],
     queryFn: () => documentService.getDocuments(params),
@@ -82,6 +90,57 @@ export function useCancelDocument() {
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['document'] });
       toast.success('Документ скасовано');
+    },
+    onError: (error: any) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+}
+
+/** Масове підтвердження документів */
+export function useBatchConfirm() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (items: Array<{ id: string; document_type: DocumentType }>) =>
+      documentService.batchConfirm(items),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      toast.success('Документи успішно підтверджено');
+    },
+    onError: (error: any) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+}
+
+/** Копіювання документа */
+export function useCopyDocument() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, documentType }: { id: string; documentType: DocumentType }) =>
+      documentService.copyDocument(id, documentType),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      toast.success('Документ скопійовано');
+    },
+    onError: (error: any) => {
+      toast.error(getErrorMessage(error));
+    },
+  });
+}
+
+/** Видалення документа */
+export function useDeleteDocument() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, documentType }: { id: string; documentType: DocumentType }) =>
+      documentService.deleteDocument(id, documentType),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      toast.success('Документ видалено');
     },
     onError: (error: any) => {
       toast.error(getErrorMessage(error));

@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.api.v1 import api_v1_router
@@ -161,6 +162,10 @@ app.add_middleware(AuthMiddleware)
 
 # ─── SlowAPI Middleware (для rate limiting) ───────────────────────────────────
 app.add_middleware(SlowAPIMiddleware)
+
+
+# ─── Static Files (завантажені зображення) ────────────────────────────
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 # ─── Підключення роутерів ────────────────────────────────────────────────────

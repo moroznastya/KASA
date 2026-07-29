@@ -22,6 +22,7 @@ from app.models.invoice import Invoice, InvoiceItem  # noqa: F401
 from app.models.transfer import Transfer, TransferItem  # noqa: F401
 from app.models.write_off import WriteOff, WriteOffItem  # noqa: F401
 from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem  # noqa: F401
+from app.models.inventory import Inventory, InventoryItem, InventoryStatus  # noqa: F401
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem  # noqa: F401
 
 # ── Продажі ────────────────────────────────────
@@ -30,7 +31,16 @@ from app.models.receipt import Receipt, ReceiptItem  # noqa: F401
 # ── Взаєморозрахунки ───────────────────────────
 from app.models.supplier_ledger import SupplierLedger  # noqa: F401
 
-# ── Список усіх моделей для зручності ──────────
+# ── Системні налаштування ──────────────────────
+from app.models.system_setting import SystemSetting  # noqa: F401
+
+# ── Облік робочого часу ────────────────────────
+from app.models.work_session import WorkSession  # noqa: F401
+
+# ── Шаблони друку ──────────────────────────────
+from app.models.print_template import PrintTemplate  # noqa: F401
+
+# ── Список усіх моделей для зручності ─────────
 __all__ = [
     # Довідники
     "User", "UserRole",
@@ -46,9 +56,16 @@ __all__ = [
     "Transfer", "TransferItem",
     "WriteOff", "WriteOffItem",
     "ReturnInvoice", "ReturnInvoiceItem",
+    "Inventory", "InventoryItem", "InventoryStatus",
     "PurchaseOrder", "PurchaseOrderItem",
     # Продажі
     "Receipt", "ReceiptItem",
     # Взаєморозрахунки
     "SupplierLedger",
+    # Системні налаштування
+    "SystemSetting",
+    # Облік робочого часу
+    "WorkSession",
+    # Шаблони друку
+    "PrintTemplate",
 ]

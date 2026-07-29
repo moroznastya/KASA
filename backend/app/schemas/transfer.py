@@ -31,7 +31,7 @@ class TransferItemResponse(BaseModel):
 
 class TransferCreate(BaseModel):
     """Схема створення нового переміщення."""
-    number: str = Field(..., max_length=50, description="Номер документа")
+    number: Optional[str] = Field(None, max_length=50, description="Номер документа (якщо не вказано — генерується автоматично)")
     from_location: str = Field(..., max_length=255, description="Звідки переміщуємо")
     to_location: str = Field(..., max_length=255, description="Куди переміщуємо")
     transfer_date: datetime = Field(..., description="Дата переміщення")

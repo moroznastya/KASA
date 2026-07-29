@@ -68,7 +68,6 @@ const UsersPage: React.FC = () => {
     setEditingUser(null);
     setFormData({
       name: '',
-      login: '',
       password: '',
       pin_code: '',
       role: 'cashier',
@@ -81,7 +80,6 @@ const UsersPage: React.FC = () => {
     setEditingUser(user);
     setFormData({
       name: user.name,
-      login: user.login,
       password: '',
       pin_code: '',
       role: user.role as 'admin' | 'cashier',
@@ -95,10 +93,6 @@ const UsersPage: React.FC = () => {
       toast.error("Введіть ім'я користувача");
       return;
     }
-    if (!formData.login.trim()) {
-      toast.error('Введіть логін');
-      return;
-    }
     if (!editingUser && !formData.password) {
       toast.error('Введіть пароль');
       return;
@@ -109,7 +103,6 @@ const UsersPage: React.FC = () => {
       if (editingUser) {
         const updateData: UserUpdate = {
           name: formData.name,
-          login: formData.login,
           role: formData.role,
           is_active: formData.is_active,
         };
@@ -126,7 +119,17 @@ const UsersPage: React.FC = () => {
       loadUsers();
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      toast.error(detail || 'Помилка збереження користувача');
+      if (Array.isArray(detail)) {
+        const messages = detail.map((d: any) => {
+          const field = d.loc?.slice(1).join('.') || '';
+          return field ? `${field}: ${d.msg}` : d.msg;
+        });
+        toast.error(messages.join('\n') || 'Помилка валідації даних');
+      } else if (typeof detail === 'string') {
+        toast.error(detail);
+      } else {
+        toast.error('Помилка збереження користувача');
+      }
     } finally {
       setIsSaving(false);
     }
@@ -149,8 +152,7 @@ const UsersPage: React.FC = () => {
 
   const filteredUsers = users.filter(
     (u) =>
-      u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.login.toLowerCase().includes(searchQuery.toLowerCase())
+      u.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const roleBadge = (role: string) => {
@@ -201,7 +203,7 @@ const UsersPage: React.FC = () => {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
         <input
           type="text"
-          placeholder="Пошук за ім'ям або логіном..."
+          placeholder="Пошук за ім'ям..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-gray-300 dark:border-slate-600 
@@ -325,15 +327,6 @@ const UsersPage: React.FC = () => {
           />
 
           <Input
-            label="Логін"
-            value={formData.login}
-            onChange={(e) => setFormData({ ...formData, login: e.target.value })}
-            placeholder="Логін для входу"
-            id="user-login"
-            name="user-login"
-          />
-
-          <Input
             label={editingUser ? 'Новий пароль (залиште порожнім, щоб не змінювати)' : 'Пароль'}
             type="password"
             value={formData.password}
@@ -400,7 +393,7 @@ const UsersPage: React.FC = () => {
         title="Видалити користувача"
         message={
           deleteTarget
-            ? `Ви впевнені, що хочете видалити користувача "${deleteTarget.name}" (${deleteTarget.login})?`
+            ? `Ви впевнені, що хочете видалити користувача "${deleteTarget.name}"?`
             : ''
         }
         confirmText="Видалити"

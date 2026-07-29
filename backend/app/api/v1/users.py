@@ -6,19 +6,22 @@ API роутер для роботи з користувачами (Users) та 
   - POST   /auth/login-pin     — логін за PIN-кодом
   - POST   /auth/refresh       — оновлення JWT токена
   - POST   /auth/logout        — вихід із системи
+  - GET    /auth/users-list    — публічний список активних користувачів (без авторизації)
   - GET    /users               — список користувачів (admin)
   - GET    /users/{id}          — отримати користувача за ID
   - POST   /users               — створити користувача (admin)
   - PUT    /users/{id}          — оновити користувача (admin)
   - DELETE /users/{id}          — видалити користувача (admin)
   - PUT    /users/{id}/permissions — оновити права доступу користувача (admin)
+  - PUT    /users/{id}/hourly-rate — оновити погодинну ставку користувача (admin)
   - GET    /users/permissions/list — отримати список всіх доступних прав
 """
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import select
@@ -26,7 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.models.user import User
+from app.models.receipt import Receipt
 from app.models.permission import Permission, PERMISSION_GROUPS, PERMISSION_LABELS
+from app.models.work_session import WorkSession
 from app.schemas.user import (
     UserCreate,
     UserUpdate,
@@ -37,6 +42,7 @@ from app.schemas.user import (
     UserTokenResponse,
 )
 from app.services.auth_service import AuthService
+from app.domain.entities.user import User as UserEntity
 
 # Rate limiter для auth ендпоінтів (5 запитів на хвилину)
 limiter = Limiter(key_func=get_remote_address)
@@ -54,6 +60,13 @@ users_router = APIRouter(
 )
 
 
+# ─── Схема для оновлення погодинної ставки ──────────────────────────────────
+
+class HourlyRateUpdate(BaseModel):
+    """Запит на оновлення погодинної ставки користувача."""
+    hourly_rate: float = Field(..., gt=0, description="Погодинна ставка (грн/год)")
+
+
 # ─── Авторизація ─────────────────────────────────────────────────────────────
 
 @auth_router.post("/login", response_model=UserTokenResponse)
@@ -67,10 +80,20 @@ async def login(
     Аутентифікація користувача за логіном та паролем.
 
     Повертає JWT токен доступу, refresh токен та дані користувача.
+    Після успішного входу автоматично створюється робоча сесія.
     Rate limit: 5 запитів на хвилину.
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_password(data.login, data.password)
+
+    # Створюємо робочу сесію
+    work_session = WorkSession(
+        user_id=user.id,
+        login_time=datetime.utcnow(),
+    )
+    session.add(work_session)
+    await session.commit()
+
     refresh_token = AuthService.create_refresh_token(user.id, user.role)
     return UserTokenResponse(
         access_token=token,
@@ -92,10 +115,20 @@ async def login_pin(
 
     Використовується для швидкого входу на касі.
     Повертає JWT токен доступу, refresh токен та дані користувача.
+    Після успішного входу автоматично створюється робоча сесія.
     Rate limit: 5 запитів на хвилину.
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_pin(data.login, data.pin_code)
+
+    # Створюємо робочу сесію
+    work_session = WorkSession(
+        user_id=user.id,
+        login_time=datetime.utcnow(),
+    )
+    session.add(work_session)
+    await session.commit()
+
     refresh_token = AuthService.create_refresh_token(user.id, user.role)
     return UserTokenResponse(
         access_token=token,
@@ -166,13 +199,54 @@ async def refresh_token(
 @auth_router.post("/logout")
 async def logout(
     current_user: User = Depends(AuthService.get_current_user),
+    session: AsyncSession = Depends(get_session),
 ):
     """
     Вихід із системи.
 
-    На стороні клієнта потрібно видалити токени.
+    Завершує активну робочу сесію користувача (якщо є):
+    - встановлює logout_time
+    - розраховує duration_hours
     """
+    # Знаходимо останню активну сесію (де logout_time IS NULL)
+    result = await session.execute(
+        select(WorkSession)
+        .where(WorkSession.user_id == current_user.id)
+        .where(WorkSession.logout_time.is_(None))
+        .order_by(WorkSession.login_time.desc())
+        .limit(1)
+    )
+    active_session = result.scalar_one_or_none()
+
+    if active_session:
+        active_session.logout_time = datetime.utcnow()
+        # Розраховуємо тривалість сесії в годинах
+        duration = active_session.logout_time - active_session.login_time
+        active_session.duration_hours = round(duration.total_seconds() / 3600, 2)
+        await session.commit()
+
     return {"message": "Успішний вихід із системи"}
+
+
+@auth_router.get("/users-list", response_model=list[dict])
+async def get_users_list(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Публічний ендпоінт для отримання списку активних користувачів.
+    Використовується на сторінці логіну для випадаючого списку.
+
+    Повертає тільки id, name, login — жодних конфіденційних даних.
+    """
+    result = await session.execute(
+        select(User.id, User.name, User.login).where(User.is_active == True).order_by(User.name)
+    )
+    users = [
+        {"id": str(row.id), "name": row.name, "login": row.login}
+        for row in result.all()
+    ]
+    return users
 
 
 # ─── Управління користувачами ────────────────────────────────────────────────
@@ -215,16 +289,37 @@ async def create_user(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(AuthService.require_admin),
 ):
-    """Створює нового користувача (тільки admin)."""
-    # Перевіряємо унікальність логіну
-    result = await session.execute(
-        select(User).where(User.login == data.login)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Користувач з логіном '{data.login}' вже існує",
+    """
+    Створює нового користувача (тільки admin).
+
+    Якщо `login` не вказано — генерується автоматично з `name`
+    (транслітерація + lower case). При дублюванні додається числовий суфікс.
+    """
+    # Авто-генерація логіну, якщо не вказано
+    if not data.login:
+        base_login = UserEntity.generate_login_from_name(data.name)
+        login = base_login
+        counter = 1
+        # Перевіряємо унікальність
+        while True:
+            result = await session.execute(
+                select(User).where(User.login == login)
+            )
+            if not result.scalar_one_or_none():
+                break
+            login = f"{base_login}_{counter}"
+            counter += 1
+        data.login = login
+    else:
+        # Перевіряємо унікальність переданого логіну
+        result = await session.execute(
+            select(User).where(User.login == data.login)
         )
+        if result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Користувач з логіном '{data.login}' вже існує",
+            )
 
     # Хешуємо пароль та PIN-код
     password_hash = AuthService.hash_password(data.password)
@@ -335,6 +430,39 @@ async def update_user_permissions(
     return UserResponse.model_validate(user)
 
 
+@users_router.put("/{user_id}/hourly-rate")
+async def update_user_hourly_rate(
+    user_id: UUID,
+    data: HourlyRateUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(AuthService.require_admin),
+):
+    """
+    Оновлює погодинну ставку користувача (тільки admin).
+
+    Тіло запиту: `{ "hourly_rate": 150.00 }`
+    """
+    result = await session.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Користувача з ID '{user_id}' не знайдено",
+        )
+
+    user.hourly_rate = data.hourly_rate
+    await session.flush()
+
+    return {
+        "id": str(user.id),
+        "name": user.name,
+        "hourly_rate": data.hourly_rate,
+        "message": "Погодинну ставку оновлено",
+    }
+
+
 @users_router.delete("/{user_id}", status_code=204)
 async def delete_user(
     user_id: UUID,
@@ -351,6 +479,30 @@ async def delete_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Користувача з ID '{user_id}' не знайдено",
         )
+
+    # Перевіряємо, чи є в користувача пов'язані чеки
+    receipt_count_result = await session.execute(
+        select(Receipt.id).where(Receipt.cashier_id == user_id).limit(1)
+    )
+    has_receipts = receipt_count_result.first() is not None
+
+    if has_receipts:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Неможливо видалити користувача '{user.name}' — "
+                f"він має пов'язані чеки продажу. "
+                f"Деактивуйте користувача замість видалення."
+            ),
+        )
+
+    # Запобігаємо видаленню самого себе
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Неможливо видалити самого себе",
+        )
+
     await session.delete(user)
     await session.flush()
 

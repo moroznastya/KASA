@@ -1,11 +1,13 @@
 """
-Сервіс для роботи з документами (накладні, переміщення, списання, повернення).
+Сервіс для роботи з документами (накладні, переміщення, списання, повернення, інвентаризація).
 
 Забезпечує:
   - Підтвердження документів (зміна статусу)
   - Оновлення залишків товарів при підтвердженні
+  - Оновлення собівартості товарів при підтвердженні накладної
   - Відміну підтвердження (повернення залишків)
   - Автоматичне створення прибуткової накладної при обміні товару
+  - Оновлення залишків при підтвердженні інвентаризації
 """
 
 from decimal import Decimal
@@ -21,13 +23,15 @@ from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMetho
 from app.models.transfer import Transfer, TransferItem, TransferStatus
 from app.models.write_off import WriteOff, WriteOffItem
 from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
+from app.models.purchase_order import PurchaseOrder
+from app.models.inventory import Inventory, InventoryItem, InventoryStatus
 from app.models.product import Product
 from app.services.product_service import ProductService
 from app.services.ledger_service import LedgerService
 
 
 # Тип документа для узагальненої роботи
-DocumentType = Union[Invoice, Transfer, WriteOff, ReturnInvoice]
+DocumentType = Union[Invoice, Transfer, WriteOff, ReturnInvoice, PurchaseOrder, Inventory]
 
 
 # Мапа для відображення способу оплати в текст
@@ -70,6 +74,30 @@ async def generate_invoice_number(session: AsyncSession) -> str:
     return f"{prefix}{new_seq:03d}"
 
 
+async def generate_inventory_number(session: AsyncSession) -> str:
+    """
+    Генерує автоматичний номер для інвентаризації.
+    Формат: ІН-{YYYYMMDD}-{XXX}, де XXX — порядковий номер за день.
+    """
+    from datetime import datetime
+    today = datetime.utcnow().strftime("%Y%m%d")
+    prefix = f"ІН-{today}-"
+
+    result = await session.execute(
+        select(func.max(Inventory.number))
+        .where(Inventory.number.like(f"{prefix}%"))
+    )
+    max_number = result.scalar()
+
+    if max_number:
+        last_seq = int(max_number[-3:])
+        new_seq = last_seq + 1
+    else:
+        new_seq = 1
+
+    return f"{prefix}{new_seq:03d}"
+
+
 class DocumentService:
     """
     Сервіс для управління документами.
@@ -77,6 +105,7 @@ class DocumentService:
     Відповідає за:
     - Підтвердження документів (зміна статусу з DRAFT на CONFIRMED)
     - Оновлення залишків товарів при підтвердженні
+    - Оновлення собівартості товарів при підтвердженні накладної
     - Скасування документів (зміна статусу на CANCELLED)
     - Відкат залишків при скасуванні
     - Автоматичне створення прибуткової накладної при обміні
@@ -97,7 +126,8 @@ class DocumentService:
         При підтвердженні:
         1. Змінює статус на CONFIRMED
         2. Збільшує залишки товарів на складі
-        3. Якщо обрано спосіб оплати "в борг" (credit) — створює запис
+        3. Оновлює собівартість товарів (середньозважену або останню ціну закупівлі)
+        4. Якщо обрано спосіб оплати "в борг" (credit) — створює запис
            у SupplierLedger (збільшення боргу перед постачальником)
 
         Args:
@@ -126,12 +156,21 @@ class DocumentService:
                 detail=f"Накладна вже має статус '{invoice.status.value}'",
             )
 
-        # Оновлюємо залишки товарів
+        # Оновлюємо залишки та собівартість товарів
         for item in invoice.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
                 quantity_change=item.quantity,
             )
+            # Оновлюємо собівартість товару (середньозважену або останню ціну закупівлі)
+            if item.cost_price and item.cost_price > 0:
+                result = await self.session.execute(
+                    select(Product).where(Product.id == item.product_id)
+                )
+                product = result.scalar_one_or_none()
+                if product:
+                    product.cost_price = item.cost_price
+                    await self.session.flush()
 
         # Створюємо запис у SupplierLedger ТІЛЬКИ якщо обрано "в борг" (credit)
         # Або якщо спосіб оплати не вказано (для зворотної сумісності)
@@ -338,6 +377,9 @@ class DocumentService:
            - add_to_cash: зачислює суму в касу (створює запис у CashRegister)
            - exchange: створює прибуткову накладну на новий товар
                         та збільшує його залишок
+        4. Якщо вказано source_invoice_id — прив'язує повернення до прибуткової
+           накладної: ledger entry створюється з document_id = source_invoice_id,
+           що дозволяє payment-info прибуткової накладної враховувати повернення
 
         Args:
             return_id: UUID повернення.
@@ -384,14 +426,31 @@ class DocumentService:
         )
         notes = f"Повернення постачальнику №{return_invoice.number} ({action_label})"
 
+        # Визначаємо document_id та document_number для ledger entry:
+        # Якщо повернення прив'язане до прибуткової накладної (source_invoice_id),
+        # використовуємо ID та номер прибуткової накладної, щоб payment-info
+        # для цієї накладної враховувало повернення
+        if return_invoice.source_invoice_id:
+            doc_id = return_invoice.source_invoice_id
+            # Отримуємо номер прибуткової накладної
+            src_result = await self.session.execute(
+                select(Invoice.number).where(Invoice.id == return_invoice.source_invoice_id)
+            )
+            src_number = src_result.scalar_one_or_none()
+            doc_number = src_number or return_invoice.number
+            notes += f" (прив'язано до накладної №{doc_number})"
+        else:
+            doc_id = return_invoice.id
+            doc_number = return_invoice.number
+
         if return_invoice.total_amount and return_invoice.total_amount > 0:
             if return_invoice.return_action == ReturnActionType.DEDUCT_FROM_DEBT:
                 # Списуємо з боргу постачальника (від'ємна сума = зменшення боргу)
                 await self.ledger_service.create_ledger_entry(
                     supplier_id=return_invoice.supplier_id,
                     operation_type="return",
-                    document_id=return_invoice.id,
-                    document_number=return_invoice.number,
+                    document_id=doc_id,
+                    document_number=doc_number,
                     amount=-return_invoice.total_amount,
                     operation_date=return_invoice.return_date,
                     notes=notes,
@@ -403,8 +462,8 @@ class DocumentService:
                 await self.ledger_service.create_ledger_entry(
                     supplier_id=return_invoice.supplier_id,
                     operation_type="return",
-                    document_id=return_invoice.id,
-                    document_number=return_invoice.number,
+                    document_id=doc_id,
+                    document_number=doc_number,
                     amount=Decimal("0.00"),  # Не змінюємо борг
                     operation_date=return_invoice.return_date,
                     notes=notes + " (сума зачислена в касу)",
@@ -469,8 +528,8 @@ class DocumentService:
                 await self.ledger_service.create_ledger_entry(
                     supplier_id=return_invoice.supplier_id,
                     operation_type="return",
-                    document_id=return_invoice.id,
-                    document_number=return_invoice.number,
+                    document_id=doc_id,
+                    document_number=doc_number,
                     amount=Decimal("0.00"),  # Не змінюємо борг — це обмін
                     operation_date=return_invoice.return_date,
                     notes=notes + f" (створено прибуткову накладну №{invoice_number})",
@@ -537,3 +596,93 @@ class DocumentService:
         return_invoice.status = ReturnInvoiceStatus.CANCELLED
         await self.session.flush()
         return return_invoice
+
+    # ─── Інвентаризація (Inventory) ──────────────────────────────────────────
+
+    async def confirm_inventory(self, inventory_id: UUID) -> Inventory:
+        """
+        Підтверджує інвентаризацію.
+
+        При підтвердженні:
+        1. Змінює статус на CONFIRMED
+        2. Для кожної позиції:
+           - Якщо difference > 0 (надлишок) → збільшуємо stock
+           - Якщо difference < 0 (нестача) → зменшуємо stock (на |difference|)
+           - Якщо difference == 0 → нічого не робимо
+
+        Args:
+            inventory_id: UUID інвентаризації.
+        """
+        # Отримуємо інвентаризацію з позиціями
+        result = await self.session.execute(
+            select(Inventory)
+            .options(selectinload(Inventory.items))
+            .where(Inventory.id == inventory_id)
+        )
+        inventory = result.scalar_one_or_none()
+
+        if not inventory:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Інвентаризацію з ID '{inventory_id}' не знайдено",
+            )
+
+        if inventory.status != InventoryStatus.DRAFT:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Інвентаризація вже має статус '{inventory.status.value}'",
+            )
+
+        # Оновлюємо залишки товарів згідно з різницею
+        for item in inventory.items:
+            if item.difference != 0:
+                await self.product_service.update_stock(
+                    product_id=item.product_id,
+                    quantity_change=item.difference,
+                )
+
+        inventory.status = InventoryStatus.CONFIRMED
+        await self.session.flush()
+        return inventory
+
+    async def cancel_inventory(self, inventory_id: UUID) -> Inventory:
+        """
+        Скасовує інвентаризацію.
+
+        При скасуванні:
+        1. Змінює статус на CANCELLED
+        2. Відкатує залишки (зворотна операція до confirm)
+
+        Args:
+            inventory_id: UUID інвентаризації.
+        """
+        result = await self.session.execute(
+            select(Inventory)
+            .options(selectinload(Inventory.items))
+            .where(Inventory.id == inventory_id)
+        )
+        inventory = result.scalar_one_or_none()
+
+        if not inventory:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Інвентаризацію з ID '{inventory_id}' не знайдено",
+            )
+
+        if inventory.status != InventoryStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Скасувати можна лише підтверджену інвентаризацію",
+            )
+
+        # Відкатуємо залишки (зворотна операція)
+        for item in inventory.items:
+            if item.difference != 0:
+                await self.product_service.update_stock(
+                    product_id=item.product_id,
+                    quantity_change=-item.difference,
+                )
+
+        inventory.status = InventoryStatus.CANCELLED
+        await self.session.flush()
+        return inventory

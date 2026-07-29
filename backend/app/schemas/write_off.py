@@ -31,7 +31,7 @@ class WriteOffItemResponse(BaseModel):
 
 class WriteOffCreate(BaseModel):
     """Схема створення нового списання."""
-    number: str = Field(..., max_length=50, description="Номер документа")
+    number: Optional[str] = Field(None, max_length=50, description="Номер документа (якщо не вказано — генерується автоматично)")
     reason: WriteOffReason = Field(..., description="Причина списання")
     write_off_date: datetime = Field(..., description="Дата списання")
     notes: Optional[str] = Field(None, description="Нотатки")

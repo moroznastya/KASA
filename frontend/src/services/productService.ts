@@ -1,5 +1,5 @@
 import api from './api';
-import { Product, ProductCreate, ProductUpdate } from '@/types/product';
+import { Product, ProductCreate, ProductUpdate, ProductImage, Barcode } from '@/types/product';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 export const productService = {
@@ -44,5 +44,31 @@ export const productService = {
       params: { category_id: categoryId, size: 100 },
     });
     return response.data;
+  },
+
+  async uploadImage(productId: string, file: File, isMain: boolean = false): Promise<ProductImage> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('is_main', String(isMain));
+    const response = await api.post<ProductImage>(`/products/${productId}/images`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  async deleteImage(productId: string, imageId: string): Promise<void> {
+    await api.delete(`/products/${productId}/images/${imageId}`);
+  },
+
+  async addBarcode(productId: string, barcode: string, isPrimary: boolean = false): Promise<Barcode> {
+    const response = await api.post<Barcode>(`/products/${productId}/barcodes`, {
+      barcode,
+      is_primary: isPrimary,
+    });
+    return response.data;
+  },
+
+  async deleteBarcode(productId: string, barcodeId: string): Promise<void> {
+    await api.delete(`/products/${productId}/barcodes/${barcodeId}`);
   },
 };

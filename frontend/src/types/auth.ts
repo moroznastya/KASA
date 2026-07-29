@@ -17,7 +17,7 @@ export interface User {
 export type UserRole = 'admin' | 'cashier' | 'manager' | 'owner';
 
 export interface LoginRequest {
-  username: string;
+  login: string;
   password: string;
 }
 

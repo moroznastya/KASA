@@ -87,6 +87,12 @@ class Product(Base):
         default=0.000,
         comment="Поточний залишок на складі (в одиницях виміру товару)",
     )
+    recommended_qty: Mapped[float | None] = mapped_column(
+        Numeric(10, 3),
+        default=0.000,
+        nullable=True,
+        comment="Рекомендований залишок (мінімальний залишок для замовлення)",
+    )
 
     # ── Податки та акциз ────────────────────────
     uktzed: Mapped[str | None] = mapped_column(
@@ -189,6 +195,11 @@ class Product(Base):
     )
     receipt_items: Mapped[list["ReceiptItem"]] = relationship(
         "ReceiptItem",
+        back_populates="product",
+    )
+
+    inventory_items: Mapped[list["InventoryItem"]] = relationship(
+        "InventoryItem",
         back_populates="product",
     )
 

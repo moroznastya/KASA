@@ -126,7 +126,17 @@ export const UserPermissionsModal: React.FC<UserPermissionsModalProps> = ({
       onClose();
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      toast.error(detail || 'Помилка збереження прав');
+      if (Array.isArray(detail)) {
+        const messages = detail.map((d: any) => {
+          const field = d.loc?.slice(1).join('.') || '';
+          return field ? `${field}: ${d.msg}` : d.msg;
+        });
+        toast.error(messages.join('\n') || 'Помилка валідації даних');
+      } else if (typeof detail === 'string') {
+        toast.error(detail);
+      } else {
+        toast.error('Помилка збереження прав');
+      }
     } finally {
       setIsSaving(false);
     }

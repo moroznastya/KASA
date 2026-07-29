@@ -13,7 +13,7 @@ API роутер для роботи зі списаннями товару (Wri
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +25,27 @@ from app.schemas.write_off import (
     WriteOffResponse,
 )
 from app.services.auth_service import AuthService
+
+
+async def generate_write_off_number(session: AsyncSession) -> str:
+    """
+    Генерує автоматичний номер для списання.
+    Формат: СП-{YYYYMMDD}-{XXX}, де XXX — порядковий номер за день.
+    """
+    from datetime import datetime
+    today = datetime.utcnow().strftime("%Y%m%d")
+    prefix = f"СП-{today}-"
+
+    result = await session.execute(
+        select(func.max(WriteOff.number))
+        .where(WriteOff.number.like(f"{prefix}%"))
+    )
+    max_number = result.scalar()
+    last_seq = int(max_number[-3:]) if max_number else 0
+    return f"{prefix}{last_seq + 1:03d}"
+
+
+
 from app.services.document_service import DocumentService
 
 router = APIRouter(
@@ -76,11 +97,17 @@ async def create_write_off(
     current_user = Depends(AuthService.require_admin),
 ):
     """Створює нове списання."""
+    # Автоматична генерація номера, якщо не вказано
+    number = data.number
+    if not number:
+        number = await generate_write_off_number(session)
+
     write_off = WriteOff(
-        number=data.number,
+        number=number,
         reason=data.reason,
         write_off_date=data.write_off_date,
         notes=data.notes,
+        created_by_id=current_user.id,
     )
     session.add(write_off)
     await session.flush()

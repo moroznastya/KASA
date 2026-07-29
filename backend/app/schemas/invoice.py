@@ -17,6 +17,8 @@ class ProductBrief(BaseModel):
     id: UUID
     title: str
     barcode: Optional[str] = None
+    markup: Optional[Decimal] = Field(None, description="Поточна націнка товару (%)")
+    cost_price: Optional[Decimal] = Field(None, description="Поточна собівартість товару (з ПДВ)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,6 +29,8 @@ class InvoiceItemCreate(BaseModel):
     quantity: Decimal = Field(..., max_digits=10, decimal_places=3, description="Кількість")
     price: Decimal = Field(..., max_digits=10, decimal_places=2, description="Ціна за одиницю (грн)")
     total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
+    cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість за одиницю (з ПДВ)")
+    markup_percent: Optional[Decimal] = Field(None, max_digits=5, decimal_places=1, description="Відсоток націнки")
 
 
 class InvoiceItemResponse(BaseModel):
@@ -38,6 +42,8 @@ class InvoiceItemResponse(BaseModel):
     quantity: Decimal
     price: Decimal
     total: Decimal
+    cost_price: Optional[Decimal] = Field(None, description="Собівартість за одиницю (з ПДВ)")
+    markup_percent: Optional[Decimal] = Field(None, description="Відсоток націнки")
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -45,7 +51,7 @@ class InvoiceItemResponse(BaseModel):
 
 class InvoiceCreate(BaseModel):
     """Схема створення нової прибуткової накладної."""
-    number: str = Field(..., max_length=50, description="Номер накладної")
+    number: Optional[str] = Field(None, max_length=50, description="Номер накладної (якщо не вказано — генерується автоматично)")
     supplier_id: UUID = Field(..., description="ID постачальника")
     invoice_date: datetime = Field(..., description="Дата накладної")
     payment_method: Optional[PaymentMethod] = Field(None, description="Спосіб оплати з постачальником")
@@ -72,6 +78,7 @@ class InvoiceResponse(BaseModel):
     id: UUID
     number: str
     supplier_id: UUID
+    supplier_name: Optional[str] = Field(None, description="Назва постачальника")
     invoice_date: datetime
     status: InvoiceStatus
     payment_method: Optional[PaymentMethod] = None
@@ -88,3 +95,15 @@ class InvoiceResponse(BaseModel):
 class InvoiceConfirmRequest(BaseModel):
     """Схема підтвердження накладної (зміна статусу)."""
     status: InvoiceStatus = Field(..., description="Новий статус (confirmed / cancelled)")
+
+
+class InvoicePaymentInfo(BaseModel):
+    """Інформація про оплату накладної."""
+    invoice_id: UUID = Field(..., description="ID накладної")
+    invoice_number: str = Field(..., description="Номер накладної")
+    invoice_date: datetime = Field(..., description="Дата накладної")
+    total_amount: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума накладної (грн)")
+    paid_amount: Decimal = Field(..., max_digits=12, decimal_places=2, description="Вже сплачено (грн)")
+    remaining: Decimal = Field(..., max_digits=12, decimal_places=2, description="Залишок до сплати (грн)")
+
+    model_config = ConfigDict(from_attributes=True)
