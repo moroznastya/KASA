@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.purchase_order import PurchaseOrderStatus
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrderStatus
 
 
 class ProductBrief(BaseModel):

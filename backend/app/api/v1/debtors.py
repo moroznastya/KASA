@@ -4,7 +4,7 @@ API роутер для роботи з боржниками (Debtors).
 Ендпоінти:
   - GET    /debtors/search?query=...       — пошук боржників за ім'ям
   - POST   /debtors                        — створити нового боржника
-  - GET    /debtors                        — список всіх боржників
+  - GET    /debtors                        — список всіх боржників (з пагінацією)
   - GET    /debtors/{id}                   — отримати боржника за ID
   - PUT    /debtors/{id}                   — оновити боржника
   - POST   /debtors/{id}/pay               — погашення боргу (внесення оплати)
@@ -16,13 +16,13 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, or_, desc
+from sqlalchemy import select, or_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.debtor import Debtor, DebtorPayment
-from app.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.debtor import Debtor, DebtorPayment
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
 from app.schemas.debtor import (
     DebtorCreate,
     DebtorUpdate,
@@ -61,20 +61,49 @@ async def search_debtors(
     return [DebtorResponse.model_validate(d) for d in debtors]
 
 
-@router.get("", response_model=list[DebtorResponse])
+@router.get("", response_model=dict)
 async def list_debtors(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
     """
-    Повертає список всіх боржників, відсортованих за сумою боргу (спочатку найбільші).
+    Повертає список всіх боржників з пагінацією,
+    відсортованих за сумою боргу (спочатку найбільші).
+
+    Повертає:
+    - items: список боржників
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
     """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(Debtor.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
         select(Debtor)
         .order_by(desc(Debtor.total_debt))
+        .offset(offset)
+        .limit(size)
     )
     debtors = list(result.scalars().all())
-    return [DebtorResponse.model_validate(d) for d in debtors]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [DebtorResponse.model_validate(d) for d in debtors],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.post("", response_model=DebtorResponse, status_code=201)

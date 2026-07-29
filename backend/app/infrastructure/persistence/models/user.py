@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.database import Base
 
 if TYPE_CHECKING:
-    from app.models.work_session import WorkSession
+    from app.infrastructure.persistence.models.work_session import WorkSession
 
 
 class UserRole(str, PyEnum):

@@ -16,8 +16,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.supplier_ledger import SupplierLedger, LedgerOperationType
-from app.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger, LedgerOperationType
+from app.infrastructure.persistence.models.supplier import Supplier
 
 
 def _naive_dt(dt: datetime) -> datetime:

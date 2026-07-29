@@ -21,13 +21,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.models.user import User, UserRole
-from app.models.supplier import Supplier
-from app.models.category import Category
-from app.models.product import Product
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.models.receipt import Receipt, ReceiptItem, ReceiptType
-from app.models.write_off import WriteOff, WriteOffItem, WriteOffReason
+from app.infrastructure.persistence.models.user import User, UserRole
+from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.category import Category
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem, WriteOffReason
 from app.services.auth_service import AuthService
 
 

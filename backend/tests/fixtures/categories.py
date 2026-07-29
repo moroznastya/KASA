@@ -10,7 +10,7 @@ from typing import Optional
 
 import factory
 
-from app.models.category import Category
+from app.infrastructure.persistence.models.category import Category
 
 
 class CategoryFactory(factory.Factory):

@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.database import get_session
-from app.models.user import User
-from app.models.work_session import WorkSession
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.work_session import WorkSession
 from app.schemas.work_session import (
     WorkSessionResponse,
     WorkSessionReportResponse,

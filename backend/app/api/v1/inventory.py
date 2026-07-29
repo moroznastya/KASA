@@ -2,7 +2,7 @@
 API роутер для роботи з інвентаризацією (Inventory).
 
 Ендпоінти:
-  - GET    /inventory            — список інвентаризацій з підсумками
+  - GET    /inventory            — список інвентаризацій з підсумками (з пагінацією)
   - GET    /inventory/counts     — кількість інвентаризацій за статусами
   - GET    /inventory/{id}       — отримати інвентаризацію за ID з підсумками
   - POST   /inventory            — створити інвентаризацію
@@ -13,13 +13,13 @@ API роутер для роботи з інвентаризацією (Inventor
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.inventory import Inventory, InventoryItem, InventoryStatus
+from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus
 from app.schemas.inventory import (
     InventoryCreate,
     InventoryUpdate,
@@ -94,25 +94,46 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[InventoryResponse])
+@router.get("", response_model=dict)
 async def list_inventories(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
     """
-    Отримує список всіх інвентаризацій з підсумками.
+    Отримує список всіх інвентаризацій з підсумками та пагінацією.
 
     Для кожної інвентаризації завантажує позиції (items) та розраховує підсумки:
     - total_cost: загальна сума собівартості (∑ actual_quantity * cost_price)
     - total_selling: загальна сума продажу (∑ actual_quantity * price)
     - total_deviation: загальна сума відхилення (∑ difference * cost_price)
+
+    Повертає:
+    - items: список інвентаризацій
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
     """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(Inventory.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
         select(Inventory)
         .options(selectinload(Inventory.items).selectinload(InventoryItem.product))
         .order_by(desc(Inventory.created_at))
+        .offset(offset)
+        .limit(size)
     )
     inventories = result.scalars().all()
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
 
     # Розрахувати підсумки для кожної інвентаризації
     response_list = []
@@ -127,7 +148,13 @@ async def list_inventories(
         )
         response_list.append(inv_response)
 
-    return response_list
+    return {
+        "items": [r.model_dump() for r in response_list],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/counts")

@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.return_invoice import ReturnInvoiceStatus, ReturnActionType
+from app.infrastructure.persistence.models.return_invoice import ReturnInvoiceStatus, ReturnActionType
 
 
 class ProductBrief(BaseModel):

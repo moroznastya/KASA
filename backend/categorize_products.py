@@ -7,7 +7,7 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.config import settings
-from app.models.product import Product
+from app.infrastructure.persistence.models.product import Product
 
 KEYWORD_TO_CATEGORY = {
     '0,48': ['d7ba7be7-e079-4d85-beaf-358302593f40'],

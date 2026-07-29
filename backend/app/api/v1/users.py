@@ -7,7 +7,7 @@ API роутер для роботи з користувачами (Users) та 
   - POST   /auth/refresh       — оновлення JWT токена
   - POST   /auth/logout        — вихід із системи
   - GET    /auth/users-list    — публічний список активних користувачів (без авторизації)
-  - GET    /users               — список користувачів (admin)
+  - GET    /users               — список користувачів з пагінацією (admin)
   - GET    /users/{id}          — отримати користувача за ID
   - POST   /users               — створити користувача (admin)
   - PUT    /users/{id}          — оновити користувача (admin)
@@ -20,18 +20,18 @@ API роутер для роботи з користувачами (Users) та 
 from datetime import timedelta, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.user import User
-from app.models.receipt import Receipt
-from app.models.permission import Permission, PERMISSION_GROUPS, PERMISSION_LABELS
-from app.models.work_session import WorkSession
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.receipt import Receipt
+from app.infrastructure.persistence.models.permission import Permission, PERMISSION_GROUPS, PERMISSION_LABELS
+from app.infrastructure.persistence.models.work_session import WorkSession
 from app.schemas.user import (
     UserCreate,
     UserUpdate,
@@ -251,17 +251,48 @@ async def get_users_list(
 
 # ─── Управління користувачами ────────────────────────────────────────────────
 
-@users_router.get("", response_model=list[UserResponse])
+@users_router.get("", response_model=dict)
 async def list_users(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(AuthService.require_admin),
 ):
-    """Отримує список всіх користувачів (тільки admin)."""
+    """
+    Отримує список користувачів з пагінацією (тільки admin).
+
+    Повертає:
+    - items: список користувачів
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(User.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
-        select(User).order_by(User.name)
+        select(User)
+        .order_by(User.name)
+        .offset(offset)
+        .limit(size)
     )
     users = result.scalars().all()
-    return [UserResponse.model_validate(u) for u in users]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [UserResponse.model_validate(u) for u in users],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @users_router.get("/{user_id}", response_model=UserResponse)

@@ -26,9 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.product import Product
-from app.models.product_image import ProductImage
-from app.models.barcode import Barcode
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.product_image import ProductImage
+from app.infrastructure.persistence.models.barcode import Barcode
 from app.schemas.product import (
     ProductCreate,
     ProductUpdate,
@@ -119,11 +119,13 @@ async def list_products(
         full = await _get_product_with_relations(session, p.id)
         items.append(ProductResponse.model_validate(full or p))
 
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
     return ProductListResponse(
         items=items,
         total=total,
         page=page,
-        size=size,
+        page_size=size,
+        pages=pages,
     )
 
 

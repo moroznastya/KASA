@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.write_off import WriteOffReason
+from app.infrastructure.persistence.models.write_off import WriteOffReason
 
 
 class WriteOffItemCreate(BaseModel):

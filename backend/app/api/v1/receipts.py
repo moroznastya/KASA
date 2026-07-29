@@ -22,9 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.receipt import Receipt, ReceiptItem, ReceiptType, ReceiptPaymentMethod
-from app.models.product import Product
-from app.models.debtor import Debtor, DebtorPayment
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType, ReceiptPaymentMethod
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.debtor import Debtor, DebtorPayment
 from app.schemas.receipt import (
     ReceiptCreate,
     ReceiptResponse,
@@ -350,7 +350,8 @@ async def search_receipts(
         "items": [i.model_dump() for i in items_result],
         "total": total,
         "page": page,
-        "size": size,
+        "page_size": size,
+        "pages": max(1, (total + size - 1) // size) if total > 0 else 1,
     }
 
 
@@ -652,7 +653,8 @@ async def list_receipts(
         "items": items_response,
         "total": total,
         "page": page,
-        "size": size,
+        "page_size": size,
+        "pages": max(1, (total + size - 1) // size) if total > 0 else 1,
     }
 
 

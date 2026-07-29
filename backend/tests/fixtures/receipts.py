@@ -11,7 +11,7 @@ from typing import Optional
 
 import factory
 
-from app.models.receipt import Receipt, ReceiptItem, ReceiptType
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
 
 
 class ReceiptItemFactory(factory.Factory):

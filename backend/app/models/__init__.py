@@ -1,71 +1,11 @@
 """
-Ініціалізація всіх моделей даних Kasa POS.
+Зворотна сумісність: реекспорт усіх моделей з Infrastructure Layer.
 
-Імпортує всі моделі для реєстрації в SQLAlchemy MetaData.
-Порядок імпорту важливий — спочатку батьківські моделі (без FK),
-потім дочірні (з FK).
+Всі SQLAlchemy моделі тепер знаходяться в:
+    app.infrastructure.persistence.models
+
+Цей файл забезпечує зворотну сумісність для коду,
+який ще імпортує з app.models.
 """
 
-# ── Довідники (без зовнішніх ключів) ──────────
-from app.models.user import User, UserRole  # noqa: F401
-from app.models.category import Category  # noqa: F401
-from app.models.supplier import Supplier  # noqa: F401
-from app.models.debtor import Debtor  # noqa: F401
-
-# ── Товари ─────────────────────────────────────
-from app.models.product import Product  # noqa: F401
-from app.models.barcode import Barcode  # noqa: F401
-from app.models.product_image import ProductImage  # noqa: F401
-
-# ── Документи ──────────────────────────────────
-from app.models.invoice import Invoice, InvoiceItem  # noqa: F401
-from app.models.transfer import Transfer, TransferItem  # noqa: F401
-from app.models.write_off import WriteOff, WriteOffItem  # noqa: F401
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem  # noqa: F401
-from app.models.inventory import Inventory, InventoryItem, InventoryStatus  # noqa: F401
-from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem  # noqa: F401
-
-# ── Продажі ────────────────────────────────────
-from app.models.receipt import Receipt, ReceiptItem  # noqa: F401
-
-# ── Взаєморозрахунки ───────────────────────────
-from app.models.supplier_ledger import SupplierLedger  # noqa: F401
-
-# ── Системні налаштування ──────────────────────
-from app.models.system_setting import SystemSetting  # noqa: F401
-
-# ── Облік робочого часу ────────────────────────
-from app.models.work_session import WorkSession  # noqa: F401
-
-# ── Шаблони друку ──────────────────────────────
-from app.models.print_template import PrintTemplate  # noqa: F401
-
-# ── Список усіх моделей для зручності ─────────
-__all__ = [
-    # Довідники
-    "User", "UserRole",
-    "Category",
-    "Supplier",
-    "Debtor",
-    # Товари
-    "Product",
-    "Barcode",
-    "ProductImage",
-    # Документи
-    "Invoice", "InvoiceItem",
-    "Transfer", "TransferItem",
-    "WriteOff", "WriteOffItem",
-    "ReturnInvoice", "ReturnInvoiceItem",
-    "Inventory", "InventoryItem", "InventoryStatus",
-    "PurchaseOrder", "PurchaseOrderItem",
-    # Продажі
-    "Receipt", "ReceiptItem",
-    # Взаєморозрахунки
-    "SupplierLedger",
-    # Системні налаштування
-    "SystemSetting",
-    # Облік робочого часу
-    "WorkSession",
-    # Шаблони друку
-    "PrintTemplate",
-]
+from app.infrastructure.persistence.models import *  # noqa: F401, F403

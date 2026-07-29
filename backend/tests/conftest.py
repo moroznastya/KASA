@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.database import Base, get_session
 from app.main import app
-from app.models.user import User, UserRole
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.services.auth_service import AuthService
 
 # ─── Тестова БД ──────────────────────────────────────────────────────────────

@@ -29,15 +29,15 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 from app.database import get_session
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.models.transfer import Transfer, TransferItem, TransferStatus
-from app.models.write_off import WriteOff, WriteOffItem
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
-from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
-from app.models.supplier import Supplier
-from app.models.product import Product
-from app.models.user import User
-from app.models.inventory import Inventory, InventoryItem as InventoryItemModel
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
+from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem as InventoryItemModel
 from app.services.auth_service import AuthService
 from app.services.document_service import DocumentService, generate_invoice_number
 
@@ -550,7 +550,7 @@ async def list_documents(
         "items": paginated,
         "total": total,
         "page": page,
-        "size": size,
+        "page_size": size,
         "pages": max(1, (total + size - 1) // size),
     }
 
@@ -612,7 +612,7 @@ async def batch_confirm_documents(
                     )
 
                 # Створюємо прибуткову накладну
-                from app.models.invoice import Invoice as InvoiceModel, PaymentMethod, InvoiceStatus as InvoiceStatusModel, InvoiceItem as InvoiceItemModel
+                from app.infrastructure.persistence.models.invoice import Invoice as InvoiceModel, PaymentMethod, InvoiceStatus as InvoiceStatusModel, InvoiceItem as InvoiceItemModel
 
                 invoice_number = await generate_invoice_number(session)
                 new_invoice = InvoiceModel(
@@ -687,7 +687,7 @@ async def delete_document(
     Визначає тип документа та викликає відповідний delete-ендпоінт.
     """
     if document_type == "invoice":
-        from app.models.invoice import Invoice, InvoiceStatus as InvStatus
+        from app.infrastructure.persistence.models.invoice import Invoice, InvoiceStatus as InvStatus
         result = await session.execute(
             select(Invoice).where(Invoice.id == document_id)
         )
@@ -705,7 +705,7 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "transfer":
-        from app.models.transfer import Transfer, TransferStatus as TrStatus
+        from app.infrastructure.persistence.models.transfer import Transfer, TransferStatus as TrStatus
         result = await session.execute(
             select(Transfer).where(Transfer.id == document_id)
         )
@@ -723,7 +723,7 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "write_off":
-        from app.models.write_off import WriteOff
+        from app.infrastructure.persistence.models.write_off import WriteOff
         result = await session.execute(
             select(WriteOff).where(WriteOff.id == document_id)
         )
@@ -741,7 +741,7 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "return_invoice":
-        from app.models.return_invoice import ReturnInvoice, ReturnInvoiceStatus as RiStatus
+        from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceStatus as RiStatus
         result = await session.execute(
             select(ReturnInvoice).where(ReturnInvoice.id == document_id)
         )
@@ -759,7 +759,7 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "purchase_order":
-        from app.models.purchase_order import PurchaseOrder, PurchaseOrderStatus as PoStatus
+        from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderStatus as PoStatus
         result = await session.execute(
             select(PurchaseOrder).where(PurchaseOrder.id == document_id)
         )

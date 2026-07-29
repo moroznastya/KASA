@@ -9,7 +9,7 @@ from datetime import datetime
 
 import factory
 
-from app.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier import Supplier
 
 
 class SupplierFactory(factory.Factory):

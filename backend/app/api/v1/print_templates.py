@@ -19,12 +19,12 @@ API роутер для управління шаблонами чеків др�
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.user import User
-from app.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.print_template import PrintTemplate
 from app.schemas.print_template import (
     PrintTemplateCreate,
     PrintTemplateUpdate,
@@ -43,23 +43,35 @@ router = APIRouter(
 
 # ─── CRUD: Список активних шаблонів ──────────────────────────────────────────
 
-@router.get("", response_model=list[PrintTemplateResponse])
+@router.get("")
 async def list_active_templates(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(AuthService.get_current_user),
 ):
     """
-    Повертає список активних шаблонів друку (is_active == True).
+    Повертає список активних шаблонів друку (is_active == True) з пагінацією.
 
     Доступно будь-якому аутентифікованому користувачу.
     """
-    result = await session.execute(
-        select(PrintTemplate)
-        .where(PrintTemplate.is_active == True)
-        .order_by(PrintTemplate.type, PrintTemplate.name)
-    )
+    offset = (page - 1) * size
+    stmt = select(PrintTemplate).where(PrintTemplate.is_active == True).order_by(PrintTemplate.type, PrintTemplate.name).offset(offset).limit(size)
+    result = await session.execute(stmt)
     templates = result.scalars().all()
-    return [PrintTemplateResponse.model_validate(t) for t in templates]
+
+    # total count
+    count_stmt = select(func.count(PrintTemplate.id)).where(PrintTemplate.is_active == True)
+    count_result = await session.execute(count_stmt)
+    total = count_result.scalar()
+
+    return {
+        "items": [PrintTemplateResponse.model_validate(t) for t in templates],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": max(1, (total + size - 1) // size),
+    }
 
 
 # ─── CRUD: Всі шаблони (admin only) ──────────────────────────────────────────

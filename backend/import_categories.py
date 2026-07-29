@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.models.category import Category
+from app.infrastructure.persistence.models.category import Category
 
 # ─── Ієрархія категорій ──────────────────────────────────────────────────────
 # Формат: (назва_категорії, [підкатегорії])

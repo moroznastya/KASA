@@ -11,7 +11,7 @@ from typing import Optional
 
 import factory
 
-from app.models.product import Product
+from app.infrastructure.persistence.models.product import Product
 
 
 class ProductFactory(factory.Factory):

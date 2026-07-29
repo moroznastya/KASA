@@ -21,13 +21,13 @@ from sqlalchemy import select, union
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.product import Product
-from app.models.supplier import Supplier
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
-from app.models.transfer import Transfer, TransferItem, TransferStatus
-from app.models.write_off import WriteOff, WriteOffItem
-from app.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
 from app.schemas.supplier_products import (
     SupplierProductItem,
     SupplierProductMovement,

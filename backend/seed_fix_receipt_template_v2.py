@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from app.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.print_template import PrintTemplate
 
 DEFAULT_TEMPLATE_ID = "a0000000-0000-0000-0000-000000000001"
 

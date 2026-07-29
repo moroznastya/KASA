@@ -10,7 +10,7 @@ from datetime import datetime
 import factory
 from factory import fuzzy
 
-from app.models.user import User, UserRole
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.services.auth_service import AuthService
 
 

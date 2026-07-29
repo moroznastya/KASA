@@ -2,7 +2,7 @@
 API роутер для роботи зі списаннями товару (WriteOffs).
 
 Ендпоінти:
-  - GET    /write-offs            — список списань
+  - GET    /write-offs            — список списань (з пагінацією)
   - GET    /write-offs/{id}       — отримати списання за ID
   - POST   /write-offs            — створити списання
   - PUT    /write-offs/{id}       — оновити списання
@@ -12,13 +12,13 @@ API роутер для роботи зі списаннями товару (Wri
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.write_off import WriteOff, WriteOffItem
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 from app.schemas.write_off import (
     WriteOffCreate,
     WriteOffUpdate,
@@ -54,19 +54,49 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[WriteOffResponse])
+@router.get("", response_model=dict)
 async def list_write_offs(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх списань."""
+    """
+    Отримує список всіх списань з пагінацією.
+
+    Повертає:
+    - items: список списань
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(WriteOff.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
         select(WriteOff)
         .options(selectinload(WriteOff.items))
         .order_by(desc(WriteOff.created_at))
+        .offset(offset)
+        .limit(size)
     )
     write_offs = result.scalars().all()
-    return [WriteOffResponse.model_validate(w) for w in write_offs]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [WriteOffResponse.model_validate(w) for w in write_offs],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/{write_off_id}", response_model=WriteOffResponse)

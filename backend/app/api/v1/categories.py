@@ -2,7 +2,7 @@
 API роутер для роботи з категоріями (Categories).
 
 Ендпоінти:
-  - GET    /categories          — список категорій
+  - GET    /categories          — список категорій (з пагінацією)
   - GET    /categories/tree     — дерево категорій
   - GET    /categories/{id}     — отримати категорію за ID
   - POST   /categories          — створити категорію
@@ -12,12 +12,12 @@ API роутер для роботи з категоріями (Categories).
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.category import Category
+from app.infrastructure.persistence.models.category import Category
 from app.schemas.category import (
     CategoryCreate,
     CategoryUpdate,
@@ -32,15 +32,48 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[CategoryResponse])
+@router.get("", response_model=dict)
 async def list_categories(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх категорій."""
-    result = await session.execute(select(Category).order_by(Category.name))
+    """
+    Отримує список категорій з пагінацією.
+
+    Повертає:
+    - items: список категорій
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(Category.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
+    result = await session.execute(
+        select(Category)
+        .order_by(Category.name)
+        .offset(offset)
+        .limit(size)
+    )
     categories = result.scalars().all()
-    return [CategoryResponse.model_validate(c) for c in categories]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [CategoryResponse.model_validate(c) for c in categories],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/tree", response_model=list[CategoryTreeResponse])

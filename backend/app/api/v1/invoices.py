@@ -2,7 +2,7 @@
 API роутер для роботи з прибутковими накладними (Invoices).
 
 Ендпоінти:
-  - GET    /invoices            — список накладних
+  - GET    /invoices            — список накладних (з пагінацією)
   - GET    /invoices/{id}       — отримати накладну за ID
   - POST   /invoices            — створити накладну
   - PUT    /invoices/{id}       — оновити накладну
@@ -15,14 +15,14 @@ from uuid import UUID
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.services.document_service import generate_invoice_number
-from app.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier import Supplier
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceUpdate,
@@ -33,7 +33,7 @@ from app.schemas.invoice import (
 )
 from app.services.auth_service import AuthService
 from app.services.document_service import DocumentService
-from app.models.supplier_ledger import SupplierLedger, LedgerOperationType
+from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger, LedgerOperationType
 
 router = APIRouter(
     prefix="/invoices",
@@ -41,37 +41,66 @@ router = APIRouter(
 )
 
 
-@router.get("/", response_model=list[InvoiceResponse])
+@router.get("/", response_model=dict)
 async def list_invoices(
     supplier_id: UUID = Query(None, description="Фільтр за постачальником (повертає тільки підтверджені накладні для оплати)"),
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
     """
-    Отримує список прибуткових накладних.
+    Отримує список прибуткових накладних з пагінацією.
 
     Якщо передано `supplier_id`, повертає тільки підтверджені накладні
     для цього постачальника (для вибору при оплаті).
+
+    Повертає:
+    - items: список накладних
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
     """
+    # Базовий запит для підрахунку
+    count_query = select(func.count(Invoice.id))
     query = select(Invoice).options(
         selectinload(Invoice.items).selectinload(InvoiceItem.product),
         selectinload(Invoice.supplier),
     )
-    
+
     if supplier_id:
         query = query.where(Invoice.supplier_id == supplier_id)
         query = query.where(Invoice.status == InvoiceStatus.CONFIRMED)
-    
-    query = query.order_by(desc(Invoice.created_at))
-    
+        count_query = count_query.where(Invoice.supplier_id == supplier_id)
+        count_query = count_query.where(Invoice.status == InvoiceStatus.CONFIRMED)
+
+    # Загальна кількість
+    count_result = await session.execute(count_query)
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
+    query = query.order_by(desc(Invoice.created_at)).offset(offset).limit(size)
+
     result = await session.execute(query)
     invoices = result.scalars().all()
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
     response_list = []
     for inv in invoices:
         result_item = InvoiceResponse.model_validate(inv)
         result_item.supplier_name = inv.supplier.name if inv.supplier else None
         response_list.append(result_item)
-    return response_list
+
+    return {
+        "items": [r.model_dump() for r in response_list],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)

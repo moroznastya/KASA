@@ -115,7 +115,7 @@ class TestLoginByPin:
 
     async def test_login_pin_user_without_pin(self, client: AsyncClient, session):
         """Логін користувача без PIN-коду."""
-        from app.models.user import User, UserRole
+        from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
         from app.services.auth_service import AuthService
 
@@ -258,7 +258,7 @@ class TestInactiveUser:
 
     async def test_inactive_user_cannot_login(self, client: AsyncClient, session):
         """Неактивний користувач не може увійти."""
-        from app.models.user import User, UserRole
+        from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
         from app.services.auth_service import AuthService
 

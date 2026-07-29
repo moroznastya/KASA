@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.supplier_ledger import LedgerOperationType
+from app.infrastructure.persistence.models.supplier_ledger import LedgerOperationType
 
 
 class SupplierLedgerCreate(BaseModel):

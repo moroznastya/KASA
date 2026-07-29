@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.transfer import TransferStatus
+from app.infrastructure.persistence.models.transfer import TransferStatus
 
 
 class TransferItemCreate(BaseModel):

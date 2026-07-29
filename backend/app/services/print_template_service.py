@@ -13,7 +13,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.print_template import PrintTemplate
 
 logger = logging.getLogger(__name__)
 

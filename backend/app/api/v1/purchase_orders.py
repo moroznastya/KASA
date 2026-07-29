@@ -2,7 +2,7 @@
 API роутер для роботи із замовленнями постачальнику (PurchaseOrders).
 
 Ендпоінти:
-  - GET    /purchase-orders            — список замовлень
+  - GET    /purchase-orders            — список замовлень (з пагінацією)
   - GET    /purchase-orders/{id}       — отримати замовлення за ID
   - POST   /purchase-orders            — створити замовлення
   - PUT    /purchase-orders/{id}       — оновити замовлення
@@ -14,15 +14,15 @@ API роутер для роботи із замовленнями постач�
 from uuid import UUID
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
-from app.models.supplier import Supplier
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
+from app.infrastructure.persistence.models.supplier import Supplier
 from app.schemas.purchase_order import (
     PurchaseOrderCreate,
     PurchaseOrderUpdate,
@@ -84,12 +84,31 @@ async def generate_invoice_number(session: AsyncSession) -> str:
     return f"{prefix}{new_seq:03d}"
 
 
-@router.get("", response_model=list[PurchaseOrderResponse])
+@router.get("", response_model=dict)
 async def list_purchase_orders(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх замовлень постачальнику."""
+    """
+    Отримує список всіх замовлень постачальнику з пагінацією.
+
+    Повертає:
+    - items: список замовлень
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(PurchaseOrder.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
         select(PurchaseOrder)
         .options(
@@ -98,14 +117,26 @@ async def list_purchase_orders(
             selectinload(PurchaseOrder.supplier),
         )
         .order_by(desc(PurchaseOrder.created_at))
+        .offset(offset)
+        .limit(size)
     )
     orders = result.scalars().all()
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
     response_list = []
     for order in orders:
         result_item = PurchaseOrderResponse.model_validate(order)
         result_item.supplier_name = order.supplier.name if order.supplier else None
         response_list.append(result_item)
-    return response_list
+
+    return {
+        "items": [r.model_dump() for r in response_list],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/{order_id}", response_model=PurchaseOrderResponse)

@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
-from app.models.inventory import InventoryStatus
+from app.infrastructure.persistence.models.inventory import InventoryStatus
 
 
 class ProductBrief(BaseModel):

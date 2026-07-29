@@ -108,11 +108,12 @@ class ProductResponse(BaseModel):
 
 
 class ProductListResponse(BaseModel):
-    """Схема відповіді зі списком товарів."""
+    """Схема відповіді зі списком товарів (з пагінацією)."""
     items: list[ProductResponse]
     total: int = Field(..., description="Загальна кількість товарів")
     page: int = Field(1, description="Поточна сторінка")
-    size: int = Field(20, description="Розмір сторінки")
+    page_size: int = Field(20, description="Розмір сторінки")
+    pages: int = Field(1, description="Загальна кількість сторінок")
 
 
 class ProductSearchParams(BaseModel):

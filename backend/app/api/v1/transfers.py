@@ -2,7 +2,7 @@
 API роутер для роботи з переміщеннями товару (Transfers).
 
 Ендпоінти:
-  - GET    /transfers            — список переміщень
+  - GET    /transfers            — список переміщень (з пагінацією)
   - GET    /transfers/{id}       — отримати переміщення за ID
   - POST   /transfers            — створити переміщення
   - PUT    /transfers/{id}       — оновити переміщення
@@ -13,13 +13,13 @@ API роутер для роботи з переміщеннями товару 
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.models.transfer import Transfer, TransferItem, TransferStatus
+from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
 from app.schemas.transfer import (
     TransferCreate,
     TransferUpdate,
@@ -56,19 +56,49 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[TransferResponse])
+@router.get("", response_model=dict)
 async def list_transfers(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх переміщень."""
+    """
+    Отримує список всіх переміщень з пагінацією.
+
+    Повертає:
+    - items: список переміщень
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(Transfer.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
     result = await session.execute(
         select(Transfer)
         .options(selectinload(Transfer.items))
         .order_by(desc(Transfer.created_at))
+        .offset(offset)
+        .limit(size)
     )
     transfers = result.scalars().all()
-    return [TransferResponse.model_validate(t) for t in transfers]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [TransferResponse.model_validate(t) for t in transfers],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/{transfer_id}", response_model=TransferResponse)

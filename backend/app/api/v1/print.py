@@ -26,9 +26,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.print_template import PrintTemplate
-from app.models.system_setting import SystemSetting
-from app.models.user import User
+from app.infrastructure.persistence.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.system_setting import SystemSetting
+from app.infrastructure.persistence.models.user import User
 from app.schemas.print import (
     PriceTagRenderRequest,
     PriceTagRenderResponse,

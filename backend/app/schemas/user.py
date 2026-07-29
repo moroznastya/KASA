@@ -10,8 +10,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.user import UserRole
-from app.models.permission import Permission
+from app.infrastructure.persistence.models.user import UserRole
+from app.infrastructure.persistence.models.permission import Permission
 
 
 class UserCreate(BaseModel):

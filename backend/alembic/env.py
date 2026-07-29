@@ -23,7 +23,7 @@ from app.config import settings
 from app.database import Base
 
 # ── Імпорт усіх моделей (щоб Alembic бачив їх) ─
-from app.models import (  # noqa: F401
+from app.infrastructure.persistence.models import (  # noqa: F401
     # Довідники
     User,
     Category,

@@ -2,7 +2,7 @@
 API роутер для роботи з постачальниками (Suppliers).
 
 Ендпоінти:
-  - GET    /suppliers                  — список постачальників з балансом
+  - GET    /suppliers                  — список постачальників з пагінацією
   - GET    /suppliers/all              — список всіх постачальників (без пагінації)
   - GET    /suppliers/{id}             — отримати постачальника за ID
   - POST   /suppliers                  — створити постачальника
@@ -20,8 +20,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.supplier import Supplier
-from app.models.supplier_ledger import SupplierLedger
+from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger
 from app.schemas.supplier import (
     SupplierCreate,
     SupplierUpdate,
@@ -58,15 +58,48 @@ async def _supplier_to_response(session: AsyncSession, supplier: Supplier) -> Su
     return response
 
 
-@router.get("", response_model=list[SupplierResponse])
+@router.get("", response_model=dict)
 async def list_suppliers(
+    page: int = Query(1, ge=1, description="Номер сторінки"),
+    size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.get_current_user),
 ):
-    """Отримує список всіх постачальників з поточним балансом."""
-    result = await session.execute(select(Supplier).order_by(Supplier.name))
+    """
+    Отримує список постачальників з поточним балансом та пагінацією.
+
+    Повертає:
+    - items: список постачальників
+    - total: загальна кількість
+    - page: поточна сторінка
+    - page_size: розмір сторінки
+    - pages: загальна кількість сторінок
+    """
+    # Загальна кількість
+    count_result = await session.execute(
+        select(func.count(Supplier.id))
+    )
+    total = count_result.scalar() or 0
+
+    # Пагінація
+    offset = (page - 1) * size
+    result = await session.execute(
+        select(Supplier)
+        .order_by(Supplier.name)
+        .offset(offset)
+        .limit(size)
+    )
     suppliers = result.scalars().all()
-    return [await _supplier_to_response(session, s) for s in suppliers]
+
+    pages = max(1, (total + size - 1) // size) if total > 0 else 1
+
+    return {
+        "items": [await _supplier_to_response(session, s) for s in suppliers],
+        "total": total,
+        "page": page,
+        "page_size": size,
+        "pages": pages,
+    }
 
 
 # ⚠️ /all МАЄ БУТИ ПЕРЕД /{supplier_id}, інакше FastAPI сприймає "all" як UUID

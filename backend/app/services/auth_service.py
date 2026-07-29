@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_session
-from app.models.user import User, UserRole
-from app.models.permission import Permission, ADMIN_PERMISSIONS, CASHIER_PERMISSIONS
+from app.infrastructure.persistence.models.user import User, UserRole
+from app.infrastructure.persistence.models.permission import Permission, ADMIN_PERMISSIONS, CASHIER_PERMISSIONS
 
 # Схема Bearer токена для Swagger
 security_scheme = HTTPBearer()

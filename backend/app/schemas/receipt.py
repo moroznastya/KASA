@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.receipt import ReceiptType, ReceiptPaymentMethod
+from app.infrastructure.persistence.models.receipt import ReceiptType, ReceiptPaymentMethod
 
 
 class DebtPaymentInfo(BaseModel):

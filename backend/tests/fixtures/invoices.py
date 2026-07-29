@@ -11,7 +11,7 @@ from typing import Optional
 
 import factory
 
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 
 
 class InvoiceItemFactory(factory.Factory):

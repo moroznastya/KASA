@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models.system_setting import SystemSetting
+from app.infrastructure.persistence.models.system_setting import SystemSetting
 from app.schemas.settings import (
     SystemSettingRead,
     SystemSettingUpdate,
@@ -21,7 +21,7 @@ from app.schemas.settings import (
     SystemSettingBatchUpdate,
 )
 from app.services.auth_service import AuthService
-from app.models.user import User
+from app.infrastructure.persistence.models.user import User
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 

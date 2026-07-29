@@ -17,9 +17,9 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.product import Product
-from app.models.barcode import Barcode
-from app.models.product_image import ProductImage
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.barcode import Barcode
+from app.infrastructure.persistence.models.product_image import ProductImage
 from app.schemas.product import ProductCreate, ProductUpdate, ProductSearchParams
 
 

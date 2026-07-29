@@ -19,13 +19,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
-from app.models.transfer import Transfer, TransferItem, TransferStatus
-from app.models.write_off import WriteOff, WriteOffItem
-from app.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
-from app.models.purchase_order import PurchaseOrder
-from app.models.inventory import Inventory, InventoryItem, InventoryStatus
-from app.models.product import Product
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
+from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder
+from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus
+from app.infrastructure.persistence.models.product import Product
 from app.services.product_service import ProductService
 from app.services.ledger_service import LedgerService
 

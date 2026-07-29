@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.models.invoice import InvoiceStatus, PaymentMethod
+from app.infrastructure.persistence.models.invoice import InvoiceStatus, PaymentMethod
 
 
 class ProductBrief(BaseModel):
