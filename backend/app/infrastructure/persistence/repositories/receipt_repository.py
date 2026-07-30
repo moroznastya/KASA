@@ -1,64 +1,51 @@
 """
-Infrastructure Layer: ReceiptRepository — реалізація IReceiptRepository.
+Repository Implementation: SQLAlchemyReceiptRepository.
 
-Використовує SQLAlchemy ORM модель ReceiptModel для роботи з БД.
+Реалізація IReceiptRepository з використанням SQLAlchemy.
 """
 
-from __future__ import annotations
-
-import logging
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, and_, extract
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.receipt import Receipt
-from app.domain.repositories.i_receipt_repository import IReceiptRepository
-from app.infrastructure.persistence.models import ReceiptModel
+from app.domain.repositories import IReceiptRepository
+from app.infrastructure.persistence.models.receipt import (
+    Receipt,
+    ReceiptItem,
+    ReceiptPaymentMethod,
+)
 
-logger = logging.getLogger(__name__)
 
-
-class ReceiptRepository(IReceiptRepository):
+class SQLAlchemyReceiptRepository(IReceiptRepository):
     """
-    Репозиторій чеків продажу.
+    SQLAlchemy реалізація репозиторію чеків продажу.
 
-    Реалізує IReceiptRepository використовуючи SQLAlchemy ORM.
+    Працює з моделями Receipt та ReceiptItem.
     """
 
-    def __init__(self) -> None:
-        self._session: AsyncSession | None = None
-
-    @property
-    def session(self) -> AsyncSession:
-        if self._session is None:
-            raise RuntimeError("Session not set.")
-        return self._session
-
-    def set_session(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self._session = session
 
     async def save(self, receipt: Receipt) -> Receipt:
-        model = self._to_model(receipt)
-        self.session.add(model)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Зберігає новий чек."""
+        self._session.add(receipt)
+        await self._session.flush()
+        return receipt
 
     async def find_by_id(self, receipt_id: UUID) -> Optional[Receipt]:
-        result = await self.session.execute(
-            select(ReceiptModel).where(ReceiptModel.id == receipt_id)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить чек за ID."""
+        stmt = select(Receipt).where(Receipt.id == receipt_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_number(self, number: str) -> Optional[Receipt]:
-        result = await self.session.execute(
-            select(ReceiptModel).where(ReceiptModel.receipt_number == number)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить чек за номером."""
+        stmt = select(Receipt).where(Receipt.receipt_number == number)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_date_range(
         self,
@@ -67,19 +54,22 @@ class ReceiptRepository(IReceiptRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Receipt], int]:
-        stmt = select(ReceiptModel).where(
-            and_(
-                ReceiptModel.created_at >= date_from,
-                ReceiptModel.created_at <= date_to,
-            )
+        """Знаходить чеки за діапазоном дат з пагінацією."""
+        base_stmt = select(Receipt).where(
+            Receipt.created_at >= date_from,
+            Receipt.created_at <= date_to,
         )
-        count_stmt = select(func.count(ReceiptModel.id)).where(
-            and_(
-                ReceiptModel.created_at >= date_from,
-                ReceiptModel.created_at <= date_to,
-            )
-        )
-        return await self._paginate(stmt, count_stmt, page, size)
+
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        offset = (page - 1) * size
+        stmt = base_stmt.offset(offset).limit(size).order_by(Receipt.created_at.desc())
+        result = await self._session.execute(stmt)
+        receipts = list(result.scalars().all())
+
+        return receipts, total
 
     async def search(
         self,
@@ -90,89 +80,65 @@ class ReceiptRepository(IReceiptRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Receipt], int]:
-        stmt = select(ReceiptModel)
-        count_stmt = select(func.count(ReceiptModel.id))
+        """Розширений пошук чеків."""
+        base_stmt = select(Receipt)
 
-        conditions = []
         if query:
             like_pattern = f"%{query}%"
-            conditions.append(ReceiptModel.receipt_number.ilike(like_pattern))
-        if date_from:
-            conditions.append(ReceiptModel.created_at >= date_from)
-        if date_to:
-            conditions.append(ReceiptModel.created_at <= date_to)
-        if payment_method:
-            conditions.append(ReceiptModel.payment_type == payment_method)
-
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-            count_stmt = count_stmt.where(and_(*conditions))
-
-        return await self._paginate(stmt, count_stmt, page, size)
-
-    async def delete(self, receipt_id: UUID) -> None:
-        result = await self.session.execute(
-            select(ReceiptModel).where(ReceiptModel.id == receipt_id)
-        )
-        model = result.scalar_one_or_none()
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
-
-    async def count(self) -> int:
-        result = await self.session.execute(
-            select(func.count(ReceiptModel.id))
-        )
-        return result.scalar() or 0
-
-    async def get_daily_total(self, date: datetime) -> float:
-        result = await self.session.execute(
-            select(func.coalesce(func.sum(ReceiptModel.total_amount), 0)).where(
-                and_(
-                    extract("year", ReceiptModel.created_at) == date.year,
-                    extract("month", ReceiptModel.created_at) == date.month,
-                    extract("day", ReceiptModel.created_at) == date.day,
+            base_stmt = base_stmt.where(
+                or_(
+                    Receipt.receipt_number.ilike(like_pattern),
+                    Receipt.notes.ilike(like_pattern),
                 )
             )
-        )
-        return float(result.scalar() or 0.0)
+        if date_from is not None:
+            base_stmt = base_stmt.where(Receipt.created_at >= date_from)
+        if date_to is not None:
+            base_stmt = base_stmt.where(Receipt.created_at <= date_to)
+        if payment_method is not None:
+            base_stmt = base_stmt.where(
+                Receipt.payment_method == ReceiptPaymentMethod(payment_method)
+            )
 
-    # ─── Допоміжні методи ──────────────────────────────────────────────────
-
-    async def _paginate(self, stmt, count_stmt, page: int, size: int) -> tuple[list[Receipt], int]:
-        total_result = await self.session.execute(count_stmt)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
         total = total_result.scalar() or 0
 
         offset = (page - 1) * size
-        stmt = stmt.offset(offset).limit(size).order_by(ReceiptModel.created_at.desc())
+        stmt = base_stmt.offset(offset).limit(size).order_by(Receipt.created_at.desc())
+        result = await self._session.execute(stmt)
+        receipts = list(result.scalars().all())
 
-        result = await self.session.execute(stmt)
-        models = result.scalars().all()
+        return receipts, total
 
-        return [self._to_domain(m) for m in models], total
+    async def delete(self, receipt_id: UUID) -> None:
+        """Видаляє чек за ID."""
+        receipt = await self.find_by_id(receipt_id)
+        if receipt is not None:
+            await self._session.delete(receipt)
+            await self._session.flush()
 
-    # ─── Маппінг ────────────────────────────────────────────────────────────
+    async def count(self) -> int:
+        """Повертає загальну кількість чеків."""
+        stmt = select(func.count()).select_from(Receipt)
+        result = await self._session.execute(stmt)
+        return result.scalar() or 0
 
-    def _to_domain(self, model: ReceiptModel | None) -> Receipt | None:
-        if model is None:
-            return None
-        return Receipt(
-            id=model.id,
-            number=model.receipt_number,
-            total_amount=float(model.total_amount or 0),
-            payment_type=model.payment_type or "cash",
+    async def get_daily_total(self, date: datetime) -> float:
+        """
+        Повертає загальну суму продажів за день.
+
+        Враховує тільки чеки продажу (sale), без повернень.
+        """
+        start_of_day = datetime(date.year, date.month, date.day)
+        end_of_day = datetime(
+            date.year, date.month, date.day, 23, 59, 59
         )
 
-    def _to_model(self, domain: Receipt) -> ReceiptModel:
-        return ReceiptModel(
-            id=domain.id,
-            receipt_number=domain.number,
-            total_amount=domain.total_amount,
-            payment_type=domain.payment_type,
+        stmt = select(func.coalesce(func.sum(Receipt.total_amount), 0)).where(
+            Receipt.created_at >= start_of_day,
+            Receipt.created_at <= end_of_day,
+            Receipt.is_return.is_(False),
         )
-
-    async def _get_model(self, receipt_id: UUID) -> Optional[ReceiptModel]:
-        result = await self.session.execute(
-            select(ReceiptModel).where(ReceiptModel.id == receipt_id)
-        )
-        return result.scalar_one_or_none()
+        result = await self._session.execute(stmt)
+        return float(result.scalar() or 0.0)

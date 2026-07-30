@@ -1,75 +1,58 @@
 """
-Infrastructure Layer: SupplierRepository — реалізація ISupplierRepository.
+Repository Implementation: SQLAlchemySupplierRepository.
 
-Використовує SQLAlchemy ORM модель SupplierModel для роботи з БД.
+Реалізація ISupplierRepository з використанням SQLAlchemy.
 """
 
-from __future__ import annotations
-
-import logging
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.supplier import Supplier
-from app.domain.repositories.i_supplier_repository import ISupplierRepository
-from app.infrastructure.persistence.models import SupplierModel
-
-logger = logging.getLogger(__name__)
+from app.domain.repositories import ISupplierRepository
+from app.infrastructure.persistence.models.supplier import Supplier
 
 
-class SupplierRepository(ISupplierRepository):
+class SQLAlchemySupplierRepository(ISupplierRepository):
     """
-    Репозиторій постачальників.
+    SQLAlchemy реалізація репозиторію постачальників.
 
-    Реалізує ISupplierRepository використовуючи SQLAlchemy ORM.
+    Працює з моделлю Supplier.
     """
 
-    def __init__(self) -> None:
-        self._session: AsyncSession | None = None
-
-    @property
-    def session(self) -> AsyncSession:
-        if self._session is None:
-            raise RuntimeError("Session not set.")
-        return self._session
-
-    def set_session(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self._session = session
 
     async def save(self, supplier: Supplier) -> Supplier:
-        model = self._to_model(supplier)
-        self.session.add(model)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Зберігає нового постачальника."""
+        self._session.add(supplier)
+        await self._session.flush()
+        return supplier
 
     async def update(self, supplier: Supplier) -> Supplier:
-        model = await self._get_model(supplier.id)
-        if model is None:
-            raise ValueError(f"Supplier with id {supplier.id} not found")
-        self._update_model(model, supplier)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Оновлює існуючого постачальника."""
+        merged = await self._session.merge(supplier)
+        await self._session.flush()
+        return merged
 
     async def find_by_id(self, supplier_id: UUID) -> Optional[Supplier]:
-        model = await self._get_model(supplier_id)
-        return self._to_domain(model) if model else None
+        """Знаходить постачальника за ID."""
+        stmt = select(Supplier).where(Supplier.id == supplier_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_name(self, name: str) -> Optional[Supplier]:
-        result = await self.session.execute(
-            select(SupplierModel).where(SupplierModel.name == name)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить постачальника за назвою."""
+        stmt = select(Supplier).where(Supplier.name == name)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_edrpou(self, edrpou: str) -> Optional[Supplier]:
-        result = await self.session.execute(
-            select(SupplierModel).where(SupplierModel.edrpou == edrpou)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить постачальника за кодом ЄДРПОУ."""
+        stmt = select(Supplier).where(Supplier.edrpou == edrpou)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def search(
         self,
@@ -78,85 +61,48 @@ class SupplierRepository(ISupplierRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Supplier], int]:
-        stmt = select(SupplierModel)
-        count_stmt = select(func.count(SupplierModel.id))
+        """Пошук постачальників з фільтрацією та пагінацією."""
+        base_stmt = select(Supplier)
 
-        conditions = []
         if query:
             like_pattern = f"%{query}%"
-            conditions.append(
+            base_stmt = base_stmt.where(
                 or_(
-                    SupplierModel.name.ilike(like_pattern),
-                    SupplierModel.edrpou.ilike(like_pattern),
-                    SupplierModel.phone.ilike(like_pattern),
+                    Supplier.name.ilike(like_pattern),
+                    Supplier.edrpou.ilike(like_pattern),
+                    Supplier.phone.ilike(like_pattern),
                 )
             )
-        if is_active is not None:
-            conditions.append(SupplierModel.is_active == is_active)
 
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-            count_stmt = count_stmt.where(and_(*conditions))
+        # Supplier не має поля is_active, тому фільтр пропускаємо
+        # (але параметр приймаємо для сумісності з інтерфейсом)
 
-        total_result = await self.session.execute(count_stmt)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
         total = total_result.scalar() or 0
 
         offset = (page - 1) * size
-        stmt = stmt.offset(offset).limit(size).order_by(SupplierModel.name)
+        stmt = base_stmt.offset(offset).limit(size).order_by(Supplier.name)
+        result = await self._session.execute(stmt)
+        suppliers = list(result.scalars().all())
 
-        result = await self.session.execute(stmt)
-        models = result.scalars().all()
-
-        return [self._to_domain(m) for m in models], total
+        return suppliers, total
 
     async def delete(self, supplier_id: UUID) -> None:
-        model = await self._get_model(supplier_id)
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
+        """Видаляє постачальника за ID."""
+        supplier = await self.find_by_id(supplier_id)
+        if supplier is not None:
+            await self._session.delete(supplier)
+            await self._session.flush()
 
     async def count(self) -> int:
-        result = await self.session.execute(
-            select(func.count(SupplierModel.id))
-        )
+        """Повертає загальну кількість постачальників."""
+        stmt = select(func.count()).select_from(Supplier)
+        result = await self._session.execute(stmt)
         return result.scalar() or 0
 
     async def get_all_with_balance(self) -> list[Supplier]:
-        result = await self.session.execute(
-            select(SupplierModel).where(SupplierModel.is_active == True)
-        )
-        return [self._to_domain(m) for m in result.scalars().all()]
-
-    # ─── Маппінг ────────────────────────────────────────────────────────────
-
-    def _to_domain(self, model: SupplierModel | None) -> Supplier | None:
-        if model is None:
-            return None
-        return Supplier(
-            id=model.id,
-            name=model.name,
-            edrpou=model.edrpou or "",
-            phone=model.phone or "",
-            is_active=model.is_active,
-        )
-
-    def _to_model(self, domain: Supplier) -> SupplierModel:
-        return SupplierModel(
-            id=domain.id,
-            name=domain.name,
-            edrpou=domain.edrpou or None,
-            phone=domain.phone or None,
-            is_active=domain.is_active,
-        )
-
-    def _update_model(self, model: SupplierModel, domain: Supplier) -> None:
-        model.name = domain.name
-        model.edrpou = domain.edrpou or None
-        model.phone = domain.phone or None
-        model.is_active = domain.is_active
-
-    async def _get_model(self, supplier_id: UUID) -> Optional[SupplierModel]:
-        result = await self.session.execute(
-            select(SupplierModel).where(SupplierModel.id == supplier_id)
-        )
-        return result.scalar_one_or_none()
+        """Повертає всіх постачальників."""
+        stmt = select(Supplier).order_by(Supplier.name)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

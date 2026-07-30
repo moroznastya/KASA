@@ -1,74 +1,58 @@
 """
-Infrastructure Layer: UserRepository — реалізація IUserRepository.
+Repository Implementation: SQLAlchemyUserRepository.
 
-Використовує SQLAlchemy ORM модель UserModel для роботи з БД.
+Реалізація IUserRepository з використанням SQLAlchemy.
 """
 
-from __future__ import annotations
-
-import logging
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.user import User, UserRole
-from app.domain.repositories.i_user_repository import IUserRepository
-from app.infrastructure.persistence.models import UserModel
-
-logger = logging.getLogger(__name__)
+from app.domain.repositories import IUserRepository
+from app.infrastructure.persistence.models.user import User, UserRole
 
 
-class UserRepository(IUserRepository):
+class SQLAlchemyUserRepository(IUserRepository):
     """
-    Репозиторій користувачів.
+    SQLAlchemy реалізація репозиторію користувачів.
 
-    Реалізує IUserRepository використовуючи SQLAlchemy ORM.
+    Працює з моделлю User.
     """
 
-    def __init__(self) -> None:
-        self._session: AsyncSession | None = None
-
-    @property
-    def session(self) -> AsyncSession:
-        if self._session is None:
-            raise RuntimeError("Session not set.")
-        return self._session
-
-    def set_session(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self._session = session
 
     async def save(self, user: User) -> User:
-        model = self._to_model(user)
-        self.session.add(model)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Зберігає нового користувача."""
+        self._session.add(user)
+        await self._session.flush()
+        return user
 
     async def update(self, user: User) -> User:
-        model = await self._get_model(user.id)
-        if model is None:
-            raise ValueError(f"User with id {user.id} not found")
-        self._update_model(model, user)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Оновлює існуючого користувача."""
+        merged = await self._session.merge(user)
+        await self._session.flush()
+        return merged
 
     async def find_by_id(self, user_id: UUID) -> Optional[User]:
-        model = await self._get_model(user_id)
-        return self._to_domain(model) if model else None
+        """Знаходить користувача за ID."""
+        stmt = select(User).where(User.id == user_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_login(self, login: str) -> Optional[User]:
-        result = await self.session.execute(
-            select(UserModel).where(UserModel.login == login)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить користувача за логіном."""
+        stmt = select(User).where(User.login == login)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_role(self, role: UserRole) -> list[User]:
-        result = await self.session.execute(
-            select(UserModel).where(UserModel.role == role.value)
-        )
-        return [self._to_domain(m) for m in result.scalars().all()]
+        """Знаходить всіх користувачів з роллю."""
+        stmt = select(User).where(User.role == role).order_by(User.name)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def search(
         self,
@@ -78,91 +62,52 @@ class UserRepository(IUserRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[User], int]:
-        stmt = select(UserModel)
-        count_stmt = select(func.count(UserModel.id))
+        """Пошук користувачів з фільтрацією та пагінацією."""
+        base_stmt = select(User)
 
-        conditions = []
         if query:
             like_pattern = f"%{query}%"
-            conditions.append(
+            base_stmt = base_stmt.where(
                 or_(
-                    UserModel.full_name.ilike(like_pattern),
-                    UserModel.login.ilike(like_pattern),
+                    User.name.ilike(like_pattern),
+                    User.login.ilike(like_pattern),
                 )
             )
-        if role:
-            conditions.append(UserModel.role == role.value)
+        if role is not None:
+            base_stmt = base_stmt.where(User.role == role)
         if is_active is not None:
-            conditions.append(UserModel.is_active == is_active)
+            base_stmt = base_stmt.where(User.is_active == is_active)
 
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-            count_stmt = count_stmt.where(and_(*conditions))
-
-        total_result = await self.session.execute(count_stmt)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
         total = total_result.scalar() or 0
 
         offset = (page - 1) * size
-        stmt = stmt.offset(offset).limit(size).order_by(UserModel.full_name)
+        stmt = base_stmt.offset(offset).limit(size).order_by(User.name)
+        result = await self._session.execute(stmt)
+        users = list(result.scalars().all())
 
-        result = await self.session.execute(stmt)
-        models = result.scalars().all()
-
-        return [self._to_domain(m) for m in models], total
+        return users, total
 
     async def delete(self, user_id: UUID) -> None:
-        model = await self._get_model(user_id)
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
+        """Видаляє користувача за ID."""
+        user = await self.find_by_id(user_id)
+        if user is not None:
+            await self._session.delete(user)
+            await self._session.flush()
 
     async def count(self) -> int:
-        result = await self.session.execute(
-            select(func.count(UserModel.id))
-        )
+        """Повертає загальну кількість користувачів."""
+        stmt = select(func.count()).select_from(User)
+        result = await self._session.execute(stmt)
         return result.scalar() or 0
 
     async def exists_by_login(
-        self,
-        login: str,
-        exclude_id: Optional[UUID] = None,
+        self, login: str, exclude_id: Optional[UUID] = None
     ) -> bool:
-        stmt = select(UserModel).where(UserModel.login == login)
-        if exclude_id:
-            stmt = stmt.where(UserModel.id != exclude_id)
-        result = await self.session.execute(stmt)
+        """Перевіряє, чи існує користувач з таким логіном."""
+        stmt = select(User).where(User.login == login)
+        if exclude_id is not None:
+            stmt = stmt.where(User.id != exclude_id)
+        result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
-
-    # ─── Маппінг ────────────────────────────────────────────────────────────
-
-    def _to_domain(self, model: UserModel | None) -> User | None:
-        if model is None:
-            return None
-        return User(
-            id=model.id,
-            login=model.login,
-            full_name=model.full_name or "",
-            role=UserRole(model.role) if model.role else UserRole.CASHIER,
-            is_active=model.is_active,
-        )
-
-    def _to_model(self, domain: User) -> UserModel:
-        return UserModel(
-            id=domain.id,
-            login=domain.login,
-            full_name=domain.full_name,
-            role=domain.role.value if domain.role else "cashier",
-            is_active=domain.is_active,
-        )
-
-    def _update_model(self, model: UserModel, domain: User) -> None:
-        model.login = domain.login
-        model.full_name = domain.full_name
-        model.role = domain.role.value if domain.role else "cashier"
-        model.is_active = domain.is_active
-
-    async def _get_model(self, user_id: UUID) -> Optional[UserModel]:
-        result = await self.session.execute(
-            select(UserModel).where(UserModel.id == user_id)
-        )
-        return result.scalar_one_or_none()

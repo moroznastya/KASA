@@ -13,19 +13,17 @@ from typing import TYPE_CHECKING
 # ─── Event Bus ───────────────────────────────────────────────────────────────
 from app.infrastructure.event_bus import LocalEventBus
 
-# ─── Repository Implementations ──────────────────────────────────────────────
+# ─── Repository Implementations & Unit of Work ──────────────────────────────
 from app.infrastructure.persistence.repositories import (
-    ProductRepository,
-    InvoiceRepository,
-    ReceiptRepository,
-    UserRepository,
-    SupplierRepository,
-    CategoryRepository,
-    LedgerRepository,
+    SQLAlchemyProductRepository,
+    SQLAlchemyInvoiceRepository,
+    SQLAlchemyReceiptRepository,
+    SQLAlchemyUserRepository,
+    SQLAlchemySupplierRepository,
+    SQLAlchemyCategoryRepository,
+    SQLAlchemyLedgerRepository,
+    SQLAlchemyUnitOfWork,
 )
-
-# ─── Unit of Work ────────────────────────────────────────────────────────────
-from app.infrastructure.persistence.unit_of_work import SQLAlchemyUnitOfWork
 
 # ─── Domain Services ─────────────────────────────────────────────────────────
 from app.domain.services.stock_service import StockService
@@ -77,13 +75,13 @@ def register_all_services(container: DIContainer) -> None:
     # 2. Repository Implementations (transient)
     # ═══════════════════════════════════════════════════════════════════════
 
-    container.register("product_repository", lambda c: ProductRepository(), singleton=False)
-    container.register("invoice_repository", lambda c: InvoiceRepository(), singleton=False)
-    container.register("receipt_repository", lambda c: ReceiptRepository(), singleton=False)
-    container.register("user_repository", lambda c: UserRepository(), singleton=False)
-    container.register("supplier_repository", lambda c: SupplierRepository(), singleton=False)
-    container.register("category_repository", lambda c: CategoryRepository(), singleton=False)
-    container.register("ledger_repository", lambda c: LedgerRepository(), singleton=False)
+    container.register("product_repository", lambda c: SQLAlchemyProductRepository(), singleton=False)
+    container.register("invoice_repository", lambda c: SQLAlchemyInvoiceRepository(), singleton=False)
+    container.register("receipt_repository", lambda c: SQLAlchemyReceiptRepository(), singleton=False)
+    container.register("user_repository", lambda c: SQLAlchemyUserRepository(), singleton=False)
+    container.register("supplier_repository", lambda c: SQLAlchemySupplierRepository(), singleton=False)
+    container.register("category_repository", lambda c: SQLAlchemyCategoryRepository(), singleton=False)
+    container.register("ledger_repository", lambda c: SQLAlchemyLedgerRepository(), singleton=False)
 
     # ═══════════════════════════════════════════════════════════════════════
     # 3. Unit of Work (transient)

@@ -1,116 +1,76 @@
 """
-Infrastructure Layer: ProductRepository — реалізація IProductRepository.
+Repository Implementation: SQLAlchemyProductRepository.
 
-Використовує SQLAlchemy ORM модель ProductModel для роботи з БД.
+Реалізація IProductRepository з використанням SQLAlchemy.
 """
 
-from __future__ import annotations
-
-import logging
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.product import Product
-from app.domain.repositories.i_product_repository import IProductRepository
-from app.infrastructure.persistence.models import ProductModel
-
-logger = logging.getLogger(__name__)
+from app.domain.repositories import IProductRepository
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.barcode import Barcode
 
 
-def _relevance_sort_key(query: str):
+class SQLAlchemyProductRepository(IProductRepository):
     """
-    Повертає функцію для сортування товарів за релевантністю до пошукового запиту.
+    SQLAlchemy реалізація репозиторію товарів.
 
-    Пріоритет:
-    0 - назва починається з запиту
-    1 - назва містить слово, що починається з запиту
-    2 - назва просто містить запит
-    3 - штрих-код або артикул містять запит
-    4 - інше
-    """
-    q = query.lower().strip()
-
-    def sort_key(product: Product) -> tuple:
-        title = product.name.lower()
-        barcode = (product.sku or "").lower()
-
-        if title.startswith(q):
-            return (0, title)
-        if f" {q}" in title:
-            return (1, title)
-        if q in title:
-            return (2, title)
-        if q in barcode:
-            return (3, title)
-        return (4, title)
-
-    return sort_key
-
-
-class ProductRepository(IProductRepository):
-    """
-    Репозиторій товарів.
-
-    Реалізує IProductRepository використовуючи SQLAlchemy ORM.
-    Маппить між Domain Entity (Product) та ORM Model (ProductModel).
+    Працює безпосередньо з ORM моделями Product та Barcode.
     """
 
-    def __init__(self) -> None:
-        """Ініціалізація репозиторію."""
-        self._session: AsyncSession | None = None
-
-    @property
-    def session(self) -> AsyncSession:
-        """Поточна сесія БД."""
-        if self._session is None:
-            raise RuntimeError("Session not set. Use set_session() or use within UoW.")
-        return self._session
-
-    def set_session(self, session: AsyncSession) -> None:
-        """Встановлює сесію БД (використовується Unit of Work)."""
+    def __init__(self, session: AsyncSession):
         self._session = session
 
-    # ─── CRUD ───────────────────────────────────────────────────────────────
-
     async def save(self, product: Product) -> Product:
-        """Зберігає новий товар."""
-        model = self._to_model(product)
-        self.session.add(model)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Зберігає новий товар у БД."""
+        self._session.add(product)
+        await self._session.flush()
+        return product
 
     async def update(self, product: Product) -> Product:
-        """Оновлює існуючий товар."""
-        model = await self._get_model(product.id)
-        if model is None:
-            raise ValueError(f"Product with id {product.id} not found")
-        self._update_model(model, product)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Оновлює існуючий товар у БД."""
+        merged = await self._session.merge(product)
+        await self._session.flush()
+        return merged
 
     async def find_by_id(self, product_id: UUID) -> Optional[Product]:
-        """Знаходить товар за ID."""
-        model = await self._get_model(product_id)
-        return self._to_domain(model) if model else None
+        """Знаходить товар за його UUID."""
+        stmt = select(Product).where(Product.id == product_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_barcode(self, barcode: str) -> Optional[Product]:
-        """Знаходить товар за штрих-кодом."""
-        result = await self.session.execute(
-            select(ProductModel).where(ProductModel.barcode == barcode)
+        """
+        Знаходить товар за штрих-кодом.
+
+        Спочатку шукає у основному полі barcode таблиці products,
+        потім у таблиці barcodes (додаткові штрих-коди).
+        """
+        # Пошук за основним штрих-кодом
+        stmt = select(Product).where(Product.barcode == barcode)
+        result = await self._session.execute(stmt)
+        product = result.scalar_one_or_none()
+        if product is not None:
+            return product
+
+        # Пошук у додаткових штрих-кодах
+        stmt = (
+            select(Product)
+            .join(Barcode, Barcode.product_id == Product.id)
+            .where(Barcode.barcode == barcode)
         )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_sku(self, sku: str) -> Optional[Product]:
         """Знаходить товар за артикулом (SKU)."""
-        result = await self.session.execute(
-            select(ProductModel).where(ProductModel.sku == sku)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        stmt = select(Product).where(Product.sku == sku)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def search(
         self,
@@ -121,145 +81,83 @@ class ProductRepository(IProductRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Product], int]:
-        """Пошук товарів з фільтрацією, пагінацією та сортуванням за релевантністю."""
-        stmt = select(ProductModel)
-        count_stmt = select(func.count(ProductModel.id))
+        """
+        Пошук товарів з фільтрацією та пагінацією.
 
-        conditions = []
+        Підтримує фільтри: текстовий пошук (назва, штрих-код, артикул),
+        категорія, постачальник, активність.
+        """
+        base_stmt = select(Product)
+
+        # Фільтри
         if query:
             like_pattern = f"%{query}%"
-            conditions.append(
+            base_stmt = base_stmt.where(
                 or_(
-                    ProductModel.title.ilike(like_pattern),
-                    ProductModel.barcode.ilike(like_pattern),
-                    ProductModel.sku.ilike(like_pattern),
+                    Product.title.ilike(like_pattern),
+                    Product.barcode.ilike(like_pattern),
+                    Product.sku.ilike(like_pattern),
                 )
             )
-        if category_id:
-            conditions.append(ProductModel.category_id == category_id)
-        if supplier_id:
-            conditions.append(ProductModel.supplier_id == supplier_id)
-        if is_active is not None:
-            conditions.append(ProductModel.is_active == is_active)
+        if category_id is not None:
+            base_stmt = base_stmt.where(Product.category_id == category_id)
+        if supplier_id is not None:
+            base_stmt = base_stmt.where(Product.supplier_id == supplier_id)
 
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-            count_stmt = count_stmt.where(and_(*conditions))
-
-        # Загальна кількість
-        total_result = await self.session.execute(count_stmt)
+        # Підрахунок загальної кількості
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
         total = total_result.scalar() or 0
 
-        # Спочатку отримуємо всі знайдені товари (без пагінації та сортування)
-        result = await self.session.execute(stmt)
-        models = list(result.scalars().all())
-
-        # Сортуємо за релевантністю на рівні Python
-        if query:
-            sort_key = _relevance_sort_key(query)
-            models.sort(key=lambda m: sort_key(self._to_domain(m)))
-
-        # Пагінація після сортування
+        # Пагінація
         offset = (page - 1) * size
-        page_models = models[offset : offset + size]
+        stmt = base_stmt.offset(offset).limit(size)
+        result = await self._session.execute(stmt)
+        products = list(result.scalars().all())
 
-        return [self._to_domain(m) for m in page_models], total
+        return products, total
 
     async def find_by_category(self, category_id: UUID) -> list[Product]:
         """Знаходить всі товари в категорії."""
-        result = await self.session.execute(
-            select(ProductModel).where(ProductModel.category_id == category_id)
-        )
-        return [self._to_domain(m) for m in result.scalars().all()]
+        stmt = select(Product).where(Product.category_id == category_id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def find_by_supplier(self, supplier_id: UUID) -> list[Product]:
         """Знаходить всі товари постачальника."""
-        result = await self.session.execute(
-            select(ProductModel).where(ProductModel.supplier_id == supplier_id)
-        )
-        return [self._to_domain(m) for m in result.scalars().all()]
+        stmt = select(Product).where(Product.supplier_id == supplier_id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def delete(self, product_id: UUID) -> None:
         """Видаляє товар за ID."""
-        model = await self._get_model(product_id)
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
+        product = await self.find_by_id(product_id)
+        if product is not None:
+            await self._session.delete(product)
+            await self._session.flush()
 
     async def count(self) -> int:
         """Повертає загальну кількість товарів."""
-        result = await self.session.execute(
-            select(func.count(ProductModel.id))
-        )
+        stmt = select(func.count()).select_from(Product)
+        result = await self._session.execute(stmt)
         return result.scalar() or 0
 
     async def exists_by_barcode(
-        self,
-        barcode: str,
-        exclude_id: Optional[UUID] = None,
+        self, barcode: str, exclude_id: Optional[UUID] = None
     ) -> bool:
         """Перевіряє, чи існує товар з таким штрих-кодом."""
-        stmt = select(ProductModel).where(ProductModel.barcode == barcode)
-        if exclude_id:
-            stmt = stmt.where(ProductModel.id != exclude_id)
-        result = await self.session.execute(stmt)
+        stmt = select(Product).where(Product.barcode == barcode)
+        if exclude_id is not None:
+            stmt = stmt.where(Product.id != exclude_id)
+        result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
     async def exists_by_sku(
-        self,
-        sku: str,
-        exclude_id: Optional[UUID] = None,
+        self, sku: str, exclude_id: Optional[UUID] = None
     ) -> bool:
         """Перевіряє, чи існує товар з таким артикулом."""
-        stmt = select(ProductModel).where(ProductModel.sku == sku)
-        if exclude_id:
-            stmt = stmt.where(ProductModel.id != exclude_id)
-        result = await self.session.execute(stmt)
+        stmt = select(Product).where(Product.sku == sku)
+        if exclude_id is not None:
+            stmt = stmt.where(Product.id != exclude_id)
+        result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
-
-    # ─── Маппінг ────────────────────────────────────────────────────────────
-
-    def _to_domain(self, model: ProductModel | None) -> Product | None:
-        """Маппить ORM модель в Domain Entity."""
-        if model is None:
-            return None
-        return Product(
-            id=model.id,
-            name=model.title,
-            sku=model.sku or "",
-            unit=model.unit or "шт",
-            is_active=model.is_active,
-            description=model.description or "",
-            category_id=model.category_id,
-            supplier_id=model.supplier_id,
-        )
-
-    def _to_model(self, domain: Product) -> ProductModel:
-        """Маппить Domain Entity в ORM модель."""
-        return ProductModel(
-            id=domain.id,
-            title=domain.name,
-            sku=domain.sku or None,
-            unit=domain.unit or "шт",
-            is_active=domain.is_active,
-            description=domain.description or None,
-            category_id=domain.category_id,
-            supplier_id=domain.supplier_id,
-        )
-
-    def _update_model(self, model: ProductModel, domain: Product) -> None:
-        """Оновлює ORM модель даними з Domain Entity."""
-        model.title = domain.name
-        model.sku = domain.sku or None
-        model.unit = domain.unit or "шт"
-        model.is_active = domain.is_active
-        model.description = domain.description or None
-        model.category_id = domain.category_id
-        model.supplier_id = domain.supplier_id
-
-    async def _get_model(self, product_id: UUID) -> Optional[ProductModel]:
-        """Отримує ORM модель за ID."""
-        result = await self.session.execute(
-            select(ProductModel).where(ProductModel.id == product_id)
-        )
-        return result.scalar_one_or_none()

@@ -1,23 +1,26 @@
 """
-Infrastructure Layer: Repository Implementations.
+Repository Implementations (SQLAlchemy).
 
-Реалізації репозиторіїв для роботи з БД через SQLAlchemy ORM.
+Реалізації інтерфейсів репозиторіїв з використанням SQLAlchemy.
+Призначені для використання в Infrastructure Layer (Clean Architecture).
 """
 
-from .product_repository import ProductRepository
-from .invoice_repository import InvoiceRepository
-from .receipt_repository import ReceiptRepository
-from .user_repository import UserRepository
-from .supplier_repository import SupplierRepository
-from .category_repository import CategoryRepository
-from .ledger_repository import LedgerRepository
+from .product_repository import SQLAlchemyProductRepository
+from .invoice_repository import SQLAlchemyInvoiceRepository
+from .receipt_repository import SQLAlchemyReceiptRepository
+from .category_repository import SQLAlchemyCategoryRepository
+from .ledger_repository import SQLAlchemyLedgerRepository
+from .supplier_repository import SQLAlchemySupplierRepository
+from .user_repository import SQLAlchemyUserRepository
+from .unit_of_work import SQLAlchemyUnitOfWork
 
 __all__ = [
-    "ProductRepository",
-    "InvoiceRepository",
-    "ReceiptRepository",
-    "UserRepository",
-    "SupplierRepository",
-    "CategoryRepository",
-    "LedgerRepository",
+    "SQLAlchemyProductRepository",
+    "SQLAlchemyInvoiceRepository",
+    "SQLAlchemyReceiptRepository",
+    "SQLAlchemyCategoryRepository",
+    "SQLAlchemyLedgerRepository",
+    "SQLAlchemySupplierRepository",
+    "SQLAlchemyUserRepository",
+    "SQLAlchemyUnitOfWork",
 ]

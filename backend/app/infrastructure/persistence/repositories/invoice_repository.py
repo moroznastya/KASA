@@ -1,69 +1,57 @@
 """
-Infrastructure Layer: InvoiceRepository — реалізація IInvoiceRepository.
+Repository Implementation: SQLAlchemyInvoiceRepository.
 
-Використовує SQLAlchemy ORM модель InvoiceModel для роботи з БД.
+Реалізація IInvoiceRepository з використанням SQLAlchemy.
 """
 
-from __future__ import annotations
-
-import logging
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.entities.invoice import Invoice, InvoiceStatus
-from app.domain.repositories.i_invoice_repository import IInvoiceRepository
-from app.infrastructure.persistence.models import InvoiceModel, InvoiceItemModel
+from app.domain.repositories import IInvoiceRepository
+from app.infrastructure.persistence.models.invoice import (
+    Invoice,
+    InvoiceStatus,
+    InvoiceItem,
+)
 
-logger = logging.getLogger(__name__)
 
-
-class InvoiceRepository(IInvoiceRepository):
+class SQLAlchemyInvoiceRepository(IInvoiceRepository):
     """
-    Репозиторій прибуткових накладних.
+    SQLAlchemy реалізація репозиторію прибуткових накладних.
 
-    Реалізує IInvoiceRepository використовуючи SQLAlchemy ORM.
+    Працює з моделями Invoice та InvoiceItem.
     """
 
-    def __init__(self) -> None:
-        self._session: AsyncSession | None = None
-
-    @property
-    def session(self) -> AsyncSession:
-        if self._session is None:
-            raise RuntimeError("Session not set.")
-        return self._session
-
-    def set_session(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self._session = session
 
     async def save(self, invoice: Invoice) -> Invoice:
-        model = self._to_model(invoice)
-        self.session.add(model)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Зберігає нову накладну."""
+        self._session.add(invoice)
+        await self._session.flush()
+        return invoice
 
     async def update(self, invoice: Invoice) -> Invoice:
-        model = await self._get_model(invoice.id)
-        if model is None:
-            raise ValueError(f"Invoice with id {invoice.id} not found")
-        self._update_model(model, invoice)
-        await self.session.flush()
-        return self._to_domain(model)
+        """Оновлює існуючу накладну."""
+        merged = await self._session.merge(invoice)
+        await self._session.flush()
+        return merged
 
     async def find_by_id(self, invoice_id: UUID) -> Optional[Invoice]:
-        model = await self._get_model(invoice_id)
-        return self._to_domain(model) if model else None
+        """Знаходить накладну за ID."""
+        stmt = select(Invoice).where(Invoice.id == invoice_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_number(self, number: str) -> Optional[Invoice]:
-        result = await self.session.execute(
-            select(InvoiceModel).where(InvoiceModel.number == number)
-        )
-        model = result.scalar_one_or_none()
-        return self._to_domain(model) if model else None
+        """Знаходить накладну за номером."""
+        stmt = select(Invoice).where(Invoice.number == number)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def find_by_supplier(
         self,
@@ -71,11 +59,21 @@ class InvoiceRepository(IInvoiceRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        stmt = select(InvoiceModel).where(InvoiceModel.supplier_id == supplier_id)
-        count_stmt = select(func.count(InvoiceModel.id)).where(
-            InvoiceModel.supplier_id == supplier_id
-        )
-        return await self._paginate(stmt, count_stmt, page, size)
+        """Знаходить накладні постачальника з пагінацією."""
+        base_stmt = select(Invoice).where(Invoice.supplier_id == supplier_id)
+
+        # Підрахунок
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        # Пагінація
+        offset = (page - 1) * size
+        stmt = base_stmt.offset(offset).limit(size).order_by(Invoice.created_at.desc())
+        result = await self._session.execute(stmt)
+        invoices = list(result.scalars().all())
+
+        return invoices, total
 
     async def find_by_status(
         self,
@@ -83,12 +81,19 @@ class InvoiceRepository(IInvoiceRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        status_str = status.value
-        stmt = select(InvoiceModel).where(InvoiceModel.status == status_str)
-        count_stmt = select(func.count(InvoiceModel.id)).where(
-            InvoiceModel.status == status_str
-        )
-        return await self._paginate(stmt, count_stmt, page, size)
+        """Знаходить накладні за статусом з пагінацією."""
+        base_stmt = select(Invoice).where(Invoice.status == status)
+
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        offset = (page - 1) * size
+        stmt = base_stmt.offset(offset).limit(size).order_by(Invoice.created_at.desc())
+        result = await self._session.execute(stmt)
+        invoices = list(result.scalars().all())
+
+        return invoices, total
 
     async def find_by_date_range(
         self,
@@ -97,19 +102,22 @@ class InvoiceRepository(IInvoiceRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        stmt = select(InvoiceModel).where(
-            and_(
-                InvoiceModel.invoice_date >= date_from,
-                InvoiceModel.invoice_date <= date_to,
-            )
+        """Знаходить накладні за діапазоном дат."""
+        base_stmt = select(Invoice).where(
+            Invoice.invoice_date >= date_from,
+            Invoice.invoice_date <= date_to,
         )
-        count_stmt = select(func.count(InvoiceModel.id)).where(
-            and_(
-                InvoiceModel.invoice_date >= date_from,
-                InvoiceModel.invoice_date <= date_to,
-            )
-        )
-        return await self._paginate(stmt, count_stmt, page, size)
+
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
+        total = total_result.scalar() or 0
+
+        offset = (page - 1) * size
+        stmt = base_stmt.offset(offset).limit(size).order_by(Invoice.invoice_date.desc())
+        result = await self._session.execute(stmt)
+        invoices = list(result.scalars().all())
+
+        return invoices, total
 
     async def search(
         self,
@@ -121,95 +129,46 @@ class InvoiceRepository(IInvoiceRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[Invoice], int]:
-        stmt = select(InvoiceModel)
-        count_stmt = select(func.count(InvoiceModel.id))
+        """Розширений пошук накладних з фільтрацією."""
+        base_stmt = select(Invoice)
 
-        conditions = []
         if query:
             like_pattern = f"%{query}%"
-            conditions.append(
+            base_stmt = base_stmt.where(
                 or_(
-                    InvoiceModel.number.ilike(like_pattern),
-                    InvoiceModel.notes.ilike(like_pattern),
+                    Invoice.number.ilike(like_pattern),
+                    Invoice.notes.ilike(like_pattern),
                 )
             )
-        if supplier_id:
-            conditions.append(InvoiceModel.supplier_id == supplier_id)
-        if status:
-            conditions.append(InvoiceModel.status == status.value)
-        if date_from:
-            conditions.append(InvoiceModel.invoice_date >= date_from)
-        if date_to:
-            conditions.append(InvoiceModel.invoice_date <= date_to)
+        if supplier_id is not None:
+            base_stmt = base_stmt.where(Invoice.supplier_id == supplier_id)
+        if status is not None:
+            base_stmt = base_stmt.where(Invoice.status == status)
+        if date_from is not None:
+            base_stmt = base_stmt.where(Invoice.invoice_date >= date_from)
+        if date_to is not None:
+            base_stmt = base_stmt.where(Invoice.invoice_date <= date_to)
 
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-            count_stmt = count_stmt.where(and_(*conditions))
-
-        return await self._paginate(stmt, count_stmt, page, size)
-
-    async def delete(self, invoice_id: UUID) -> None:
-        model = await self._get_model(invoice_id)
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
-
-    async def count(self) -> int:
-        result = await self.session.execute(
-            select(func.count(InvoiceModel.id))
-        )
-        return result.scalar() or 0
-
-    # ─── Допоміжні методи ──────────────────────────────────────────────────
-
-    async def _paginate(
-        self,
-        stmt,
-        count_stmt,
-        page: int,
-        size: int,
-    ) -> tuple[list[Invoice], int]:
-        total_result = await self.session.execute(count_stmt)
+        count_stmt = select(func.count()).select_from(base_stmt.subquery())
+        total_result = await self._session.execute(count_stmt)
         total = total_result.scalar() or 0
 
         offset = (page - 1) * size
-        stmt = stmt.offset(offset).limit(size).order_by(InvoiceModel.created_at.desc())
+        stmt = base_stmt.offset(offset).limit(size).order_by(Invoice.created_at.desc())
+        result = await self._session.execute(stmt)
+        invoices = list(result.scalars().all())
 
-        result = await self.session.execute(stmt)
-        models = result.scalars().all()
+        return invoices, total
 
-        return [self._to_domain(m) for m in models], total
+    async def delete(self, invoice_id: UUID) -> None:
+        """Видаляє накладну за ID."""
+        invoice = await self.find_by_id(invoice_id)
+        if invoice is not None:
+            await self._session.delete(invoice)
+            await self._session.flush()
 
-    # ─── Маппінг ────────────────────────────────────────────────────────────
-
-    def _to_domain(self, model: InvoiceModel | None) -> Invoice | None:
-        if model is None:
-            return None
-        return Invoice(
-            id=model.id,
-            number=model.number,
-            supplier_id=model.supplier_id,
-            status=InvoiceStatus(model.status),
-            notes=model.notes or "",
-        )
-
-    def _to_model(self, domain: Invoice) -> InvoiceModel:
-        return InvoiceModel(
-            id=domain.id,
-            number=domain.number,
-            supplier_id=domain.supplier_id,
-            status=domain.status.value,
-            notes=domain.notes or None,
-        )
-
-    def _update_model(self, model: InvoiceModel, domain: Invoice) -> None:
-        model.number = domain.number
-        model.supplier_id = domain.supplier_id
-        model.status = domain.status.value
-        model.notes = domain.notes or None
-
-    async def _get_model(self, invoice_id: UUID) -> Optional[InvoiceModel]:
-        result = await self.session.execute(
-            select(InvoiceModel).where(InvoiceModel.id == invoice_id)
-        )
-        return result.scalar_one_or_none()
+    async def count(self) -> int:
+        """Повертає загальну кількість накладних."""
+        stmt = select(func.count()).select_from(Invoice)
+        result = await self._session.execute(stmt)
+        return result.scalar() or 0
