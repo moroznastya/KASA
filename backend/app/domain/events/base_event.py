@@ -1,41 +1,24 @@
 """
-Базовий клас для всіх доменних подій.
+Domain Event: Base Domain Event.
 
-Всі доменні події мають наслідуватись від DomainEvent.
+Базовий клас для всіх доменних подій в Kasa POS.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True)
-class DomainEvent:
-    """
-    Базовий клас доменної події.
-
-    Всі події в системі мають наслідуватись від цього класу.
-    Події є immutable (frozen=True) після створення.
-
-    Атрибути:
-        event_id: Унікальний ідентифікатор події.
-        created_at: Час створення події (UTC).
-        aggregate_id: ID агрегату, який згенерував подію.
-    """
+@dataclass(kw_only=True)
+class BaseDomainEvent:
+    """Базовий клас для всіх доменних подій."""
 
     event_id: UUID = field(default_factory=uuid4)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    aggregate_id: UUID = field(default_factory=uuid4)
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    event_name: str = ""
 
-    def __str__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"event_id={self.event_id}, "
-            f"aggregate_id={self.aggregate_id}, "
-            f"created_at={self.created_at.isoformat()})"
-        )
-
-    def __repr__(self) -> str:
-        return self.__str__()
+    def __post_init__(self) -> None:
+        if not self.event_name:
+            self.event_name = self.__class__.__name__

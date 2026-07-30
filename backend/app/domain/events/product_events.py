@@ -1,58 +1,42 @@
-"""
-Доменні події модуля Product (Товари).
-"""
+"""Domain Events: Product."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Optional
+from dataclasses import dataclass
 from uuid import UUID
 
-from .base_event import DomainEvent
+from .base_event import BaseDomainEvent
 
 
-@dataclass(frozen=True)
-class ProductCreated(DomainEvent):
-    """
-    Подія: товар створено.
-
-    Публікується після успішного створення нового товару.
-    """
-
-    product_id: UUID = field(default_factory=UUID)
-    name: str = ""
-    barcode: Optional[str] = None
-    sku: str = ""
-    category_id: Optional[UUID] = None
-    supplier_id: Optional[UUID] = None
+@dataclass(kw_only=True)
+class ProductCreated(BaseDomainEvent):
+    """Створено новий товар."""
+    product_id: UUID
+    name: str
+    barcode: str
+    category_id: UUID | None = None
+    supplier_id: UUID | None = None
 
 
-@dataclass(frozen=True)
-class ProductUpdated(DomainEvent):
-    """
-    Подія: товар оновлено.
-
-    Публікується після успішного оновлення даних товару.
-    """
-
-    product_id: UUID = field(default_factory=UUID)
-    name: str = ""
-    changed_fields: tuple[str, ...] = field(default_factory=tuple)
+@dataclass(kw_only=True)
+class ProductUpdated(BaseDomainEvent):
+    """Оновлено товар."""
+    product_id: UUID
+    changes: dict  # {field_name: (old_value, new_value)}
 
 
-@dataclass(frozen=True)
-class StockChanged(DomainEvent):
-    """
-    Подія: змінено залишок товару.
+@dataclass(kw_only=True)
+class ProductDeleted(BaseDomainEvent):
+    """Видалено товар."""
+    product_id: UUID
 
-    Публікується після зміни кількості товару на складі.
-    """
 
-    product_id: UUID = field(default_factory=UUID)
-    old_quantity: Decimal = Decimal("0")
-    new_quantity: Decimal = Decimal("0")
-    change_amount: Decimal = Decimal("0")
-    reason: str = ""
-    document_id: Optional[UUID] = None
-    document_type: str = ""
+@dataclass(kw_only=True)
+class StockChanged(BaseDomainEvent):
+    """Змінено залишок товару."""
+    product_id: UUID
+    old_quantity: float
+    new_quantity: float
+    reason: str  # "purchase", "sale", "write_off", "adjustment"
+    reference_type: str | None = None  # "invoice", "receipt", "write_off"
+    reference_id: UUID | None = None

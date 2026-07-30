@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.domain.events.base_event import DomainEvent
+from app.domain.events.base_event import BaseDomainEvent
 
 
 class IEventBus(Protocol):
@@ -20,7 +20,7 @@ class IEventBus(Protocol):
     Використовується Use Cases для публікації подій після виконання команд.
     """
 
-    async def publish(self, event: DomainEvent) -> None:
+    async def publish(self, event: BaseDomainEvent) -> None:
         """
         Публікує доменну подію.
 
@@ -31,7 +31,7 @@ class IEventBus(Protocol):
         """
         ...
 
-    async def publish_many(self, events: list[DomainEvent]) -> None:
+    async def publish_many(self, events: list[BaseDomainEvent]) -> None:
         """
         Публікує декілька доменних подій одночасно.
 
@@ -40,17 +40,17 @@ class IEventBus(Protocol):
         """
         ...
 
-    def subscribe(self, event_type: type[DomainEvent], handler) -> None:
+    def subscribe(self, event_type: type[BaseDomainEvent], handler) -> None:
         """
         Підписує обробник на тип події.
 
         Args:
-            event_type: Тип події (клас, успадкований від DomainEvent).
+            event_type: Тип події (клас, успадкований від BaseDomainEvent).
             handler: Асинхронний обробник події.
         """
         ...
 
-    def unsubscribe(self, event_type: type[DomainEvent], handler) -> None:
+    def unsubscribe(self, event_type: type[BaseDomainEvent], handler) -> None:
         """
         Відписує обробник від типу події.
 

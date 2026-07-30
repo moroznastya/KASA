@@ -20,6 +20,11 @@ from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.product_dto import ProductDTO, ProductCreateDTO, ProductUpdateDTO
 from app.application.mappers.product_mapper import ProductMapper
 from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.events import (
+    ProductCreated,
+    ProductUpdated,
+    ProductDeleted,
+)
 
 
 class ProductUseCases:
@@ -81,9 +86,15 @@ class ProductUseCases:
             saved = await self._product_repo.save(product)
             await self._uow.commit()
 
-        # Публікуємо подію
-        # from app.domain.events.product_events import ProductCreated
-        # await self._event_bus.publish(ProductCreated(aggregate_id=saved.id))
+        # Публікуємо подію ProductCreated
+        event = ProductCreated(
+            product_id=saved.id,
+            name=saved.name,
+            barcode=saved.barcode or "",
+            category_id=saved.category_id,
+            supplier_id=saved.supplier_id,
+        )
+        await self._event_bus.publish(event)
 
         return ProductMapper.entity_to_dto(saved)
 
@@ -126,6 +137,13 @@ class ProductUseCases:
             saved = await self._product_repo.update(updated)
             await self._uow.commit()
 
+        # Публікуємо подію ProductUpdated
+        event = ProductUpdated(
+            product_id=saved.id,
+            changes={},  # TODO: track actual changes
+        )
+        await self._event_bus.publish(event)
+
         return ProductMapper.entity_to_dto(saved)
 
     async def delete_product(self, product_id: UUID) -> None:
@@ -145,6 +163,10 @@ class ProductUseCases:
         async with self._uow:
             await self._product_repo.delete(product_id)
             await self._uow.commit()
+
+        # Публікуємо подію ProductDeleted
+        event = ProductDeleted(product_id=product_id)
+        await self._event_bus.publish(event)
 
     async def get_product(self, product_id: UUID) -> ProductDTO:
         """

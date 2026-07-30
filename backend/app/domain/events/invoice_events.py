@@ -1,44 +1,38 @@
-"""
-Доменні події модуля Invoice (Прибуткові накладні).
-"""
+"""Domain Events: Invoice (прибуткові накладні)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import dataclass
 from uuid import UUID
+from decimal import Decimal
 
-from .base_event import DomainEvent
-
-
-@dataclass(frozen=True)
-class InvoiceConfirmed(DomainEvent):
-    """
-    Подія: прибуткову накладну підтверджено.
-
-    Публікується після успішного підтвердження накладної.
-    Слухачі: StockModule (збільшення залишків), LedgerModule (створення запису).
-    """
-
-    invoice_id: UUID = field(default_factory=UUID)
-    invoice_number: str = ""
-    supplier_id: UUID = field(default_factory=UUID)
-    total_amount: Decimal = Decimal("0")
-    currency: str = "UAH"
-    item_count: int = 0
+from .base_event import BaseDomainEvent
 
 
-@dataclass(frozen=True)
-class InvoiceCancelled(DomainEvent):
-    """
-    Подія: прибуткову накладну скасовано.
+@dataclass(kw_only=True)
+class InvoiceCreated(BaseDomainEvent):
+    """Створено прибуткову накладну."""
+    invoice_id: UUID
+    supplier_id: UUID
+    total_amount: Decimal
+    status: str = "pending"
 
-    Публікується після скасування підтвердженої накладної.
-    Слухачі: StockModule (зменшення залишків), LedgerModule (створення запису).
-    """
 
-    invoice_id: UUID = field(default_factory=UUID)
-    invoice_number: str = ""
-    supplier_id: UUID = field(default_factory=UUID)
-    total_amount: Decimal = Decimal("0")
-    currency: str = "UAH"
+@dataclass(kw_only=True)
+class InvoiceUpdated(BaseDomainEvent):
+    """Оновлено прибуткову накладну."""
+    invoice_id: UUID
+    changes: dict
+
+
+@dataclass(kw_only=True)
+class InvoiceDeleted(BaseDomainEvent):
+    """Видалено прибуткову накладну."""
+    invoice_id: UUID
+
+
+@dataclass(kw_only=True)
+class InvoiceApproved(BaseDomainEvent):
+    """Затверджено прибуткову накладну (товари оприбутковано)."""
+    invoice_id: UUID
+    items_count: int

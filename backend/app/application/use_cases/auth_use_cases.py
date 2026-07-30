@@ -19,6 +19,7 @@ from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.user_dto import UserDTO, UserCreateDTO
 from app.application.mappers.user_mapper import UserMapper
 from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.events import UserLoggedIn, UserCreated
 
 
 class AuthUseCases:
@@ -80,6 +81,13 @@ class AuthUseCases:
             await self._user_repo.update(user)
             await self._uow.commit()
 
+        # Публікуємо подію UserLoggedIn
+        event = UserLoggedIn(
+            user_id=user.id,
+            login_method="password",
+        )
+        await self._event_bus.publish(event)
+
         # Генеруємо токен (заглушка)
         token = f"mock_token_{user.id}"
 
@@ -111,6 +119,13 @@ class AuthUseCases:
         async with self._uow:
             await self._user_repo.update(user)
             await self._uow.commit()
+
+        # Публікуємо подію UserLoggedIn
+        event = UserLoggedIn(
+            user_id=user.id,
+            login_method="pin",
+        )
+        await self._event_bus.publish(event)
 
         # Генеруємо токен (заглушка)
         token = f"mock_token_{user.id}"
@@ -185,6 +200,14 @@ class AuthUseCases:
         async with self._uow:
             saved = await self._user_repo.save(user)
             await self._uow.commit()
+
+        # Публікуємо подію UserCreated
+        event = UserCreated(
+            user_id=saved.id,
+            login=saved.login,
+            role=saved.role.value if hasattr(saved.role, 'value') else str(saved.role),
+        )
+        await self._event_bus.publish(event)
 
         return UserMapper.entity_to_dto(saved)
 

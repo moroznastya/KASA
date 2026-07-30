@@ -11,6 +11,7 @@ Use Cases для Invoice (Прибуткова накладна).
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -20,6 +21,11 @@ from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.invoice_dto import InvoiceDTO, InvoiceCreateDTO, InvoiceConfirmDTO
 from app.application.mappers.invoice_mapper import InvoiceMapper
 from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.events import (
+    InvoiceCreated,
+    InvoiceUpdated,
+    InvoiceApproved,
+)
 
 
 class InvoiceUseCases:
@@ -86,6 +92,15 @@ class InvoiceUseCases:
             saved = await self._invoice_repo.save(invoice)
             await self._uow.commit()
 
+        # Публікуємо подію InvoiceCreated
+        event = InvoiceCreated(
+            invoice_id=saved.id,
+            supplier_id=saved.supplier_id,
+            total_amount=saved.total or Decimal("0"),
+            status=saved.status.value if hasattr(saved.status, 'value') else str(saved.status),
+        )
+        await self._event_bus.publish(event)
+
         return InvoiceMapper.entity_to_dto(saved)
 
     async def confirm_invoice(self, dto: InvoiceConfirmDTO) -> InvoiceDTO:
@@ -132,9 +147,12 @@ class InvoiceUseCases:
             saved = await self._invoice_repo.update(invoice)
             await self._uow.commit()
 
-        # Публікуємо подію
-        # from app.domain.events.invoice_events import InvoiceConfirmed
-        # await self._event_bus.publish(InvoiceConfirmed(aggregate_id=saved.id))
+        # Публікуємо подію InvoiceApproved
+        event = InvoiceApproved(
+            invoice_id=saved.id,
+            items_count=len(saved.items),
+        )
+        await self._event_bus.publish(event)
 
         return InvoiceMapper.entity_to_dto(saved)
 
@@ -183,9 +201,12 @@ class InvoiceUseCases:
             saved = await self._invoice_repo.update(invoice)
             await self._uow.commit()
 
-        # Публікуємо подію
-        # from app.domain.events.invoice_events import InvoiceCancelled
-        # await self._event_bus.publish(InvoiceCancelled(aggregate_id=saved.id))
+        # Публікуємо подію InvoiceUpdated (скасування)
+        event = InvoiceUpdated(
+            invoice_id=saved.id,
+            changes={"status": ("CONFIRMED", "CANCELLED")},
+        )
+        await self._event_bus.publish(event)
 
         return InvoiceMapper.entity_to_dto(saved)
 

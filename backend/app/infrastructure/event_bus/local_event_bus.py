@@ -12,13 +12,13 @@ import logging
 from collections import defaultdict
 from typing import Any, Callable, Coroutine
 
-from app.domain.events.base_event import DomainEvent
+from app.domain.events.base_event import BaseDomainEvent
 from app.application.interfaces.i_event_bus import IEventBus
 
 logger = logging.getLogger(__name__)
 
 # Тип для обробника події
-EventHandler = Callable[[DomainEvent], Coroutine[Any, Any, None]]
+EventHandler = Callable[[BaseDomainEvent], Coroutine[Any, Any, None]]
 
 
 class LocalEventBus(IEventBus):
@@ -37,12 +37,12 @@ class LocalEventBus(IEventBus):
 
     def __init__(self) -> None:
         """Ініціалізує Event Bus з порожнім словником підписок."""
-        self._handlers: dict[type[DomainEvent], list[EventHandler]] = defaultdict(list)
-        self._history: list[DomainEvent] = []
+        self._handlers: dict[type[BaseDomainEvent], list[EventHandler]] = defaultdict(list)
+        self._history: list[BaseDomainEvent] = []
 
     # ─── Публікація ─────────────────────────────────────────────────────────
 
-    async def publish(self, event: DomainEvent) -> None:
+    async def publish(self, event: BaseDomainEvent) -> None:
         """
         Публікує доменну подію — викликає всіх підписаних обробників.
 
@@ -74,7 +74,7 @@ class LocalEventBus(IEventBus):
 
         self._history.append(event)
 
-    async def publish_many(self, events: list[DomainEvent]) -> None:
+    async def publish_many(self, events: list[BaseDomainEvent]) -> None:
         """
         Публікує декілька доменних подій одночасно.
 
@@ -88,14 +88,14 @@ class LocalEventBus(IEventBus):
 
     def subscribe(
         self,
-        event_type: type[DomainEvent],
+        event_type: type[BaseDomainEvent],
         handler: EventHandler,
     ) -> None:
         """
         Підписує обробник на тип події.
 
         Args:
-            event_type: Тип події (клас, успадкований від DomainEvent).
+            event_type: Тип події (клас, успадкований від BaseDomainEvent).
             handler: Асинхронний обробник події.
         """
         if handler not in self._handlers[event_type]:
@@ -106,7 +106,7 @@ class LocalEventBus(IEventBus):
 
     def unsubscribe(
         self,
-        event_type: type[DomainEvent],
+        event_type: type[BaseDomainEvent],
         handler: EventHandler,
     ) -> None:
         """
@@ -128,8 +128,8 @@ class LocalEventBus(IEventBus):
 
     def get_history(
         self,
-        event_type: type[DomainEvent] | None = None,
-    ) -> list[DomainEvent]:
+        event_type: type[BaseDomainEvent] | None = None,
+    ) -> list[BaseDomainEvent]:
         """
         Повертає історію подій (для аудиту).
 

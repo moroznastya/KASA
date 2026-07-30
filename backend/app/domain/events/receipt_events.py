@@ -1,28 +1,26 @@
-"""
-Доменні події модуля Receipt (Чеки продажу).
-"""
+"""Domain Events: Receipt (чеки продажу)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import dataclass
 from uuid import UUID
+from decimal import Decimal
 
-from .base_event import DomainEvent
+from .base_event import BaseDomainEvent
 
 
-@dataclass(frozen=True)
-class ReceiptCreated(DomainEvent):
-    """
-    Подія: чек продажу створено.
+@dataclass(kw_only=True)
+class ReceiptCreated(BaseDomainEvent):
+    """Створено чек продажу."""
+    receipt_id: UUID
+    cashier_id: UUID
+    total_amount: Decimal
+    payment_method: str
 
-    Публікується після успішного створення чеку продажу.
-    Слухачі: StockModule (зменшення залишків), ReportsModule (оновлення звітів).
-    """
 
-    receipt_id: UUID = field(default_factory=UUID)
-    receipt_number: str = ""
-    total_amount: Decimal = Decimal("0")
-    currency: str = "UAH"
-    payment_method: str = "cash"
-    item_count: int = 0
+@dataclass(kw_only=True)
+class ReceiptRefunded(BaseDomainEvent):
+    """Повернення за чеком."""
+    receipt_id: UUID
+    original_receipt_id: UUID
+    refund_amount: Decimal

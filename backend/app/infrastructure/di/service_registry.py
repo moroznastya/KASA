@@ -36,6 +36,13 @@ from app.application.use_cases.receipt_use_cases import ReceiptUseCases
 from app.application.use_cases.ledger_use_cases import LedgerUseCases
 from app.application.use_cases.auth_use_cases import AuthUseCases
 
+# ─── Event Handlers ──────────────────────────────────────────────────────────
+from app.application.event_handlers import (
+    LoggingHandler,
+    CacheInvalidationHandler,
+    AuditHandler,
+)
+
 # ─── Services (старі, для зворотної сумісності) ─────────────────────────────
 from app.domain.services.product_service import ProductService
 from app.domain.services.document_service import DocumentService
@@ -164,6 +171,20 @@ def register_all_services(container: DIContainer) -> None:
     container.register("document_service", lambda c: DocumentService(session=None), singleton=False)
     container.register("ledger_service", lambda c: LedgerService(session=None), singleton=False)
     container.register("auth_service", lambda c: AuthService(session=None), singleton=False)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 8. Event Handlers — підписка на події
+    # ═══════════════════════════════════════════════════════════════════════
+
+    logging_handler = LoggingHandler()
+    cache_handler = CacheInvalidationHandler()
+    audit_handler = AuditHandler()
+
+    event_bus.subscribe(logging_handler.handle)
+    event_bus.subscribe(cache_handler.handle)
+    event_bus.subscribe(audit_handler.handle)
+
+    logger.info("✅ Event Handlers зареєстровано")
 
     logger.info(
         f"Registered {len(container.registered_services)} services in DI Container"

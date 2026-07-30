@@ -19,6 +19,7 @@ from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.receipt_dto import ReceiptDTO, ReceiptCreateDTO
 from app.application.mappers.receipt_mapper import ReceiptMapper
 from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.events import ReceiptCreated, ReceiptRefunded
 
 
 class ReceiptUseCases:
@@ -87,9 +88,14 @@ class ReceiptUseCases:
             saved = await self._receipt_repo.save(receipt)
             await self._uow.commit()
 
-        # Публікуємо подію
-        # from app.domain.events.receipt_events import ReceiptCreated
-        # await self._event_bus.publish(ReceiptCreated(aggregate_id=saved.id))
+        # Публікуємо подію ReceiptCreated
+        event = ReceiptCreated(
+            receipt_id=saved.id,
+            cashier_id=saved.cashier_id,
+            total_amount=saved.total or Decimal("0"),
+            payment_method=saved.payment_method.value if hasattr(saved.payment_method, 'value') else str(saved.payment_method),
+        )
+        await self._event_bus.publish(event)
 
         return ReceiptMapper.entity_to_dto(saved)
 
@@ -123,6 +129,14 @@ class ReceiptUseCases:
             # Зберігаємо чек
             saved = await self._receipt_repo.save(receipt)
             await self._uow.commit()
+
+        # Публікуємо подію ReceiptRefunded
+        event = ReceiptRefunded(
+            receipt_id=saved.id,
+            original_receipt_id=getattr(saved, 'original_receipt_id', saved.id) or saved.id,
+            refund_amount=saved.total or Decimal("0"),
+        )
+        await self._event_bus.publish(event)
 
         return ReceiptMapper.entity_to_dto(saved)
 

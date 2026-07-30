@@ -1,18 +1,25 @@
-"""Domain Events для доменного шару Kasa POS."""
+"""Domain Events для Kasa POS."""
 
-from .base_event import DomainEvent
-from .product_events import ProductCreated, ProductUpdated, StockChanged
-from .invoice_events import InvoiceConfirmed, InvoiceCancelled
-from .receipt_events import ReceiptCreated
+from .base_event import BaseDomainEvent
+from .product_events import ProductCreated, ProductUpdated, ProductDeleted, StockChanged
+from .invoice_events import InvoiceCreated, InvoiceUpdated, InvoiceDeleted, InvoiceApproved
+from .receipt_events import ReceiptCreated, ReceiptRefunded
 from .ledger_events import LedgerEntryCreated
+from .user_events import UserLoggedIn, UserCreated
 
 __all__ = [
-    "DomainEvent",
+    "BaseDomainEvent",
     "ProductCreated",
     "ProductUpdated",
+    "ProductDeleted",
     "StockChanged",
-    "InvoiceConfirmed",
-    "InvoiceCancelled",
+    "InvoiceCreated",
+    "InvoiceUpdated",
+    "InvoiceDeleted",
+    "InvoiceApproved",
     "ReceiptCreated",
+    "ReceiptRefunded",
     "LedgerEntryCreated",
+    "UserLoggedIn",
+    "UserCreated",
 ]

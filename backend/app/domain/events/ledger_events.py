@@ -1,29 +1,20 @@
-"""
-Доменні події модуля Ledger (Взаєморозрахунки).
-"""
+"""Domain Events: Ledger (журнал взаєморозрахунків)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import dataclass
 from uuid import UUID
+from decimal import Decimal
 
-from .base_event import DomainEvent
+from .base_event import BaseDomainEvent
 
 
-@dataclass(frozen=True)
-class LedgerEntryCreated(DomainEvent):
-    """
-    Подія: створено запис у журналі взаєморозрахунків.
-
-    Публікується після створення нового запису в ledger.
-    Слухачі: ReportsModule (оновлення звітів), NotificationModule (сповіщення).
-    """
-
-    entry_id: UUID = field(default_factory=UUID)
-    supplier_id: UUID = field(default_factory=UUID)
-    amount: Decimal = Decimal("0")
-    currency: str = "UAH"
-    operation_type: str = ""
-    balance_after: Decimal = Decimal("0")
-    document_id: UUID | None = None
+@dataclass(kw_only=True)
+class LedgerEntryCreated(BaseDomainEvent):
+    """Створено запис у журналі взаєморозрахунків."""
+    entry_id: UUID
+    supplier_id: UUID
+    amount: Decimal
+    entry_type: str  # "debit", "credit"
+    reference_type: str  # "invoice", "payment"
+    reference_id: UUID
