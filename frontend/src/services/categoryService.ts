@@ -3,8 +3,10 @@ import { Category, CategoryCreate, CategoryUpdate } from '@/types/product';
 
 export const categoryService = {
   async getCategories(): Promise<Category[]> {
-    const response = await api.get<Category[]>('/categories');
-    return response.data;
+    const response = await api.get<{items: Category[]}>('/categories', {
+      params: { size: 1000 }
+    });
+    return response.data.items || [];
   },
 
   async getCategoryTree(): Promise<Category[]> {

@@ -116,10 +116,12 @@ const ProductListPage: React.FC = () => {
 
   const categoryOptions = [
     { value: '', label: 'Всі категорії' },
-    ...(categories?.map((cat) => ({
-      value: String(cat.id),
-      label: cat.name,
-    })) || []),
+    ...(Array.isArray(categories)
+      ? categories.map((cat) => ({
+          value: String(cat.id),
+          label: cat.name,
+        }))
+      : []),
   ];
 
   return (
