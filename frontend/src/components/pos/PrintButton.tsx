@@ -111,6 +111,44 @@ function receiptToRenderData(receipt: Receipt): Record<string, string> {
   };
 }
 
+/** Друк HTML у новому вікні (для Tauri та браузера) */
+function printViaNewWindow(html: string, printerName?: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        reject(new Error('Блокувальник спливних вікон'));
+        return;
+      }
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Друк — Kasa POS</title>
+          <style>
+            @media print {
+              body { font-family: 'Courier New', monospace; font-size: 12px; }
+              @page { margin: 5mm; }
+            }
+          </style>
+        </head>
+        <body>${html}</body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+        resolve();
+      }, 500);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 export const PrintButton: React.FC<PrintButtonProps> = ({
   content,
   receipt,
@@ -123,7 +161,7 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
   onPrintSuccess,
   onPrintError,
 }) => {
-  const { isTauri: inTauri, print, printing } = useTauri();
+  const { isTauri: inTauri, printing } = useTauri();
   const [isBrowserPrinting, setIsBrowserPrinting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [renderedHtml, setRenderedHtml] = useState<string | null>(null);
@@ -139,11 +177,16 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
 
         // Друк зрендереного HTML
         if (inTauri) {
-          const result = await print(html, printerName);
-          if (result.success) {
+          setIsBrowserPrinting(true);
+          try {
+            printViaNewWindow(html, printerName);
             onPrintSuccess?.();
-          } else {
-            onPrintError?.(result.message);
+          } catch (error) {
+            onPrintError?.(
+              error instanceof Error ? error.message : 'Помилка друку',
+            );
+          } finally {
+            setIsBrowserPrinting(false);
           }
         } else {
           setIsBrowserPrinting(true);
@@ -195,11 +238,16 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
     const htmlToPrint = renderedHtml || content;
 
     if (inTauri) {
-      const result = await print(htmlToPrint, printerName);
-      if (result.success) {
+      setIsBrowserPrinting(true);
+      try {
+        printViaNewWindow(htmlToPrint, printerName);
         onPrintSuccess?.();
-      } else {
-        onPrintError?.(result.message);
+      } catch (error) {
+        onPrintError?.(
+          error instanceof Error ? error.message : 'Помилка друку',
+        );
+      } finally {
+        setIsBrowserPrinting(false);
       }
     } else {
       setIsBrowserPrinting(true);
@@ -237,7 +285,7 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
         setIsBrowserPrinting(false);
       }
     }
-  }, [inTauri, print, content, renderedHtml, receipt, receiptTemplateId, printerName, onPrintSuccess, onPrintError]);
+  }, [inTauri, content, renderedHtml, receipt, receiptTemplateId, printerName, onPrintSuccess, onPrintError]);
 
   const isLoading = printing || isBrowserPrinting || isRendering;
 

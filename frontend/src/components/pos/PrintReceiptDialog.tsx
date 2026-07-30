@@ -144,7 +144,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
     return (
       <Modal isOpen={isOpen} onClose={onClose} title="" size="sm" showCloseButton={false}>
         {/* ✅ Прихований контейнер для html2canvas */}
-        <div ref={receiptRef} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+        <div ref={receiptRef as React.RefObject<HTMLDivElement>} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
           <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
         </div>
         <div className="flex flex-col items-center justify-center py-8 gap-3">
@@ -204,7 +204,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
         {/* ── Основний контент ──────────────── */}
         <div className="py-4 space-y-4">
           {/* ✅ Прихований контейнер для html2canvas (для Print-as-Image) */}
-          <div ref={receiptRef} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+          <div ref={receiptRef as React.RefObject<HTMLDivElement>} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
             <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
           </div>
 

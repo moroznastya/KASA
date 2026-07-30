@@ -130,13 +130,33 @@ const PrintLabelsPage: React.FC = () => {
     setIsPrinting(true);
     try {
       if (isTauri()) {
-        // Tauri — використовуємо системний принтер
-        const { printDocument } = await import('@/hooks/useTauri');
-        const result = await printDocument(previewHtml);
-        if (result.success) {
+        // Tauri — друкуємо через нове вікно (як у браузері)
+        const printWindow = window.open('', '_blank');
+        if (printWindow) {
+          printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="UTF-8">
+              <title>Друк етикеток — Kasa POS</title>
+              <style>
+                @media print {
+                  @page { margin: 0; size: 58mm 40mm; }
+                  body { margin: 0; padding: 0; }
+                }
+              </style>
+            </head>
+            <body>${previewHtml}</body>
+            </html>
+          `);
+          printWindow.document.close();
+          printWindow.focus();
+          setTimeout(() => {
+            printWindow.print();
+          }, 500);
           toast.success('Етикетки відправлено на друк');
         } else {
-          throw new Error(result.message);
+          toast.error('Блокувальник спливних вікон. Дозвольте спливні вікна для цього сайту.');
         }
       } else {
         // Браузер — відкриваємо в новому вікні

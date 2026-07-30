@@ -8,7 +8,6 @@
 
 pub mod commands;
 pub mod db;
-pub mod escpos;
 pub mod print;
 pub mod utils;
 
@@ -28,14 +27,9 @@ pub fn run() {
         // Реєстрація команд
         .invoke_handler(tauri::generate_handler![
             // ── Команди друку ──────────────────────────────────────────
-            commands::print::print_receipt_escpos,
-            commands::print::print_document,
-            commands::print::print_receipt,
-            commands::print::print_receipt_html,
-            commands::print::print_raster_image,
             commands::print::print_image,
+            commands::print::print_raster_image,
             commands::print::get_printers,
-            commands::print::print_preview,
             commands::print::open_cash_drawer,
             commands::print::get_system_info,
             // ── Команди офлайн-режиму ─────────────────────────────────
