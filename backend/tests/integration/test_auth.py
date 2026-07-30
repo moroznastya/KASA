@@ -194,7 +194,9 @@ class TestRoleBasedAccess:
         )
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
+        assert isinstance(data, dict)
+        assert "items" in data
+        assert isinstance(data["items"], list)
 
     async def test_cashier_cannot_create_user(
         self, client: AsyncClient, cashier_headers: dict

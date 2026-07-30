@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import String, Boolean, Enum, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON
 
 from app.database import Base
 
@@ -72,7 +73,7 @@ class User(Base):
         comment="Чи активний користувач (може входити в систему)",
     )
     permissions: Mapped[list | None] = mapped_column(
-        JSONB,
+        JSON,
         nullable=True,
         default=None,
         comment="Список прав доступу (масив рядків-пермішенів). "

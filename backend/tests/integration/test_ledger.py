@@ -423,7 +423,7 @@ class TestLedger:
         assert response.status_code == 201
         entry = response.json()
         assert entry["operation_type"] == "correction"
-        assert entry["amount"] == 500.00
+        assert float(entry["amount"]) == 500.0
         assert entry["balance_after"] == 500.00
 
         # Перевіряємо баланс

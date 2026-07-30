@@ -112,7 +112,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 0.000
+        assert float(response.json()["stock"]) == 0.0
 
         # Підтверджуємо накладну
         response = await client.post(
@@ -128,7 +128,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 10.000
+        assert float(response.json()["stock"]) == 10.0
 
     async def test_cancel_invoice_restores_stock(
         self,
@@ -174,7 +174,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 20.000
+        assert float(response.json()["stock"]) == 20.0
 
         # Скасовуємо накладну
         response = await client.post(
@@ -190,7 +190,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 0.000
+        assert float(response.json()["stock"]) == 0.0
 
     async def test_cannot_confirm_twice(
         self,
@@ -383,7 +383,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 50.000
+        assert float(response.json()["stock"]) == 50.0
 
         # 3. Продаємо 10 шт
         response = await client.post(
@@ -412,7 +412,7 @@ class TestInvoiceFlow:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 40.000
+        assert float(response.json()["stock"]) == 40.0
 
     async def test_invoice_creates_ledger_entry(
         self,

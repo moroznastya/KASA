@@ -58,7 +58,7 @@ class TestSaleFlow:
         assert response.status_code == 201
         product = response.json()
         product_id = product["id"]
-        assert product["stock"] == 50.000
+        assert float(product["stock"]) == 50.0
 
         # 2. Шукаємо товар за штрих-кодом
         response = await client.get(
@@ -92,7 +92,7 @@ class TestSaleFlow:
         receipt = response.json()
         assert receipt["receipt_number"] == "SALE-001"
         assert receipt["receipt_type"] == "sale"
-        assert receipt["total_amount"] == 450.00
+        assert float(receipt["total_amount"]) == 450.0
 
         # 4. Перевіряємо, що stock зменшився (50 - 3 = 47)
         response = await client.get(
@@ -100,7 +100,7 @@ class TestSaleFlow:
             headers=cashier_headers,
         )
         assert response.status_code == 200
-        assert response.json()["stock"] == 47.000
+        assert float(response.json()["stock"]) == 47.0
 
     async def test_sale_insufficient_stock(
         self,
@@ -209,7 +209,7 @@ class TestSaleFlow:
             f"/api/v1/products/{product_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 90.000
+        assert float(response.json()["stock"]) == 90.0
 
         # 3. Повертаємо 3 шт
         response = await client.post(
@@ -238,7 +238,7 @@ class TestSaleFlow:
             f"/api/v1/products/{product_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 93.000
+        assert float(response.json()["stock"]) == 93.0
 
     async def test_sale_multiple_items(
         self,
@@ -315,10 +315,10 @@ class TestSaleFlow:
             f"/api/v1/products/{prod_a_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 98.000  # 100 - 2
+        assert float(response.json()["stock"]) == 98.0  # 100 - 2
 
         response = await client.get(
             f"/api/v1/products/{prod_b_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 197.000  # 200 - 3
+        assert float(response.json()["stock"]) == 197.0  # 200 - 3

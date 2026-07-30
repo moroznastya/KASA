@@ -334,7 +334,7 @@ class AuthService:
 
         # Шукаємо користувача в БД
         result = await session.execute(
-            select(User).where(User.id == user_id)
+            select(User).where(User.id == UUID(user_id))
         )
         user = result.scalar_one_or_none()
 

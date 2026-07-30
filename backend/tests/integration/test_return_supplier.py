@@ -103,7 +103,7 @@ class TestReturnSupplier:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 100.000
+        assert float(response.json()["stock"]) == 100.0
 
         # Підтверджуємо повернення
         response = await client.post(
@@ -119,7 +119,7 @@ class TestReturnSupplier:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 90.000
+        assert float(response.json()["stock"]) == 90.0
 
     async def test_cancel_return_restores_stock(
         self,
@@ -165,7 +165,7 @@ class TestReturnSupplier:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 95.000
+        assert float(response.json()["stock"]) == 95.0
 
         # Скасовуємо повернення
         response = await client.post(
@@ -181,7 +181,7 @@ class TestReturnSupplier:
             f"/api/v1/products/{product['id']}",
             headers=auth_headers,
         )
-        assert response.json()["stock"] == 100.000
+        assert float(response.json()["stock"]) == 100.0
 
     async def test_return_creates_ledger_entry(
         self,

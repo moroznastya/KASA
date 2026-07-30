@@ -79,7 +79,7 @@ class TestReturnFlow:
             f"/api/v1/products/{product_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 45.000
+        assert float(response.json()["stock"]) == 45.0
 
         # 3. Повертаємо 2 шт
         response = await client.post(
@@ -111,7 +111,7 @@ class TestReturnFlow:
             f"/api/v1/products/{product_id}",
             headers=cashier_headers,
         )
-        assert response.json()["stock"] == 47.000
+        assert float(response.json()["stock"]) == 47.0
 
     async def test_return_receipt_has_correct_type(
         self,
@@ -184,7 +184,7 @@ class TestReturnFlow:
         data = response.json()
         assert data["receipt_type"] == "return"
         assert data["is_return"] is True
-        assert data["total_amount"] == 100.00
+        assert float(data["total_amount"]) == 100.0
 
     async def test_today_stats_reflects_returns(
         self,

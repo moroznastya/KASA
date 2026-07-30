@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import String, Text, Boolean, DateTime, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON
 
 from app.database import Base
 
@@ -46,7 +47,7 @@ class PrintTemplate(Base):
         comment="HTML-вміст шаблону з {{змінними}} для підстановки",
     )
     variables: Mapped[dict | None] = mapped_column(
-        JSONB,
+        JSON,
         nullable=True,
         default=None,
         comment="JSON з описом змінних: { 'name': 'shop_name', 'label': 'Назва магазину', 'type': 'string' }",
