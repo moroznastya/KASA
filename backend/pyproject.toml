@@ -1,0 +1,112 @@
+# ============================================================================
+# Kasa POS — Backend pyproject.toml
+# ============================================================================
+# Конфігурація: ruff (лінтер/форматер), mypy (перевірка типів), pytest
+# ============================================================================
+
+[project]
+name = "kasa-pos-backend"
+version = "1.0.0"
+description = "Kasa POS — Enterprise Point of Sale System (Backend)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "sqlalchemy>=2.0.30",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
+    "slowapi>=0.1.9",
+    "python-multipart>=0.0.9",
+    "google-genai>=1.0.0",
+    "python-barcode>=0.16.0",
+    "qrcode[pil]>=8.0.0",
+]
+
+# ─── Ruff — лінтер та форматер ──────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [
+    ".git", "__pycache__", "venv", ".venv",
+    "node_modules", "migrations", "alembic",
+    "dist", "build", "*.egg-info",
+]
+
+# ─── Правила лінтера ────────────────────────────────────────────────────────
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle — помилки
+    "W",    # pycodestyle — попередження
+    "F",    # pyflakes
+    "I",    # isort (сортування імпортів)
+    "N",    # pep8-naming (стиль імен)
+    "UP",   # pyupgrade (сучасний синтаксис)
+    "B",    # flake8-bugbear (баги)
+    "SIM",  # flake8-simplify (спрощення)
+    "ARG",  # flake8-unused-arguments
+    "RUF",  # специфічні для ruff
+]
+ignore = [
+    "E501",     # довгі рядки — handled by formatter
+    "E402",     # імпорти після коду — потрібно для alembic/env.py
+    "N802",     # імена функцій з великої літери
+    "N803",     # імена аргументів з великої літери
+    "N806",     # імена змінних з великої літери
+    "ARG001",   # невикористані аргументи callback
+    "ARG002",   # невикористані аргументи методу
+    "RUF002",   # кирилиця в docstrings (українська мова)
+    "RUF003",   # кирилиця в коментарях
+    "UP045",    # дозволяємо Optional[X] замість X | None
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E402", "N802", "N803"]
+"tests/*.py" = ["ARG001", "ARG002"]
+"seed*.py" = ["E402"]
+
+# ─── Форматування ────────────────────────────────────────────────────────────
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+skip-magic-trailing-comma = false
+
+# ─── Сортування імпортів ────────────────────────────────────────────────────
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ─── Mypy ───────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+no_implicit_reexport = true
+files = ["app/"]
+exclude = ["alembic/", "venv/", ".venv/"]
+
+# ─── Pytest ──────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "integration: Integration tests",
+    "unit: Unit tests (isolated)",
+    "slow: Slow tests (performance)",
+]
+
+# ─── Coverage ────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/tests/*", "*/alembic/*", "*/migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80.0

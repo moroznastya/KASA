@@ -1,15 +1,22 @@
+# ============================================================================
 # Kasa POS — Docker Compose
-# Запуск: docker compose up -d
-# Зупинка: docker compose down
+# ============================================================================
+# Запуск:         docker compose up -d
+# Зупинка:        docker compose down
+# Тестова база:   docker compose up -d db-test
+# ============================================================================
 #
-# ⚠️  УВАГА: Backend (kasa-backend) запускається локально (не в Docker),
-#    щоб використовувати локальну PostgreSQL на порту 5432.
-#    Docker-база (kasa-db) на порту 5434 залишається як резервна/тестова.
-#    Для локального запуску backend:
-#      cd backend && . venv/bin/activate && uvicorn app.main:app --reload
+# ⚠️  Поточна конфігурація:
+#     Backend (kasa-backend) запускається локально (не в Docker),
+#     щоб використовувати локальну PostgreSQL на порту 5432.
+#     Docker-база (kasa-db) на порту 5434 залишається як резервна/тестова.
+#
+#     Для локального запуску backend:
+#       cd backend && . venv/bin/activate && uvicorn app.main:app --reload
+# ============================================================================
 
 services:
-  # ─── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  # ─── PostgreSQL 16 (основна БД) ───────────────────────────────────────────
   db:
     image: postgres:16-alpine
     container_name: kasa-db
@@ -31,7 +38,30 @@ services:
     networks:
       - kasa-network
 
-  # ─── Backend (FastAPI) — закоментовано, запускається локально ──────────────
+  # ─── PostgreSQL 16 (тестова БД для CI/CD) ────────────────────────────────
+  db-test:
+    image: postgres:16-alpine
+    container_name: kasa-db-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pos_system_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pos_system_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - kasa-network
+    profiles:
+      - test
+      - ci
+
+  # ─── Backend (FastAPI) — закоментовано, запускається локально ─────────────
   # backend:
   #   build:
   #     context: ./backend
