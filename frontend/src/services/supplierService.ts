@@ -4,14 +4,13 @@ import { PaginatedResponse, SearchParams } from '@/types/api';
 
 export const supplierService = {
   async getSuppliers(params?: SearchParams): Promise<PaginatedResponse<Supplier>> {
-    const response = await api.get<Supplier[]>('/suppliers', { params });
-    const items = response.data;
+    const response = await api.get<{items: Supplier[]; total: number; page: number; page_size: number; pages: number}>('/suppliers', { params });
     return {
-      items,
-      total: items.length,
-      page: 1,
-      pages: 1,
-      size: items.length,
+      items: response.data.items || [],
+      total: response.data.total || 0,
+      page: response.data.page || 1,
+      pages: response.data.pages || 1,
+      size: response.data.page_size || 0,
     };
   },
 

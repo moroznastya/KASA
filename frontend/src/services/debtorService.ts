@@ -32,8 +32,10 @@ export interface DebtorPayment {
 
 export const debtorService = {
   async list(): Promise<Debtor[]> {
-    const response = await api.get<Debtor[]>('/debtors');
-    return response.data;
+    const response = await api.get<{items: Debtor[]}>('/debtors', {
+      params: { size: 1000 }
+    });
+    return response.data.items || [];
   },
 
   async search(query: string, limit: number = 10): Promise<Debtor[]> {
