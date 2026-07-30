@@ -104,11 +104,11 @@ class TestLedger:
 
         # Перевіряємо баланс
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
         assert response.status_code == 200
-        assert response.json()["current_balance"] == 7000.00
+        assert float(response.json()["current_balance"]) == 7000.00
 
     async def test_balance_after_payment(
         self,
@@ -151,10 +151,10 @@ class TestLedger:
 
         # Баланс = 7000
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 7000.00
+        assert float(response.json()["current_balance"]) == 7000.00
 
         # Оплачуємо 3000 грн
         response = await client.post(
@@ -174,10 +174,10 @@ class TestLedger:
 
         # Баланс = 4000 (7000 - 3000)
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 4000.00
+        assert float(response.json()["current_balance"]) == 4000.00
 
     async def test_full_ledger_cycle(
         self,
@@ -219,10 +219,10 @@ class TestLedger:
 
         # Баланс = 10000
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 10000.00
+        assert float(response.json()["current_balance"]) == 10000.00
 
         # 2. Оплата 4000 грн
         await client.post(
@@ -240,10 +240,10 @@ class TestLedger:
 
         # Баланс = 6000
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 6000.00
+        assert float(response.json()["current_balance"]) == 6000.00
 
         # 3. Повернення товару на 1000 грн
         response = await client.post(
@@ -273,10 +273,10 @@ class TestLedger:
 
         # Баланс = 5000 (6000 - 1000)
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 5000.00
+        assert float(response.json()["current_balance"]) == 5000.00
 
     async def test_ledger_history(
         self,
@@ -424,11 +424,11 @@ class TestLedger:
         entry = response.json()
         assert entry["operation_type"] == "correction"
         assert float(entry["amount"]) == 500.0
-        assert entry["balance_after"] == 500.00
+        assert float(entry["balance_after"]) == 500.0
 
         # Перевіряємо баланс
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 500.00
+        assert float(response.json()["current_balance"]) == 500.00

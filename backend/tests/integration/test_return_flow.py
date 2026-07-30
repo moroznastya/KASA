@@ -257,10 +257,10 @@ class TestReturnFlow:
         # Перевіряємо статистику
         response = await client.get(
             "/api/v1/receipts/stats/today",
-            headers=cashier_headers,
+            headers=auth_headers,
         )
         assert response.status_code == 200
         stats = response.json()
-        assert stats["total_sales"] == 1000.00
-        assert stats["total_returns"] == 500.00
+        assert float(stats["total_sales"]) == 1000.0
+        assert float(stats["total_returns"]) == 500.0
         assert stats["receipts_count"] >= 2

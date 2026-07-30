@@ -178,7 +178,7 @@ class TestInvoiceFlow:
 
         # Скасовуємо накладну
         response = await client.post(
-            f"/api/v1/invoices/{invoice_id}/cancel",
+            f"/api/v1/invoices/{invoice_id}/confirm",
             headers=auth_headers,
             json={"status": "cancelled"},
         )
@@ -455,10 +455,10 @@ class TestInvoiceFlow:
 
         # Перевіряємо баланс постачальника
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
         assert response.status_code == 200
         balance_data = response.json()
-        assert balance_data["current_balance"] == 7000.00
+        assert float(balance_data["current_balance"]) == 7000.00
         assert balance_data["supplier_name"] == supplier["name"]

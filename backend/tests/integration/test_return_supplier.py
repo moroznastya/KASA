@@ -225,10 +225,10 @@ class TestReturnSupplier:
 
         # Баланс = 15000
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 15000.00
+        assert float(response.json()["current_balance"]) == 15000.00
 
         # Створюємо та підтверджуємо повернення на 1500 грн
         response = await client.post(
@@ -259,10 +259,10 @@ class TestReturnSupplier:
 
         # Баланс = 13500 (15000 - 1500)
         response = await client.get(
-            f"/api/v1/ledger/{supplier['id']}/balance",
+            f"/api/v1/ledger/balance/{supplier['id']}",
             headers=auth_headers,
         )
-        assert response.json()["current_balance"] == 13500.00
+        assert float(response.json()["current_balance"]) == 13500.00
 
     async def test_cannot_confirm_return_twice(
         self,
