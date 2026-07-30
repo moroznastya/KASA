@@ -57,9 +57,6 @@ export async function printImage(
   imageBase64: string,
   printerName?: string,
 ): Promise<PrintResult> {
-  // Передаємо snake_case ключі, як очікує Rust:
-  // - data.image_base64
-  // - data.printer_name
   return invoke<PrintResult>('print_image', {
     data: {
       image_base64: imageBase64,
@@ -129,7 +126,9 @@ export async function getSystemInfo(): Promise<SystemInfo> {
  * @returns Шлях до збереженого файлу (наприклад "/home/user/Downloads/kasa_receipt_20260730_121500.png")
  */
 export async function saveReceiptImage(imageBase64: string): Promise<string> {
+  // ⚠️ Tauri v2 для простих параметрів (не структура) використовує camelCase
+  //    Rust: image_base64 → JS: imageBase64
   return invoke<string>('save_receipt_image', {
-    image_base64: imageBase64,
+    imageBase64: imageBase64,
   });
 }
