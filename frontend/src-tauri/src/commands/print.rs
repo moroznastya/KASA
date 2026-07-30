@@ -54,6 +54,15 @@ pub struct PrintResult {
     pub bytes_sent: Option<usize>,
 }
 
+/// Дані для друку зображення (Print-as-Image) з Base64 рядка
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct PrintImageData {
+    /// Base64-рядок зображення (PNG, без префіксу data:image/png;base64,)
+    pub image_base64: String,
+    /// Назва принтера (опціонально)
+    pub printer_name: Option<String>,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Допоміжні функції
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +214,36 @@ pub fn print_raster_image(
     }
     result?;
     Ok(ok_result("OK".to_string(), None))
+}
+
+/// Друк зображення з Base64 рядка (Print-as-Image).
+///
+/// React рендерить чек, конвертує в Base64 PNG і надсилає в Rust.
+/// Base64 має бути без префіксу `data:image/png;base64,` — тільки чистий Base64.
+#[tauri::command]
+pub fn print_image(data: PrintImageData) -> Result<PrintResult, String> {
+    eprintln!(
+        "[KASA] print_image: base64_len={}, printer={:?}",
+        data.image_base64.len(),
+        data.printer_name
+    );
+
+    // Декодуємо Base64
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let image_bytes = engine
+        .decode(&data.image_base64)
+        .map_err(|e| format!("Помилка декодування Base64: {}", e))?;
+
+    // Використовуємо існуючу функцію print_raster_image
+    print::print_raster_image(image_bytes, data.printer_name.as_deref())
+        .map_err(|e| e.to_string())?;
+
+    Ok(PrintResult {
+        success: true,
+        message: "Зображення надруковано".to_string(),
+        bytes_sent: None,
+    })
 }
 
 /// Отримати список доступних принтерів

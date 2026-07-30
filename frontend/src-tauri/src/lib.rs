@@ -33,6 +33,7 @@ pub fn run() {
             commands::print::print_receipt,
             commands::print::print_receipt_html,
             commands::print::print_raster_image,
+            commands::print::print_image,
             commands::print::get_printers,
             commands::print::print_preview,
             commands::print::open_cash_drawer,

@@ -47,6 +47,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
     generatePreview,
     printReceipt,
     loadDefaultTemplate,
+    receiptRef,               // ✅ Додано: ref для html2canvas
   } = useReceiptPrinter({ receipt });
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -142,6 +143,10 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
   if (!isReturnReceipt && autoPrint && (isPrinting || isPreviewLoading || !previewHtml) && !printError) {
     return (
       <Modal isOpen={isOpen} onClose={onClose} title="" size="sm" showCloseButton={false}>
+        {/* ✅ Прихований контейнер для html2canvas */}
+        <div ref={receiptRef} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+          <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
+        </div>
         <div className="flex flex-col items-center justify-center py-8 gap-3">
           <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
           <p className="text-sm text-gray-500">
@@ -198,6 +203,11 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
 
         {/* ── Основний контент ──────────────── */}
         <div className="py-4 space-y-4">
+          {/* ✅ Прихований контейнер для html2canvas (для Print-as-Image) */}
+          <div ref={receiptRef} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+            <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
+          </div>
+
           {/* Інформація про чек */}
           <div className={`rounded-lg p-4 ${
             isReturnReceipt

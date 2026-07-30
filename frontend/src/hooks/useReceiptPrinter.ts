@@ -3,6 +3,7 @@ import { printTemplateService } from '@/services/printTemplateService';
 import { settingsService } from '@/services/settingsService';
 import type { PrintTemplate } from '@/types/printTemplate';
 import type { Receipt, ReceiptItem } from '@/types/receipt';
+import { usePrintAsImage } from '@/hooks/usePrintAsImage';
 import {
   isTauri,
   printDocument,
@@ -27,16 +28,10 @@ export interface UseReceiptPrinterReturn {
   generatePreview: () => Promise<void>;
   printReceipt: () => Promise<void>;
   loadDefaultTemplate: (type?: string) => Promise<void>;
+  receiptRef: React.RefObject<HTMLDivElement | null>;
 }
 
 // ── НОВИЙ МЕТОД: Конвертація чеку в дані для прямого ESC/POS друку ────
-//
-// Збирає всі дані, які Rust потрібні для генерації ESC/POS байтів:
-//   - Інформація про магазин (з налаштувань)
-//   - Дані чеку (номер, дата, касир)
-//   - Масив товарів зі штрих-кодами, назвами, кількістю, цінами
-//   - Платіжна інформація
-//
 export function receiptToPrintData(
   receipt: Receipt,
   shopInfo: { shop_name: string; shop_address: string; tax_id: string },
@@ -81,9 +76,6 @@ export function receiptToPrintData(
 }
 
 // ── СТАРИЙ МЕТОД (для сумісності з HTML-шаблонами) ────────────────────
-//
-// Конвертує дані чеку в шаблонні змінні HTML
-//
 export function receiptToRenderData(
   receipt: Receipt,
   shopInfo?: { shop_name: string; shop_address: string; tax_id: string },
@@ -178,19 +170,13 @@ export function receiptToPlainText(
 
   const lines: string[] = [];
 
-  // Шапка
   lines.push(centerText(name, width));
   if (address) lines.push(centerText(address, width));
-
   lines.push(separator(width));
-
-  // Номер чеку, дата, касир
   lines.push(centerText(`ПОВЕРНЕННЯ № ${receipt.receipt_number}`, width));
-  // Номер оригінального чеку (якщо є)
   if (isReturn && receipt.original_receipt_number) {
     lines.push(centerText(`(Ориг. чек №${receipt.original_receipt_number})`, width));
   }
-  // Причина повернення (якщо є)
   if (isReturn && receipt.return_reason) {
     lines.push(centerText(`Причина: ${receipt.return_reason}`, width));
   }
@@ -198,7 +184,6 @@ export function receiptToPlainText(
   if (cashier) lines.push(`Касир: ${cashier}`);
   lines.push(separator(width));
 
-  // Товари
   for (const item of receipt.items) {
     const qty = Number(item.quantity);
     const price = Number(item.price);
@@ -206,19 +191,15 @@ export function receiptToPlainText(
     const nameStr = item.product_name || 'Товар';
     const qtyStr = formatNumber(qty);
     const totalStr = itemTotal.toFixed(2);
-
     const maxNameLen = width - 14;
     const shortName = nameStr.length > maxNameLen
       ? nameStr.substring(0, maxNameLen - 1) + '…'
       : nameStr;
-
     const line = `${shortName.padEnd(maxNameLen)} ${qtyStr.padStart(4)}  ${totalStr.padStart(7)}`;
     lines.push(line);
   }
 
   lines.push(separator(width));
-
-  // Підсумок
   if (isReturn) {
     lines.push(`СУМА ПОВЕРНЕННЯ:${total.toFixed(2).padStart(width - 16)}`);
   } else {
@@ -232,7 +213,6 @@ export function receiptToPlainText(
   return lines.join('\n');
 }
 
-// ── Допоміжні функції ────────────────────────
 function centerText(text: string, width: number): string {
   if (text.length >= width) return text;
   const padding = Math.floor((width - text.length) / 2);
@@ -276,7 +256,13 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
   const [devicePath, setDevicePath] = useState<string | undefined>(undefined);
   const [defaultTemplateType, setDefaultTemplateType] = useState<string>('receipt_58mm');
 
-  // Завантаження налаштувань магазину, принтера, порту та типу шаблону
+  // ── Print-as-Image через html2canvas ──
+  const {
+    receiptRef,
+    captureAndPrint: printAsImage,
+  } = usePrintAsImage({ showErrors: true });
+
+  // Завантаження налаштувань
   useEffect(() => {
     const loadSettings = async () => {
       try {
@@ -290,13 +276,10 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
           shop_address: getName('company_address'),
           tax_id: getName('company_edrpou'),
         });
-        // Назва принтера
         const printer = printingSettings.find((s: any) => s.key === 'printer_name')?.value;
         if (printer) setPrinterName(printer);
-        // Шлях до порту принтера
         const port = printingSettings.find((s: any) => s.key === 'printer_port')?.value;
         if (port) setDevicePath(port);
-        // Тип шаблону
         const templateType = printingSettings.find((s: any) => s.key === 'default_template_type')?.value;
         if (templateType) setDefaultTemplateType(templateType);
       } catch {
@@ -306,10 +289,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     loadSettings();
   }, []);
 
-  // Завантаження списку шаблонів
-  useEffect(() => {
-    loadTemplates();
-  }, []);
+  useEffect(() => { loadTemplates(); }, []);
 
   const loadTemplates = async () => {
     try {
@@ -349,7 +329,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     setPreviewHtml(null);
   }, [templates]);
 
-  // Генерація прев'ю (HTML для візуального перегляду)
+  // ── Генерація прев'ю ───────────────────────
   const generatePreview = useCallback(async () => {
     if (!selectedTemplate || !receipt) return;
     setIsPreviewLoading(true);
@@ -365,6 +345,49 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     }
   }, [selectedTemplate, receipt, shopInfo]);
 
+  // ── Отримати HTML чека ─────────────────────
+  // Повертає HTML з кешу (previewHtml) або генерує новий
+  const getReceiptHtml = useCallback(async (): Promise<string> => {
+    if (previewHtml) return previewHtml;
+
+    if (!selectedTemplate) {
+      throw new Error('Не вибрано шаблон для друку');
+    }
+
+    const renderData = receiptToRenderData(receipt!, shopInfo);
+    return await printTemplateService.render(selectedTemplate.id, renderData);
+  }, [previewHtml, selectedTemplate, receipt, shopInfo]);
+
+  // ── Забезпечити HTML у DOM перед друком ────
+  // Викликається ПЕРЕД printAsImage(), щоб html2canvas
+  // гарантовано знайшов контент у receiptRef.
+  const ensureHtmlInDom = useCallback(async (): Promise<void> => {
+    // Якщо previewHtml вже є — він вже в DOM через ререндер
+    if (previewHtml) return;
+
+    if (!selectedTemplate || !receipt) {
+      throw new Error('Немає шаблону або даних чеку');
+    }
+
+    // Генеруємо HTML
+    setIsPreviewLoading(true);
+    try {
+      const renderData = receiptToRenderData(receipt, shopInfo);
+      const html = await printTemplateService.render(selectedTemplate.id, renderData);
+      setPreviewHtml(html);
+
+      // ⏳ Чекаємо, поки React оновить DOM після setPreviewHtml
+      // Это гарантує, що receiptRef має актуальний вміст
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 100); // 100ms — достатньо для React batch update
+        });
+      });
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  }, [previewHtml, selectedTemplate, receipt, shopInfo]);
+
   // ─── Друк чеку ───
   const printReceipt = useCallback(async () => {
     if (!receipt) {
@@ -375,41 +398,62 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
 
     try {
       if (isTauri()) {
-        // ─── ДРУК ЧЕРЕЗ HTML ШАБЛОН: Chrome headless → PNG → ESC/POS ──
-        // Цей режим підтримує повний стиль шаблону (жирний, вирівнювання,
-        // різні розміри, логотип) та кирилицю
-        const effectiveTemplateType = receipt.receipt_type === 'return' ? 'return_receipt_58mm' : defaultTemplateType;
-        const selectedTemplateForType = receipt.receipt_type === 'return'
-          ? await printTemplateService.getDefault('return_receipt_58mm')
-          : null;
-        const finalTemplate = selectedTemplateForType || selectedTemplate;
+        // ═══════════════════════════════════════════════════════════════
+        // 🥇 ОСНОВНИЙ ШЛЯХ: PRINT-AS-IMAGE (html2canvas → PNG → Rust)
+        // ═══════════════════════════════════════════════════════════════
+        // Як працює:
+        //   1. ensureHtmlInDom() — гарантує, що HTML чека є в DOM
+        //      (всередині <div ref={receiptRef}>)
+        //   2. printAsImage() → captureToBase64() → html2canvas
+        //      знімає скріншот receiptRef → Canvas → Base64 PNG
+        //   3. printImage() → Tauri команда → Rust
+        //   4. Rust → print_raster_image() → ESC/POS растр → принтер
+        //
+        // ✅ Кирилиця: ПРАЦЮЄ, тому що текст рендериться браузером
+        //    (DejaVu/Noto шрифти з кирилицею). Rust отримує вже
+        //    готові пікселі — жодного кодування тексту!
+        // ═══════════════════════════════════════════════════════════════
 
-        if (!finalTemplate) {
-          throw new Error('Не вибрано шаблон для друку');
-        }
+        // Крок 1: гарантуємо HTML у DOM
+        await ensureHtmlInDom();
 
-        let html = previewHtml;
-        if (!html) {
-          const renderData = receiptToRenderData(receipt, shopInfo);
-          html = await printTemplateService.render(finalTemplate.id, renderData);
-        }
+        // Крок 2: друк через зображення
+        try {
+          await printAsImage(printerName);
+        } catch (imageError) {
+          console.warn('Print-as-Image не вдався, fallback на ESC/POS:', imageError);
 
-        const result = await printReceiptHtml(html, printerName);
-        if (!result.success) {
-          throw new Error(result.message);
+          // ─── Fallback 1: прямий ESC/POS ──
+          try {
+            const printData = receiptToPrintData(receipt, shopInfo);
+            const result = await printReceiptEscpos(printData, printerName, devicePath);
+            if (!result.success) {
+              throw new Error(result.message);
+            }
+          } catch (escposError) {
+            console.warn('ESC/POS друк не вдався, fallback на HTML:', escposError);
+
+            // ─── Fallback 2: Chrome headless → PNG → ESC/POS ──
+            const effectiveTemplateType = receipt.receipt_type === 'return' ? 'return_receipt_58mm' : defaultTemplateType;
+            const selectedTemplateForType = receipt.receipt_type === 'return'
+              ? await printTemplateService.getDefault('return_receipt_58mm')
+              : null;
+            const finalTemplate = selectedTemplateForType || selectedTemplate;
+
+            if (!finalTemplate) {
+              throw new Error('Не вибрано шаблон для друку');
+            }
+
+            const html = await getReceiptHtml();
+            const result = await printReceiptHtml(html, printerName);
+            if (!result.success) {
+              throw new Error(result.message);
+            }
+          }
         }
       } else {
         // ─── Браузер: друк HTML через window.print() ───────────
-        if (!selectedTemplate) {
-          throw new Error('Не вибрано шаблон для друку');
-        }
-
-        let html = previewHtml;
-        if (!html) {
-          const renderData = receiptToRenderData(receipt, shopInfo);
-          html = await printTemplateService.render(selectedTemplate.id, renderData);
-        }
-
+        const html = await getReceiptHtml();
         printViaBrowser(html);
       }
     } catch (err) {
@@ -418,7 +462,10 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     } finally {
       setIsPrinting(false);
     }
-  }, [selectedTemplate, receipt, previewHtml, shopInfo, printerName, devicePath]);
+  }, [
+    selectedTemplate, receipt, previewHtml, shopInfo, printerName, devicePath,
+    defaultTemplateType, ensureHtmlInDom, printAsImage, getReceiptHtml,
+  ]);
 
   return {
     templates,
@@ -430,6 +477,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     generatePreview,
     printReceipt,
     loadDefaultTemplate,
+    receiptRef,
   };
 }
 

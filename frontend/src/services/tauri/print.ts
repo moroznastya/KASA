@@ -3,6 +3,7 @@
  *
  * Надає функції для:
  *   - Прямого ESC/POS друку (генерація байтів на Rust стороні)
+ *   - Print-as-Image (Base64 → PNG → ESC/POS)
  *   - HTML-друку через CUPS/lp
  *   - Текстового друку
  *   - Перегляду перед друком
@@ -51,6 +52,16 @@ export interface ReceiptPrintData {
   footer?: string | null;
   original_receipt_number?: string | null;
   return_reason?: string | null;
+}
+
+/**
+ * Дані для друку зображення (Print-as-Image).
+ */
+export interface PrintImageData {
+  /** Base64-рядок зображення (PNG, без префіксу data:image/png;base64,) */
+  imageBase64: string;
+  /** Назва принтера (опціонально) */
+  printerName?: string;
 }
 
 // ─── Основні функції друку ──────────────────────────────────────────────────
@@ -125,6 +136,27 @@ export async function printRasterImage(imageData: number[], printerName?: string
   return invoke<PrintResult>('print_raster_image', {
     imageData,
     printerName: printerName ?? null,
+  });
+}
+
+/**
+ * Друк зображення (Base64) — Print-as-Image.
+ *
+ * React рендерить чек, конвертує в Base64 PNG, надсилає в Rust.
+ * Base64 має бути без префіксу `data:image/png;base64,` — тільки чистий Base64.
+ *
+ * @param imageBase64 - Base64-рядок зображення (PNG)
+ * @param printerName - Назва принтера (опціонально)
+ */
+export async function printImage(
+  imageBase64: string,
+  printerName?: string,
+): Promise<PrintResult> {
+  return invoke<PrintResult>('print_image', {
+    data: {
+      imageBase64,
+      printerName: printerName ?? null,
+    },
   });
 }
 

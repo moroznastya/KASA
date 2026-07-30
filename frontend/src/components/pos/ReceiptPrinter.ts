@@ -54,9 +54,9 @@ interface ReceiptData {
  */
 const THERMAL_STYLES = `
   @page {
-    width: 56mm;
+    width: 58mm;
     margin: 0;
-    padding: 1mm 2mm;
+    padding: 0;
   }
   * {
     margin: 0;
@@ -66,21 +66,22 @@ const THERMAL_STYLES = `
   body {
     font-family: 'Courier New', 'Consolas', monospace;
     font-size: 10px;
-    line-height: 1.3;
+    line-height: 1.2;
     color: #000;
-    width: 56mm;
+    width: 58mm;
+    padding: 1mm 2mm;
   }
   .header {
     text-align: center;
     margin-bottom: 4px;
   }
   .shop-name {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: bold;
     text-transform: uppercase;
   }
   .shop-address {
-    font-size: 18px;
+    font-size: 9px;
     color: #333;
   }
   .divider {
@@ -88,7 +89,7 @@ const THERMAL_STYLES = `
     margin: 4px 0;
   }
   .receipt-info {
-    font-size: 18px;
+    font-size: 9px;
     margin-bottom: 4px;
   }
   .receipt-info td {
@@ -133,12 +134,12 @@ const THERMAL_STYLES = `
     font-weight: bold;
   }
   .payment-info {
-    font-size: 18px;
+    font-size: 9px;
     margin-top: 4px;
   }
   .footer {
     text-align: center;
-    font-size: 18px;
+    font-size: 9px;
     margin-top: 6px;
     color: #555;
   }
@@ -150,6 +151,16 @@ const THERMAL_STYLES = `
   .bold { font-weight: bold; }
   .text-center { text-align: center; }
   .text-right { text-align: right; }
+  @media print {
+    .print-media-type {
+      box-shadow: none !important;
+      background: none !important;
+      background-color: transparent !important;
+      background-image: none !important;
+      text-shadow: none !important;
+      border-color: #000 !important;
+    }
+  }
 `;
 
 /**
