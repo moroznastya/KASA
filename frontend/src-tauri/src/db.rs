@@ -19,7 +19,7 @@ pub struct OfflineDatabase {
 impl OfflineDatabase {
     /// Створити/відкрити SQLite базу даних
     pub fn new() -> Result<Self, String> {
-        let db_path = Self::get_db_path()?;
+        let db_path = Self::get_db_path_inner()?;
 
         // Створюємо директорію, якщо не існує
         if let Some(parent) = db_path.parent() {
@@ -36,8 +36,15 @@ impl OfflineDatabase {
         Ok(db)
     }
 
-    /// Шлях до файлу бази даних
-    fn get_db_path() -> Result<PathBuf, String> {
+    /// Отримати шлях до файлу БД (публічний метод)
+    pub fn get_db_path(&self) -> String {
+        Self::get_db_path_inner()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Шлях до файлу бази даних (внутрішній)
+    fn get_db_path_inner() -> Result<PathBuf, String> {
         // Використовуємо стандартну директорію для даних застосунку
         let data_dir = dirs_next::data_dir()
             .ok_or_else(|| "Не вдалося визначити директорію даних".to_string())?;
@@ -113,14 +120,14 @@ impl OfflineDatabase {
     }
 
     /// Отримати кешовані товари
-    pub fn get_cached_products(&self, query: Option<&str>) -> Result<String, String> {
+    pub fn get_cached_products(&self, query: Option<&str>, limit: usize) -> Result<String, String> {
         let products: Vec<serde_json::Value> = if let Some(q) = query {
             let pattern = format!("%{}%", q);
             let mut stmt = self.conn.prepare(
-                "SELECT data FROM products WHERE data LIKE ?1 ORDER BY updated_at DESC LIMIT 100"
+                "SELECT data FROM products WHERE data LIKE ?1 ORDER BY updated_at DESC LIMIT ?2"
             ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-            let rows = stmt.query_map(params![pattern], |row| {
+            let rows = stmt.query_map(params![pattern, limit as i64], |row| {
                 let data: String = row.get(0)?;
                 Ok(data)
             }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
@@ -136,10 +143,10 @@ impl OfflineDatabase {
             result
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT data FROM products ORDER BY updated_at DESC LIMIT 1000"
+                "SELECT data FROM products ORDER BY updated_at DESC LIMIT ?1"
             ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![limit as i64], |row| {
                 let data: String = row.get(0)?;
                 Ok(data)
             }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
@@ -159,6 +166,24 @@ impl OfflineDatabase {
             .map_err(|e| format!("Помилка серіалізації: {}", e))
     }
 
+    /// Очистити кеш товарів
+    pub fn clear_product_cache(&self) -> Result<usize, String> {
+        let count = self.conn.execute("DELETE FROM products", [])
+            .map_err(|e| format!("Помилка очищення кешу товарів: {}", e))?;
+        Ok(count)
+    }
+
+    /// Отримати кількість кешованих товарів
+    pub fn get_product_count(&self) -> Result<usize, String> {
+        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM products")
+            .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+
+        let count: i64 = stmt.query_row([], |row| row.get(0))
+            .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+
+        Ok(count as usize)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Чеки (офлайн)
     // ─────────────────────────────────────────────────────────────────────────
@@ -173,8 +198,13 @@ impl OfflineDatabase {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Отримати несинхронізовані чеки
-    pub fn get_unsynced_receipts(&self) -> Result<String, String> {
+    /// Зберегти чек локально (синонім для зручності)
+    pub fn save_receipt_offline(&self, receipt_json: &str) -> Result<i64, String> {
+        self.save_receipt(receipt_json)
+    }
+
+    /// Отримати несинхронізовані чеки (JSON рядок)
+    pub fn get_unsynced_receipts_json(&self) -> Result<String, String> {
         let mut stmt = self.conn.prepare(
             "SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC"
         ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
@@ -196,6 +226,28 @@ impl OfflineDatabase {
             .map_err(|e| format!("Помилка серіалізації: {}", e))
     }
 
+    /// Отримати несинхронізовані чеки (Vec<Value>)
+    pub fn get_unsynced_receipts(&self) -> Result<Vec<serde_json::Value>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC"
+        ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let data: String = row.get(1)?;
+            Ok(serde_json::json!({"id": id, "data": data}))
+        }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+
+        let mut receipts = Vec::new();
+        for row in rows {
+            if let Ok(receipt) = row {
+                receipts.push(receipt);
+            }
+        }
+
+        Ok(receipts)
+    }
+
     /// Позначити чек як синхронізований
     pub fn mark_synced(&self, receipt_id: i64) -> Result<(), String> {
         self.conn.execute(
@@ -204,6 +256,22 @@ impl OfflineDatabase {
         ).map_err(|e| format!("Помилка оновлення: {}", e))?;
 
         Ok(())
+    }
+
+    /// Позначити чек як синхронізований (синонім)
+    pub fn mark_receipt_synced(&self, receipt_id: i64) -> Result<(), String> {
+        self.mark_synced(receipt_id)
+    }
+
+    /// Кількість несинхронізованих чеків
+    pub fn count_unsynced_receipts(&self) -> Result<usize, String> {
+        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM receipts WHERE synced = 0")
+            .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+
+        let count: i64 = stmt.query_row([], |row| row.get(0))
+            .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+
+        Ok(count as usize)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -221,6 +289,11 @@ impl OfflineDatabase {
         Ok(())
     }
 
+    /// Зберегти налаштування (синонім)
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        self.save_setting(key, value)
+    }
+
     /// Отримати налаштування
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
         let mut stmt = self.conn.prepare(
@@ -236,5 +309,13 @@ impl OfflineDatabase {
             Some(Ok(value)) => Ok(Some(value)),
             _ => Ok(None),
         }
+    }
+
+    /// Отримати розмір файлу БД
+    pub fn get_db_size(&self) -> Result<u64, String> {
+        let path = Self::get_db_path_inner()?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| format!("Помилка отримання розміру БД: {}", e))?;
+        Ok(metadata.len())
     }
 }
