@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING
 # ─── Event Bus ───────────────────────────────────────────────────────────────
 from app.infrastructure.event_bus import LocalEventBus
 
+# ─── Cache ───────────────────────────────────────────────────────────────────
+from app.infrastructure.cache import RedisCacheService
+
 # ─── Repository Implementations & Unit of Work ──────────────────────────────
 from app.infrastructure.persistence.repositories import (
     SQLAlchemyProductRepository,
@@ -77,6 +80,14 @@ def register_all_services(container: DIContainer) -> None:
     # Event Bus — singleton, один на весь застосунок
     event_bus = LocalEventBus()
     container.register_instance("event_bus", event_bus)
+
+    # Cache Service — singleton, один пул з'єднань з Redis
+    from app.config import settings as app_settings
+    cache_service = RedisCacheService(
+        url=app_settings.REDIS_ACTUAL_URL,
+        default_ttl=app_settings.CACHE_TTL_DEFAULT,
+    )
+    container.register_instance("cache_service", cache_service)
 
     # ═══════════════════════════════════════════════════════════════════════
     # 2. Repository Implementations (transient)
@@ -177,7 +188,7 @@ def register_all_services(container: DIContainer) -> None:
     # ═══════════════════════════════════════════════════════════════════════
 
     logging_handler = LoggingHandler()
-    cache_handler = CacheInvalidationHandler()
+    cache_handler = CacheInvalidationHandler(cache_service=cache_service)
     audit_handler = AuditHandler()
 
     event_bus.subscribe(logging_handler.handle)
@@ -185,7 +196,9 @@ def register_all_services(container: DIContainer) -> None:
     event_bus.subscribe(audit_handler.handle)
 
     logger.info("✅ Event Handlers зареєстровано")
-
+    logger.info(
+        f"✅ Cache Service зареєстровано: {app_settings.REDIS_ACTUAL_URL}"
+    )
     logger.info(
         f"Registered {len(container.registered_services)} services in DI Container"
     )

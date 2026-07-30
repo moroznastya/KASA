@@ -1,4 +1,10 @@
-"""Product API v2 — використовує ProductUseCases."""
+"""Product API v2 — використовує ProductUseCases з кешуванням.
+
+Кешування:
+- GET /products — кеш списку (TTL: 60s), інвалідація при POST
+- GET /products/{id} — кеш продукту (TTL: 300s), інвалідація при PUT/DELETE
+- POST/PUT/DELETE — інвалідація відповідних кешів
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ProductUseCases
-from .deps import get_product_use_cases
+from app.domain.services.cache_service import ICacheService
+from app.config import settings
+from .deps import get_product_use_cases, get_cache_service
+from .cache_utils import cached, invalidate_product_cache
 
 router = APIRouter(prefix="/products", tags=["products_v2"])
 
@@ -72,41 +81,61 @@ async def list_products(
     search: str | None = None,
     category_id: UUID | None = None,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати список товарів з пагінацією та фільтрацією."""
-    products, total = await use_cases.search_products(
-        query=search,
-        category_id=category_id,
-        page=page,
-        size=size,
+    """Отримати список товарів з пагінацією, фільтрацією та кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="products:list",
+        ttl=settings.CACHE_TTL_PRODUCTS,
     )
-    return {
-        "items": products,
-        "total": total,
-        "page": page,
-        "size": size,
-    }
+    async def _fetch(page: int, size: int, search: str | None, category_id: UUID | None):
+        products, total = await use_cases.search_products(
+            query=search,
+            category_id=category_id,
+            page=page,
+            size=size,
+        )
+        return {
+            "items": products,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
+
+    return await _fetch(page, size, search, category_id)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: UUID,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати товар за ID."""
-    try:
-        product = await use_cases.get_product(product_id)
-        return product
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Отримати товар за ID з кешуванням (TTL: 300s)."""
+
+    @cached(
+        cache,
+        prefix=f"product:{product_id}",
+        ttl=settings.CACHE_TTL_PRODUCT_DETAIL,
+    )
+    async def _fetch(product_id: UUID):
+        try:
+            return await use_cases.get_product(product_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(product_id)
 
 
 @router.post("", response_model=ProductResponse, status_code=201)
 async def create_product(
     data: CreateProductRequest,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Створити новий товар."""
+    """Створити новий товар та інвалідувати кеш списку."""
     try:
         from app.application.dto.product_dto import ProductCreateDTO
         dto = ProductCreateDTO(
@@ -121,7 +150,12 @@ async def create_product(
             sku=data.sku,
             description=data.description,
         )
-        return await use_cases.create_product(dto)
+        result = await use_cases.create_product(dto)
+
+        # Інвалідація кешу списку продуктів
+        await invalidate_product_cache(cache)
+
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -131,8 +165,9 @@ async def update_product(
     product_id: UUID,
     data: UpdateProductRequest,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Оновити товар."""
+    """Оновити товар та інвалідувати кеш."""
     try:
         from app.application.dto.product_dto import ProductUpdateDTO
         dto = ProductUpdateDTO(
@@ -145,7 +180,12 @@ async def update_product(
             sku=data.sku,
             description=data.description,
         )
-        return await use_cases.update_product(product_id, dto)
+        result = await use_cases.update_product(product_id, dto)
+
+        # Інвалідація кешу (список + конкретний продукт)
+        await invalidate_product_cache(cache)
+
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400 if "не знайдено" not in str(e) else 404, detail=str(e))
 
@@ -154,9 +194,13 @@ async def update_product(
 async def delete_product(
     product_id: UUID,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Видалити товар."""
+    """Видалити товар та інвалідувати кеш."""
     try:
         await use_cases.delete_product(product_id)
+
+        # Інвалідація кешу
+        await invalidate_product_cache(cache)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

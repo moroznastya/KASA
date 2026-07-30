@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # Безпека
     # ──────────────────────────────────────────────
-    SECRET_KEY: str = "change-me-in-production"
+    SECRET_KEY: str = "cd0e5965b2bca226a1270c59716fe7e83341ec18212f0bfdbd592aaa8ba7c881"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 годин
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 днів
 
@@ -75,13 +75,38 @@ class Settings(BaseSettings):
     RATE_LIMIT_AUTH: str = "5/minute"
 
     # ──────────────────────────────────────────────
+    # Redis / Cache — конфігурація кешування
+    # ──────────────────────────────────────────────
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: str | None = None
+
+    @property
+    def REDIS_ACTUAL_URL(self) -> str:
+        """Повертає фактичний Redis URL (з REDIS_URL або з компонентів)."""
+        if self.REDIS_URL:
+            return self.REDIS_URL
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    # ─── TTL для кешу (секунди) ──────────────────────────────────────────────
+    CACHE_TTL_DEFAULT: int = 300          # 5 хвилин (загальний)
+    CACHE_TTL_PRODUCTS: int = 60          # 1 хвилина (списки продуктів)
+    CACHE_TTL_PRODUCT_DETAIL: int = 300   # 5 хвилин (деталі продукту)
+    CACHE_TTL_CATEGORIES: int = 300       # 5 хвилин (категорії)
+    CACHE_TTL_INVOICES: int = 600         # 10 хвилин (накладні)
+
+    # ──────────────────────────────────────────────
     # Налаштування застосунку
     # ──────────────────────────────────────────────
     APP_NAME: str = "Kasa POS"
     DEBUG: bool = False
 
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file=Path(__file__).resolve().parent / ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
     )

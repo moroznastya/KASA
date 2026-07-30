@@ -1,4 +1,4 @@
-"""Dependencies для API v2 — отримання Use Cases через DI."""
+"""Dependencies для API v2 — отримання Use Cases та сервісів через DI."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from app.application.use_cases import (
     LedgerUseCases,
 )
 from app.domain.repositories import ICategoryRepository
+from app.domain.services.cache_service import ICacheService
 
 
 async def get_product_use_cases(request: Request) -> ProductUseCases:
@@ -44,3 +45,12 @@ async def get_ledger_use_cases(request: Request) -> LedgerUseCases:
 async def get_category_repository(request: Request) -> ICategoryRepository:
     """Отримати CategoryRepository з DI контейнера."""
     return request.app.state.di_container.resolve("category_repository")
+
+
+async def get_cache_service(request: Request) -> ICacheService:
+    """Отримати ICacheService з DI контейнера.
+
+    Повертає RedisCacheService, зареєстрований як singleton.
+    Якщо Redis недоступний, повертає NullCacheService (без кешу).
+    """
+    return request.app.state.di_container.resolve("cache_service")

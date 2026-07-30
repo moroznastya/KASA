@@ -2,13 +2,14 @@
 Головний файл FastAPI застосунку Kasa POS.
 
 Підключає:
-  - Всі API роутери v1
+  - Всі API роутери v1 та v2
   - CORS middleware (через settings)
   - Swagger документацію
   - Middleware авторизації
   - Rate Limiting (slowapi)
   - DI Container та Event Bus (ініціалізація в lifespan)
   - Обробники помилок
+  - Graceful shutdown для Redis cache
 """
 
 from contextlib import asynccontextmanager
@@ -91,10 +92,11 @@ async def lifespan(app: FastAPI):
     При старті:
     - Ініціалізація DI Container
     - Ініціалізація Event Bus
-    - Реєстрація всіх сервісів
+    - Реєстрація всіх сервісів (включно з Redis cache)
 
     При завершенні:
-    - Закриття з'єднань
+    - Graceful shutdown Redis cache connection
+    - Очищення глобальних посилань
     """
     global container, event_bus
 
@@ -116,19 +118,29 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ─── Завершення роботи ──────────────────────────────────────────────────
-    print(f"👋 {settings.APP_NAME} завершує роботу.")
+    # ─── Graceful Shutdown ──────────────────────────────────────────────────
+    print(f"👋 {settings.APP_NAME} завершує роботу...")
+
+    # Закриваємо з'єднання з Redis (якщо є)
+    try:
+        if container and container.has("cache_service"):
+            cache_service = container.resolve("cache_service")
+            await cache_service.close()
+            print("   ✅ Redis cache connection closed")
+    except Exception as e:
+        print(f"   ⚠️  Помилка при закритті Redis: {e}")
 
     # Очищаємо глобальні посилання
     container = None
     event_bus = None
+    print(f"   ✅ Cleanup завершено")
 
 
 # ─── Створення застосунку ────────────────────────────────────────────────────
 app = FastAPI(
     title=settings.APP_NAME,
     description=APP_DESCRIPTION,
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -182,7 +194,7 @@ async def health_check():
     return {
         "status": "ok",
         "app": settings.APP_NAME,
-        "version": "1.0.0",
+        "version": "2.0.0",
     }
 
 
@@ -191,7 +203,7 @@ async def root():
     """Кореневий ендпоінт з інформацією про API."""
     return {
         "app": settings.APP_NAME,
-        "version": "1.0.0",
+        "version": "2.0.0",
         "docs": "/docs",
         "redoc": "/redoc",
     }
@@ -206,7 +218,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     Логує помилку та повертає 500.
     В DEBUG режимі додає тип помилки для зручності розробки.
     """
-    # В майбутньому тут можна додати логування в файл/Sentry
     print(f"❌ Непередбачена помилка: {exc}")
 
     content = {
