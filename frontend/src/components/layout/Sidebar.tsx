@@ -16,7 +16,6 @@ import {
   UserCog,
   Settings,
   Clock,
-  Tag,
   Printer,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
@@ -67,15 +66,8 @@ const navItems: NavItem[] = [
     roles: ['admin', 'cashier'],
   },
   {
-    path: '/printing/price-tags',
-    label: 'Друк цінників',
-    icon: <Tag className="w-5 h-5" />,
-    module: 'products',
-    roles: ['admin', 'cashier'],
-  },
-  {
-    path: '/printing/labels',
-    label: 'Друк етикеток',
+    path: '/printing',
+    label: 'Друк цінників та етикеток',
     icon: <Printer className="w-5 h-5" />,
     module: 'products',
     roles: ['admin', 'cashier'],

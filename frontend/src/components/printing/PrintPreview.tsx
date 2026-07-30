@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { FileText, Loader2 } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { FileText } from 'lucide-react';
 import { Spinner } from '@/components/ui/Spinner';
 
 // ── Пропси ───────────────────────────────────────
@@ -19,19 +19,44 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
   totalLabels,
   type,
 }) => {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-
-  // Оновлюємо iframe при зміні html
-  useEffect(() => {
-    if (html && iframeRef.current) {
-      iframeRef.current.srcdoc = html;
-    }
+  // Додаємо скрипт масштабування в HTML через useMemo
+  const scaledHtml = useMemo(() => {
+    if (!html) return undefined;
+    return html.replace(
+      '</body>',
+      `<script>
+        (function() {
+          function fitContent() {
+            var body = document.body;
+            if (!body) return;
+            var container = document.querySelector('.page') || body;
+            if (!container || !container.offsetWidth) return;
+            var scaleX = window.innerWidth / container.offsetWidth;
+            var scaleY = window.innerHeight / container.offsetHeight;
+            var scale = Math.min(scaleX, scaleY, 1);
+            if (scale < 1) {
+              body.style.transformOrigin = 'top left';
+              body.style.transform = 'scale(' + scale + ')';
+              body.style.width = (100 / scale) + '%';
+              body.style.overflow = 'hidden';
+            }
+          }
+          if (document.readyState === 'complete') {
+            fitContent();
+          } else {
+            window.addEventListener('load', fitContent);
+          }
+        })();
+      </script></body>`
+    );
   }, [html]);
+
+  const showMeta = html && (totalPages !== undefined || totalLabels !== undefined);
 
   return (
     <div className="flex flex-col h-full">
       {/* Мета-інформація */}
-      {(totalPages !== undefined || totalLabels !== undefined) && html && !isLoading && (
+      {showMeta && (
         <div className="flex items-center gap-3 mb-3 px-1">
           {type === 'price_tag' && totalPages !== undefined && (
             <div className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 dark:bg-primary-900/20 rounded-lg">
@@ -52,7 +77,14 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
 
       {/* Прев'ю */}
       <div className="flex-1 border border-gray-200 dark:border-slate-600 rounded-lg overflow-hidden bg-white dark:bg-slate-800 min-h-[300px]">
-        {isLoading ? (
+        {html ? (
+          <iframe
+            title={`Прев'ю ${type === 'price_tag' ? 'цінників' : 'етикеток'}`}
+            className="w-full h-full min-h-[300px] overflow-hidden"
+            sandbox="allow-scripts allow-same-origin"
+            srcDoc={scaledHtml}
+          />
+        ) : isLoading ? (
           <div className="flex items-center justify-center h-full min-h-[300px]">
             <div className="text-center p-6">
               <Spinner size="md" />
@@ -61,13 +93,6 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
               </p>
             </div>
           </div>
-        ) : html ? (
-          <iframe
-            ref={iframeRef}
-            title={`Прев'ю ${type === 'price_tag' ? 'цінників' : 'етикеток'}`}
-            className="w-full h-full min-h-[300px]"
-            sandbox="allow-same-origin"
-          />
         ) : (
           <div className="flex items-center justify-center h-full min-h-[300px] text-gray-400 dark:text-gray-500">
             <div className="text-center p-6">

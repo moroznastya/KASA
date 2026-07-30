@@ -34,8 +34,7 @@ const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
 const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
-const PrintPriceTagsPage = lazy(() => import('@/pages/printing/PrintPriceTagsPage'));
-const PrintLabelsPage = lazy(() => import('@/pages/printing/PrintLabelsPage'));
+const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -71,7 +70,11 @@ const App: React.FC = () => {
   }, [theme]);
 
   return (
-    <BrowserRouter>
+    <BrowserRouter
+  future={{
+    v7_startTransition: true,
+    v7_relativeSplatPath: true,
+  }}>
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -250,8 +253,7 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
             <Route path="work-time" element={<WorkTimePage />} />
-            <Route path="printing/price-tags" element={<PrintPriceTagsPage />} />
-            <Route path="printing/labels" element={<PrintLabelsPage />} />
+            <Route path="printing" element={<PrintLabelsPriceTagsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

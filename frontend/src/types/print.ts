@@ -1,4 +1,62 @@
 // ── Типи для друку цінників та етикеток ────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Типи друку (для об'єднаної сторінки)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Тип друку */
+export type PrintType = 'price_tag' | 'label';
+
+/** Конфігурація типу друку */
+export interface PrintTypeConfig {
+  id: PrintType;
+  label: string;
+  description: string;
+  defaultSettings: {
+    templateId: string;
+    widthMm: number;
+    heightMm: number;
+    gapMm: number;
+    marginMm: number;
+  };
+  templateType: string;
+  apiEndpoint: 'renderPriceTags' | 'renderLabels';
+}
+
+/** Конфігурація всіх типів друку */
+export const PRINT_TYPES: Record<PrintType, PrintTypeConfig> = {
+  price_tag: {
+    id: 'price_tag',
+    label: 'Цінник',
+    description: 'Друк цінників на A4',
+    defaultSettings: {
+      templateId: '',
+      widthMm: 40,
+      heightMm: 25,
+      gapMm: 3,
+      marginMm: 10,
+    },
+    templateType: 'price_tag',
+    apiEndpoint: 'renderPriceTags',
+  },
+  label: {
+    id: 'label',
+    label: 'Етикетка',
+    description: 'Друк етикеток на термопринтер',
+    defaultSettings: {
+      templateId: '',
+      widthMm: 58,
+      heightMm: 40,
+      gapMm: 2,
+      marginMm: 0,
+    },
+    templateType: 'label',
+    apiEndpoint: 'renderLabels',
+  },
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Основни типи (використовуються API)
+// ═════════════════════════════════════════════════════════════════════════════
 
 /** Товар для рендеру цінників/етикеток */
 export interface PrintProductItem {
