@@ -35,8 +35,8 @@ from app.schemas.print import (
     LabelRenderRequest,
     LabelRenderResponse,
 )
-from app.services.auth_service import AuthService
-from app.services.price_tag_print_service import PriceTagPrintService
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +321,7 @@ async def test_print(
     }
     ```
     """
-    from app.services.print_template_service import PrintTemplateService
+    from app.infrastructure.services.print_template_service import PrintTemplateService
 
     # 1. Отримуємо дефолтний шаблон для вказаного типу
     service = PrintTemplateService(session)

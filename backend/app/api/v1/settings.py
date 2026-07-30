@@ -20,7 +20,7 @@ from app.schemas.settings import (
     SettingsModuleResponse,
     SystemSettingBatchUpdate,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.user import User
 
 router = APIRouter(prefix="/settings", tags=["Settings"])

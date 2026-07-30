@@ -41,7 +41,7 @@ from app.schemas.user import (
     UserPinLoginRequest,
     UserTokenResponse,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 from app.domain.entities.user import User as UserEntity
 
 # Rate limiter для auth ендпоінтів (5 запитів на хвилину)

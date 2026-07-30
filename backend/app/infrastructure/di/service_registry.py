@@ -39,10 +39,10 @@ from app.application.use_cases.ledger_use_cases import LedgerUseCases
 from app.application.use_cases.auth_use_cases import AuthUseCases
 
 # ─── Services (старі, для зворотної сумісності) ─────────────────────────────
-from app.services.product_service import ProductService
-from app.services.document_service import DocumentService
-from app.services.ledger_service import LedgerService
-from app.services.auth_service import AuthService
+from app.domain.services.product_service import ProductService
+from app.domain.services.document_service import DocumentService
+from app.domain.services.ledger_service import LedgerService
+from app.domain.services.auth_service import AuthService
 
 # ─── Application Services ────────────────────────────────────────────────────
 from app.application.services.settings_service import SettingsService

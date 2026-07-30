@@ -21,7 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.services.document_service import generate_invoice_number
+from app.domain.services.document_service import generate_invoice_number
 from app.infrastructure.persistence.models.supplier import Supplier
 from app.schemas.invoice import (
     InvoiceCreate,
@@ -31,8 +31,8 @@ from app.schemas.invoice import (
     InvoiceConfirmRequest,
     InvoicePaymentInfo,
 )
-from app.services.auth_service import AuthService
-from app.services.document_service import DocumentService
+from app.domain.services.auth_service import AuthService
+from app.domain.services.document_service import DocumentService
 from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger, LedgerOperationType
 
 router = APIRouter(

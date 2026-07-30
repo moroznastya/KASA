@@ -9,8 +9,8 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from app.services.auth_service import AuthService
-from app.services.ocr_service import OCRService
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.services.ocr_service import OCRService
 
 logger = logging.getLogger(__name__)
 

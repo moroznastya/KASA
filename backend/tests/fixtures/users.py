@@ -11,7 +11,7 @@ import factory
 from factory import fuzzy
 
 from app.infrastructure.persistence.models.user import User, UserRole
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 class UserFactory(factory.Factory):

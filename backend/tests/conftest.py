@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import (
 from app.database import Base, get_session
 from app.main import app
 from app.infrastructure.persistence.models.user import User, UserRole
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 # ─── Тестова БД ──────────────────────────────────────────────────────────────
 TEST_DB_URL = "postgresql+asyncpg://kasa_user:kasa_pass@localhost:5432/kasa_test"

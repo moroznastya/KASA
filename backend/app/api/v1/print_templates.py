@@ -32,8 +32,8 @@ from app.schemas.print_template import (
     TemplateRenderRequest,
     TemplateRenderResponse,
 )
-from app.services.auth_service import AuthService
-from app.services.print_template_service import PrintTemplateService
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.services.print_template_service import PrintTemplateService
 
 router = APIRouter(
     prefix="/print-templates",

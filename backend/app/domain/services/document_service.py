@@ -26,8 +26,8 @@ from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, 
 from app.infrastructure.persistence.models.purchase_order import PurchaseOrder
 from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus
 from app.infrastructure.persistence.models.product import Product
-from app.services.product_service import ProductService
-from app.services.ledger_service import LedgerService
+from app.domain.services.product_service import ProductService
+from app.domain.services.ledger_service import LedgerService
 
 
 # Тип документа для узагальненої роботи

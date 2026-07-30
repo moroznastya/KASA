@@ -29,8 +29,8 @@ from app.schemas.purchase_order import (
     PurchaseOrderResponse,
     PurchaseOrderConfirmRequest,
 )
-from app.services.auth_service import AuthService
-from app.services.product_service import ProductService
+from app.domain.services.auth_service import AuthService
+from app.domain.services.product_service import ProductService
 
 router = APIRouter(
     prefix="/purchase-orders",

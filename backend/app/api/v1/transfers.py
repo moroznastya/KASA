@@ -26,7 +26,7 @@ from app.schemas.transfer import (
     TransferResponse,
     TransferConfirmRequest,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 async def generate_transfer_number(session: AsyncSession) -> str:
@@ -48,7 +48,7 @@ async def generate_transfer_number(session: AsyncSession) -> str:
 
 
 
-from app.services.document_service import DocumentService
+from app.domain.services.document_service import DocumentService
 
 router = APIRouter(
     prefix="/transfers",

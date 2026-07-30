@@ -24,7 +24,7 @@ from app.schemas.work_session import (
     WorkSessionDetail,
     UserHoursSummary,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/work-sessions",

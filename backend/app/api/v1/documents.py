@@ -38,8 +38,8 @@ from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem as InventoryItemModel
-from app.services.auth_service import AuthService
-from app.services.document_service import DocumentService, generate_invoice_number
+from app.domain.services.auth_service import AuthService
+from app.domain.services.document_service import DocumentService, generate_invoice_number
 
 router = APIRouter(
     prefix="/documents",

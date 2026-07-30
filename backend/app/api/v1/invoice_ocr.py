@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.services.auth_service import AuthService
-from app.services.invoice_ocr_service import InvoiceOCRService
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.services.invoice_ocr_service import InvoiceOCRService
 
 logger = logging.getLogger(__name__)
 

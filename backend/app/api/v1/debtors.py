@@ -31,7 +31,7 @@ from app.schemas.debtor import (
     DebtorPaymentResponse,
 )
 from app.schemas.receipt import ReceiptResponse
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/debtors",

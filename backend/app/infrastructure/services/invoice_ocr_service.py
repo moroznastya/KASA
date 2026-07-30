@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.barcode import Barcode
-from app.services.ocr_service import OCRService
+from app.infrastructure.services.ocr_service import OCRService
 
 logger = logging.getLogger(__name__)
 

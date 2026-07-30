@@ -10,7 +10,7 @@ Middleware для авторизації запитів.
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 # Список публічних шляхів, які не потребують авторизації

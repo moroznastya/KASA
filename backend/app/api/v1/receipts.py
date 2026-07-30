@@ -36,8 +36,8 @@ from app.schemas.receipt import (
     ProductRecentSalesListResponse,
     ProductBriefInfo,
 )
-from app.services.auth_service import AuthService
-from app.services.product_service import ProductService
+from app.domain.services.auth_service import AuthService
+from app.domain.services.product_service import ProductService
 from app.application.services.settings_service import SettingsService
 from app.domain.value_objects.rounding import round_amount
 

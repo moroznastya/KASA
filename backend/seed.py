@@ -28,7 +28,7 @@ from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
 from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem, WriteOffReason
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 async def seed():

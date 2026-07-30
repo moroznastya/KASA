@@ -23,7 +23,7 @@ from google.genai import types as genai_types
 logger = logging.getLogger(__name__)
 
 # Шлях до файлу з ключами відносно кореня проекту
-KEYS_FILE_PATH = Path(__file__).resolve().parent.parent.parent / "keys.txt"
+KEYS_FILE_PATH = Path(__file__).resolve().parent.parent.parent.parent / "keys.txt"
 
 # Затримка між звичайними запитами (секунди)
 REQUEST_DELAY_SECONDS = 5

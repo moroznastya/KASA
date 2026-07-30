@@ -28,7 +28,7 @@ from app.schemas.inventory import (
     InventorySummary,
     InventoryConfirmRequest,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 async def generate_inventory_number(session: AsyncSession) -> str:
@@ -86,7 +86,7 @@ def calculate_summary(items: list[InventoryItemResponse]) -> dict:
     }
 
 
-from app.services.document_service import DocumentService
+from app.domain.services.document_service import DocumentService
 
 router = APIRouter(
     prefix="/inventory",

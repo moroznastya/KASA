@@ -31,8 +31,8 @@ from app.schemas.supplier_products import (
     SupplierProductsResponse,
     SupplierProductMovementsResponse,
 )
-from app.services.auth_service import AuthService
-from app.services.supplier_product_service import SupplierProductService
+from app.domain.services.auth_service import AuthService
+from app.domain.services.supplier_product_service import SupplierProductService
 
 router = APIRouter(
     prefix="/suppliers",

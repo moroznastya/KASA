@@ -117,7 +117,7 @@ class TestLoginByPin:
         """Логін користувача без PIN-коду."""
         from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
-        from app.services.auth_service import AuthService
+        from app.domain.services.auth_service import AuthService
 
         user = User(
             id=uuid4(),
@@ -260,7 +260,7 @@ class TestInactiveUser:
         """Неактивний користувач не може увійти."""
         from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
-        from app.services.auth_service import AuthService
+        from app.domain.services.auth_service import AuthService
 
         user = User(
             id=uuid4(),

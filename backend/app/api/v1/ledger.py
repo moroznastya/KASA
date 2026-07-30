@@ -18,8 +18,8 @@ from app.schemas.ledger import (
     SupplierLedgerResponse,
     SupplierLedgerBalanceResponse,
 )
-from app.services.auth_service import AuthService
-from app.services.ledger_service import LedgerService
+from app.domain.services.auth_service import AuthService
+from app.domain.services.ledger_service import LedgerService
 
 router = APIRouter(
     prefix="/ledger",

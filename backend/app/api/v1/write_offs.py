@@ -24,7 +24,7 @@ from app.schemas.write_off import (
     WriteOffUpdate,
     WriteOffResponse,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 
 async def generate_write_off_number(session: AsyncSession) -> str:
@@ -46,7 +46,7 @@ async def generate_write_off_number(session: AsyncSession) -> str:
 
 
 
-from app.services.document_service import DocumentService
+from app.domain.services.document_service import DocumentService
 
 router = APIRouter(
     prefix="/write-offs",

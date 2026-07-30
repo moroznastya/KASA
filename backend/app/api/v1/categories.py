@@ -24,7 +24,7 @@ from app.schemas.category import (
     CategoryResponse,
     CategoryTreeResponse,
 )
-from app.services.auth_service import AuthService
+from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/categories",
