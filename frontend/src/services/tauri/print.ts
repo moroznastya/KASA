@@ -28,13 +28,16 @@ export interface SystemInfo {
 
 /**
  * Дані для друку зображення (Print-as-Image).
- * TypeScript інтерфейс — camelCase, але Tauri очікує snake_case ключі.
+ *
+ * ⚠️ Tauri v2: поля Rust-структури передаються в snake_case.
  */
 export interface PrintImageData {
   /** Base64-рядок зображення (PNG, без префіксу data:image/png;base64,) */
-  imageBase64: string;
+  image_base64: string;
   /** Назва принтера (опціонально) */
-  printerName?: string;
+  printer_name?: string | null;
+  /** Шлях до пристрою (опціонально, напр. /dev/usb/lp0) */
+  device_path?: string | null;
 }
 
 // ─── Основні функції друку ──────────────────────────────────────────────────
@@ -45,39 +48,45 @@ export interface PrintImageData {
  * React рендерить чек, конвертує в Base64 PNG, надсилає в Rust.
  * Base64 має бути без префіксу `data:image/png;base64,` — тільки чистий Base64.
  *
- * ⚠️ Tauri v2: Rust команда `print_image(data: PrintImageData)` очікує
- *    аргумент з ІМЕНЕМ `data` на верхньому рівні, а всередині — snake_case поля.
+ * ⚠️ Tauri v2: команда `print_image(data: PrintImageData)` очікує
+ *    аргумент з ІМЕНЕМ `data` та snake_case полями всередині.
  *
- * ✅ ПРАВИЛЬНО: invoke('print_image', { data: { image_base64, printer_name } })
+ * ✅ invoke('print_image', { data: { image_base64, printer_name, device_path } })
  *
  * @param imageBase64 - Base64-рядок зображення (PNG)
  * @param printerName - Назва принтера (опціонально)
+ * @param devicePath  - Шлях до пристрою (опціонально, напр. /dev/usb/lp0)
  */
 export async function printImage(
   imageBase64: string,
   printerName?: string,
+  devicePath?: string,
 ): Promise<PrintResult> {
   return invoke<PrintResult>('print_image', {
     data: {
       image_base64: imageBase64,
       printer_name: printerName ?? null,
+      device_path: devicePath ?? null,
     },
   });
 }
 
 /**
- * Друк растрового зображення (байти PNG).
+ * Друк растрового зображення (байти PNG) — низькорівнева команда.
  *
- * @param imageData - Масив байтів зображення
+ * @param imageData   - Масив байтів зображення
  * @param printerName - Назва принтера (опціонально)
+ * @param devicePath  - Шлях до пристрою (опціонально, напр. /dev/usb/lp0)
  */
 export async function printRasterImage(
   imageData: number[],
   printerName?: string,
+  devicePath?: string,
 ): Promise<PrintResult> {
   return invoke<PrintResult>('print_raster_image', {
     image_data: imageData,
     printer_name: printerName ?? null,
+    device_path: devicePath ?? null,
   });
 }
 
@@ -122,12 +131,13 @@ export async function getSystemInfo(): Promise<SystemInfo> {
  * Приймає чистий Base64 (без префіксу data:image/png;base64,).
  * Повертає повний шлях до збереженого файлу.
  *
+ * ⚠️ Tauri v2: для простих параметрів camelCase = snake_case в Rust.
+ *    Rust: `image_base64: String` → JS: `imageBase64: string`
+ *
  * @param imageBase64 - Base64-рядок зображення (PNG)
- * @returns Шлях до збереженого файлу (наприклад "/home/user/Downloads/kasa_receipt_20260730_121500.png")
+ * @returns Шлях до збереженого файлу
  */
 export async function saveReceiptImage(imageBase64: string): Promise<string> {
-  // ⚠️ Tauri v2 для простих параметрів (не структура) використовує camelCase
-  //    Rust: image_base64 → JS: imageBase64
   return invoke<string>('save_receipt_image', {
     imageBase64: imageBase64,
   });

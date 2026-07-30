@@ -146,7 +146,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
         <div
           ref={receiptRef as React.RefObject<HTMLDivElement>}
           data-print-receipt="true"
-          style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}
+          style={{ position: 'absolute', left: '-9999px', top: 0, width: '192px' }}
         >
           <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
         </div>
@@ -210,7 +210,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
           <div
             ref={receiptRef as React.RefObject<HTMLDivElement>}
             data-print-receipt="true"
-            style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}
+            style={{ position: 'absolute', left: '-9999px', top: 0, width: '192px' }}
           >
             <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
           </div>

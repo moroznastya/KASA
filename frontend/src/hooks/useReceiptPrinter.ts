@@ -34,20 +34,28 @@ export function receiptToRenderData(
   const taxId = shopInfo?.tax_id || '';
   const isReturn = receipt.receipt_type === 'return';
 
+  // ── Покращене вирівнювання: CSS Grid для кожного рядка ──
   const itemsHtml = receipt.items
     .map((item: ReceiptItem) => {
       const qty = Number(item.quantity);
       const price = Number(item.price);
       const total = Number(item.total);
       const barcode = item.product_barcode
-        ? `<div style="font-size: 16px; color: #000; letter-spacing: 0.5px; font-weight: bold;">${escapeHtml(item.product_barcode)}</div>`
+        ? `<div style="font-size:9px; color:#555; letter-spacing:0.3px; font-weight:bold;">${escapeHtml(item.product_barcode)}</div>`
         : '';
       return `
-<div style="margin-bottom: 2px;">
+<div style="margin-bottom:3px; ${barcode ? 'border-top:1px dotted #ccc; padding-top:3px;' : ''}">
   ${barcode}
-  <div style="font-size: 22px; line-height: 1.3; font-weight: bold;">${escapeHtml(item.product_name)}</div>
-  <div style="font-size: 18px; color: #333; margin-left: 2px;">
-    ${qty} × ${price.toFixed(2)} = ${total.toFixed(2)} грн
+  <div style="display:grid; grid-template-columns:1fr auto; gap:4px; align-items:start;">
+    <div style="font-size:11px; line-height:1.3; font-weight:bold; word-break:break-word; overflow-wrap:break-word;">
+      ${escapeHtml(item.product_name)}
+    </div>
+    <div style="font-size:11px; text-align:right; white-space:nowrap; font-weight:bold;">
+      ${total.toFixed(2)}
+    </div>
+  </div>
+  <div style="font-size:9px; color:#555;">
+    ${qty} × ${price.toFixed(2)}
   </div>
 </div>`;
     })
@@ -99,6 +107,32 @@ function escapeHtml(text: string): string {
   };
   return text.replace(/[&<>"']/g, (c) => map[c] || c);
 }
+
+/**
+ * Стилі для друку через браузер (window.print()).
+ * Імітують термічний чек 58мм.
+ */
+const BROWSER_PRINT_STYLES = `
+  @media print {
+    @page {
+      width: 58mm;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 58mm;
+      margin: 0;
+      padding: 0;
+      font-family: 'Courier New', 'Consolas', monospace;
+      font-size: 10px;
+      line-height: 1.2;
+      color: #000;
+    }
+    * {
+      box-sizing: border-box;
+    }
+  }
+`;
 
 // ── Хук ──────────────────────────────────────
 export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseReceiptPrinterReturn {
@@ -220,8 +254,6 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
   }, [previewHtml, selectedTemplate, receipt, shopInfo]);
 
   // ── Забезпечити HTML у DOM перед друком ────
-  // Викликається ПЕРЕД printAsImage(), щоб html2canvas
-  // гарантовано знайшов контент у receiptRef.
   const ensureHtmlInDom = useCallback(async (): Promise<void> => {
     if (previewHtml) return;
 
@@ -253,16 +285,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
 
     try {
       if (isTauri()) {
-        // ═══════════════════════════════════════════════════════════════
-        // 🥇 ЄДИНИЙ ШЛЯХ: PRINT-AS-IMAGE (html2canvas → PNG → Rust)
-        // ═══════════════════════════════════════════════════════════════
-        // React → html2canvas → Canvas → Base64 PNG → printImage() →
-        // Tauri команда → Rust print_image() → print_raster_image() →
-        // ESC/POS растр → принтер
-        //
-        // ✅ Кирилиця: ПРАЦЮЄ (текст рендериться браузером,
-        //    Rust отримує готові пікселі — жодного кодування!)
-        // ═══════════════════════════════════════════════════════════════
+        // ═══ ЄДИНИЙ ШЛЯХ: PRINT-AS-IMAGE (html2canvas → PNG → Rust) ═══
         await ensureHtmlInDom();
         await printAsImage(printerName);
       } else {
@@ -294,6 +317,35 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
 
 // ── Друк через браузер ───────────────────────
 function printViaBrowser(html: string): void {
+  const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Друк — Kasa POS</title>
+  <style>
+    ${BROWSER_PRINT_STYLES}
+    /* Друк на всю ширину: body точно 58mm */
+    body {
+      width: 58mm;
+      margin: 0 auto;
+      padding: 1mm 1.5mm;
+      font-family: 'Courier New', 'Consolas', monospace;
+      font-size: 10px;
+      line-height: 1.2;
+      color: #000;
+    }
+    /* Переноси для довгих назв */
+    * {
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+  </style>
+</head>
+<body>
+  ${html}
+</body>
+</html>`;
+
   const printWindow = window.open('', '_blank');
   if (!printWindow) {
     const iframe = document.createElement('iframe');
@@ -302,16 +354,7 @@ function printViaBrowser(html: string): void {
     document.body.appendChild(iframe);
     const iframeDoc = iframe.contentWindow?.document;
     if (iframeDoc) {
-      iframeDoc.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>Друк — Kasa POS</title>
-        </head>
-        <body>${html}</body>
-        </html>
-      `);
+      iframeDoc.write(fullHtml);
       iframeDoc.close();
       setTimeout(() => {
         iframe.contentWindow?.print();
@@ -321,16 +364,7 @@ function printViaBrowser(html: string): void {
     return;
   }
 
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>Друк — Kasa POS</title>
-    </head>
-    <body>${html}</body>
-    </html>
-  `);
+  printWindow.document.write(fullHtml);
   printWindow.document.close();
   printWindow.focus();
 

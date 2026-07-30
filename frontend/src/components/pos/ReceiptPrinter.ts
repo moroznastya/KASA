@@ -55,6 +55,7 @@ interface ReceiptData {
 const THERMAL_STYLES = `
   @page {
     width: 58mm;
+    height: auto;
     margin: 0;
     padding: 0;
   }
@@ -69,24 +70,25 @@ const THERMAL_STYLES = `
     line-height: 1.2;
     color: #000;
     width: 58mm;
-    padding: 1mm 2mm;
+    padding: 1mm 1.5mm;
   }
   .header {
     text-align: center;
     margin-bottom: 4px;
   }
   .shop-name {
-    font-size: 12px;
+    font-size: 10px;
     font-weight: bold;
     text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
   .shop-address {
     font-size: 9px;
     color: #333;
   }
   .divider {
-    border-top: 1px dashed #000;
-    margin: 4px 0;
+    border-top: 2px dashed #000;
+    margin: 6px 0;
   }
   .receipt-info {
     font-size: 9px;
@@ -111,14 +113,26 @@ const THERMAL_STYLES = `
     vertical-align: top;
   }
   .item-name {
-    max-width: 30mm;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    white-space: normal;
+    line-height: 1.3;
+  }
+  .item-qty {
+    text-align: center;
+    white-space: nowrap;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+  .item-price {
+    text-align: right;
     white-space: nowrap;
   }
-  .item-qty { text-align: center; }
-  .item-price { text-align: right; }
-  .item-total { text-align: right; }
+  .item-total {
+    text-align: right;
+    white-space: nowrap;
+    font-weight: bold;
+  }
   .totals {
     width: 100%;
     margin-top: 4px;
@@ -137,6 +151,9 @@ const THERMAL_STYLES = `
     font-size: 9px;
     margin-top: 4px;
   }
+  .payment-info td {
+    padding: 1px 0;
+  }
   .footer {
     text-align: center;
     font-size: 9px;
@@ -152,6 +169,10 @@ const THERMAL_STYLES = `
   .text-center { text-align: center; }
   .text-right { text-align: right; }
   @media print {
+    html, body {
+      width: 58mm;
+      height: auto;
+    }
     .print-media-type {
       box-shadow: none !important;
       background: none !important;
@@ -223,7 +244,6 @@ export function generateReceiptHtml(data: ReceiptData): string {
   <div class="header">
     <div class="shop-name">${escapeHtml(shopName)}</div>
     ${shopAddress ? `<div class="shop-address">${escapeHtml(shopAddress)}</div>` : ''}
-
   </div>
 
   <div class="divider"></div>
@@ -231,6 +251,7 @@ export function generateReceiptHtml(data: ReceiptData): string {
   <table class="receipt-info">
     <tr><td>Чек #${escapeHtml(String(number))}</td><td class="text-right">${escapeHtml(dateTime)}</td></tr>
     ${cashier ? `<tr><td>Касир: ${escapeHtml(cashier)}</td></tr>` : ''}
+    ${taxId ? `<tr><td>ЄДРПОУ: ${escapeHtml(taxId)}</td></tr>` : ''}
   </table>
 
   <div class="divider"></div>

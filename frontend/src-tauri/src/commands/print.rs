@@ -29,6 +29,8 @@ pub struct PrintImageData {
     pub image_base64: String,
     /// Назва принтера (опціонально)
     pub printer_name: Option<String>,
+    /// Шлях до пристрою (опціонально, напр. /dev/usb/lp0)
+    pub device_path: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,9 +60,10 @@ fn ok_result(msg: String, bytes: Option<usize>) -> PrintResult {
 #[tauri::command]
 pub fn print_image(data: PrintImageData) -> Result<PrintResult, String> {
     eprintln!(
-        "[KASA] print_image: base64_len={}, printer={:?}",
+        "[KASA] print_image: base64_len={}, printer={:?}, device={:?}",
         data.image_base64.len(),
-        data.printer_name
+        data.printer_name,
+        data.device_path
     );
 
     // Декодуємо Base64
@@ -70,9 +73,13 @@ pub fn print_image(data: PrintImageData) -> Result<PrintResult, String> {
         .decode(&data.image_base64)
         .map_err(|e| format!("Помилка декодування Base64: {}", e))?;
 
-    // Використовуємо існуючу функцію print_raster_image
-    print::print_raster_image(image_bytes, data.printer_name.as_deref())
-        .map_err(|e| e.to_string())?;
+    // Використовуємо print_raster_image з маршрутизацією (порт → lp)
+    print::print_raster_image(
+        image_bytes,
+        data.printer_name.as_deref(),
+        data.device_path.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(PrintResult {
         success: true,
@@ -86,14 +93,20 @@ pub fn print_image(data: PrintImageData) -> Result<PrintResult, String> {
 pub fn print_raster_image(
     image_data: Vec<u8>,
     printer_name: Option<String>,
+    device_path: Option<String>,
 ) -> Result<PrintResult, String> {
     eprintln!(
-        "[KASA] print_raster_image: data_len={}, printer={:?}",
+        "[KASA] print_raster_image: data_len={}, printer={:?}, device={:?}",
         image_data.len(),
-        printer_name
+        printer_name,
+        device_path
     );
-    let result =
-        print::print_raster_image(image_data, printer_name.as_deref()).map_err(map_print_err);
+    let result = print::print_raster_image(
+        image_data,
+        printer_name.as_deref(),
+        device_path.as_deref(),
+    )
+    .map_err(map_print_err);
     match &result {
         Ok(_) => eprintln!("[KASA] print_raster_image OK"),
         Err(e) => eprintln!("[KASA] print_raster_image ERROR: {}", e),
