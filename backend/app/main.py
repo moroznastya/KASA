@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.api.v1 import api_v1_router
+from app.api.v2 import router as v2_router
 from app.middleware.auth_middleware import AuthMiddleware
 from app.api.v1.users import limiter
 
@@ -108,11 +109,8 @@ async def lifespan(app: FastAPI):
     event_bus = container.resolve("event_bus")
     print(f"   ✅ Event Bus ініціалізовано")
 
-    # ─── 3. Ініціалізація обробників подій (майбутнє) ──────────────────────
-    # Тут будуть підписуватись обробники подій:
-    # stock_handler = StockEventHandler(...)
-    # event_bus.subscribe(InvoiceConfirmed, stock_handler.handle)
-    # event_bus.subscribe(InvoiceConfirmed, ledger_handler.handle)
+    # ─── 3. Зберігаємо контейнер в стані застосунку ─────────────────────────
+    app.state.di_container = container
 
     print(f"   ✅ Інфраструктура готова")
 
@@ -170,6 +168,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ─── Підключення роутерів ────────────────────────────────────────────────────
 app.include_router(api_v1_router)
+app.include_router(v2_router)
 
 
 # ─── Health Check ────────────────────────────────────────────────────────────
