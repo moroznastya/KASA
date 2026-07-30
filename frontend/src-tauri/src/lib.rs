@@ -32,6 +32,7 @@ pub fn run() {
             commands::print::get_printers,
             commands::print::open_cash_drawer,
             commands::print::get_system_info,
+            commands::print::save_receipt_image,
             // ── Команди офлайн-режиму ─────────────────────────────────
             commands::offline::is_offline_available,
             commands::offline::get_unsynced_count,

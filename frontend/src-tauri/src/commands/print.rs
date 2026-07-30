@@ -128,6 +128,44 @@ pub fn get_system_info() -> Result<serde_json::Value, String> {
     Ok(info)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// 🖼️ Збереження зображення чека на диск (для дебагу/перевірки)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Зберегти PNG-зображення чека на диск у ~/Downloads/.
+///
+/// Приймає чистий Base64 (без префіксу).
+/// Повертає повний шлях до збереженого файлу.
+#[tauri::command]
+pub fn save_receipt_image(image_base64: String) -> Result<String, String> {
+    use base64::Engine;
+
+    // Декодуємо Base64
+    let engine = base64::engine::general_purpose::STANDARD;
+    let image_bytes = engine
+        .decode(&image_base64)
+        .map_err(|e| format!("Помилка декодування Base64: {}", e))?;
+
+    // Визначаємо шлях — ~/Downloads/
+    let downloads_dir = dirs_next::download_dir()
+        .or_else(dirs_next::home_dir)
+        .ok_or_else(|| "Не вдалося визначити домашню директорію".to_string())?;
+
+    // Генеруємо ім'я файлу з timestamp
+    let now = chrono::Local::now();
+    let filename = format!("kasa_receipt_{}.png", now.format("%Y%m%d_%H%M%S"));
+    let filepath = downloads_dir.join(&filename);
+
+    // Зберігаємо файл
+    std::fs::write(&filepath, &image_bytes)
+        .map_err(|e| format!("Помилка запису файлу: {}", e))?;
+
+    eprintln!("[KASA] ✅ Збережено чек: {:?}", filepath);
+
+    // Повертаємо шлях
+    Ok(filepath.to_string_lossy().to_string())
+}
+
 fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .ok()

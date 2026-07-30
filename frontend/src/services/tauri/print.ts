@@ -6,6 +6,7 @@
  *   - Растрового друку (байти → PNG → принтер)
  *   - Відкриття грошової скриньки
  *   - Отримання списку принтерів
+ *   - 🖼️ Збереження PNG на диск (для дебагу)
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -112,4 +113,23 @@ export async function openCashDrawer(devicePath?: string): Promise<PrintResult> 
  */
 export async function getSystemInfo(): Promise<SystemInfo> {
   return invoke<SystemInfo>('get_system_info');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 🖼️ Збереження зображення чека на диск (для дебагу/перевірки)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Зберегти PNG-зображення чека на диск у ~/Downloads/.
+ *
+ * Приймає чистий Base64 (без префіксу data:image/png;base64,).
+ * Повертає повний шлях до збереженого файлу.
+ *
+ * @param imageBase64 - Base64-рядок зображення (PNG)
+ * @returns Шлях до збереженого файлу (наприклад "/home/user/Downloads/kasa_receipt_20260730_121500.png")
+ */
+export async function saveReceiptImage(imageBase64: string): Promise<string> {
+  return invoke<string>('save_receipt_image', {
+    image_base64: imageBase64,
+  });
 }

@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
-import { printImage } from '@/services/tauri/print';
+import { printImage, saveReceiptImage } from '@/services/tauri/print';
 import { isTauri } from '@/hooks/useTauri';
 
 interface UsePrintAsImageOptions {
@@ -15,6 +15,8 @@ interface UsePrintAsImageReturn {
   captureAndPrint: (printerName?: string) => Promise<void>;
   /** Захопити та повернути Base64 (для прев'ю) */
   captureToBase64: () => Promise<string>;
+  /** Захопити та повернути повний data URL (data:image/png;base64,...) */
+  captureToDataUrl: () => Promise<string>;
   /** Чи йде захоплення зараз */
   isCapturing: boolean;
   /** Остання помилка */
@@ -24,9 +26,6 @@ interface UsePrintAsImageReturn {
 /**
  * Генерує CSS-код для перевизначення стандартних кольорів Tailwind CSS v4
  * з oklch() на hex/rgb. Це необхідно, оскільки html2canvas не підтримує oklch().
- *
- * Цей CSS додається ТІЛЬКИ в клонований DOM (onclone), тому глобальний UI
- * залишається без змін. Друк отримує коректні кольори.
  */
 function getTailwindColorResetCSS(): string {
   return [
@@ -142,7 +141,7 @@ export function usePrintAsImage(
     return node;
   }, []);
 
-  /** Захопити HTML в Base64 PNG */
+  /** Захопити HTML в Canvas і повернути Base64 (без префіксу) */
   const captureToBase64 = useCallback(async (): Promise<string> => {
     await waitForDomUpdate();
     ensureRefHasContent();
@@ -150,20 +149,47 @@ export function usePrintAsImage(
     const node = receiptRef.current!;
 
     try {
-      // ═══ html2canvas ═══
       const canvas = await html2canvas(node, {
         scale: 2,
         useCORS: true,
         backgroundColor: '#ffffff',
-        logging: true, // 🟢 Увімкнути логування html2canvas
+        logging: true,
         onclone: (clonedDoc) => {
           try {
+            // ═══════════════════════════════════════════════════════════
+            // КРОК 1: Перевизначаємо CSS-змінні Tailwind v4 (oklch → hex)
+            // ═══════════════════════════════════════════════════════════
             const resetStyle = clonedDoc.createElement('style');
             resetStyle.textContent = getPrintResetCSS();
             clonedDoc.head.appendChild(resetStyle);
-            console.log('[Print] ✅ onclone: CSS reset додано');
+
+            // ═══════════════════════════════════════════════════════════
+            // КРОК 2: Знаходимо контейнер чека за data-атрибутом
+            //          і примусово встановлюємо чорний колір тексту
+            //          для всіх нащадків.
+            // ═══════════════════════════════════════════════════════════
+            const receiptContainer = clonedDoc.querySelector('[data-print-receipt]');
+            if (receiptContainer) {
+              (receiptContainer as HTMLElement).style.color = '#000';
+              (receiptContainer as HTMLElement).style.backgroundColor = '#fff';
+
+              const allElements = receiptContainer.querySelectorAll('*');
+              allElements.forEach((el) => {
+                const htmlEl = el as HTMLElement;
+                if (!htmlEl.style.color || htmlEl.style.color === '') {
+                  htmlEl.style.color = '#000';
+                }
+                if (!htmlEl.style.backgroundColor || htmlEl.style.backgroundColor === '') {
+                  htmlEl.style.backgroundColor = 'transparent';
+                }
+              });
+
+              console.log('[Print] ✅ onclone: колір тексту встановлено на #000 для контейнера');
+            } else {
+              console.warn('[Print] ⚠️ onclone: data-print-receipt не знайдено');
+            }
           } catch (err) {
-            console.error('[Print] ❌ onclone: помилка при додаванні CSS reset:', err);
+            console.error('[Print] ❌ onclone: помилка:', err);
           }
         },
       });
@@ -175,15 +201,20 @@ export function usePrintAsImage(
       console.log('[Print] ✅ Canvas створено, довжина Base64:', base64.length);
       return base64;
     } catch (err) {
-      // 🟢 Логуємо справжню помилку html2canvas
       console.error('[Print] ❌ html2canvas помилка:', err);
       if (err instanceof Error) {
         console.error('[Print]   → message:', err.message);
         console.error('[Print]   → stack:', err.stack);
       }
-      throw err; // передаємо далі
+      throw err;
     }
   }, [waitForDomUpdate, ensureRefHasContent]);
+
+  /** Захопити HTML в Data URL (data:image/png;base64,...) */
+  const captureToDataUrl = useCallback(async (): Promise<string> => {
+    const base64 = await captureToBase64();
+    return `data:image/png;base64,${base64}`;
+  }, [captureToBase64]);
 
   /** Захопити та надрукувати */
   const captureAndPrint = useCallback(
@@ -199,8 +230,24 @@ export function usePrintAsImage(
       try {
         console.log('[Print] 🖨️ Захоплення...');
         const base64 = await captureToBase64();
-        console.log('[Print] 🖨️ Відправка в Tauri print_image...');
 
+        // ═══════════════════════════════════════════════════════════════
+        // 🖼️ Автоматичне збереження PNG на диск (для дебагу)
+        //    Файл зберігається в ~/Downloads/kasa_receipt_YYYYMMDD_HHMMSS.png
+        // ═══════════════════════════════════════════════════════════════
+        console.log('[Print] 🖼️ Збереження PNG на диск...');
+        try {
+          const savedPath = await saveReceiptImage(base64);
+          console.log('[Print] ✅ PNG збережено:', savedPath);
+        } catch (saveErr) {
+          // Помилка збереження — не критична, друк продовжується
+          console.warn('[Print] ⚠️ Не вдалося зберегти PNG:', saveErr);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 🖨️ Відправка в Tauri print_image
+        // ═══════════════════════════════════════════════════════════════
+        console.log('[Print] 🖨️ Відправка в Tauri print_image...');
         const result = await printImage(base64, printerName);
 
         console.log('[Print] 🖨️ Результат Tauri:', result);
@@ -233,6 +280,7 @@ export function usePrintAsImage(
     receiptRef,
     captureAndPrint,
     captureToBase64,
+    captureToDataUrl,
     isCapturing,
     error,
   };

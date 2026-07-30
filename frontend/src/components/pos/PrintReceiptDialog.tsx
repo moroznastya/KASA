@@ -47,7 +47,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
     generatePreview,
     printReceipt,
     loadDefaultTemplate,
-    receiptRef,               // ✅ Додано: ref для html2canvas
+    receiptRef,
   } = useReceiptPrinter({ receipt });
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -139,12 +139,15 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
     );
 
   // Якщо авто-друк і процес триває — показуємо мінімальний індикатор
-  // (для звичайних чеків, не для повернення)
   if (!isReturnReceipt && autoPrint && (isPrinting || isPreviewLoading || !previewHtml) && !printError) {
     return (
       <Modal isOpen={isOpen} onClose={onClose} title="" size="sm" showCloseButton={false}>
-        {/* ✅ Прихований контейнер для html2canvas */}
-        <div ref={receiptRef as React.RefObject<HTMLDivElement>} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+        {/* ✅ Прихований контейнер для html2canvas з data-атрибутом */}
+        <div
+          ref={receiptRef as React.RefObject<HTMLDivElement>}
+          data-print-receipt="true"
+          style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}
+        >
           <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
         </div>
         <div className="flex flex-col items-center justify-center py-8 gap-3">
@@ -204,7 +207,11 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
         {/* ── Основний контент ──────────────── */}
         <div className="py-4 space-y-4">
           {/* ✅ Прихований контейнер для html2canvas (для Print-as-Image) */}
-          <div ref={receiptRef as React.RefObject<HTMLDivElement>} style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}>
+          <div
+            ref={receiptRef as React.RefObject<HTMLDivElement>}
+            data-print-receipt="true"
+            style={{ position: 'absolute', left: '-9999px', top: 0, width: '58mm' }}
+          >
             <div dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
           </div>
 
@@ -222,7 +229,6 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
                 </span>
               </div>
 
-              {/* Номер оригінального чеку (для повернення) */}
               {isReturnReceipt && receipt.original_receipt_number && (
                 <div className="flex justify-between">
                   <span className="text-gray-500 dark:text-gray-400">Оригінальний чек:</span>
@@ -232,7 +238,6 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
                 </div>
               )}
 
-              {/* Причина повернення */}
               {isReturnReceipt && receipt.return_reason && (
                 <div className="flex justify-between">
                   <span className="text-gray-500 dark:text-gray-400">Причина:</span>
@@ -249,7 +254,6 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
                 </span>
               </div>
 
-              {/* Сума — для повернення червоним кольором */}
               <div className={`flex justify-between text-base font-semibold pt-1.5 border-t ${
                 isReturnReceipt
                   ? 'border-danger-200 dark:border-danger-700'
@@ -312,7 +316,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
             </div>
           </div>
 
-          {/* Назва шаблону (інформаційно) */}
+          {/* Назва шаблону */}
           {selectedTemplate && (
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <FileText className="w-3.5 h-3.5" />
@@ -323,7 +327,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
             </div>
           )}
 
-          {/* Прогрес генерації/друку */}
+          {/* Прогрес */}
           {(isPreviewLoading || isPrinting) && !printError && (
             <div className="flex items-center justify-center gap-2 py-3 text-sm text-gray-500">
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -333,7 +337,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
             </div>
           )}
 
-          {/* Помилка друку */}
+          {/* Помилка */}
           {printError && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-danger-50 dark:bg-danger-900/20 border border-danger-200 dark:border-danger-800">
               <AlertTriangle className="w-4 h-4 text-danger-500 mt-0.5 shrink-0" />
@@ -345,7 +349,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
           )}
         </div>
 
-        {/* ── Нижня частина — кнопки ────────── */}
+        {/* ── Кнопки ────────── */}
         <div className={`flex items-center justify-between pt-4 border-t ${
           isReturnReceipt
             ? 'border-danger-200 dark:border-danger-700'
