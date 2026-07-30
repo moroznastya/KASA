@@ -116,3 +116,29 @@ export interface SelectedProduct {
   category_id: string | null;
   copies: number;
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Друк цінників/етикеток з накладної
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Запит на друк цінників/етикеток з товарів накладної */
+export interface InvoicePrintRequest {
+  print_type: 'price_tag' | 'label';
+  only_changed: boolean;
+  template_id: string;
+  width_mm: number;
+  height_mm: number;
+  gap_mm: number;
+  margin_mm: number;
+  barcode_type: 'code128' | 'qr';
+  barcode_height_mm: number;
+}
+
+/** Відповідь на запит друку з накладної */
+export interface InvoicePrintResponse {
+  html: string;
+  total_labels: number;
+  total_pages?: number;
+  changed_count?: number;
+  total_count: number;
+}

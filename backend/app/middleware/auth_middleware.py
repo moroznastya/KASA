@@ -5,6 +5,7 @@ Middleware для авторизації запитів.
   - Перевірку Bearer токена в заголовках
   - Додавання інформації про користувача в request.state
   - Обробку публічних ендпоінтів (логін, реєстрація)
+  - Пропуск CORS preflight запитів (OPTIONS) без авторизації
 """
 
 from fastapi import HTTPException, status
@@ -19,6 +20,7 @@ PUBLIC_PATHS = {
     "/api/v1/auth/login-pin",
     "/api/v1/auth/refresh",
     "/api/v1/auth/users-list",
+    "/api/v1/auth/verify",
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -34,6 +36,8 @@ class AuthMiddleware:
 
     Перевіряє наявність та валідність JWT токена в заголовку Authorization.
     Для публічних шляхів пропускає запит без перевірки.
+    CORS preflight-запити (OPTIONS) пропускаються без авторизації,
+    оскільки вони не мають Authorization-заголовка.
     """
 
     def __init__(self, app):
@@ -56,6 +60,14 @@ class AuthMiddleware:
         """
         # Отримуємо метод та шлях запиту
         path = scope.get("path", "")
+        method = scope.get("method", "")
+
+        # CORS preflight запити (OPTIONS) не мають Authorization-заголовка.
+        # Пропускаємо їх без авторизації, щоб CORSMiddleware міг додати
+        # необхідні CORS-заголовки до відповіді.
+        if method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
 
         # Перевіряємо чи шлях публічний
         if self._is_public_path(path):
@@ -89,6 +101,12 @@ class AuthMiddleware:
             return
 
         token = auth_header[7:]  # Видаляємо "Bearer "
+
+        # ═══════════════════════════════════════════════════════════════
+        # ДІАГНОСТИКА: логимо перші символи токена
+        # ═══════════════════════════════════════════════════════════════
+        print(f"[AUTH_MIDDLEWARE] Path: {path}, Method: {method}, TokenFirstChars: {token[:20]}...", flush=True)
+        # ═══════════════════════════════════════════════════════════════
 
         try:
             # Декодуємо токен

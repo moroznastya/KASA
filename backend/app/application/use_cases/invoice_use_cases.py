@@ -135,6 +135,12 @@ class InvoiceUseCases:
                 product = await self._product_repo.find_by_id(item.product_id)
                 if product:
                     product.update_stock(item.quantity)
+                    # Оновлюємо роздрібну ціну товару згідно з ціною в накладній
+                    if item.price is not None:
+                        product.change_price(item.price)
+                    # Оновлюємо собівартість
+                    if item.cost_price is not None:
+                        product.change_cost_price(item.cost_price)
                     await self._product_repo.update(product)
 
             # Оновлюємо баланс постачальника

@@ -6,6 +6,7 @@ API роутер для роботи з користувачами (Users) та 
   - POST   /auth/login-pin     — логін за PIN-кодом
   - POST   /auth/refresh       — оновлення JWT токена
   - POST   /auth/logout        — вихід із системи
+  - GET    /auth/verify        — перевірка валідності JWT токена (публічний)
   - GET    /auth/users-list    — публічний список активних користувачів (без авторизації)
   - GET    /users               — список користувачів з пагінацією (admin)
   - GET    /users/{id}          — отримати користувача за ID
@@ -226,6 +227,37 @@ async def logout(
         await session.commit()
 
     return {"message": "Успішний вихід із системи"}
+
+
+# ─── Перевірка токена (публічний ендпоінт) ──────────────────────────────────
+
+
+@auth_router.get("/verify")
+async def verify_token(
+    current_user = Depends(AuthService.get_current_user_optional),
+):
+    """
+    Перевіряє валідність JWT токена.
+
+    Публічний ендпоінт — не потребує попередньої авторизації на рівні
+    AuthMiddleware. Токен передається в заголовку Authorization: Bearer <token>.
+
+    - Якщо токен валідний → 200, повертає `{"valid": True, "user_id": "...", "role": "..."}`
+    - Якщо токен відсутній або недійсний → 200, повертає `{"valid": False}`
+
+    Використовується фронтендом для перевірки токена **до** завантаження
+    основних даних, щоб визначити, чи потрібно перенаправляти на сторінку логіну.
+    """
+    if current_user:
+        return {
+            "valid": True,
+            "user_id": str(current_user.id),
+            "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
+        }
+    return {"valid": False}
+
+
+# ─── Список користувачів для логіну ──────────────────────────────────────────
 
 
 @auth_router.get("/users-list", response_model=list[dict])

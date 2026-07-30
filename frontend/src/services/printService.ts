@@ -4,6 +4,8 @@ import type {
   PriceTagRenderResponse,
   LabelRenderRequest,
   LabelRenderResponse,
+  InvoicePrintRequest,
+  InvoicePrintResponse,
 } from '@/types/print';
 
 /**
@@ -12,6 +14,7 @@ import type {
  * Ендпоінти:
  *   POST /api/v1/print/price-tags/render
  *   POST /api/v1/print/labels/render
+ *   POST /api/v1/invoices/{id}/print-items
  */
 export const printService = {
   /**
@@ -27,6 +30,21 @@ export const printService = {
    */
   async renderLabels(data: LabelRenderRequest): Promise<LabelRenderResponse> {
     const res = await api.post<LabelRenderResponse>('/print/labels/render', data);
+    return res.data;
+  },
+
+  /**
+   * Рендер цінників/етикеток для товарів з прибуткової накладної.
+   * Використовується зі сторінки перегляду накладної.
+   */
+  async renderInvoicePrintItems(
+    invoiceId: string,
+    data: InvoicePrintRequest,
+  ): Promise<InvoicePrintResponse> {
+    const res = await api.post<InvoicePrintResponse>(
+      `/invoices/${invoiceId}/print-items`,
+      data,
+    );
     return res.data;
   },
 };

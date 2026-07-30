@@ -17,6 +17,7 @@ class ProductBrief(BaseModel):
     id: UUID
     title: str
     barcode: Optional[str] = None
+    price: Optional[Decimal] = Field(None, description="Поточна роздрібна ціна товару")
     markup: Optional[Decimal] = Field(None, description="Поточна націнка товару (%)")
     cost_price: Optional[Decimal] = Field(None, description="Поточна собівартість товару (з ПДВ)")
 
@@ -30,7 +31,7 @@ class InvoiceItemCreate(BaseModel):
     price: Decimal = Field(..., max_digits=10, decimal_places=2, description="Ціна за одиницю (грн)")
     total: Decimal = Field(..., max_digits=12, decimal_places=2, description="Загальна сума (грн)")
     cost_price: Optional[Decimal] = Field(None, max_digits=10, decimal_places=2, description="Собівартість за одиницю (з ПДВ)")
-    markup_percent: Optional[Decimal] = Field(None, max_digits=5, decimal_places=1, description="Відсоток націнки")
+    markup_percent: Optional[Decimal] = Field(None, max_digits=5, decimal_places=2, description="Відсоток націнки")
 
 
 class InvoiceItemResponse(BaseModel):
@@ -44,6 +45,7 @@ class InvoiceItemResponse(BaseModel):
     total: Decimal
     cost_price: Optional[Decimal] = Field(None, description="Собівартість за одиницю (з ПДВ)")
     markup_percent: Optional[Decimal] = Field(None, description="Відсоток націнки")
+    previous_price: Optional[Decimal] = Field(None, description="Ціна товару до створення накладної")
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

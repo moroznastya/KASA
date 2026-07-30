@@ -1,14 +1,15 @@
-import React from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar, Edit } from 'lucide-react';
+import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar, Edit, Printer, ArrowUp, ArrowDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import { formatCurrency, formatDateTime, formatDocumentStatus, formatDocumentType } from '@/utils/format';
+import PrintFromInvoiceModal from '@/components/printing/PrintFromInvoiceModal';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
 const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'warning'> = {
@@ -92,6 +93,50 @@ function calcMarkupPercent(price: number, costPrice: number | null | undefined):
   return Math.round(((price - costPrice) / costPrice) * 100);
 }
 
+/** Компонент індикатора зміни ціни */
+const PriceChangeIndicator: React.FC<{
+  invoicePrice: number;
+  currentPrice: number | undefined | null;
+}> = ({ invoicePrice, currentPrice }) => {
+  const oldPrice = currentPrice != null ? Number(currentPrice) : null;
+  const newPrice = Number(invoicePrice);
+
+  // Якщо старої ціни немає — показуємо ціну накладної без індикатора
+  if (oldPrice === null) {
+    return <span className="text-gray-900 dark:text-gray-100">{formatCurrency(newPrice)}</span>;
+  }
+
+  const isSame = Math.abs(oldPrice - newPrice) < 0.001;
+  const isIncreased = newPrice > oldPrice;
+
+  if (isSame) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-full bg-green-500 inline-block flex-shrink-0" />
+        <span className="text-gray-900 dark:text-gray-100">{formatCurrency(newPrice)}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block flex-shrink-0" />
+      <span className="flex flex-col items-end leading-tight">
+        <span className="text-xs text-gray-400 dark:text-gray-500 line-through">
+          {formatCurrency(oldPrice)}
+        </span>
+        <span className="text-sm font-bold text-red-600 dark:text-red-400 inline-flex items-center gap-0.5">
+          {formatCurrency(newPrice)}
+          {isIncreased
+            ? <ArrowUp className="w-3 h-3 text-red-500" />
+            : <ArrowDown className="w-3 h-3 text-red-500" />
+          }
+        </span>
+      </span>
+    </span>
+  );
+};
+
 const DocumentViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -102,6 +147,9 @@ const DocumentViewPage: React.FC = () => {
   const docType = getDocumentTypeFromPath(location.pathname);
   const docTitle = getDocumentTitle(docType);
 
+  // Стан для модалки друку
+  const [showPrintModal, setShowPrintModal] = useState(false);
+
   const { data: doc, isLoading, error } = useQuery({
     queryKey: ['document', docType, id],
     queryFn: async () => {
@@ -111,6 +159,24 @@ const DocumentViewPage: React.FC = () => {
     },
     enabled: !!id,
   });
+
+  // Підрахунок товарів зі змінною ціною (для інвойсів)
+  const { changedPriceCount, totalItems } = useMemo(() => {
+    if (!doc?.items || !Array.isArray(doc.items)) {
+      return { changedPriceCount: 0, totalItems: 0 };
+    }
+    const changed = doc.items.filter((item: any) => {
+      const invoicePrice = Number(item.price || 0);
+      // Показуємо зміну: previous_price (ціна до накладної) або поточна ціна товару
+      const prevPrice = item.previous_price != null ? Number(item.previous_price) : (item.product?.price != null ? Number(item.product.price) : null);
+      if (prevPrice === null) return false;
+      return Math.abs(prevPrice - invoicePrice) >= 0.001;
+    });
+    return {
+      changedPriceCount: changed.length,
+      totalItems: doc.items.length,
+    };
+  }, [doc]);
 
   if (isLoading) {
     return (
@@ -374,9 +440,22 @@ const DocumentViewPage: React.FC = () => {
         {/* ─── Товари ─────────────────────────────────── */}
         {doc.items && doc.items.length > 0 && (
           <div>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">
-              {docType === 'return_invoice' ? 'Повернуті товари' : 'Товари'}
-            </h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                {docType === 'return_invoice' ? 'Повернуті товари' : 'Товари'}
+              </h3>
+              {/* Кнопка друку цінників/етикеток — для invoice */}
+              {docType === 'invoice' && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowPrintModal(true)}
+                  icon={<Printer className="w-4 h-4" />}
+                >
+                  Друк цінників / етикеток
+                </Button>
+              )}
+            </div>
             <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-hidden">
               <table className="w-full">
                 <thead>
@@ -397,6 +476,9 @@ const DocumentViewPage: React.FC = () => {
                     ) : (
                       <>
                         <th className="table-header w-24 text-right">Кількість</th>
+                        {docType === 'invoice' && (
+                          <th className="table-header w-32 text-right">Ціна</th>
+                        )}
                         <th className="table-header w-28 text-right">Собівартість (з ПДВ)</th>
                         <th className="table-header w-28 text-right">Ціна продажу</th>
                         <th className="table-header w-24 text-right">Націнка</th>
@@ -414,6 +496,8 @@ const DocumentViewPage: React.FC = () => {
                     const productId = item.product?.id || item.product_id;
                     const costPrice = Number(item.cost_price || 0);
                     const sellPrice = Number(item.price || 0);
+                    // previous_price — ціна товару ДО створення накладної (для показу змін навіть після підтвердження)
+                    const currentPrice = item.previous_price != null ? Number(item.previous_price) : (item.product?.price != null ? Number(item.product.price) : null);
                     const quantity = Number(item.quantity || 0);
                     const markup = calcMarkupPercent(sellPrice, costPrice);
                     // Для return_invoice: сума відхилення = sellPrice*quantity - costPrice*quantity
@@ -486,6 +570,15 @@ const DocumentViewPage: React.FC = () => {
                         ) : (
                           <>
                             <td className="table-cell text-right">{quantity.toFixed(3)}</td>
+                            {/* Колонка "Ціна" з індикатором — тільки для invoice */}
+                            {docType === 'invoice' && (
+                              <td className="table-cell text-right">
+                                <PriceChangeIndicator
+                                  invoicePrice={sellPrice}
+                                  currentPrice={currentPrice}
+                                />
+                              </td>
+                            )}
                             <td className="table-cell text-right">{formatCurrency(costPrice || sellPrice)}</td>
                             <td className="table-cell text-right">{formatCurrency(sellPrice)}</td>
                             <td className="table-cell text-right">
@@ -519,10 +612,10 @@ const DocumentViewPage: React.FC = () => {
                 {docType !== 'inventory' && (
                   <tfoot>
                     <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
-                      <td colSpan={docType === 'return_invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                      <td colSpan={docType === 'return_invoice' ? 5 : docType === 'invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                         Закупівельна сума:
                       </td>
-                      <td colSpan={docType === 'return_invoice' ? 3 : 2} className="px-4 py-3 font-bold text-xl text-gray-900 dark:text-gray-100 text-right">
+                      <td colSpan={docType === 'return_invoice' ? 3 : docType === 'invoice' ? 3 : 2} className="px-4 py-3 font-bold text-xl text-gray-900 dark:text-gray-100 text-right">
                         {(() => {
                           const total = (doc.items || []).reduce((sum: number, item: any) =>
                             sum + Number(item.cost_price || item.price || 0) * Number(item.quantity || 0), 0
@@ -532,10 +625,10 @@ const DocumentViewPage: React.FC = () => {
                       </td>
                     </tr>
                     <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
-                      <td colSpan={docType === 'return_invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
+                      <td colSpan={docType === 'return_invoice' ? 5 : docType === 'invoice' ? 5 : 4} className="px-4 py-3 text-right text-gray-700 dark:text-gray-300">
                         Сума продажу:
                       </td>
-                      <td colSpan={docType === 'return_invoice' ? 3 : 2} className="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 text-right">
+                      <td colSpan={docType === 'return_invoice' ? 3 : docType === 'invoice' ? 3 : 2} className="px-4 py-3 font-bold text-gray-900 dark:text-gray-100 text-right">
                         {formatCurrency(Number(doc.total_amount))}
                       </td>
                     </tr>
@@ -774,6 +867,15 @@ const DocumentViewPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* Модалка друку цінників/етикеток з накладної */}
+      <PrintFromInvoiceModal
+        isOpen={showPrintModal}
+        onClose={() => setShowPrintModal(false)}
+        invoiceId={id!}
+        totalItems={totalItems}
+        changedPriceCount={changedPriceCount}
+      />
     </div>
   );
 };

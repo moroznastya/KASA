@@ -3,9 +3,9 @@
 
 Підключає:
   - Всі API роутери v1 та v2
-  - CORS middleware (через settings)
+  - CORS middleware (через settings) — зовнішній шар
   - Swagger документацію
-  - Middleware авторизації
+  - Middleware авторизації — внутрішній шар
   - Rate Limiting (slowapi)
   - DI Container та Event Bus (ініціалізація в lifespan)
   - Обробники помилок
@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
 
 # ─── Створення застосунку ────────────────────────────────────────────────────
 app = FastAPI(
+    redirect_slashes=False,
     title=settings.APP_NAME,
     description=APP_DESCRIPTION,
     version="2.0.0",
@@ -153,8 +154,19 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-# ─── CORS Middleware ──────────────────────────────────────────────────────────
-# Використовуємо налаштування з config.py
+# ─── Auth Middleware ──────────────────────────────────────────────────────────
+# Додається першим, щоб бути внутрішнім шаром.
+# CORS preflight-запити (OPTIONS) пропускаються без авторизації.
+app.add_middleware(AuthMiddleware)
+
+
+# ─── SlowAPI Middleware (для rate limiting) ───────────────────────────────────
+app.add_middleware(SlowAPIMiddleware)
+
+
+# ─── CORS Middleware (зовнішній шар — додається останнім) ─────────────────────
+# CORSMiddleware має бути зовнішнім (доданий останнім), щоб обробляти
+# CORS preflight-запити ДО того, як вони дійдуть до AuthMiddleware.
 cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"]
 
 app.add_middleware(
@@ -164,14 +176,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ─── Auth Middleware ──────────────────────────────────────────────────────────
-app.add_middleware(AuthMiddleware)
-
-
-# ─── SlowAPI Middleware (для rate limiting) ───────────────────────────────────
-app.add_middleware(SlowAPIMiddleware)
 
 
 # ─── Static Files (завантажені зображення) ────────────────────────────

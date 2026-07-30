@@ -126,28 +126,29 @@ const InvoiceFormPage: React.FC = () => {
 
     if (editData.items && editData.items.length > 0) {
       const cartItems: CartItem[] = editData.items.map((item: any) => {
-        // Актуальна собівартість з карточки товару
-        const currentCostPrice = parseFloat(item.product?.cost_price) || 0;
-        const savedCostPrice = Number(item.cost_price || item.price || 0);
-        const costPrice = currentCostPrice > 0 ? currentCostPrice : savedCostPrice;
-
-        // Актуальна ціна продажу з карточки товару
-        const currentRetailPrice = parseFloat(item.product?.price) || 0;
+        // Збережені в накладній значення
+        const savedCostPrice = Number(item.cost_price || 0);
         const savedPrice = Number(item.price || 0);
-
-        // Актуальна націнка з карточки товару
         const savedMarkup = parseFloat(item.markup_percent) || 0;
-        const currentMarkup = parseFloat(item.product?.markup) || savedMarkup;
 
-        // Ціна продажу: пріоритет — retail_price з БД
-        const retailPrice = currentRetailPrice > 0 ? currentRetailPrice : savedPrice;
+        // Актуальні значення з карточки товару (тільки для підказки при створенні)
+        const currentCostPrice = parseFloat(item.product?.cost_price) || 0;
+        const currentRetailPrice = parseFloat(item.product?.price) || 0;
+        const currentMarkup = parseFloat(item.product?.markup) || 0;
 
-        // Націнка: якщо є retail_price, перераховуємо для узгодженості
-        const markupPercent = retailPrice > 0 && costPrice > 0
-          ? calcMarkupPercent(retailPrice, costPrice)
-          : currentMarkup;
+        // ПРИ РЕДАГУВАННІ: використовуємо збережені в накладній значення
+        // ПРИ СТВОРЕННІ: використовуємо поточні з карточки товару
+        const costPrice = isEdit ? savedCostPrice : (currentCostPrice > 0 ? currentCostPrice : savedCostPrice);
+        const retailPrice = isEdit ? savedPrice : (currentRetailPrice > 0 ? currentRetailPrice : savedPrice);
 
-        // Ціна продажу = retail_price (заокруглена), або розрахована
+        // Націнка: для редагування — збережена, для створення — розрахована або поточна
+        const markupPercent = isEdit
+          ? savedMarkup
+          : (retailPrice > 0 && costPrice > 0
+              ? calcMarkupPercent(retailPrice, costPrice)
+              : currentMarkup);
+
+        // Ціна продажу
         const price = retailPrice > 0
           ? roundPrice(retailPrice)
           : costPrice > 0
@@ -487,6 +488,34 @@ const InvoiceFormPage: React.FC = () => {
         
         await api.put(`/invoices/${editId}`, payload);
         toast.success("Накладну оновлено");
+        navigate("/documents");
+        return;
+      }
+      
+      // Якщо є чернетка від авто-збереження — оновлюємо її, не створюємо дублікат
+      if (draftId) {
+        const payload = {
+          number: number.trim() || undefined,
+          supplier_id: supplierId,
+          invoice_date: new Date(invoiceDate).toISOString(),
+          payment_method: paymentMethod || undefined,
+          is_fiscal: isFiscal,
+          notes: notes || undefined,
+          items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            price: item.price,
+            cost_price: item.cost_price,
+            markup_percent,
+            total: item.quantity * item.price,
+          })),
+        };
+        await api.put(`/invoices/${draftId}`, payload);
+        
+        if (andConfirm) {
+          await confirmMutation.mutateAsync({ id: draftId, documentType: "invoice" });
+        }
+        
         navigate("/documents");
         return;
       }

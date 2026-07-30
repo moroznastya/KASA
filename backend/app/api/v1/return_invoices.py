@@ -88,7 +88,7 @@ async def get_product_cost_info(session: AsyncSession, product_id: UUID):
     return None, None
 
 
-@router.get("/", response_model=dict)
+@router.get("", response_model=dict)
 async def list_return_invoices(
     page: int = Query(1, ge=1, description="Номер сторінки"),
     size: int = Query(50, ge=1, le=1000, description="Кількість записів на сторінці"),
@@ -172,7 +172,7 @@ async def get_return_invoice(
     return result_item
 
 
-@router.post("/", response_model=ReturnInvoiceResponse, status_code=201)
+@router.post("", response_model=ReturnInvoiceResponse, status_code=201)
 async def create_return_invoice(
     data: ReturnInvoiceCreate,
     session: AsyncSession = Depends(get_session),

@@ -170,6 +170,11 @@ class DocumentService:
                 product = result.scalar_one_or_none()
                 if product:
                     product.cost_price = item.cost_price
+                    # Оновлюємо роздрібну ціну товару згідно з ціною в накладній
+                    # Зберігаємо попередню ціну, якщо ще не збережена
+                    if item.previous_price is None:
+                        item.previous_price = product.price
+                    product.price = item.price
                     await self.session.flush()
 
         # Створюємо запис у SupplierLedger ТІЛЬКИ якщо обрано "в борг" (credit)

@@ -182,6 +182,12 @@ class InvoiceItem(Base):
         default=0,
         comment="Відсоток націнки",
     )
+    previous_price: Mapped[float | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=None,
+        comment="Ціна товару до створення накладної (для відстеження змін)",
+    )
 
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(

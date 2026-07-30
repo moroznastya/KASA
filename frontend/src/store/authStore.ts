@@ -1,5 +1,8 @@
 import { create } from 'zustand';
+import axios from 'axios';
 import { User } from '@/types/auth';
+
+const API_BASE_URL = '/api/v1';
 
 interface AuthStore {
   user: User | null;
@@ -12,7 +15,7 @@ interface AuthStore {
   setLoading: (loading: boolean) => void;
   login: (user: User, accessToken: string, refreshToken?: string | null) => void;
   logout: () => void;
-  initialize: () => void;
+  initialize: () => Promise<void>;
 }
 
 function clearStorage() {
@@ -68,14 +71,70 @@ export const useAuthStore = create<AuthStore>((set) => ({
     });
   },
 
-  initialize: () => {
+  initialize: async () => {
     const accessToken = localStorage.getItem('accessToken');
     const refreshToken = localStorage.getItem('refreshToken');
     const userStr = localStorage.getItem('user');
 
-    if (accessToken && userStr) {
+    // ═══════════════════════════════════════════════════════════════
+    // ТИМЧАСОВЕ ЛОГУВАННЯ — прибрати після діагностики 401
+    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════
+    // ДІАГНОСТИКА ТОКЕНА — декодуємо exp
+    // ═══════════════════════════════════════════════════════════════
+    if (accessToken) {
       try {
-        const user = JSON.parse(userStr) as User;
+        const payload = JSON.parse(atob(accessToken.split('.')[1]));
+        console.log(
+          '[Auth] initialize() - Token exp:',
+          new Date(payload.exp * 1000).toLocaleString(),
+          'iat:',
+          new Date(payload.iat * 1000).toLocaleString(),
+          'sub:',
+          payload.sub,
+          'role:',
+          payload.role,
+        );
+      } catch (e) {
+        console.log('[Auth] initialize() - Cannot decode token:', e);
+      }
+    }
+    console.log(
+      '[Auth] initialize() - Token:',
+      !!accessToken,
+      'Refresh:',
+      !!refreshToken,
+      'User:',
+      !!userStr,
+      'TokenFirstChars:',
+      accessToken ? accessToken.substring(0, 10) + '...' : 'N/A',
+    );
+    // ═══════════════════════════════════════════════════════════════
+
+    // Якщо немає ні токена, ні користувача — одразу виходимо
+    if (!accessToken || !userStr) {
+      set({ isLoading: false });
+      return;
+    }
+
+    let user: User;
+    try {
+      user = JSON.parse(userStr) as User;
+    } catch {
+      // Пошкоджені дані — очищаємо
+      clearStorage();
+      set({ isLoading: false });
+      return;
+    }
+
+    try {
+      // Перевіряємо, чи токен ще валідний
+      const response = await axios.get(`${API_BASE_URL}/auth/verify`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (response.data.valid) {
+        // Токен валідний — встановлюємо стан
         set({
           user,
           accessToken,
@@ -83,19 +142,53 @@ export const useAuthStore = create<AuthStore>((set) => ({
           isAuthenticated: true,
           isLoading: false,
         });
-      } catch {
-        // При помилці парсингу — очищаємо сховище
-        clearStorage();
+        return;
+      }
+    } catch {
+      // Токен невалідний або помилка мережі — пробуємо refresh нижче
+    }
+
+    // Спроба оновити токен через refresh_token
+    if (refreshToken) {
+      try {
+        const refreshResponse = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+          refresh_token: refreshToken,
+        });
+
+        const { access_token, refresh_token: newRefreshToken } = refreshResponse.data;
+
+        // Зберігаємо нові токени
+        localStorage.setItem('accessToken', access_token);
+        if (newRefreshToken) {
+          localStorage.setItem('refreshToken', newRefreshToken);
+        } else {
+          localStorage.removeItem('refreshToken');
+        }
+
         set({
-          user: null,
-          accessToken: null,
-          refreshToken: null,
-          isAuthenticated: false,
+          user,
+          accessToken: access_token,
+          refreshToken: newRefreshToken || null,
+          isAuthenticated: true,
           isLoading: false,
         });
+        return;
+      } catch {
+        // Refresh не вдався — очищаємо
+        clearStorage();
       }
     } else {
-      set({ isLoading: false });
+      // Немає refresh_token — очищаємо
+      clearStorage();
     }
+
+    // Якщо дійшли сюди — автентифікація не вдалась
+    set({
+      user: null,
+      accessToken: null,
+      refreshToken: null,
+      isAuthenticated: false,
+      isLoading: false,
+    });
   },
 }));

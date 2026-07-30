@@ -27,7 +27,8 @@ from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.models.permission import Permission, ADMIN_PERMISSIONS, CASHIER_PERMISSIONS
 
 # Схема Bearer токена для Swagger
-security_scheme = HTTPBearer()
+# auto_error=False — дозволяє передати None в get_current_user_optional
+security_scheme = HTTPBearer(auto_error=False)
 
 # Контекст хешування паролів (bcrypt)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -306,7 +307,7 @@ class AuthService:
 
     @staticmethod
     async def get_current_user(
-        credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
         session: AsyncSession = Depends(get_session),
     ) -> User:
         """
@@ -322,6 +323,13 @@ class AuthService:
         Raises:
             HTTPException 401: Якщо токен недійсний або користувача не знайдено.
         """
+        # Перевіряємо наявність токена
+        if not credentials or not credentials.credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Відсутній заголовок авторизації",
+            )
+
         # Декодуємо токен
         payload = AuthService.decode_access_token(credentials.credentials)
         user_id = payload.get("sub")
@@ -351,6 +359,54 @@ class AuthService:
             )
 
         return user
+
+    @staticmethod
+    async def get_current_user_optional(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+        session: AsyncSession = Depends(get_session),
+    ) -> Optional[User]:
+        """
+        Dependency: Отримує поточного користувача з токена (опціонально).
+
+        На відміну від get_current_user, ця функція НЕ кидає 401,
+        якщо токен відсутній або недійсний. Замість цього повертає None.
+
+        Використовується для публічних ендпоінтів, які хочуть визначити,
+        чи є користувач авторизованим, але не вимагають цього.
+
+        Args:
+            credentials: Bearer токен (або None, якщо не переданий).
+            session: Асинхронна сесія БД.
+
+        Returns:
+            Об'єкт User або None, якщо токен відсутній або недійсний.
+        """
+        # Якщо токен не переданий — повертаємо None
+        if not credentials or not credentials.credentials:
+            return None
+
+        try:
+            # Декодуємо токен
+            payload = AuthService.decode_access_token(credentials.credentials)
+            user_id = payload.get("sub")
+
+            if not user_id:
+                return None
+
+            # Шукаємо користувача в БД
+            result = await session.execute(
+                select(User).where(User.id == UUID(user_id))
+            )
+            user = result.scalar_one_or_none()
+
+            if not user or not user.is_active:
+                return None
+
+            return user
+
+        except (HTTPException, JWTError, ValueError):
+            # Якщо токен недійсний або будь-яка інша помилка — повертаємо None
+            return None
 
     # ─── Перевірка ролі ──────────────────────────────────────────────────────
 
@@ -396,7 +452,7 @@ class AuthService:
             Dependency функція, яка повертає User, якщо право є.
         """
         async def _check_permission(
-            credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+            credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
             session: AsyncSession = Depends(get_session),
         ) -> User:
             # Спочатку отримуємо користувача
