@@ -6,11 +6,21 @@ import type { PrintTemplate, PrintTemplateFormData } from '@/types/printTemplate
  *
  * Всі методи звертаються до `/api/v1/print-templates`.
  */
+
+// ── Тип відповіді з пагінацією ─────────────────────────
+interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 export const printTemplateService = {
   /** Отримати всі активні шаблони */
   getAll: async (): Promise<PrintTemplate[]> => {
-    const res = await api.get<PrintTemplate[]>('/print-templates');
-    return res.data;
+    const res = await api.get<PaginatedResponse<PrintTemplate>>('/print-templates');
+    return res.data.items; // ✅ ВИТЯГУЄМО items з пагінованої відповіді
   },
 
   /** Отримати всі шаблони (включно з неактивними) */

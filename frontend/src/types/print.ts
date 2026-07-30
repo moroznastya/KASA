@@ -1,7 +1,8 @@
 // ── Типи для друку цінників та етикеток ────────────
 // ═════════════════════════════════════════════════════════════════════════════
-// Типи друку (для об'єднаної сторінки)
-// ═════════════════════════════════════════════════════════════════════════════
+
+/** Тип штрих-коду / QR */
+export type BarcodeType = 'code128' | 'qr';
 
 /** Тип друку */
 export type PrintType = 'price_tag' | 'label';
@@ -55,7 +56,7 @@ export const PRINT_TYPES: Record<PrintType, PrintTypeConfig> = {
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Основни типи (використовуються API)
+// Основи типи (використовуються API)
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** Товар для рендеру цінників/етикеток */
@@ -77,6 +78,8 @@ export interface PriceTagRenderRequest {
   height_mm: number;
   gap_mm: number;
   margin_mm: number;
+  barcode_type?: BarcodeType;
+  barcode_height_mm?: number;
 }
 
 /** Відповідь рендеру цінників */
@@ -93,6 +96,8 @@ export interface LabelRenderRequest {
   width_mm: number;
   height_mm: number;
   gap_mm: number;
+  barcode_type?: BarcodeType;
+  barcode_height_mm?: number;
 }
 
 /** Відповідь рендеру етикеток */

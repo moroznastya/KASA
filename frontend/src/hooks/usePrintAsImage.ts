@@ -88,29 +88,6 @@ function getPrintResetCSS(): string {
   return `:root {\n${getTailwindColorResetCSS()}}\n`;
 }
 
-/**
- * Логування розмірів DOM-вузла перед захопленням html2canvas.
- */
-function logNodeDimensions(node: HTMLElement, label: string): void {
-  const rect = node.getBoundingClientRect();
-  console.log(`[Print] 📐 ${label} dimensions:`, {
-    offsetWidth: node.offsetWidth,
-    offsetHeight: node.offsetHeight,
-    clientWidth: node.clientWidth,
-    clientHeight: node.clientHeight,
-    scrollWidth: node.scrollWidth,
-    scrollHeight: node.scrollHeight,
-    boundingRect: {
-      width: rect.width.toFixed(1),
-      height: rect.height.toFixed(1),
-      top: rect.top.toFixed(1),
-      left: rect.left.toFixed(1),
-    },
-    children: node.children.length,
-    textLength: (node.textContent || '').trim().length,
-  });
-}
-
 export function usePrintAsImage(
   options: UsePrintAsImageOptions = {},
 ): UsePrintAsImageReturn {
@@ -145,8 +122,6 @@ export function usePrintAsImage(
         'і знаходиться всередині <div ref={receiptRef}>.',
       );
     }
-    // 📐 Логування розмірів перед захопленням
-    logNodeDimensions(node, 'receiptRef');
     return node;
   }, []);
 
@@ -155,32 +130,17 @@ export function usePrintAsImage(
     ensureRefHasContent();
     const node = receiptRef.current!;
     try {
-      // 📐 Логування розмірів безпосередньо перед html2canvas
-      logNodeDimensions(node, 'PRE-html2canvas');
-
       const canvas = await html2canvas(node, {
         scale: 2,
         useCORS: true,
         backgroundColor: '#ffffff',
-        logging: true,
+        logging: false,
         width: node.scrollWidth,
         height: node.scrollHeight,
         windowWidth: node.scrollWidth,
         windowHeight: node.scrollHeight,
         onclone: (clonedDoc) => {
           try {
-            // 📐 Логування розмірів у клонованому документі
-            const clonedReceipt = clonedDoc.querySelector('[data-print-receipt]');
-            if (clonedReceipt) {
-              const el = clonedReceipt as HTMLElement;
-              console.log('[Print] 📐 cloned receipt dimensions:', {
-                offsetWidth: el.offsetWidth,
-                offsetHeight: el.offsetHeight,
-                scrollWidth: el.scrollWidth,
-                scrollHeight: el.scrollHeight,
-              });
-            }
-
             const resetStyle = clonedDoc.createElement('style');
             resetStyle.textContent = getPrintResetCSS();
             clonedDoc.head.appendChild(resetStyle);
@@ -206,25 +166,9 @@ export function usePrintAsImage(
         },
       });
 
-      // 📐 Логування розмірів отриманого Canvas
-      console.log('[Print] 📐 canvas dimensions:', {
-        width: canvas.width,
-        height: canvas.height,
-        scale: 2,
-        expectedWidth: node.scrollWidth * 2,
-        expectedHeight: node.scrollHeight * 2,
-      });
-
       const base64 = canvas
         .toDataURL('image/png')
         .replace(/^data:image\/png;base64,/, '');
-
-      // 📐 Логування розміру Base64
-      console.log('[Print] 📐 base64 PNG size:', {
-        length: base64.length,
-        estimatedBytes: Math.round(base64.length * 0.75),
-        estimatedKB: (base64.length * 0.75 / 1024).toFixed(1),
-      });
 
       return base64;
     } catch (err) {
@@ -251,18 +195,14 @@ export function usePrintAsImage(
       try {
         const base64 = await captureToBase64();
 
-        // 🖼️ Збереження PNG на диск
+        // Збереження PNG на диск
         try {
-          const savedPath = await saveReceiptImage(base64);
-          console.log('[Print] ✅ PNG збережено:', savedPath);
-          toast.success(`📸 Чек збережено: ~/Downloads/${savedPath.split('/').pop()}`);
-        } catch (saveErr) {
-          const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
-          console.error('[Print] ❌ ПОМИЛКА збереження PNG:', msg);
-          toast.error(`❌ Не вдалося зберегти PNG: ${msg}`);
+          await saveReceiptImage(base64);
+        } catch {
+          // не критично
         }
 
-        // 🖨️ Друк
+        // Друк
         const result = await printImage(base64, printerName);
         if (!result.success) {
           throw new Error(result.message);

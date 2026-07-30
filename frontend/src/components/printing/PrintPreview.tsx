@@ -11,6 +11,39 @@ interface PrintPreviewProps {
   type: 'price_tag' | 'label';
 }
 
+// ── Функція: прибрати @page з HTML для прев'ю ──
+function stripAtPageRules(html: string): string {
+  return html.replace(/@page\s*\{[^}]*\}/gs, '');
+}
+
+// ── Функція: додати скрипт масштабування ───────
+function injectScaleScript(html: string): string {
+  return html.replace(
+    '</body>',
+    `<script>
+      (function() {
+        function fitContent() {
+          var body = document.body;
+          if (!body) return;
+          var scaleX = window.innerWidth / (body.scrollWidth || 1);
+          var scaleY = window.innerHeight / (body.scrollHeight || 1);
+          var scale = Math.min(scaleX, scaleY, 1);
+          if (scale < 1) {
+            body.style.transform = 'scale(' + scale + ')';
+            body.style.transformOrigin = 'top left';
+            body.style.overflow = 'hidden';
+          }
+        }
+        if (document.readyState === 'complete') {
+          fitContent();
+        } else {
+          window.addEventListener('load', fitContent);
+        }
+      })();
+    </script></body>`
+  );
+}
+
 // ── Компонент ────────────────────────────────────
 const PrintPreview: React.FC<PrintPreviewProps> = ({
   html,
@@ -19,45 +52,20 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
   totalLabels,
   type,
 }) => {
-  // Додаємо скрипт масштабування в HTML через useMemo
-  const scaledHtml = useMemo(() => {
+  // Обробка HTML: видаляємо @page, додаємо скрипт
+  const processedHtml = useMemo(() => {
     if (!html) return undefined;
-    return html.replace(
-      '</body>',
-      `<script>
-        (function() {
-          function fitContent() {
-            var body = document.body;
-            if (!body) return;
-            var container = document.querySelector('.page') || body;
-            if (!container || !container.offsetWidth) return;
-            var scaleX = window.innerWidth / container.offsetWidth;
-            var scaleY = window.innerHeight / container.offsetHeight;
-            var scale = Math.min(scaleX, scaleY, 1);
-            if (scale < 1) {
-              body.style.transformOrigin = 'top left';
-              body.style.transform = 'scale(' + scale + ')';
-              body.style.width = (100 / scale) + '%';
-              body.style.overflow = 'hidden';
-            }
-          }
-          if (document.readyState === 'complete') {
-            fitContent();
-          } else {
-            window.addEventListener('load', fitContent);
-          }
-        })();
-      </script></body>`
-    );
+    const withoutPage = stripAtPageRules(html);
+    return injectScaleScript(withoutPage);
   }, [html]);
 
   const showMeta = html && (totalPages !== undefined || totalLabels !== undefined);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* Мета-інформація */}
       {showMeta && (
-        <div className="flex items-center gap-3 mb-3 px-1">
+        <div className="flex items-center gap-3 mb-3 px-1 flex-shrink-0">
           {type === 'price_tag' && totalPages !== undefined && (
             <div className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 dark:bg-primary-900/20 rounded-lg">
               <span className="text-xs font-medium text-primary-700 dark:text-primary-400">
@@ -75,17 +83,20 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
         </div>
       )}
 
-      {/* Прев'ю */}
-      <div className="flex-1 border border-gray-200 dark:border-slate-600 rounded-lg overflow-hidden bg-white dark:bg-slate-800 min-h-[300px]">
+      {/* Прев'ю — relative контейнер з absolute iframe */}
+      <div
+        className="relative flex-1 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 overflow-hidden min-h-0"
+        data-print-preview-container="true"
+      >
         {html ? (
           <iframe
             title={`Прев'ю ${type === 'price_tag' ? 'цінників' : 'етикеток'}`}
-            className="w-full h-full min-h-[300px] overflow-hidden"
+            className="absolute inset-0 w-full h-full border-0"
             sandbox="allow-scripts allow-same-origin"
-            srcDoc={scaledHtml}
+            srcDoc={processedHtml}
           />
         ) : isLoading ? (
-          <div className="flex items-center justify-center h-full min-h-[300px]">
+          <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center p-6">
               <Spinner size="md" />
               <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
@@ -94,7 +105,7 @@ const PrintPreview: React.FC<PrintPreviewProps> = ({
             </div>
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full min-h-[300px] text-gray-400 dark:text-gray-500">
+          <div className="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-gray-500">
             <div className="text-center p-6">
               <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center">
                 <FileText className="w-8 h-8 text-gray-400" />

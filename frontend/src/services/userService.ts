@@ -24,8 +24,8 @@ export interface UserUpdate {
 
 export const userService = {
   async list(): Promise<User[]> {
-    const response = await api.get<User[]>('/users');
-    return response.data;
+    const response = await api.get<{ items: User[] }>('/users');
+    return response.data.items;
   },
 
   async getUsers(params?: { page?: number; size?: number }): Promise<PaginatedResponse<User>> {

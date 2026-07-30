@@ -110,6 +110,8 @@ def _generate_barcode_svg(
         code.write(svg_buffer)
         svg_str = svg_buffer.getvalue().decode("utf-8")
 
+        # Видаляємо текст всередині SVG (write_text=False не працює в деяких версіях)
+        svg_str = re.sub(r'<text[^>]*>.*?</text>', '', svg_str, flags=re.DOTALL)
         svg_match = re.search(r'<svg[^>]*>.*?</svg>', svg_str, re.DOTALL)
         if not svg_match:
             return (
@@ -132,7 +134,7 @@ def _generate_barcode_svg(
             f'align-items: center;">'
             f'{svg_tag}'
             f'<span style="font-family: monospace; font-size: 7px; '
-            f'color: #333; margin-top: 1px; letter-spacing: 0.5px;">'
+            f'color: #000; margin-top: 1px; letter-spacing: 0.5px;">'
             f'{display_text}</span>'
             f'</div>'
         )
@@ -154,7 +156,7 @@ def _generate_qr_svg(data: str, box_size_mm: float = 12) -> str:
         box_size_mm: розмір модуля в міліметрах
 
     Returns:
-        HTML-рядок з SVG-зображенням QR-коду
+        HTML-рядок з SVG-зображенням QR-коду + підпис цифрами внизу
     """
     if not HAS_QRCODE:
         # Fallback: показати текст як monospace
@@ -184,10 +186,18 @@ def _generate_qr_svg(data: str, box_size_mm: float = 12) -> str:
             f'<svg style="width: {box_size_mm * 2}mm; height: {box_size_mm * 2}mm;"',
         )
 
+        # Обрізаємо текст для підпису (аналогічно code128)
+        display_text = data[:MAX_BARCODE_TEXT_LEN]
+        if len(data) > MAX_BARCODE_TEXT_LEN:
+            display_text += "…"
+
         return (
             f'<div style="display: flex; flex-direction: column; '
             f'align-items: center;">'
             f'{svg_str}'
+            f'<span style="font-family: monospace; font-size: 7px; '
+            f'color: #000; margin-top: 1px; letter-spacing: 0.5px;">'
+            f'{display_text}</span>'
             f'</div>'
         )
 
