@@ -2,31 +2,21 @@ import { useCallback, useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
 import { printImage, saveReceiptImage } from '@/services/tauri/print';
 import { isTauri } from '@/hooks/useTauri';
+import toast from 'react-hot-toast';
 
 interface UsePrintAsImageOptions {
-  /** Відображати повідомлення про помилки */
   showErrors?: boolean;
 }
 
 interface UsePrintAsImageReturn {
-  /** Ref, який потрібно прикріпити до контейнера з чеком */
   receiptRef: React.RefObject<HTMLDivElement | null>;
-  /** Захопити та надрукувати вміст receiptRef */
   captureAndPrint: (printerName?: string) => Promise<void>;
-  /** Захопити та повернути Base64 (для прев'ю) */
   captureToBase64: () => Promise<string>;
-  /** Захопити та повернути повний data URL (data:image/png;base64,...) */
   captureToDataUrl: () => Promise<string>;
-  /** Чи йде захоплення зараз */
   isCapturing: boolean;
-  /** Остання помилка */
   error: string | null;
 }
 
-/**
- * Генерує CSS-код для перевизначення стандартних кольорів Tailwind CSS v4
- * з oklch() на hex/rgb. Це необхідно, оскільки html2canvas не підтримує oklch().
- */
 function getTailwindColorResetCSS(): string {
   return [
     '--color-gray-50: #f9fafb;',
@@ -98,9 +88,6 @@ function getPrintResetCSS(): string {
   return `:root {\n${getTailwindColorResetCSS()}}\n`;
 }
 
-/**
- * Хук для друку чека як зображення (Print-as-Image).
- */
 export function usePrintAsImage(
   options: UsePrintAsImageOptions = {},
 ): UsePrintAsImageReturn {
@@ -124,12 +111,10 @@ export function usePrintAsImage(
         'Переконайтеся, що <div ref={receiptRef}> є в JSX.',
       );
     }
-
     const hasContent =
       node.children.length > 0 &&
       node.textContent !== null &&
       node.textContent.trim().length > 0;
-
     if (!hasContent) {
       throw new Error(
         'receiptRef порожній. ' +
@@ -137,17 +122,13 @@ export function usePrintAsImage(
         'і знаходиться всередині <div ref={receiptRef}>.',
       );
     }
-
     return node;
   }, []);
 
-  /** Захопити HTML в Canvas і повернути Base64 (без префіксу) */
   const captureToBase64 = useCallback(async (): Promise<string> => {
     await waitForDomUpdate();
     ensureRefHasContent();
-
     const node = receiptRef.current!;
-
     try {
       const canvas = await html2canvas(node, {
         scale: 2,
@@ -156,23 +137,14 @@ export function usePrintAsImage(
         logging: true,
         onclone: (clonedDoc) => {
           try {
-            // ═══════════════════════════════════════════════════════════
-            // КРОК 1: Перевизначаємо CSS-змінні Tailwind v4 (oklch → hex)
-            // ═══════════════════════════════════════════════════════════
             const resetStyle = clonedDoc.createElement('style');
             resetStyle.textContent = getPrintResetCSS();
             clonedDoc.head.appendChild(resetStyle);
 
-            // ═══════════════════════════════════════════════════════════
-            // КРОК 2: Знаходимо контейнер чека за data-атрибутом
-            //          і примусово встановлюємо чорний колір тексту
-            //          для всіх нащадків.
-            // ═══════════════════════════════════════════════════════════
             const receiptContainer = clonedDoc.querySelector('[data-print-receipt]');
             if (receiptContainer) {
               (receiptContainer as HTMLElement).style.color = '#000';
               (receiptContainer as HTMLElement).style.backgroundColor = '#fff';
-
               const allElements = receiptContainer.querySelectorAll('*');
               allElements.forEach((el) => {
                 const htmlEl = el as HTMLElement;
@@ -183,40 +155,27 @@ export function usePrintAsImage(
                   htmlEl.style.backgroundColor = 'transparent';
                 }
               });
-
-              console.log('[Print] ✅ onclone: колір тексту встановлено на #000 для контейнера');
-            } else {
-              console.warn('[Print] ⚠️ onclone: data-print-receipt не знайдено');
             }
           } catch (err) {
             console.error('[Print] ❌ onclone: помилка:', err);
           }
         },
       });
-
       const base64 = canvas
         .toDataURL('image/png')
         .replace(/^data:image\/png;base64,/, '');
-
-      console.log('[Print] ✅ Canvas створено, довжина Base64:', base64.length);
       return base64;
     } catch (err) {
       console.error('[Print] ❌ html2canvas помилка:', err);
-      if (err instanceof Error) {
-        console.error('[Print]   → message:', err.message);
-        console.error('[Print]   → stack:', err.stack);
-      }
       throw err;
     }
   }, [waitForDomUpdate, ensureRefHasContent]);
 
-  /** Захопити HTML в Data URL (data:image/png;base64,...) */
   const captureToDataUrl = useCallback(async (): Promise<string> => {
     const base64 = await captureToBase64();
     return `data:image/png;base64,${base64}`;
   }, [captureToBase64]);
 
-  /** Захопити та надрукувати */
   const captureAndPrint = useCallback(
     async (printerName?: string) => {
       if (!isTauri()) {
@@ -228,42 +187,26 @@ export function usePrintAsImage(
       setError(null);
 
       try {
-        console.log('[Print] 🖨️ Захоплення...');
         const base64 = await captureToBase64();
 
-        // ═══════════════════════════════════════════════════════════════
-        // 🖼️ Автоматичне збереження PNG на диск (для дебагу)
-        //    Файл зберігається в ~/Downloads/kasa_receipt_YYYYMMDD_HHMMSS.png
-        // ═══════════════════════════════════════════════════════════════
-        console.log('[Print] 🖼️ Збереження PNG на диск...');
+        // 🖼️ Збереження PNG на диск
         try {
           const savedPath = await saveReceiptImage(base64);
           console.log('[Print] ✅ PNG збережено:', savedPath);
+          toast.success(`📸 Чек збережено: ~/Downloads/${savedPath.split('/').pop()}`);
         } catch (saveErr) {
-          // Помилка збереження — не критична, друк продовжується
-          console.warn('[Print] ⚠️ Не вдалося зберегти PNG:', saveErr);
+          const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+          console.error('[Print] ❌ ПОМИЛКА збереження PNG:', msg);
+          toast.error(`❌ Не вдалося зберегти PNG: ${msg}`);
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        // 🖨️ Відправка в Tauri print_image
-        // ═══════════════════════════════════════════════════════════════
-        console.log('[Print] 🖨️ Відправка в Tauri print_image...');
+        // 🖨️ Друк
         const result = await printImage(base64, printerName);
-
-        console.log('[Print] 🖨️ Результат Tauri:', result);
-
         if (!result.success) {
           throw new Error(result.message);
         }
-
-        console.log('[Print] ✅ Друк успішно завершено');
       } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : 'Невідома помилка';
-        console.error('[Print] ❌ ФАТАЛЬНА ПОМИЛКА:', msg);
-        if (err instanceof Error) {
-          console.error('[Print]   → stack:', err.stack);
-        }
+        const msg = err instanceof Error ? err.message : 'Невідома помилка';
         setError(msg);
         if (options.showErrors) {
           console.error('[Print-as-Image error]:', msg);
