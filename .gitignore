@@ -73,3 +73,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Secrets
+backend/keys.txt
