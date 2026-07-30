@@ -93,7 +93,8 @@ export function receiptToRenderData(
     change: change.toFixed(2),
     original_receipt_number: receipt.original_receipt_number || '',
     return_reason: receipt.return_reason || '',
-    footer: isReturn ? 'Повернення оформлено' : 'Дякуємо за покупку!',
+    // ⚠️ footer НЕ передаємо — шаблони вже містять потрібний текст в HTML
+    // footer: isReturn ? 'Повернення оформлено' : 'Дякуємо за покупку!',
   };
 }
 
@@ -182,6 +183,14 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     loadSettings();
   }, []);
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // Зміна 2: оновлення defaultTemplateType на основі receipt.receipt_type
+  // ═══════════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    const templateType = receipt?.receipt_type === 'return' ? 'return_receipt_58mm' : 'receipt_58mm';
+    setDefaultTemplateType(templateType);
+  }, [receipt?.receipt_type]);
+
   // Завантаження списку шаблонів
   useEffect(() => {
     loadTemplates();
@@ -213,11 +222,20 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     }
   }, [templates, defaultTemplateType]);
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // Зміна 1: автоматичний вибір шаблону при ініціалізації
+  // ═══════════════════════════════════════════════════════════════════════
+  // Замість виклику loadDefaultTemplate() без параметрів,
+  // визначаємо тип шаблону на основі receipt.receipt_type:
+  //   'return' → 'return_receipt_58mm'
+  //   інше     → 'receipt_58mm'
+  // ═══════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (templates.length > 0 && !selectedTemplate) {
-      loadDefaultTemplate();
+      const templateType = receipt?.receipt_type === 'return' ? 'return_receipt_58mm' : 'receipt_58mm';
+      loadDefaultTemplate(templateType);
     }
-  }, [templates, selectedTemplate, loadDefaultTemplate]);
+  }, [templates, selectedTemplate, loadDefaultTemplate, receipt?.receipt_type]);
 
   const selectTemplate = useCallback((id: string) => {
     const template = templates.find((t) => t.id === id) || null;
