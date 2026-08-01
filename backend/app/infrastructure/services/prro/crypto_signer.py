@@ -317,24 +317,61 @@ class PrroCryptoSigner:
             "конвертувати його у PKCS#12 (.pfx/.p12) або PEM."
         )
 
+    _OID_DSTU4145_LE = "1.2.804.2.1.1.1.1.3.1.1"   # ДСТУ 4145-2002 little endian
+    _OID_DSTU4145_BE = "1.2.804.2.1.1.1.1.3.1.2"   # ДСТУ 4145-2002 big endian
+
     def _load_from_jks(self) -> tuple[PrivateKeyTypes, x509.Certificate]:
-        """Завантажує ключ із Java KeyStore (JKS/JCEKS) через pyjks."""
+        """Завантажує ключ із Java KeyStore (JKS/JCEKS) через pyjks.
+
+        pyjks 20.0.0 падає при `decrypt()` на PKCS#8 з нестандартними
+        параметрами алгоритму (ДСТУ 4145-2002 / ІІТ): валідація через
+        pyasn1 rfc5208 не розуміє структуру AlgorithmIdentifier.
+        Тут ця валідація обходиться (ключ просто розшифровується,
+        структура PKCS#8 залишається незмінною).
+        """
         try:
             import jks  # модуль pyjks
+            from jks.jks import PrivateKeyEntry
+            from jks import sun_crypto
+            from pyasn1.codec.ber import decoder
+            from pyasn1_modules import rfc5208
         except ImportError as exc:  # pragma: no cover
             raise PrroCryptoError(
                 "Для роботи з JKS-ключами встановіть бібліотеку pyjks: "
                 "pip install pyjks"
             ) from exc
 
+        def _loose_decrypt(self, key_password: str) -> None:
+            """decrypt без pyasn1-валідації PKCS#8 (підтримка ДСТУ 4145)."""
+            encrypted_info = decoder.decode(
+                self._encrypted, asn1Spec=rfc5208.EncryptedPrivateKeyInfo()
+            )[0]
+            algo_id = encrypted_info["encryptionAlgorithm"]["algorithm"].asTuple()
+            encrypted_private_key = encrypted_info["encryptedData"].asOctets()
+            if algo_id == sun_crypto.SUN_JKS_ALGO_ID:
+                plaintext = sun_crypto.jks_pkey_decrypt(
+                    encrypted_private_key, key_password
+                )
+            else:
+                raise PrroCryptoError(
+                    f"Непідтримуваний алгоритм захисту ключа JKS: {algo_id}"
+                )
+            self._encrypted = None
+            self._pkey_pkcs8 = plaintext
+            self._pkey = plaintext
+            self._algorithm_oid = None
+
+        # monkeypatch: обхід падіння pyjks на ДСТУ-ключах
+        orig_decrypt = PrivateKeyEntry.decrypt
+        PrivateKeyEntry.decrypt = _loose_decrypt
         try:
-            store = jks.KeyStore.load(
-                str(self.key_path), self.key_password
-            )
+            store = jks.KeyStore.load(str(self.key_path), self.key_password)
         except Exception as exc:  # noqa: BLE001
             raise PrroCryptoError(
                 f"Не вдалося відкрити JKS ({self.key_path.name}): {exc}"
             ) from exc
+        finally:
+            PrivateKeyEntry.decrypt = orig_decrypt
 
         if not store.private_keys:
             raise PrroCryptoError(
@@ -352,6 +389,16 @@ class PrroCryptoSigner:
                 f"Не вдалося розшифрувати ключ JKS ({alias}): {exc}"
             ) from exc
 
+        # Діагностика алгоритму ключа з PKCS#8 (OID в AlgorithmIdentifier)
+        algo_oid = self._detect_pkcs8_algorithm(key_der)
+        if algo_oid in (self._OID_DSTU4145_LE, self._OID_DSTU4145_BE):
+            raise PrroCryptoError(
+                "Ключ використовує ДСТУ 4145-2002 (український стандарт "
+                "електронного підпису), який вимагає крипто-ядро ІІТ "
+                "(SDK EUSign). Модуль ПРРО поки підтримує RSA/EC ключі — "
+                "підпис ДСТУ 4145 буде реалізовано на наступному етапі."
+            )
+
         try:
             private_key = serialization.load_der_private_key(
                 key_der, password=None
@@ -364,6 +411,51 @@ class PrroCryptoSigner:
 
         logger.info("PRRO_CRYPTO | JKS завантажено: %s (alias=%s)", self.key_path.name, alias)
         return private_key, certificate
+
+    @staticmethod
+    def _detect_pkcs8_algorithm(key_der: bytes) -> str | None:
+        """Витягує OID алгоритму з PKCS#8 (перший OBJECT у DER).
+
+        Не покладається на pyasn1 (не розуміє ДСТУ 4145 параметри),
+        а читає DER-структуру PKCS#8 вручну:
+        SEQUENCE { INTEGER 0, SEQUENCE { OBJECT oid, ... }, ... }
+        """
+        try:
+            i = 0
+            assert key_der[i] == 0x30          # SEQUENCE (PrivateKeyInfo)
+            i += 1
+            ln = key_der[i]; i += 1
+            if ln & 0x80:                      # довга форма довжини
+                i += ln & 0x7F
+            assert key_der[i] == 0x02          # INTEGER (version)
+            i += 1
+            ln = key_der[i]; i += 1
+            if ln & 0x80:
+                i += ln & 0x7F
+            i += ln
+            assert key_der[i] == 0x30          # SEQUENCE (AlgorithmIdentifier)
+            i += 1
+            ln = key_der[i]; i += 1
+            if ln & 0x80:
+                i += ln & 0x7F
+            assert key_der[i] == 0x06          # OBJECT (algorithm OID)
+            i += 1
+            oid_len = key_der[i]; i += 1
+            oid_bytes = key_der[i:i + oid_len]
+
+            parts: list[str] = []
+            first = oid_bytes[0]
+            parts.append(str(first // 40))
+            parts.append(str(first % 40))
+            val = 0
+            for b in oid_bytes[1:]:
+                val = (val << 7) | (b & 0x7F)
+                if not (b & 0x80):
+                    parts.append(str(val))
+                    val = 0
+            return ".".join(parts)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _load_from_pem(self) -> tuple[PrivateKeyTypes, x509.Certificate]:
         """Завантажує ключ із PEM-файлу (ключ + сертифікат)."""
