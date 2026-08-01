@@ -38,6 +38,20 @@ export interface PrintImageData {
   printer_name?: string | null;
   /** Шлях до пристрою (опціонально, напр. /dev/usb/lp0) */
   device_path?: string | null;
+  /** Кількість копій (опціонально, за замовчуванням — 1) */
+  copies?: number | null;
+  /** Автоматичне відрізання паперу після друку (опціонально, за замовчуванням — true) */
+  auto_cut?: boolean | null;
+  /**
+   * Фізична ширина етикетки в мм (опціонально; для термо-етикеток).
+   * Якщо задані width_mm/height_mm — Rust масштабує PNG ТОЧНО під мм:
+   * 58×40мм @ 203dpi → (384, 320) dots = 48×40мм фізично.
+   */
+  width_mm?: number | null;
+  /** Фізична висота етикетки в мм (опціонально; для термо-етикеток) */
+  height_mm?: number | null;
+  /** Роздільна здатність принтера, dots/inch (опціонально, за замовчуванням — 203) */
+  dpi?: number | null;
 }
 
 // ─── Основні функції друку ──────────────────────────────────────────────────
@@ -51,22 +65,48 @@ export interface PrintImageData {
  * ⚠️ Tauri v2: команда `print_image(data: PrintImageData)` очікує
  *    аргумент з ІМЕНЕМ `data` та snake_case полями всередині.
  *
- * ✅ invoke('print_image', { data: { image_base64, printer_name, device_path } })
+ * ✅ invoke('print_image', { data: { image_base64, printer_name, device_path, copies, auto_cut, width_mm, height_mm, dpi } })
  *
  * @param imageBase64 - Base64-рядок зображення (PNG)
  * @param printerName - Назва принтера (опціонально)
  * @param devicePath  - Шлях до пристрою (опціонально, напр. /dev/usb/lp0)
+ * @param copies      - Кількість копій (опціонально, null = за замовчуванням у Rust)
+ * @param autoCut     - Автоматичне відрізання паперу (опціонально, null = за замовчуванням у Rust)
+ * @param widthMm     - Фізична ширина етикетки в мм (опціонально; для термо-етикеток)
+ * @param heightMm    - Фізична висота етикетки в мм (опціонально; для термо-етикеток)
+ * @param dpi         - Роздільна здатність принтера dots/inch (опціонально, null = 203)
+ *
+ * ## Розміри термо-етикеток (widthMm/heightMm/dpi)
+ * Якщо задані widthMm/heightMm — Rust масштабує PNG ТОЧНО під фізичні мм:
+ *   - `target_w = min(round(width_mm * dpi / 25.4), 384)`
+ *   - `target_h = round(height_mm * dpi / 25.4)`
+ *   - resize ЗАВЖДИ через Lanczos3
+ *
+ * Приклад: етикетка 58×40мм @ 203dpi → (384, 320) dots = 48×40мм фізично
+ * (ширина 48мм — фізичне обмеження 58мм принтера, висота ТОЧНО 40мм).
+ *
+ * Якщо НЕ задані (звичайні чеки) — стара логіка (масштаб до 384 лише якщо > 384px).
  */
 export async function printImage(
   imageBase64: string,
   printerName?: string,
   devicePath?: string,
+  copies?: number | null,
+  autoCut?: boolean | null,
+  widthMm?: number | null,
+  heightMm?: number | null,
+  dpi?: number | null,
 ): Promise<PrintResult> {
   return invoke<PrintResult>('print_image', {
     data: {
       image_base64: imageBase64,
       printer_name: printerName ?? null,
       device_path: devicePath ?? null,
+      copies: copies ?? null,
+      auto_cut: autoCut ?? null,
+      width_mm: widthMm ?? null,
+      height_mm: heightMm ?? null,
+      dpi: dpi ?? null,
     },
   });
 }
@@ -87,6 +127,47 @@ export async function printRasterImage(
     image_data: imageData,
     printer_name: printerName ?? null,
     device_path: devicePath ?? null,
+  });
+}
+
+
+// ─── Друк HTML (A4) — нативний системний діалог ─────────────────────────────
+
+/**
+ * Дані для друку HTML-документа (A4).
+ *
+ * ⚠️ Tauri v2: поля Rust-структури передаються в snake_case.
+ */
+export interface PrintHtmlData {
+  /** Повний HTML-документ для друку (з <html> та CSS-стилями) */
+  html: string;
+  /** Назва принтера (підказка для системного діалогу; опціонально) */
+  printer_name?: string | null;
+}
+
+/**
+ * Друк HTML-документа НАТИВНО через системний діалог друку (webkit2gtk).
+ *
+ * На відміну від html2canvas → PNG → ESC/POS, цей шлях використовує
+ * нативний рендер webkit2gtk, тому ПІДТРИМУЄ:
+ *   - CSS Grid (сітка цінників на A4)
+ *   - page-break (багатосторінкові документи)
+ *   - SVG, шрифти, повний CSS
+ *
+ * ✅ invoke('print_html', { data: { html, printer_name } })
+ *
+ * @param html        - Повний HTML-документ
+ * @param printerName - Назва принтера (підказка; опціонально)
+ */
+export async function printHtml(
+  html: string,
+  printerName?: string,
+): Promise<PrintResult> {
+  return invoke<PrintResult>('print_html', {
+    data: {
+      html: html,
+      printer_name: printerName ?? null,
+    },
   });
 }
 

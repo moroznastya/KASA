@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import html2canvas from 'html2canvas';
+import html2canvas from 'html2canvas-pro';
 import { printImage, saveReceiptImage } from '@/services/tauri/print';
 import { isTauri } from '@/hooks/useTauri';
 import toast from 'react-hot-toast';
@@ -8,9 +8,25 @@ interface UsePrintAsImageOptions {
   showErrors?: boolean;
 }
 
+/** Опції друку (копії, автовідрізання, фізичні розміри, окремі елементи) */
+export interface PrintAsImageOptions {
+  copies?: number | null;
+  autoCut?: boolean | null;
+  widthMm?: number | null;
+  heightMm?: number | null;
+  dpi?: number | null;
+  /**
+   * CSS-селектор елементів, які друкувати ОКРЕМО (по одному).
+   * Якщо задано — html2canvas знімає КОЖЕН елемент окремим знімком
+   * (розмір = одна етикетка) → Rust масштабує рівномірно, без сплющення.
+   * Якщо НЕ задано — весь контейнер одним знімком (чеки).
+   */
+  itemsSelector?: string | null;
+}
+
 interface UsePrintAsImageReturn {
   receiptRef: React.RefObject<HTMLDivElement | null>;
-  captureAndPrint: (printerName?: string) => Promise<void>;
+  captureAndPrint: (printerName?: string, options?: PrintAsImageOptions) => Promise<void>;
   captureToBase64: () => Promise<string>;
   captureToDataUrl: () => Promise<string>;
   isCapturing: boolean;
@@ -88,6 +104,16 @@ function getPrintResetCSS(): string {
   return `:root {\n${getTailwindColorResetCSS()}}\n`;
 }
 
+/** Спільна конфігурація html2canvas для друку зображень (чеки/етикетки) */
+function getHtml2CanvasOptions() {
+  return {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    logging: false,
+  };
+}
+
 export function usePrintAsImage(
   options: UsePrintAsImageOptions = {},
 ): UsePrintAsImageReturn {
@@ -131,10 +157,7 @@ export function usePrintAsImage(
     const node = receiptRef.current!;
     try {
       const canvas = await html2canvas(node, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-        logging: false,
+        ...getHtml2CanvasOptions(),
         width: node.scrollWidth,
         height: node.scrollHeight,
         windowWidth: node.scrollWidth,
@@ -183,7 +206,7 @@ export function usePrintAsImage(
   }, [captureToBase64]);
 
   const captureAndPrint = useCallback(
-    async (printerName?: string) => {
+    async (printerName?: string, printOptions?: PrintAsImageOptions) => {
       if (!isTauri()) {
         window.print();
         return;
@@ -193,6 +216,51 @@ export function usePrintAsImage(
       setError(null);
 
       try {
+        // ── Режим «окремі елементи» (етикетки): знімаємо КОЖЕН елемент окремо ──
+        // html2canvas на окремому елементі знімає ТІЛЬКИ його (розмір = одна етикетка),
+        // Rust масштабує рівномірно → без сплющення контенту по висоті.
+        if (printOptions?.itemsSelector) {
+          // Дочекатись рендеру прихованого <div ref={receiptRef}> після setIsCapturing(true)
+          // (div рендериться умовно при isCapturing — одразу він ще не в DOM)
+          await waitForDomUpdate();
+          const node = receiptRef.current;
+          if (!node) {
+            throw new Error(
+              'receiptRef не прикріплено до DOM-вузла. ' +
+              'Переконайтеся, що <div ref={receiptRef}> є в JSX.',
+            );
+          }
+          const items = Array.from(
+            node.querySelectorAll<HTMLElement>(printOptions.itemsSelector),
+          );
+          if (items.length === 0) {
+            throw new Error('Не знайдено етикеток для друку');
+          }
+
+          for (let i = 0; i < items.length; i++) {
+            const canvas = await html2canvas(items[i], getHtml2CanvasOptions());
+            const base64 = canvas
+              .toDataURL('image/png')
+              .replace(/^data:image\/png;base64,/, '');
+
+            // copies=1, autoCut ТІЛЬКИ для останньої етикетки (стрічка без різів між ними)
+            const result = await printImage(
+              base64,
+              printerName,
+              undefined,
+              1,
+              i === items.length - 1,
+              printOptions?.widthMm ?? null,
+              printOptions?.heightMm ?? null,
+              printOptions?.dpi ?? null,
+            );
+            if (!result.success) {
+              throw new Error(result.message);
+            }
+          }
+          return; // весь контейнер НЕ друкуємо
+        }
+
         const base64 = await captureToBase64();
 
         // Збереження PNG на диск
@@ -202,8 +270,17 @@ export function usePrintAsImage(
           // не критично
         }
 
-        // Друк
-        const result = await printImage(base64, printerName);
+        // Друк (з копіями та автовідрізанням, якщо передано)
+        const result = await printImage(
+          base64,
+          printerName,
+          undefined,
+          printOptions?.copies ?? null,
+          printOptions?.autoCut ?? null,
+          printOptions?.widthMm ?? null,
+          printOptions?.heightMm ?? null,
+          printOptions?.dpi ?? null,
+        );
         if (!result.success) {
           throw new Error(result.message);
         }

@@ -32,7 +32,7 @@ export const PRINT_TYPES: Record<PrintType, PrintTypeConfig> = {
     defaultSettings: {
       templateId: '',
       widthMm: 40,
-      heightMm: 25,
+      heightMm: 43,
       gapMm: 3,
       marginMm: 10,
     },

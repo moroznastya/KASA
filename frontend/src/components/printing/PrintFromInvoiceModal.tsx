@@ -1,14 +1,19 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { Printer, Tag, Loader2, Eye, FileText } from 'lucide-react';
 import { printService } from '@/services/printService';
 import { printTemplateService } from '@/services/printTemplateService';
+import { settingsService } from '@/services/settingsService';
+import { printHtml } from '@/services/tauri/print';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import PrintPreview from './PrintPreview';
+import { usePrintAsImage } from '@/hooks/usePrintAsImage';
+import { isTauri } from '@/hooks/useTauri';
+import { extractBodyWithStyles } from '@/utils/printHtmlUtils';
 import type { InvoicePrintRequest, InvoicePrintResponse } from '@/types/print';
 import type { PrintTemplate } from '@/types/printTemplate';
 
@@ -57,10 +62,30 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
   const [marginMm, setMarginMm] = useState(DEFAULT_SETTINGS.price_tag.marginMm);
   const [barcodeType, setBarcodeType] = useState<'code128' | 'qr'>('code128');
   const [barcodeHeightMm, setBarcodeHeightMm] = useState(10);
+  const [printerName, setPrinterName] = useState<string | undefined>(undefined);
 
   const [previewData, setPreviewData] = useState<InvoicePrintResponse | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+
+  // Print-as-Image для етикеток у Tauri (термопринтер)
+  const { receiptRef, captureAndPrint: captureAndPrintLabel } = usePrintAsImage({ showErrors: true });
+
+  // Очищений HTML (без DOCTYPE/html/head/body) для hidden div
+  const cleanLabelHtml = useMemo(() => {
+    if (!previewData?.html) return '';
+    return extractBodyWithStyles(previewData.html);
+  }, [previewData]);
+
+  // ── Завантаження налаштувань принтера ─────────
+  useEffect(() => {
+    if (!isOpen) return;
+    const loadPrinter = async () => {
+      const printer = await settingsService.getValue('printer_name');
+      if (printer) setPrinterName(printer);
+    };
+    loadPrinter();
+  }, [isOpen]);
 
   // ── Завантаження шаблонів за типом ────────────
   const templateType = printType === 'price_tag' ? 'price_tag' : 'label';
@@ -128,53 +153,51 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
     }
   }, [templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId]);
 
-  // ── Друк ──────────────────────────────────────
-  const handlePrint = useCallback(async () => {
-    if (!templateId) {
-      toast.error('Виберіть шаблон');
-      return;
-    }
-    if (!previewData) {
-      // Якщо прев'ю ще не завантажено — завантажуємо і одразу друкуємо
-      setIsPrinting(true);
-      try {
-        const data: InvoicePrintRequest = {
-          print_type: printType,
-          only_changed: onlyChanged,
-          template_id: templateId,
-          width_mm: widthMm,
-          height_mm: heightMm,
-          gap_mm: gapMm,
-          margin_mm: marginMm,
-          barcode_type: barcodeType,
-          barcode_height_mm: barcodeHeightMm,
-        };
-        const result = await printService.renderInvoicePrintItems(invoiceId, data);
-        setPreviewData(result);
-        await printHTML(result.html);
-        showSummary(result);
-      } catch (err: any) {
-        const msg = err?.response?.data?.detail || 'Помилка друку';
-        toast.error(msg);
-      } finally {
-        setIsPrinting(false);
-      }
-      return;
-    }
-    // Якщо прев'ю є — друкуємо його
-    setIsPrinting(true);
-    try {
-      await printHTML(previewData.html);
-      showSummary(previewData);
-    } catch (err: any) {
-      toast.error(err?.message || 'Помилка друку');
-    } finally {
-      setIsPrinting(false);
-    }
-  }, [templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId, previewData]);
+  // ── Отримати результат рендеру (прев'ю або новий) ──
+  const getRenderResult = useCallback(async (): Promise<InvoicePrintResponse> => {
+    if (previewData) return previewData;
+    const data: InvoicePrintRequest = {
+      print_type: printType,
+      only_changed: onlyChanged,
+      template_id: templateId,
+      width_mm: widthMm,
+      height_mm: heightMm,
+      gap_mm: gapMm,
+      margin_mm: marginMm,
+      barcode_type: barcodeType,
+      barcode_height_mm: barcodeHeightMm,
+    };
+    const result = await printService.renderInvoicePrintItems(invoiceId, data);
+    setPreviewData(result);
+    return result;
+  }, [previewData, templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId]);
 
-  // ── Допоміжні функції ─────────────────────────
-  const printHTML = async (html: string): Promise<void> => {
+  // ── Читання копій та автовідрізання з system_settings ──
+  const readPrintCopies = useCallback(async (): Promise<number | null> => {
+    try {
+      const v =
+        (await settingsService.getValue('print_copies')) ||
+        (await settingsService.getValue('receipt_print_copies'));
+      if (!v) return null;
+      const n = parseInt(v, 10);
+      return !isNaN(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const readAutoCut = useCallback(async (): Promise<boolean | null> => {
+    try {
+      const v = await settingsService.getValue('auto_cut_paper');
+      if (v === null || v === undefined || v === '') return null;
+      return v === 'true' || v === '1';
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // ── Друк через браузер (window.print) ─────────
+  const printHtmlViaBrowser = useCallback(async (html: string): Promise<void> => {
     const win = window.open('', '_blank');
     if (!win) {
       toast.error('Блокувальник спливних вікон. Дозвольте спливні вікна для цього сайту.');
@@ -192,9 +215,65 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
     });
     win.focus();
     win.print();
-  };
+  }, []);
 
-  const showSummary = (result: InvoicePrintResponse) => {
+  // ── Друк етикеток у Tauri (Print-as-Image) ────
+  // Термопринтер отримує ESC/POS растр через html2canvas → PNG → Rust
+  const printLabelViaTauri = useCallback(async (): Promise<void> => {
+    // Чекаємо, поки React оновить hidden div (dangerouslySetInnerHTML)
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 150);
+      });
+    });
+
+    // Захоплюємо та друкуємо (з копіями/автовідрізанням з налаштувань)
+    const [copies, autoCut] = await Promise.all([readPrintCopies(), readAutoCut()]);
+    await captureAndPrintLabel(printerName || undefined, {
+      copies,
+      autoCut,
+    });
+  }, [readPrintCopies, readAutoCut, printerName, captureAndPrintLabel]);
+
+  // ── Друк ──────────────────────────────────────
+  const handlePrint = useCallback(async () => {
+    if (!templateId) {
+      toast.error('Виберіть шаблон');
+      return;
+    }
+
+    setIsPrinting(true);
+    try {
+      const result = await getRenderResult();
+
+      // ═══ ЛОГІКА ВИБОРУ СПОСОБУ ДРУКУ ═══
+      // 1. Tauri + label → Print-as-Image (термопринтер отримує ESC/POS растр)
+      // 2. Tauri + price_tag (A4 аркуш) → нативний printHtml (системний діалог webkit2gtk)
+      // 3. Не Tauri → window.print()
+      if (isTauri() && printType === 'label') {
+        await printLabelViaTauri();
+      } else if (isTauri() && printType === 'price_tag') {
+        // НАТИВНИЙ друк A4: системний діалог webkit2gtk (grid/SVG/page-break працюють)
+        const printResult = await printHtml(result.html, printerName || undefined);
+        if (printResult.success === false) {
+          toast.error(printResult.message);
+        } else {
+          toast.success('Відправлено на друк');
+        }
+      } else {
+        await printHtmlViaBrowser(result.html);
+      }
+
+      showSummary(result);
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || 'Помилка друку';
+      toast.error(msg);
+    } finally {
+      setIsPrinting(false);
+    }
+  }, [templateId, printType, getRenderResult, printLabelViaTauri, printHtmlViaBrowser]);
+
+  const showSummary = useCallback((result: InvoicePrintResponse) => {
     const label = printType === 'price_tag' ? 'цінників' : 'етикеток';
     const parts: string[] = [`Створено ${result.total_labels} ${label}`];
     if (result.total_pages !== undefined) {
@@ -204,7 +283,7 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
       parts.push(`(змінних цін: ${result.changed_count})`);
     }
     toast.success(parts.join(' '));
-  };
+  }, [printType]);
 
   // ── Опції для Select ──────────────────────────
   const templateOptions = useMemo(() => {
@@ -477,6 +556,23 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
           </div>
         )}
       </div>
+
+      {/* Прихований div для html2canvas (етикетки в Tauri) */}
+      <div
+        ref={receiptRef as React.RefObject<HTMLDivElement>}
+        data-print-receipt="true"
+        dangerouslySetInnerHTML={{ __html: cleanLabelHtml }}
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          top: 0,
+          width: 'fit-content',
+          minWidth: previewData?.html ? `${widthMm * 3.78}px` : '1px',
+          backgroundColor: 'white',
+          color: 'black',
+          zIndex: -1,
+        }}
+      />
 
       {/* Кнопки дій */}
       <div className="flex items-center justify-between pt-5 mt-5 border-t border-gray-200 dark:border-slate-700">

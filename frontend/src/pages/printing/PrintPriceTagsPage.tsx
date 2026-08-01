@@ -94,8 +94,6 @@ const PrintPriceTagsPage: React.FC = () => {
     }
 
     setIsPreviewLoading(true);
-    setPreviewHtml(null);
-    setRenderResult(null);
 
     try {
       const products = selected.map((item) => ({
@@ -206,7 +204,7 @@ const PrintPriceTagsPage: React.FC = () => {
   }, [previewHtml]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100vh-7rem)]">
       {/* Заголовок */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -244,7 +242,7 @@ const PrintPriceTagsPage: React.FC = () => {
           </Button>
           <Button
             onClick={handlePrint}
-            disabled={isPrinting || !previewHtml}
+            disabled={isPrinting || !previewHtml || isPreviewLoading}
             size="lg"
             icon={
               isPrinting ? (
@@ -277,19 +275,21 @@ const PrintPriceTagsPage: React.FC = () => {
         </div>
 
         {/* Колонка 2 — налаштування (3/12) */}
-        <div className="lg:col-span-3 card p-4">
-          <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
-            Налаштування
-          </h2>
-          <PrintSettingsPanel
-            templateId={settings.templateId}
-            widthMm={settings.widthMm}
-            heightMm={settings.heightMm}
-            gapMm={settings.gapMm}
-            marginMm={settings.marginMm}
-            onChange={handleSettingsChange}
-            type="price_tag"
-          />
+        <div className="lg:col-span-3 card p-4 overflow-hidden flex flex-col min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
+              Налаштування
+            </h2>
+            <PrintSettingsPanel
+              templateId={settings.templateId}
+              widthMm={settings.widthMm}
+              heightMm={settings.heightMm}
+              gapMm={settings.gapMm}
+              marginMm={settings.marginMm}
+              onChange={handleSettingsChange}
+              type="price_tag"
+            />
+          </div>
         </div>
 
         {/* Колонка 3 — прев'ю (5/12) */}

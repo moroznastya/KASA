@@ -3,7 +3,9 @@ import { Printer, ArrowLeft, Eye, Loader2, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { printService } from '@/services/printService';
 import { settingsService } from '@/services/settingsService';
+import { printTemplateService } from '@/services/printTemplateService';
 import { isTauri } from '@/hooks/useTauri';
+import { printHtml } from '@/services/tauri/print';
 import { usePrintAsImage } from '@/hooks/usePrintAsImage';
 import PrintProductSelector from '@/components/printing/PrintProductSelector';
 import PrintPreview from '@/components/printing/PrintPreview';
@@ -13,6 +15,7 @@ import { PRINT_TYPES } from '@/types/print';
 import type { Product } from '@/types/product';
 import type { SelectedProduct, PrintType, BarcodeType } from '@/types/print';
 import toast from 'react-hot-toast';
+import { extractBodyWithStyles } from '@/utils/printHtmlUtils';
 
 // ── Тип для зручного onChange ────────────────────
 interface PrintSettings {
@@ -23,25 +26,34 @@ interface PrintSettings {
   marginMm: number;
 }
 
+/**
+ * Єдині ключі system_settings (module='printing'):
+ *
+ *   price_tag: price_tag_width, price_tag_height, price_tag_gap,
+ *              price_tag_margin, price_tag_template_id
+ *   label:     label_width, label_height, label_gap, label_template_id
+ *   спільне:   printer_name, barcode_type
+ *
+ * НЕ використовуємо застарілі print_width_mm / print_height_mm /
+ * print_gap_mm / print_margin_mm / print_barcode_type / print_template_id.
+ */
+
 // ── Ключі налаштувань для збереження між сесіями ─
 const SETTINGS_KEYS = {
   printerName: 'printer_name',
-  templateId: 'print_template_id',
-  widthMm: 'print_width_mm',
-  heightMm: 'print_height_mm',
-  gapMm: 'print_gap_mm',
-  marginMm: 'print_margin_mm',
-  barcodeType: 'print_barcode_type',
+  barcodeType: 'barcode_type',
 } as const;
 
-// ── Функція: витягнути тільки вміст <body> з HTML ─
-function extractBodyContent(html: string): string {
-  let clean = html.replace(/<!DOCTYPE[^>]*>/gi, '');
-  clean = clean.replace(/<\/?html[^>]*>/gi, '');
-  clean = clean.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '');
-  const bodyMatch = clean.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-  if (bodyMatch) return bodyMatch[1];
-  return clean.trim();
+/** Повертає ключі системних налаштувань для типу друку */
+function getTypeSettingsKeys(type: PrintType) {
+  const prefix = type === 'price_tag' ? 'price_tag' : 'label';
+  return {
+    templateId: `${prefix}_template_id`,
+    widthMm: `${prefix}_width`,
+    heightMm: `${prefix}_height`,
+    gapMm: `${prefix}_gap`,
+    marginMm: type === 'price_tag' ? 'price_tag_margin' : null,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -78,42 +90,82 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   // Очищений HTML для hidden div (без DOCTYPE/html/head/body)
   const cleanHtmlForReceipt = useMemo(() => {
     if (!previewHtml) return '';
-    return extractBodyContent(previewHtml);
+    return extractBodyWithStyles(previewHtml);
   }, [previewHtml]);
+
+  // ── Завантаження збережених налаштувань типу (з БД) ────────────
+  // Винесено в окрему функцію: викликається і при монтуванні, і при
+  // перемиканні типу друку (щоб розміри НОВОГО типу перечитувались з БД,
+  // а не залишались від попереднього типу).
+  const loadTypeSettings = useCallback(async (type: PrintType) => {
+    try {
+      const keys = getTypeSettingsKeys(type);
+
+      // Завантажуємо всі ключі типу + спільні
+      const keysToLoad = [
+        SETTINGS_KEYS.printerName,
+        SETTINGS_KEYS.barcodeType,
+        keys.templateId,
+        keys.widthMm,
+        keys.heightMm,
+        keys.gapMm,
+        ...(keys.marginMm ? [keys.marginMm] : []),
+      ];
+      const values = await Promise.all(
+        keysToLoad.map((key) =>
+          settingsService.getValue(key).then((v) => ({ key, value: v }))
+        )
+      );
+      const map = Object.fromEntries(
+        values.filter((v) => v.value !== null && v.value !== '').map((v) => [v.key, v.value!])
+      );
+
+      if (map[SETTINGS_KEYS.printerName]) setPrinterName(map[SETTINGS_KEYS.printerName]);
+
+      // Тип штрих-коду — з перевіркою типу
+      const savedBarcodeType = map[SETTINGS_KEYS.barcodeType];
+      if (savedBarcodeType === 'qr' || savedBarcodeType === 'code128') {
+        setBarcodeType(savedBarcodeType);
+      }
+
+      // Оновлюємо розміри значеннями з БД; якщо ключа немає — залишаємо дефолт типу
+      setSettings((prev) => {
+        const next = { ...prev };
+        if (map[keys.templateId]) next.templateId = map[keys.templateId];
+        if (map[keys.widthMm]) next.widthMm = Number(map[keys.widthMm]);
+        if (map[keys.heightMm]) next.heightMm = Number(map[keys.heightMm]);
+        if (map[keys.gapMm]) next.gapMm = Number(map[keys.gapMm]);
+        if (keys.marginMm && map[keys.marginMm]) next.marginMm = Number(map[keys.marginMm]);
+        return next;
+      });
+    } catch {
+      // ignore — використовуємо дефолтні значення
+    }
+  }, []);
 
   // ── Завантаження збережених налаштувань при монтуванні ──
   useEffect(() => {
-    const load = async () => {
+    loadTypeSettings(printType).finally(() => setSettingsLoaded(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Бонус: якщо template_id порожній — підставляємо дефолтний шаблон типу ──
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (settings.templateId) return;
+
+    const loadDefaultTemplate = async () => {
       try {
-        const values = await Promise.all(
-          Object.values(SETTINGS_KEYS).map((key) =>
-            settingsService.getValue(key).then((v) => ({ key, value: v }))
-          )
-        );
-        const map = Object.fromEntries(
-          values.filter((v) => v.value !== null).map((v) => [v.key, v.value!])
-        );
-
-        if (map.printer_name) setPrinterName(map.printer_name);
-        if (map.print_barcode_type === 'qr' || map.print_barcode_type === 'code128') {
-          setBarcodeType(map.print_barcode_type);
+        const defaultTemplate = await printTemplateService.getDefault(printType);
+        if (defaultTemplate) {
+          setSettings((prev) => ({ ...prev, templateId: defaultTemplate.id }));
         }
-
-        setSettings((prev) => ({
-          templateId: map.print_template_id ?? prev.templateId,
-          widthMm: map.print_width_mm ? Number(map.print_width_mm) : prev.widthMm,
-          heightMm: map.print_height_mm ? Number(map.print_height_mm) : prev.heightMm,
-          gapMm: map.print_gap_mm ? Number(map.print_gap_mm) : prev.gapMm,
-          marginMm: map.print_margin_mm ? Number(map.print_margin_mm) : prev.marginMm,
-        }));
       } catch {
-        // ignore — використовуємо дефолтні значення
-      } finally {
-        setSettingsLoaded(true);
+        // Ігноруємо
       }
     };
-    load();
-  }, []);
+    loadDefaultTemplate();
+  }, [settingsLoaded, settings.templateId, printType]);
 
   // ── Автозбереження налаштувань при зміні ────────
   const saveSetting = useCallback(async (key: string, value: string) => {
@@ -132,15 +184,21 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
       setPreviewHtml(null);
       setRenderResult(null);
       setPrintType(newType);
-      setSettings((prev) => ({
-        templateId: prev.templateId || newConfig.defaultSettings.templateId,
-        widthMm: prev.widthMm || newConfig.defaultSettings.widthMm,
-        heightMm: prev.heightMm || newConfig.defaultSettings.heightMm,
-        gapMm: prev.gapMm || newConfig.defaultSettings.gapMm,
-        marginMm: prev.marginMm || newConfig.defaultSettings.marginMm,
-      }));
+      // Скидаємо templateId — підставиться дефолтний через useEffect
+      // Розміри — НА ДЕФОЛТ НОВОГО типу (НЕ prev.widthMm || ... — інакше
+      // старі розміри попереднього типу залишаються: цінник 40×43 замість
+      // етикетки 58×56)
+      setSettings({
+        templateId: '',
+        widthMm: newConfig.defaultSettings.widthMm,
+        heightMm: newConfig.defaultSettings.heightMm,
+        gapMm: newConfig.defaultSettings.gapMm,
+        marginMm: newConfig.defaultSettings.marginMm,
+      });
+      // Перечитуємо налаштування нового типу з БД (label_width/label_height...)
+      void loadTypeSettings(newType);
     },
-    [printType],
+    [printType, loadTypeSettings],
   );
 
   // ── Зміна принтера ──────────────────────────────
@@ -153,16 +211,18 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   );
 
   // ── Зміна налаштувань друку ────────────────────
+  // Автозберігаємо в system_settings (єдині ключі типу)
   const handleSettingsChange = useCallback(
     (field: string, value: string | number) => {
       setSettings((prev) => {
         const next = { ...prev, [field]: value };
-        const keyMap: Record<string, string> = {
-          templateId: SETTINGS_KEYS.templateId,
-          widthMm: SETTINGS_KEYS.widthMm,
-          heightMm: SETTINGS_KEYS.heightMm,
-          gapMm: SETTINGS_KEYS.gapMm,
-          marginMm: SETTINGS_KEYS.marginMm,
+        const keys = getTypeSettingsKeys(printType);
+        const keyMap: Record<string, string | null> = {
+          templateId: keys.templateId,
+          widthMm: keys.widthMm,
+          heightMm: keys.heightMm,
+          gapMm: keys.gapMm,
+          marginMm: keys.marginMm,
         };
         const settingsKey = keyMap[field];
         if (settingsKey) {
@@ -171,7 +231,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
         return next;
       });
     },
-    [saveSetting],
+    [saveSetting, printType],
   );
 
   // ── Зміна типу штрих-коду ──────────────────────
@@ -222,6 +282,17 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
       return;
     }
 
+    console.log('[PREVIEW] generate-start |', {
+      printType,
+      templateId: settings.templateId,
+      productsCount: selected.length,
+      widthMm: settings.widthMm,
+      heightMm: settings.heightMm,
+      barcodeType,
+      scrollYBefore: window.scrollY,
+    });
+    const startTime = Date.now();
+
     setIsPreviewLoading(true);
 
     try {
@@ -243,7 +314,14 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
           gap_mm: settings.gapMm,
           margin_mm: settings.marginMm,
           barcode_type: barcodeType,
-          barcode_height_mm: 12,
+          barcode_height_mm: 7,
+        });
+        console.log('[PREVIEW] response |', {
+          htmlLen: result.html?.length,
+          totalPages: result.total_pages,
+          totalLabels: result.total_labels,
+          timeMs: Date.now() - startTime,
+          scrollY: window.scrollY,
         });
         setPreviewHtml(result.html);
         setRenderResult({ totalPages: result.total_pages, totalLabels: result.total_labels });
@@ -256,13 +334,21 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
           height_mm: settings.heightMm,
           gap_mm: settings.gapMm,
           barcode_type: barcodeType,
-          barcode_height_mm: 12,
+          barcode_height_mm: 19,
+        });
+        console.log('[PREVIEW] response |', {
+          htmlLen: result.html?.length,
+          totalPages: (result as { total_pages?: number }).total_pages,
+          totalLabels: result.total_labels,
+          timeMs: Date.now() - startTime,
+          scrollY: window.scrollY,
         });
         setPreviewHtml(result.html);
         setRenderResult({ totalLabels: result.total_labels });
         toast.success(`Згенеровано ${result.total_labels} етикеток`);
       }
     } catch (err: any) {
+      console.error('[PREVIEW] error |', err);
       const msg = err?.response?.data?.detail || `Помилка генерації ${label}`;
       toast.error(msg);
     } finally {
@@ -279,10 +365,27 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
 
     setIsPrinting(true);
     try {
-      if (isTauri()) {
-        await captureAndPrintLabel(printerName || undefined);
+      if (isTauri() && printType === 'price_tag') {
+        // НАТИВНИЙ друк A4: системний діалог webkit2gtk (grid/SVG/page-break працюють)
+        const result = await printHtml(previewHtml, printerName || undefined);
+        if (result.success === false) {
+          toast.error(result.message);
+        } else {
+          toast.success('Відправлено на друк');
+        }
+      } else if (isTauri() && printType === 'label') {
+        // html2canvas → ESC/POS растр (термо, flex-рендер; CSS зберігається через extractBodyWithStyles)
+        // Передаємо фізичні розміри етикетки (мм) — Rust масштабує PNG точно під них.
+        // itemsSelector='.label-item': кожна етикетка знімається ОКРЕМИМ знімком →
+        // розмір знімка = одна етикетка → Rust масштабує рівномірно (без сплющення по висоті)
+        await captureAndPrintLabel(printerName || undefined, {
+          widthMm: settings.widthMm,
+          heightMm: settings.heightMm,
+          itemsSelector: '.label-item',
+        });
         toast.success('Відправлено на друк');
       } else {
+        // Не Tauri → браузерний друк
         printViaBrowser(previewHtml);
       }
     } catch (err: any) {
@@ -309,14 +412,14 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   // ═══════════════════════════════════════════════════════════
   if (!settingsLoaded) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
+      <div className="flex items-center justify-center h-[calc(100vh-7rem)]">
         <div className="text-gray-400 dark:text-gray-500">Завантаження налаштувань...</div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100vh-7rem)]">
       {/* Заголовок */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -355,7 +458,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
 
           <Button
             onClick={handlePrint}
-            disabled={isPrintingActive || !previewHtml}
+            disabled={isPrintingActive || !previewHtml || isPreviewLoading}
             size="lg"
             icon={
               isPrintingActive ? (
@@ -395,7 +498,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
       {/* Три колонки */}
       <div
         data-print-grid="true"
-        className="flex-1 grid grid-cols-1 lg:grid-cols-[560px_340px_minmax(0,1fr)] gap-4 min-h-0 min-w-0"
+        className="flex-1 grid grid-cols-[380px_280px_minmax(0,1fr)] gap-4 min-h-0 min-w-0 overflow-x-auto"
       >
         {/* Колонка 1 — Вибір товарів */}
         <div className="overflow-hidden card p-4 flex flex-col shrink-0">
@@ -413,8 +516,8 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
         </div>
 
         {/* Колонка 2 — Налаштування */}
-        <div className="overflow-hidden card p-4 space-y-4 shrink-0">
-          <div>
+        <div className="overflow-hidden card p-4 shrink-0 flex flex-col min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
               Налаштування
             </h2>
@@ -455,11 +558,20 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
               onChange={handleSettingsChange}
               type={printType}
             />
+
+            {/* Інфо: друкована область термопринтера (58мм → фактично 48мм, 384 dots @203dpi) */}
+            {printType === 'label' && settings.widthMm > 48 && (
+              <div className="text-sm text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-slate-100 rounded-lg p-2 mt-3">
+                <span className="mr-1">ℹ️</span>
+                Друкована область 58мм принтера — 48мм. Етикетка {settings.widthMm}×{settings.heightMm}мм
+                друкується як 48×{settings.heightMm}мм (висота точна).
+              </div>
+            )}
           </div>
         </div>
 
         {/* Колонка 3 — Прев'ю */}
-        <div className="overflow-hidden card p-4 flex flex-col min-w-0">
+        <div className="overflow-hidden card p-4 flex flex-col min-w-0 min-h-0">
           <h2 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3 flex-shrink-0">
             Попередній перегляд
           </h2>
@@ -475,21 +587,27 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Прихований div для html2canvas */}
-      <div
-        ref={receiptRef as React.RefObject<HTMLDivElement>}
-        dangerouslySetInnerHTML={{ __html: cleanHtmlForReceipt }}
-        style={{
-          position: 'absolute',
-          left: '-9999px',
-          top: 0,
-          width: previewHtml ? 'fit-content' : '1px',
-          minWidth: previewHtml ? `${settings.widthMm * 3.78}px` : '1px',
-          backgroundColor: 'white',
-          color: 'black',
-          zIndex: -1,
-        }}
-      />
+      {/* Прихований div для html2canvas — ТІЛЬКИ під час захоплення (термо-друк).
+          position: fixed (НЕ absolute): fixed-елемент не впливає на scrollHeight
+          документа → під час друку не з'являється скролбар → верстка не пливе.
+          html2canvas компенсує left:-9999px через ctx.translate(-options.x),
+          тому друк працює ідентично. */}
+      {isCapturing && (
+        <div
+          ref={receiptRef as React.RefObject<HTMLDivElement>}
+          dangerouslySetInnerHTML={{ __html: cleanHtmlForReceipt }}
+          style={{
+            position: 'fixed',
+            left: '-9999px',
+            top: 0,
+            width: previewHtml ? 'fit-content' : '1px',
+            minWidth: previewHtml ? `${settings.widthMm * 3.78}px` : '1px',
+            backgroundColor: 'white',
+            color: 'black',
+            zIndex: -1,
+          }}
+        />
+      )}
     </div>
   );
 };

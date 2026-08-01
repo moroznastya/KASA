@@ -28,6 +28,7 @@ export interface UseReceiptPrinterReturn {
 export function receiptToRenderData(
   receipt: Receipt,
   shopInfo?: { shop_name: string; shop_address: string; tax_id: string },
+  extra?: Record<string, string>,
 ): Record<string, string> {
   const name = shopInfo?.shop_name || '';
   const address = shopInfo?.shop_address || '';
@@ -95,6 +96,8 @@ export function receiptToRenderData(
     return_reason: receipt.return_reason || '',
     // ⚠️ footer НЕ передаємо — шаблони вже містять потрібний текст в HTML
     // footer: isReturn ? 'Повернення оформлено' : 'Дякуємо за покупку!',
+    // Додаткові змінні (наприклад show_logo) — зливаємо зверху
+    ...extra,
   };
 }
 
@@ -152,13 +155,18 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
   const [printerName, setPrinterName] = useState<string | undefined>(undefined);
   const [defaultTemplateType, setDefaultTemplateType] = useState<string>('receipt_58mm');
 
+  // ── Налаштування друку: копії, автовідрізання, логотип ──
+  const [printCopies, setPrintCopies] = useState<number | null>(null);
+  const [autoCutPaper, setAutoCutPaper] = useState<boolean | null>(null);
+  const [showLogo, setShowLogo] = useState<boolean>(true);
+
   // ── Print-as-Image через html2canvas ──
   const {
     receiptRef,
     captureAndPrint: printAsImage,
   } = usePrintAsImage({ showErrors: true });
 
-  // Завантаження налаштувань магазину та принтера
+  // Завантаження налаштувань магазину, принтера та друку
   useEffect(() => {
     const loadSettings = async () => {
       try {
@@ -176,6 +184,27 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
         if (printer) setPrinterName(printer);
         const templateType = printingSettings.find((s: any) => s.key === 'default_template_type')?.value;
         if (templateType) setDefaultTemplateType(templateType);
+
+        // ── Копії чеків: print_copies (або receipt_print_copies) ──
+        const copiesStr =
+          printingSettings.find((s: any) => s.key === 'print_copies')?.value ||
+          printingSettings.find((s: any) => s.key === 'receipt_print_copies')?.value;
+        if (copiesStr) {
+          const copies = parseInt(copiesStr, 10);
+          if (!isNaN(copies) && copies > 0) setPrintCopies(copies);
+        }
+
+        // ── Автовідрізання паперу ──
+        const autoCutStr = printingSettings.find((s: any) => s.key === 'auto_cut_paper')?.value;
+        if (autoCutStr !== undefined && autoCutStr !== null && autoCutStr !== '') {
+          setAutoCutPaper(autoCutStr === 'true' || autoCutStr === '1');
+        }
+
+        // ── Показ логотипу на чеку ──
+        const showLogoStr = printingSettings.find((s: any) => s.key === 'show_logo')?.value;
+        if (showLogoStr !== undefined && showLogoStr !== null && showLogoStr !== '') {
+          setShowLogo(showLogoStr === 'true' || showLogoStr === '1');
+        }
       } catch {
         // Ігноруємо
       }
@@ -225,11 +254,6 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
   // ═══════════════════════════════════════════════════════════════════════
   // Зміна 1: автоматичний вибір шаблону при ініціалізації
   // ═══════════════════════════════════════════════════════════════════════
-  // Замість виклику loadDefaultTemplate() без параметрів,
-  // визначаємо тип шаблону на основі receipt.receipt_type:
-  //   'return' → 'return_receipt_58mm'
-  //   інше     → 'receipt_58mm'
-  // ═══════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (templates.length > 0 && !selectedTemplate) {
       const templateType = receipt?.receipt_type === 'return' ? 'return_receipt_58mm' : 'receipt_58mm';
@@ -243,13 +267,23 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     setPreviewHtml(null);
   }, [templates]);
 
+  // ── Додаткові змінні для рендеру (show_logo) ──
+  const buildExtraRenderData = useCallback((): Record<string, string> => {
+    return {
+      show_logo: showLogo ? 'true' : 'false',
+    };
+  }, [showLogo]);
+
   // ── Генерація прев'ю HTML ─────────────────
   const generatePreview = useCallback(async () => {
     if (!selectedTemplate || !receipt) return;
     setIsPreviewLoading(true);
     setPreviewHtml(null);
     try {
-      const renderData = receiptToRenderData(receipt, shopInfo);
+      const renderData = {
+        ...receiptToRenderData(receipt, shopInfo),
+        ...buildExtraRenderData(),
+      };
       const html = await printTemplateService.render(selectedTemplate.id, renderData);
       setPreviewHtml(html);
     } catch {
@@ -257,7 +291,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     } finally {
       setIsPreviewLoading(false);
     }
-  }, [selectedTemplate, receipt, shopInfo]);
+  }, [selectedTemplate, receipt, shopInfo, buildExtraRenderData]);
 
   // ── Отримати HTML чека (з кешу або новий) ─
   const getReceiptHtml = useCallback(async (): Promise<string> => {
@@ -267,9 +301,12 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
       throw new Error('Не вибрано шаблон для друку');
     }
 
-    const renderData = receiptToRenderData(receipt!, shopInfo);
+    const renderData = {
+      ...receiptToRenderData(receipt!, shopInfo),
+      ...buildExtraRenderData(),
+    };
     return await printTemplateService.render(selectedTemplate.id, renderData);
-  }, [previewHtml, selectedTemplate, receipt, shopInfo]);
+  }, [previewHtml, selectedTemplate, receipt, shopInfo, buildExtraRenderData]);
 
   // ── Забезпечити HTML у DOM перед друком ────
   const ensureHtmlInDom = useCallback(async (): Promise<void> => {
@@ -281,7 +318,10 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
 
     setIsPreviewLoading(true);
     try {
-      const renderData = receiptToRenderData(receipt, shopInfo);
+      const renderData = {
+        ...receiptToRenderData(receipt, shopInfo),
+        ...buildExtraRenderData(),
+      };
       const html = await printTemplateService.render(selectedTemplate.id, renderData);
       setPreviewHtml(html);
 
@@ -294,7 +334,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     } finally {
       setIsPreviewLoading(false);
     }
-  }, [previewHtml, selectedTemplate, receipt, shopInfo]);
+  }, [previewHtml, selectedTemplate, receipt, shopInfo, buildExtraRenderData]);
 
   // ─── Друк чеку ──────────────────────────────
   const printReceipt = useCallback(async () => {
@@ -304,8 +344,12 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     try {
       if (isTauri()) {
         // ═══ ЄДИНИЙ ШЛЯХ: PRINT-AS-IMAGE (html2canvas → PNG → Rust) ═══
+        // Передаємо копії та автовідрізання у printImage
         await ensureHtmlInDom();
-        await printAsImage(printerName);
+        await printAsImage(printerName, {
+          copies: printCopies,
+          autoCut: autoCutPaper,
+        });
       } else {
         // ═══ Браузер ═══
         const html = await getReceiptHtml();
@@ -317,7 +361,7 @@ export function useReceiptPrinter(options: UseReceiptPrinterOptions = {}): UseRe
     } finally {
       setIsPrinting(false);
     }
-  }, [receipt, printerName, ensureHtmlInDom, printAsImage, getReceiptHtml]);
+  }, [receipt, printerName, printCopies, autoCutPaper, ensureHtmlInDom, printAsImage, getReceiptHtml]);
 
   return {
     templates,

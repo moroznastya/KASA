@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Printer, ChevronDown, Check } from 'lucide-react';
+import { Printer, ChevronDown, Check, AlertTriangle } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { getPrinters } from '@/services/tauri/print';
 
@@ -49,6 +49,15 @@ const PrinterSelector: React.FC<PrinterSelectorProps> = ({ value, onChange }) =>
     : [{ value: '', label: 'Системний принтер (браузер)' }];
 
   const selectedLabel = options.find((o) => o.value === value)?.label || 'Оберіть принтер...';
+
+  // ── Валідація: вибраний принтер недоступний зі списку Tauri ──
+  // ⚠️ Це попередження, а НЕ блокування — принтер може бути мережевим через CUPS
+  const isPrinterUnavailable =
+    isTauri() &&
+    value &&
+    value !== '' &&
+    printers.length > 0 &&
+    !printers.includes(value);
 
   return (
     <div className="space-y-1.5">
@@ -110,6 +119,19 @@ const PrinterSelector: React.FC<PrinterSelectorProps> = ({ value, onChange }) =>
           </div>
         )}
       </div>
+
+      {/* Жовтий бейдж «Принтер недоступний» — попередження, НЕ блокування */}
+      {isPrinterUnavailable && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
+          bg-amber-50 dark:bg-amber-900/20
+          border border-amber-200 dark:border-amber-800">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            Принтер недоступний (не знайдено в системі). Друк все одно може працювати для мережевих принтерів через CUPS.
+          </span>
+        </div>
+      )}
+
       {isTauri() && value && (
         <p className="text-xs text-gray-400 dark:text-gray-500">
           Вибрано: {value}

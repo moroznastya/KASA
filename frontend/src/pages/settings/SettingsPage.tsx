@@ -24,6 +24,7 @@ import {
   Sticker,
   Ruler,
   Eye,
+  Loader2,
 } from 'lucide-react';
 
 // ── Типи ──────────────────────────────────────
@@ -95,6 +96,26 @@ const ROUNDING_LABELS: Record<string, string> = {
   '100': '1 грн',
   '500': '5 грн',
 };
+
+// ── Опції шрифтів для друку (PrintFontService застосовує до чеків/етикеток/цінників) ──
+const PRINT_FONT_OPTIONS = [
+  { value: 'Arial, sans-serif', label: 'Arial (Liberation Sans)' },
+  { value: 'Times New Roman, serif', label: 'Times New Roman (Liberation Serif)' },
+  { value: 'Courier New, monospace', label: 'Courier New (Liberation Mono)' },
+  { value: 'DejaVu Sans', label: 'DejaVu Sans' },
+  { value: 'DejaVu Serif', label: 'DejaVu Serif' },
+  { value: 'DejaVu Sans Mono', label: 'DejaVu Sans Mono' },
+  { value: 'Liberation Sans Narrow', label: 'Liberation Sans Narrow' },
+  { value: 'Nimbus Sans', label: 'Nimbus Sans' },
+  { value: 'Nimbus Roman', label: 'Nimbus Roman' },
+  { value: 'Nimbus Mono PS', label: 'Nimbus Mono PS' },
+  { value: 'Noto Mono', label: 'Noto Mono' },
+  { value: 'Bad Script, cursive', label: 'Bad Script (Google Fonts, рукописний)' },
+  { value: 'sans-serif', label: 'Sans-serif (системний)' },
+  { value: 'serif', label: 'Serif (системний)' },
+  { value: 'monospace', label: 'Monospace (системний)' },
+  { value: 'custom', label: '✏️ Інший (ввести вручну)...' },
+];
 
 // ── Компонент поля налаштування ──────────────
 const SettingField: React.FC<{
@@ -336,6 +357,53 @@ const ModuleSection: React.FC<{
   const selectedPriceTagFields = parseJsonArray(values.price_tag_fields);
   const selectedLabelFields = parseJsonArray(values.label_fields);
   const [previewReceiptHtml, setPreviewReceiptHtml] = useState<string | null>(null);
+  // ── Стан для попереднього перегляду цінника/етикетки ──
+  const [previewTagLabelHtml, setPreviewTagLabelHtml] = useState<string | null>(null);
+  const [previewTagLabelType, setPreviewTagLabelType] = useState<'price_tag' | 'label'>('price_tag');
+  const [isTestLoading, setIsTestLoading] = useState<'price_tag' | 'label' | null>(null);
+
+  // ── Тестовий друк / прев'ю цінника чи етикетки ──
+  const handleTestPrintPreview = useCallback(async (testType: 'price_tag' | 'label') => {
+    const prefix = testType;
+    // Поточні налаштування з форми
+    const width = parseFloat(values[`${prefix}_width`] || (testType === 'price_tag' ? '40' : '60'));
+    const height = parseFloat(values[`${prefix}_height`] || (testType === 'price_tag' ? '25' : '40'));
+    const gap = parseFloat(values[`${prefix}_gap`] || '3');
+    const margin = testType === 'price_tag'
+      ? parseFloat(values.price_tag_margin || '10')
+      : 0;
+
+    setIsTestLoading(testType);
+    setPreviewTagLabelHtml(null);
+    try {
+      const res = await api.post('/print/test', {
+        print_type: testType,
+        width_mm: isNaN(width) ? 40 : width,
+        height_mm: isNaN(height) ? 25 : height,
+        gap_mm: isNaN(gap) ? 3 : gap,
+        margin_mm: isNaN(margin) ? 10 : margin,
+        // Порожній template_id → сервер візьме шаблон is_default
+        template_id: values[`${prefix}_template_id`] || '',
+      });
+
+      const previewHtml = res.data?.preview_html;
+      if (previewHtml) {
+        setPreviewTagLabelHtml(previewHtml);
+        setPreviewTagLabelType(testType);
+        toast.success(`Прев'ю ${testType === 'price_tag' ? 'цінника' : 'етикетки'} згенеровано`);
+      } else {
+        // Якщо сервер одразу надрукував — просто підтверджуємо
+        toast.success(`Тестовий друк ${testType === 'price_tag' ? 'цінника' : 'етикетки'} виконано`);
+      }
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.detail ||
+        `Помилка генерації ${testType === 'price_tag' ? 'цінника' : 'етикетки'}`,
+      );
+    } finally {
+      setIsTestLoading(null);
+    }
+  }, [values]);
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
@@ -441,6 +509,46 @@ const ModuleSection: React.FC<{
                 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
             />
           )}
+        </div>
+
+        {/* ── 🖋 Шрифт для друку ──────────── */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Шрифт для друку
+          </label>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+            Застосовується до всього друку: чеки, етикетки, цінники
+          </p>
+          <select
+            value={values.print_font_family || 'Arial, sans-serif'}
+            onChange={(e) => onFieldChange('print_font_family', e.target.value)}
+            className="flex-1 rounded-lg border border-gray-300 dark:border-slate-600 
+              bg-white dark:bg-slate-800 px-3 py-2 text-sm
+              text-gray-900 dark:text-gray-100
+              focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+          >
+            {PRINT_FONT_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          {(() => {
+            const currentFont = values.print_font_family || 'Arial, sans-serif';
+            const isCustom = currentFont === 'custom' ||
+              !PRINT_FONT_OPTIONS.some(o => o.value === currentFont);
+            if (!isCustom) return null;
+            return (
+              <input
+                type="text"
+                value={currentFont === 'custom' ? '' : currentFont}
+                onChange={(e) => onFieldChange('print_font_family', e.target.value)}
+                placeholder="Введіть font-family (наприклад: Ubuntu, sans-serif)"
+                className="mt-2 w-full rounded-lg border border-gray-300 dark:border-slate-600 
+                  bg-white dark:bg-slate-800 px-3 py-2 text-sm
+                  text-gray-900 dark:text-gray-100
+                  focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+              />
+            );
+          })()}
         </div>
 
         {/* ── 🔄 Тип чеку повернення ──────────── */}
@@ -666,6 +774,65 @@ const ModuleSection: React.FC<{
                 <div className="text-center">
                   <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">Натисніть "Оновити прев'ю", щоб побачити чек</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── 🏷️ Попередній перегляд цінника/етикетки ── */}
+        <hr className="border-gray-200 dark:border-slate-700 my-2" />
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/20 flex items-center justify-center">
+                <Tag className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Попередній перегляд цінника / етикетки
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Тестовий рендер з поточними розмірами та шаблоном
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleTestPrintPreview('price_tag')}
+                disabled={isTestLoading !== null}
+                icon={isTestLoading === 'price_tag' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Tag className="w-3.5 h-3.5" />}
+              >
+                {isTestLoading === 'price_tag' ? 'Генерація...' : 'Тест цінника'}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleTestPrintPreview('label')}
+                disabled={isTestLoading !== null}
+                icon={isTestLoading === 'label' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sticker className="w-3.5 h-3.5" />}
+              >
+                {isTestLoading === 'label' ? 'Генерація...' : 'Тест етикетки'}
+              </Button>
+            </div>
+          </div>
+          <div className="border border-gray-200 dark:border-slate-600 rounded-lg overflow-hidden bg-white">
+            {previewTagLabelHtml ? (
+              <iframe
+                srcDoc={previewTagLabelHtml}
+                title={`Прев'ю ${previewTagLabelType === 'price_tag' ? 'цінника' : 'етикетки'}`}
+                className="w-full h-[400px]"
+                sandbox="allow-same-origin"
+              />
+            ) : (
+              <div className="flex items-center justify-center h-[200px] text-gray-400 dark:text-gray-500">
+                <div className="text-center">
+                  <Tag className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">
+                    Натисніть «Тест цінника» або «Тест етикетки», щоб побачити результат
+                  </p>
                 </div>
               </div>
             )}
