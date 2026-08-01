@@ -1,0 +1,156 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// prro.proto — опис інтерфейсів API фіскалізації чеків та передачі Z-звітів
+// ІКС «Електронний кабінет» ДПС України (Програмний РРО / ПРРО).
+//
+// Джерело: docs/scr/_site_text.txt, розділ «Опис API Електронного кабінету
+// для фіскалізації чеків та передачі Z-звітів» (розділ «Опис інтерфейсів»).
+//
+// Транспорт: gRPC, синтаксис proto3.
+// Бойове API:  https://prro.tax.gov.ua:443
+// Тестове API: https://cabinet.tax.gov.ua:9443  (чеки НЕ фіскальні)
+//
+// ВАЖЛИВО:
+//   - метод rpc sendChk (Check) returns (CheckResponse) діє до 01.10.2021;
+//   - з 01.10.2021 потрібно використовувати метод rpc sendChkV2 (Check)
+//     returns (CheckResponse);
+//   - для відкриття зміни локальний номер чека повинен дорівнювати 0;
+//   - для перевірки зв'язку локальний номер чека повинен дорівнювати
+//     0x7FFFFFFF (максимальне значення int32).
+// ─────────────────────────────────────────────────────────────────────────────
+
+syntax = "proto3";
+
+option java_multiple_files = true;
+package com.programika.rro.ws.chk;
+
+// ─── Повідомлення Check: передача чеку / Z-звіту / службового чеку ──────────
+message Check {
+    string rro_fn = 1;        // Фіскальний номер ПРРО (ФН)
+    int64 date_time = 2;      // Дата та час операції (Unix epoch, секунди)
+    bytes check_sign = 3;     // XML-документ СЗЗД, підписаний ЕЦП
+    int32 local_number = 4;   // Локальний номер чеку (0 — відкриття зміни,
+                              // 0x7FFFFFFF — перевірка зв'язку)
+    enum Type {
+        UNKNOWN = 0;
+        CHK = 1;              // Чек продажу / повернення
+        ZREPORT = 2;          // Z-звіт (закриття зміни)
+        SERVICECHK = 3;       // Службовий чек (ping тощо)
+    }
+    Type check_type = 5;
+    string id_offline = 6;    // Офлайн-ідентифікатор (для роботи в офлайні)
+    string id_cancel = 7;     // Ідентифікатор чеку, який скасовується
+}
+
+// ─── CheckRequest: запит без даних чеку (для lastChk, delLastChk, statusRro) ─
+message CheckRequest {
+    bytes rro_fn_sign = 3;    // Підписаний ФН ПРРО
+}
+
+// ─── CheckRequestId: запит за ідентифікатором (для delLastChkId) ────────────
+message CheckRequestId {
+    string id = 1;            // Ідентифікатор чеку (з CheckResponse.id)
+    bytes rro_fn_sign = 2;    // Підписаний ФН ПРРО
+}
+
+// ─── CheckResponse: відповідь на передачу чеку ──────────────────────────────
+message CheckResponse {
+    string id = 1;            // Ідентифікатор чеку, присвоєний фіскальним сервером
+    enum Status {
+        UNKNOWN = 0;
+        OK = 1;                             // Чек фіскалізовано, надано номер
+        ERROR_VEREFY = -1;                  // Помилка перевірки підпису
+        ERROR_CHECK = -2;                   // Помилка перевірки РРО
+        ERROR_SAVE = -3;                    // Помилка запису
+        ERROR_UNKNOWN = -4;                 // Загальна помилка
+        ERROR_TYPE = -5;                    // Помилка типу посилки
+        ERROR_NOT_PREV_ZREPORT = -6;        // Немає Z-звіту за попередній день
+        ERROR_XML = -7;                     // Невірний формат XML
+        ERROR_XML_DATE = -8;                // Дата не відповідає Check.date
+        ERROR_XML_CHK = -9;                 // Невірний формат XML чеку
+        ERROR_XML_ZREPORT = -10;            // Невірний формат Z-звіту
+        ERROR_OFFLINE_168 = -11;            // Перевищено ліміт 168 годин офлайну
+        ERROR_BAD_HASH_PREV = -12;          // Невірний хеш попереднього чеку
+        ERROR_NOT_REGISTERED_RRO = -13;     // Не зареєстровано ПРРО
+        ERROR_NOT_REGISTERED_SIGNER = -14;  // Не зареєстрований підписант
+        ERROR_NOT_OPEN_SHIFT = -15;         // Не відкрита зміна
+        ERROR_OFFLINE_ID = -16;             // Невірний офлайн ID
+    }
+    Status status = 2;
+    bytes id_sign = 3;        // Підписаний ідентифікатор чеку
+    bytes data_sign = 4;      // Підписані дані (для lastChk — останній чек)
+    string error_message = 5; // Текст помилки (англійською)
+}
+
+// ─── StatusResponse: статус ПРРО ─────────────────────────────────────────────
+message StatusResponse {
+    bool open_shift = 1;      // Статус зміни: відкрита / закрита
+    bool online = 2;          // Стан ПРРО: онлайн / офлайн
+    string last_signer = 3;   // Останній підписант (серійний номер ключа)
+    enum Status {
+        UNKNOWN = 0;
+        OK = 1;
+        ERROR_VEREFY = -1;
+        ERROR_CHECK = -2;
+        ERROR_UNKNOWN = -4;
+        ERROR_NOT_REGISTERED_RRO = -13;
+        ERROR_NOT_REGISTERED_SIGNER = -14;
+    }
+    Status status = 4;
+    string error_message = 5;
+}
+
+// ─── RroInfoResponse: детальна інформація про ПРРО ───────────────────────────
+message RroInfoResponse {
+    enum Status {
+        UNKNOWN = 0;
+        OK = 1;
+        ERROR_VEREFY = -1;
+        ERROR_CHECK = -2;
+        ERROR_UNKNOWN = -4;
+        ERROR_NOT_REGISTERED_RRO = -13;
+        ERROR_NOT_REGISTERED_SIGNER = -14;
+    }
+    Status status = 1;          // Статус відповіді
+    int32 status_rro = 2;       // Статус ПРРО
+    bool open_shift = 3;        // Статус зміни
+    bool online = 4;            // Стан ПРРО
+    string last_signer = 5;     // Останній підписант
+    string name = 6;            // Назва
+    string name_to = 7;         // Назва ТО
+    string addr = 8;            // Адреса ТО
+    bool single_tax = 9;        // Платник єдиного податку
+    bool offline_allowed = 10;  // Дозволено роботу в офлайн режимі
+    int32 add_num = 11;         // Додаткова кількість офлайн номерів
+    string pn = 12;             // Податковий номер платника ПДВ
+
+    message Operator {
+        string serial = 1;      // publicKeyId
+        int32 status = 2;       // Статус
+        bool senior = 3;        // Старший касир
+        string isname = 4;      // ПІБ
+    }
+    repeated Operator operators = 13; // Касири
+    string tins = 14;           // Податковий номер платника
+    int32 lnum = 15;            // Локальний номер каси
+    string name_pay = 16;       // Назва платника
+}
+
+// ─── Сервіс ChkIncomeService ─────────────────────────────────────────────────
+service ChkIncomeService {
+    // Передача чеку / Z-звіту (діє до 01.10.2021)
+    rpc sendChk (Check) returns (CheckResponse);
+    // Передача чеку / Z-звіту (основний метод з 01.10.2021)
+    rpc sendChkV2 (Check) returns (CheckResponse);
+    // Отримання останнього чеку (data_sign містить останній чек)
+    rpc lastChk (CheckRequest) returns (CheckResponse);
+    // Перевірка зв'язку (XML з типом <CT="111">, MAC не заповнюється)
+    rpc ping (Check) returns (CheckResponse);
+    // Вилучення останнього чеку (1 раз, тільки чек продажу)
+    rpc delLastChk (CheckRequest) returns (CheckResponse);
+    // Вилучення чеку за ID (1 раз, тільки чек продажу)
+    rpc delLastChkId (CheckRequestId) returns (CheckResponse);
+    // Отримання статусу ПРРО
+    rpc statusRro (CheckRequest) returns (StatusResponse);
+    // Отримання детальної інформації про ПРРО
+    rpc infoRro (CheckRequest) returns (RroInfoResponse);
+}
