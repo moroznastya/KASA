@@ -46,6 +46,15 @@ from app.infrastructure.persistence.models.print_template import PrintTemplate  
 # ── Права доступу ──────────────────────────────
 from app.infrastructure.persistence.models.permission import Permission  # noqa: F401
 
+# ── ПРРО (фіскалізація) ────────────────────────
+from app.infrastructure.persistence.models.prro import (  # noqa: F401
+    PrroSetting,
+    PrroShift,
+    PrroShiftStatus,
+    PrroQueueItem,
+    PrroQueueStatus,
+)
+
 # ── Аліаси для зворотної сумісності (використовуються в репозиторіях) ─────
 ProductModel = Product  # noqa: F401
 CategoryModel = Category  # noqa: F401
@@ -87,6 +96,10 @@ __all__ = [
     "PrintTemplate",
     # Права доступу
     "Permission",
+    # ПРРО (фіскалізація)
+    "PrroSetting",
+    "PrroShift", "PrroShiftStatus",
+    "PrroQueueItem", "PrroQueueStatus",
     # Аліаси
     "ProductModel",
     "CategoryModel",

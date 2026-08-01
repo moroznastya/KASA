@@ -26,6 +26,7 @@ class Product:
     - Ідентифікацію товару (ID, назва, штрих-код)
     - Ціноутворення (ціна, собівартість, ПДВ)
     - Складський облік (залишок)
+    - Відстеження фіскальних надходжень (is_fiscal, fiscal_stock)
     - Категоризацію (категорія, постачальник)
     """
 
@@ -42,6 +43,11 @@ class Product:
     unit: str = "шт"
     is_active: bool = True
     description: str = ""
+    # ── Фіскальне відстеження ──────────────────────────────────────────────
+    is_fiscal: bool = False
+    """Ознака: товар хоча б раз надходив з фіскальної накладної."""
+    fiscal_stock: Optional[Quantity] = None
+    """Кількість у поточному залишку, що надійшла з фіскальних накладних."""
 
     def update_stock(self, quantity: Quantity) -> None:
         """
@@ -61,6 +67,46 @@ class Product:
                     f"Unit mismatch: {self.stock.unit} vs {quantity.unit}"
                 )
             self.stock = self.stock + quantity
+
+    def update_fiscal_stock(self, quantity: Quantity) -> None:
+        """
+        Оновлює фіскальний залишок товару (кількість, що надійшла
+        з фіскальних накладних).
+
+        Args:
+            quantity: Зміна кількості (додатна — надходження,
+                      від'ємна — списання при продажу/поверненні постачальнику).
+
+        Raises:
+            ValueError: Якщо одиниці виміру не співпадають або фіскальний
+                        залишок стає від'ємним.
+        """
+        if quantity.value < 0 and self.fiscal_stock is None:
+            raise ValueError(
+                f"Cannot decrease fiscal stock of product '{self.name}': "
+                "fiscal stock is empty"
+            )
+        if self.fiscal_stock is None:
+            self.fiscal_stock = quantity
+        else:
+            if self.fiscal_stock.unit != quantity.unit:
+                raise ValueError(
+                    f"Unit mismatch: {self.fiscal_stock.unit} vs {quantity.unit}"
+                )
+            new_value = self.fiscal_stock.value + quantity.value
+            if new_value < 0:
+                raise ValueError(
+                    f"Cannot decrease fiscal stock of product '{self.name}' "
+                    f"below zero: available {self.fiscal_stock.value}, "
+                    f"requested change {quantity.value}"
+                )
+            self.fiscal_stock = Quantity(new_value, self.fiscal_stock.unit)
+
+    def mark_as_fiscal(self) -> None:
+        """
+        Позначає товар як такий, що надходив з фіскальної накладної.
+        """
+        self.is_fiscal = True
 
     def change_price(self, new_price: Money) -> None:
         """
@@ -146,5 +192,6 @@ class Product:
     def __repr__(self) -> str:
         return (
             f"Product(id={self.id}, name='{self.name}', "
-            f"price={self.price}, stock={self.stock})"
+            f"price={self.price}, stock={self.stock}, "
+            f"is_fiscal={self.is_fiscal}, fiscal_stock={self.fiscal_stock})"
         )

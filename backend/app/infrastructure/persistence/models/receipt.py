@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 
+import sqlalchemy as sa
 from sqlalchemy import (
     ForeignKey, String, Text, Numeric, Boolean, Enum, DateTime,
 )
@@ -28,6 +29,14 @@ class ReceiptPaymentMethod(str, PyEnum):
     CASH = "cash"        # Готівка
     CARD = "card"        # Картка
     MIXED = "mixed"      # Готівка + картка
+
+
+class FiscalStatus(str, PyEnum):
+    """Статус відправки фіскального чеку у податкову."""
+    NONE = "none"        # Не фіскальний / не потребує відправки
+    PENDING = "pending"  # Очікує відправки у податкову
+    SENT = "sent"        # Успішно відправлено у податкову
+    FAILED = "failed"    # Помилка при відправці у податкову
 
 
 class Receipt(Base):
@@ -118,6 +127,52 @@ class Receipt(Base):
         comment="Причина повернення",
     )
 
+    # ── Фіскальні дані (відправка у податкову) ──
+    is_fiscal: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Чек є фіскальним (містить лише товари з фіскальних накладних)",
+    )
+    fiscal_status: Mapped[FiscalStatus] = mapped_column(
+        Enum(
+            FiscalStatus,
+            name="fiscal_status",
+            create_constraint=True,
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=FiscalStatus.NONE,
+        nullable=False,
+        comment="Статус відправки фіскального чеку у податкову",
+    )
+    fiscal_number: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Фіскальний номер чеку, присвоєний податковою",
+    )
+    fiscal_serial: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Фіскальний серійний номер",
+    )
+    fiscal_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="Дата/час успішної відправки у податкову",
+    )
+    fiscal_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Текст помилки при відправці у податкову",
+    )
+    split_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("receipts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID пов'язаного чеку при розділенні фіскальних/нефіскальних позицій (обидва чеки однієї продажі)",
+    )
+
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,
@@ -188,6 +243,13 @@ class ReceiptItem(Base):
         Numeric(10, 2),
         nullable=True,
         comment="Собівартість товару на момент продажу (грн)",
+    )
+    fiscal_quantity: Mapped[float] = mapped_column(
+        Numeric(10, 3),
+        nullable=False,
+        default=0,
+        server_default=sa.text('0'),
+        comment="Фіскалізована кількість позиції (0 = нефіскальна; 0<fiscal_quantity<quantity = часткова фіскалізація; =quantity = повністю фіскальна)",
     )
 
     # ── Timestamps ──────────────────────────────

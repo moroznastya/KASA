@@ -27,6 +27,14 @@ class PaymentMethod(Enum):
     MIXED = "mixed"
 
 
+class FiscalStatus(Enum):
+    """Статус відправки фіскального чеку у податкову."""
+    NONE = "none"          # Чек не фіскальний
+    PENDING = "pending"    # Очікує відправки у податкову
+    SENT = "sent"          # Успішно відправлено
+    FAILED = "failed"      # Помилка при відправці
+
+
 @dataclass
 class ReceiptItem:
     """Позиція чеку продажу."""
@@ -64,6 +72,9 @@ class Receipt:
     - Фіксацію факту продажу товарів
     - Розрахунок загальної суми
     - Облік способу оплати
+    - Фіскалізацію: формування окремих фіскальних чеків тільки
+      з товарів, що надійшли з фіскальних накладних, та відправку їх
+      у податкову (is_fiscal, fiscal_status, fiscal_number, ...)
     """
 
     id: UUID = field(default_factory=uuid4)
@@ -77,6 +88,21 @@ class Receipt:
     change_amount: Optional[Money] = None
     customer_id: Optional[UUID] = None
     notes: str = ""
+    # ── Фіскалізація ────────────────────────────────────────────────────────
+    is_fiscal: bool = False
+    """Чек є фіскальним (містить лише товари з фіскальних накладних)."""
+    fiscal_status: FiscalStatus = FiscalStatus.NONE
+    """Статус відправки фіскального чеку у податкову."""
+    fiscal_number: Optional[str] = None
+    """Фіскальний номер чеку, присвоєний податковою."""
+    fiscal_serial: Optional[str] = None
+    """Фіскальний серійний номер."""
+    fiscal_sent_at: Optional[datetime] = None
+    """Дата/час успішної відправки у податкову."""
+    fiscal_error: Optional[str] = None
+    """Текст помилки при відправці у податкову."""
+    split_group_id: Optional[UUID] = None
+    """ID пов'язаного чеку при розділенні фіскальних/нефіскальних позицій."""
 
     def add_item(self, item: ReceiptItem) -> None:
         """
@@ -146,6 +172,45 @@ class Receipt:
         if self.total:
             self.change_amount = total_paid - self.total
 
+    # ── Фіскалізація ─────────────────────────────────────────────────────────
+
+    def mark_as_fiscal(self) -> None:
+        """
+        Позначає чек як фіскальний (містить товари з фіскальних накладних)
+        та переводить його в статус очікування відправки у податкову.
+        """
+        self.is_fiscal = True
+        self.fiscal_status = FiscalStatus.PENDING
+
+    def mark_fiscal_pending(self) -> None:
+        """Переводить фіскальний чек у статус очікування відправки."""
+        self.fiscal_status = FiscalStatus.PENDING
+        self.fiscal_error = None
+
+    def mark_fiscal_sent(self, fiscal_number: str, fiscal_serial: str) -> None:
+        """
+        Позначає фіскальний чек як успішно відправлений у податкову.
+
+        Args:
+            fiscal_number: Фіскальний номер, присвоєний податковою.
+            fiscal_serial: Фіскальний серійний номер.
+        """
+        self.fiscal_status = FiscalStatus.SENT
+        self.fiscal_number = fiscal_number
+        self.fiscal_serial = fiscal_serial
+        self.fiscal_sent_at = datetime.now(timezone.utc)
+        self.fiscal_error = None
+
+    def mark_fiscal_failed(self, error: str) -> None:
+        """
+        Позначає фіскальний чек як помилку при відправці.
+
+        Args:
+            error: Текст помилки.
+        """
+        self.fiscal_status = FiscalStatus.FAILED
+        self.fiscal_error = error
+
     def _recalculate_total(self) -> None:
         """Перераховує загальну суму чеку."""
         if not self.items:
@@ -199,5 +264,6 @@ class Receipt:
         return (
             f"Receipt(id={self.id}, number='{self.number}', "
             f"items={len(self.items)}, total={self.total}, "
-            f"payment={self.payment_method.value})"
+            f"payment={self.payment_method.value}, "
+            f"is_fiscal={self.is_fiscal}, fiscal_status={self.fiscal_status.value})"
         )

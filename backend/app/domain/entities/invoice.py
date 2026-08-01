@@ -73,6 +73,9 @@ class Invoice:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     confirmed_at: Optional[datetime] = None
     notes: str = ""
+    # ── Фіскальне оприбуткування ───────────────────────────────────────────
+    is_fiscal: bool = False
+    """Ознака: товар з накладної надходить у фіскальний залишок (fiscal_stock)."""
 
     def add_item(self, item: InvoiceItem) -> None:
         """

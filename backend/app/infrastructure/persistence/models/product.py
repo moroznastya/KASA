@@ -8,6 +8,7 @@
   - Ціни, податки, акциз
   - Зображення (окрема таблиця product_images)
   - Одиниці виміру та ваговий режим
+  - Фіскальний облік (товари з фіскальних накладних)
 """
 
 import uuid
@@ -92,6 +93,20 @@ class Product(Base):
         default=0.000,
         nullable=True,
         comment="Рекомендований залишок (мінімальний залишок для замовлення)",
+    )
+
+    # ── Фіскальний облік ────────────────────────
+    is_fiscal: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="Ознака: товар надходив з фіскальної накладної",
+    )
+    fiscal_stock: Mapped[float] = mapped_column(
+        Numeric(10, 3),
+        default=0.000,
+        nullable=False,
+        comment="Кількість у поточному залишку, що надійшла з фіскальних накладних",
     )
 
     # ── Податки та акциз ────────────────────────
