@@ -76,3 +76,9 @@ Thumbs.db
 
 # Secrets
 backend/keys.txt
+
+# ── Local SQLite artifacts (PostgreSQL-проєкт) ──
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
