@@ -1,6 +1,11 @@
 """
 Імпорт товарів з CSV-файлів у базу даних pos_system.
-Запуск: python import_products.py
+
+Запуск (з директорії kasa/backend):
+    python import_products.py
+
+CSV-файли шукаються автоматично в папці <корінь проєкту>/товари/
+за маскою "Список товарів*.csv".
 """
 
 import csv
@@ -15,16 +20,12 @@ from sqlalchemy import text
 # Конфігурація БД
 DB_URL = "postgresql+asyncpg://postgres:VgxWd7MBJ10X@localhost:5434/pos_system"
 
-CSV_FILES = [
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів.csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (1).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (2).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (3).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (4).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (5).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (6).csv",
-    "/home/anastasia/Andriy/Bot/aegis_v3/товари/Список товарів (7).csv",
-]
+# ─── Шлях до CSV-файлів (відносний, без захардкоджених абсолютних шляхів) ───
+# Скрипт лежить у kasa/backend/ → корінь проєкту = на 3 рівні вище.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+TOVARY_DIR = PROJECT_ROOT / "товари"
+
+CSV_FILES = sorted(TOVARY_DIR.glob("Список товарів*.csv")) if TOVARY_DIR.is_dir() else []
 
 
 def parse_price(val: str) -> float:
@@ -37,6 +38,12 @@ def parse_price(val: str) -> float:
 
 
 async def import_products():
+    if not CSV_FILES:
+        print(f"❌ Не знайдено CSV-файлів у {TOVARY_DIR}")
+        print(f"   Скрипт: {Path(__file__).resolve()}")
+        print("   Переконайтесь, що папка 'товари/' з CSV-файлами знаходиться в корені проєкту.")
+        return
+
     engine = create_async_engine(DB_URL)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

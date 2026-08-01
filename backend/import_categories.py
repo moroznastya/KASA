@@ -2,7 +2,7 @@
 Скрипт імпорту категорій товарів з ієрархічною структурою.
 
 Використання:
-    cd /home/anastasia/Andriy/Bot/aegis_v3/kasa/backend
+    cd kasa/backend
     . venv/bin/activate
     python import_categories.py
 """
