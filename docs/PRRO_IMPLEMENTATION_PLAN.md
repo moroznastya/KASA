@@ -420,3 +420,29 @@ backend/app/
 2. **MAC**: чи приймає ДПС SHA-256(DAT) без ключа для ПРРО (QA #11).
 3. **Z-звіт**: значення local_number для ZREPORT (0 чи останній+1) (QA #10).
 4. **Авто-фіскалізація**: винести у фон (BackgroundTasks/Celery), щоб не блокувати продаж (QA #8).
+
+### Стан запуску сервісів (2026-08-01, вечір)
+
+**Сервери запущено (правильні проєкти!):**
+- Backend: `http://localhost:8000` (uvicorn, backend/venv, з ПРРО API) — лог `/tmp/kasa_backend.log`
+- Frontend: `http://localhost:5173` (vite dev, frontend/) — меню «ПРРО» доступне
+
+**Виправлені критичні баги (коміт `23035f9`):**
+1. `AuthMiddleware` відповідав 401 на lifespan-scope → DI-контейнер не ініціалізувався → весь API давав 500
+2. `LocalEventBus.publish` не знаходив хендлери за MRO (підписка на BaseDomainEvent)
+3. `service_registry`: subscribe() викликався з 1 аргументом замість (event_type, handler)
+4. DI-репозиторії створювались без session → `deps.py` перероблено на per-request session (як ПРРО)
+5. `AuthUseCases` повертав `mock_token_...` замість JWT → тепер справжній JWT
+6. ORM `User`: додано `last_login_at` (міграція `a1b2c3d4e5f6`) + domain-методи
+7. `UserMapper`/`UserResponse`: обробка role (str/enum), email/phone, datetime
+
+**venv-інфраструктура:** виправлено shebang у всіх скриптах `backend/venv/bin/` (venv був скопійований з іншого шляху — `Andriy/Bot/aegis_v3`).
+
+**Тести:** 440 passed (було 424) — додано тести gRPC-клієнта, settings-connection.
+
+**ПРРО test-connection (помилка -1) — діагностовано:**
+- Фіскальний сервер ДПС вимагає у `Check.check_sign` **підписаний XML** (CT=111); без валідного підпису зареєстрованого підписанта — завжди `-1 ERROR_VEREFY`.
+- `Key-6_test3.dat` — контейнер **ІІТ «ЦСК-1»** (ДСТУ 4145-2002, закрите крипто-ядро SDK EUSign), **недоступний для Python**.
+- 🔑 **Потрібно від користувача:** конвертувати ключ у **PKCS#12 (.pfx/.p12)** або **PEM** (KeyConverter / «Користувач ЦСК-1») та завантажити його в Налаштуваннях ПРРО.
+- Деталі: `docs/prro_test_connection_notes.md`.
+
