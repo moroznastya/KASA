@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.api.rate_limit import limiter
 from app.application.use_cases import AuthUseCases
 from .deps import get_auth_use_cases
 
@@ -67,7 +68,9 @@ class UserListResponse(BaseModel):
 # ─── Ендпоінти ───────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     data: LoginRequest,
     use_cases: AuthUseCases = Depends(get_auth_use_cases),
 ):
@@ -84,7 +87,9 @@ async def login(
 
 
 @router.post("/login-pin", response_model=TokenResponse)
+@limiter.limit("5/minute")
 async def login_pin(
+    request: Request,
     data: LoginPinRequest,
     use_cases: AuthUseCases = Depends(get_auth_use_cases),
 ):
@@ -101,7 +106,9 @@ async def login_pin(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("5/minute")
 async def refresh_token(
+    request: Request,
     user_id: UUID,
     use_cases: AuthUseCases = Depends(get_auth_use_cases),
 ):

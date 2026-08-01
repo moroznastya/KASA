@@ -26,7 +26,7 @@ from app.config import settings
 from app.api.v1 import api_v1_router
 from app.api.v2 import router as v2_router
 from app.middleware.auth_middleware import AuthMiddleware
-from app.api.v1.users import limiter
+from app.api.rate_limit import limiter
 
 # ─── Інфраструктурні компоненти ─────────────────────────────────────────────
 import logging

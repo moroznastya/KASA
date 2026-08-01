@@ -23,11 +23,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limit import limiter
 from app.database import get_session
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.receipt import Receipt
@@ -44,9 +43,6 @@ from app.schemas.user import (
 )
 from app.domain.services.auth_service import AuthService
 from app.domain.entities.user import User as UserEntity
-
-# Rate limiter для auth ендпоінтів (5 запитів на хвилину)
-limiter = Limiter(key_func=get_remote_address)
 
 # Роутер для авторизації (публічний)
 auth_router = APIRouter(
