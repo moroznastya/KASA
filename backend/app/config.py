@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     CACHE_TTL_INVOICES: int = 600         # 10 хвилин (накладні)
 
     # ──────────────────────────────────────────────
+    # ПРРО (програмний РРО) — фіскалізація чеків через ДПС України
+    # ──────────────────────────────────────────────
+    PRRO_TEST_URL: str = "cabinet.tax.gov.ua:9443"   # Тестове API (чеки НЕ фіскальні)
+    PRRO_PROD_URL: str = "prro.tax.gov.ua:443"        # Бойове API
+    PRRO_MODE: str = "test"                           # "test" або "prod"
+    PRRO_USE_SSL: bool = True                           # TLS-з'єднання
+    PRRO_TIMEOUT_SECONDS: float = 30.0                  # Таймаут gRPC-виклику
+    PRRO_MAX_RETRIES: int = 3                           # Кількість спроб з ретраями
+
+    @property
+    def PRRO_URL(self) -> str:
+        """Повертає URL фіскального сервера залежно від PRRO_MODE."""
+        return self.PRRO_PROD_URL if self.PRRO_MODE == "prod" else self.PRRO_TEST_URL
+
+    # ──────────────────────────────────────────────
     # Налаштування застосунку
     # ──────────────────────────────────────────────
     APP_NAME: str = "Kasa POS"

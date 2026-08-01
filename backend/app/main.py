@@ -133,6 +133,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"   ⚠️  Помилка при закритті Redis: {e}")
 
+    # Закриваємо gRPC-канали ПРРО
+    try:
+        from app.infrastructure.di.prro import close_prro_service_factory
+        await close_prro_service_factory()
+        print("   ✅ ПРРО gRPC-канали закрито")
+    except Exception as e:
+        print(f"   ⚠️  Помилка при закритті ПРРО каналів: {e}")
+
     # Очищаємо глобальні посилання
     container = None
     event_bus = None

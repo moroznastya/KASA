@@ -55,10 +55,32 @@ from app.domain.services.auth_service import AuthService
 # ─── Application Services ────────────────────────────────────────────────────
 from app.application.services.settings_service import SettingsService
 
+# ─── ПРРО (програмний РРО) ───────────────────────────────────────────────────
+from app.infrastructure.di.prro import (
+    get_prro_key_store,
+    get_prro_service_factory,
+    build_fiscalize_use_case,
+)
+
 if TYPE_CHECKING:
     from app.infrastructure.di.container import DIContainer
 
 logger = logging.getLogger(__name__)
+
+
+def _make_fiscalizer_factory():
+    """
+    Фабрика FiscalizeReceiptUseCase для авто-фіскалізації після створення чеку.
+
+    Створює нову сесію БД та fiscalizer на неї. Використовується
+    у ReceiptUseCases (fiscalizer_factory) — викликається per-receipt.
+    """
+    from app.database import async_session
+
+    def _factory():
+        return build_fiscalize_use_case(async_session())
+
+    return _factory
 
 
 def register_all_services(container: DIContainer) -> None:
@@ -88,6 +110,10 @@ def register_all_services(container: DIContainer) -> None:
         default_ttl=app_settings.CACHE_TTL_DEFAULT,
     )
     container.register_instance("cache_service", cache_service)
+
+    # ПРРО — singleton компоненти (gRPC-канали, сховище ключів)
+    container.register_instance("prro_service_factory", get_prro_service_factory())
+    container.register_instance("prro_key_store", get_prro_key_store())
 
     # ═══════════════════════════════════════════════════════════════════════
     # 2. Repository Implementations (transient)
@@ -140,8 +166,10 @@ def register_all_services(container: DIContainer) -> None:
         "receipt_use_cases",
         lambda c: ReceiptUseCases(
             receipt_repo=c.resolve("receipt_repository"),
+            product_repo=c.resolve("product_repository"),
             event_bus=c.resolve("event_bus"),
             unit_of_work=c.resolve("unit_of_work"),
+            fiscalizer_factory=_make_fiscalizer_factory(),
         ),
         singleton=False,
     )

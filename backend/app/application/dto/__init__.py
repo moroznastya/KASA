@@ -6,6 +6,16 @@ from .receipt_dto import ReceiptDTO, ReceiptCreateDTO
 from .user_dto import UserDTO, UserCreateDTO
 from .supplier_dto import SupplierDTO, SupplierCreateDTO
 from .ledger_dto import LedgerEntryDTO, LedgerCreateDTO
+from .prro_dto import (
+    PrroSettingsDTO,
+    PrroShiftDTO,
+    FiscalizeRequestDTO,
+    FiscalizeResponseDTO,
+    PrroStatusDTO,
+    OpenShiftRequestDTO,
+    CloseShiftRequestDTO,
+    PrroQueueItemDTO,
+)
 
 __all__ = [
     "ProductDTO",
@@ -22,4 +32,13 @@ __all__ = [
     "SupplierCreateDTO",
     "LedgerEntryDTO",
     "LedgerCreateDTO",
+    # ПРРО
+    "PrroSettingsDTO",
+    "PrroShiftDTO",
+    "FiscalizeRequestDTO",
+    "FiscalizeResponseDTO",
+    "PrroStatusDTO",
+    "OpenShiftRequestDTO",
+    "CloseShiftRequestDTO",
+    "PrroQueueItemDTO",
 ]
