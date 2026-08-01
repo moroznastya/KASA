@@ -91,6 +91,11 @@ class User(Base):
         default=datetime.utcnow,
         comment="Дата створення",
     )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+        default=None,
+        comment="Дата/час останнього входу (оновлюється при логіні)",
+    )
     updated_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
@@ -106,6 +111,51 @@ class User(Base):
         "WorkSession",
         back_populates="user",
     )
+
+    # ── Domain-сумісні методи (дублюють API доменної сутності User) ──────
+    # Репозиторій повертає ORM-модель, а use cases очікують domain entity.
+    # Щоб не мапити ORM→domain у кожному виклику, ORM-модель надає ті самі методи.
+
+    def record_login(self) -> None:
+        """Фіксує час останнього входу (UTC, naive — як інші timestamps)."""
+        self.last_login_at = datetime.utcnow()
+
+    def deactivate(self) -> None:
+        """Деактивує користувача."""
+        self.is_active = False
+
+    def activate(self) -> None:
+        """Активує користувача."""
+        self.is_active = True
+
+    def change_role(self, new_role) -> None:
+        """Змінює роль користувача."""
+        self.role = new_role
+
+    @property
+    def is_admin(self) -> bool:
+        """Чи є користувач адміністратором."""
+        return self.role == UserRole.ADMIN or self.role == "admin"
+
+    @property
+    def is_manager(self) -> bool:
+        """Чи є користувач менеджером."""
+        return self.is_admin or self.role in (UserRole.CASHIER, "cashier")
+
+    @property
+    def is_cashier(self) -> bool:
+        """Чи є користувач касиром."""
+        return self.role == UserRole.CASHIER or self.role == "cashier"
+
+    def can(self, permission: str) -> bool:
+        """Перевіряє, чи має користувач певний дозвіл."""
+        if not self.is_active:
+            return False
+        role = getattr(self.role, "value", self.role)
+        if role == "admin":
+            return True
+        allowed = {"cashier": {"read", "sell", "return"}, "admin": {"all"}}
+        return permission in allowed.get(role, set())
 
     def __repr__(self) -> str:
         return f"<User {self.login} ({self.role})>"

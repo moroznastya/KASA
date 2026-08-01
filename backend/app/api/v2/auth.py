@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,8 +24,8 @@ class UserResponse(BaseModel):
     is_active: bool = True
     email: str = ""
     phone: str = ""
-    created_at: str | None = None
-    last_login_at: str | None = None
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

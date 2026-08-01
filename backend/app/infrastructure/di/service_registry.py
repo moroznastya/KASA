@@ -40,6 +40,7 @@ from app.application.use_cases.ledger_use_cases import LedgerUseCases
 from app.application.use_cases.auth_use_cases import AuthUseCases
 
 # ─── Event Handlers ──────────────────────────────────────────────────────────
+from app.domain.events import BaseDomainEvent
 from app.application.event_handlers import (
     LoggingHandler,
     CacheInvalidationHandler,
@@ -219,9 +220,9 @@ def register_all_services(container: DIContainer) -> None:
     cache_handler = CacheInvalidationHandler(cache_service=cache_service)
     audit_handler = AuditHandler()
 
-    event_bus.subscribe(logging_handler.handle)
-    event_bus.subscribe(cache_handler.handle)
-    event_bus.subscribe(audit_handler.handle)
+    event_bus.subscribe(BaseDomainEvent, logging_handler.handle)
+    event_bus.subscribe(BaseDomainEvent, cache_handler.handle)
+    event_bus.subscribe(BaseDomainEvent, audit_handler.handle)
 
     logger.info("✅ Event Handlers зареєстровано")
     logger.info(

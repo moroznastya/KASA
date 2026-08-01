@@ -22,16 +22,17 @@ class UserMapper:
         Returns:
             UserDTO.
         """
+        role_value = entity.role.value if hasattr(entity.role, "value") else entity.role
         return UserDTO(
             id=entity.id,
             name=entity.name,
             login=entity.login,
-            role=entity.role.value,
+            role=role_value,
             is_active=entity.is_active,
-            email=entity.email,
-            phone=entity.phone,
+            email=getattr(entity, "email", "") or "",
+            phone=getattr(entity, "phone", "") or "",
             created_at=entity.created_at,
-            last_login_at=entity.last_login_at,
+            last_login_at=getattr(entity, "last_login_at", None),
         )
 
     @staticmethod

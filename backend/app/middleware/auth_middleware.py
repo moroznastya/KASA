@@ -58,6 +58,13 @@ class AuthMiddleware:
             receive: Функція отримання даних.
             send: Функція відправки даних.
         """
+        # Не-HTTP scope (lifespan, websocket) пропускаємо без обробки —
+        # інакше middleware відповідає 401 на lifespan-старт і DI-контейнер
+        # ніколи не ініціалізується.
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
         # Отримуємо метод та шлях запиту
         path = scope.get("path", "")
         method = scope.get("method", "")

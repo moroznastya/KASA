@@ -50,7 +50,19 @@ class LocalEventBus(IEventBus):
             event: Доменна подія для публікації.
         """
         event_type = type(event)
-        handlers = self._handlers.get(event_type, [])
+
+        # Шукаємо хендлери за MRO: підписка на BaseDomainEvent покриває всі події.
+        handlers: list[EventHandler] = []
+        for cls in event_type.__mro__:
+            handlers.extend(self._handlers.get(cls, []))
+        # Дедуплікація (хендлер може бути підписаний і на батьківський тип)
+        seen: set[int] = set()
+        unique: list[EventHandler] = []
+        for h in handlers:
+            if id(h) not in seen:
+                seen.add(id(h))
+                unique.append(h)
+        handlers = unique
 
         if not handlers:
             logger.debug(f"Event {event_type.__name__} published, no handlers registered")

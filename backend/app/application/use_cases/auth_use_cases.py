@@ -20,6 +20,7 @@ from app.application.dto.user_dto import UserDTO, UserCreateDTO
 from app.application.mappers.user_mapper import UserMapper
 from app.application.interfaces.i_event_bus import IEventBus
 from app.domain.events import UserLoggedIn, UserCreated
+from app.domain.services.auth_service import AuthService
 
 
 class AuthUseCases:
@@ -89,7 +90,7 @@ class AuthUseCases:
         await self._event_bus.publish(event)
 
         # Генеруємо токен (заглушка)
-        token = f"mock_token_{user.id}"
+        token = AuthService.create_access_token(user.id, user.role)
 
         return UserMapper.entity_to_dto(user), token
 
@@ -128,7 +129,7 @@ class AuthUseCases:
         await self._event_bus.publish(event)
 
         # Генеруємо токен (заглушка)
-        token = f"mock_token_{user.id}"
+        token = AuthService.create_access_token(user.id, user.role)
 
         return UserMapper.entity_to_dto(user), token
 
@@ -153,7 +154,7 @@ class AuthUseCases:
             raise ValueError("Користувач деактивований")
 
         # Генеруємо новий токен (заглушка)
-        token = f"mock_token_{user.id}"
+        token = AuthService.create_access_token(user.id, user.role)
 
         return UserMapper.entity_to_dto(user), token
 
