@@ -41,6 +41,8 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 from lxml import etree
 from signxml import XMLSigner, XMLVerifier, methods
 
+from app.infrastructure.services.prro.iit_sdk import IitSdk, IitSdkError
+
 logger = logging.getLogger(__name__)
 
 # Розширення → формат ключа
@@ -189,9 +191,19 @@ class PrroCryptoSigner:
         self.key_password = key_password
         self.key_format = (key_format or self.detect_format()).lower()
 
+        # Бекенд підписання: "signxml" (RSA/EC, XAdES) або "iit"
+        # (ДСТУ 4145-2002, CAdES через крипто-ядро ІІТ SDK EUSignCP).
+        self._backend: str = "signxml"
+
+        # Для ДСТУ 4145 (JKS): шлях/пароль для лінивого завантаження в SDK.
+        # Ініціалізуємо ДО _load_key_material() — він може їх заповнити.
+        self._iit_jks_path: Path | None = None
+        self._iit_jks_password: str = ""
+        self._iit_loaded = False
+
         # Завантажуємо матеріали ключа (приватний ключ + сертифікат)
-        self._private_key: PrivateKeyTypes
-        self._certificate: x509.Certificate
+        self._private_key: PrivateKeyTypes | None = None
+        self._certificate: x509.Certificate | None = None
         self._private_key, self._certificate = self._load_key_material()
 
     # ─── Визначення формату ────────────────────────────────────────────────
@@ -392,12 +404,17 @@ class PrroCryptoSigner:
         # Діагностика алгоритму ключа з PKCS#8 (OID в AlgorithmIdentifier)
         algo_oid = self._detect_pkcs8_algorithm(key_der)
         if algo_oid in (self._OID_DSTU4145_LE, self._OID_DSTU4145_BE):
-            raise PrroCryptoError(
-                "Ключ використовує ДСТУ 4145-2002 (український стандарт "
-                "електронного підпису), який вимагає крипто-ядро ІІТ "
-                "(SDK EUSign). Модуль ПРРО поки підтримує RSA/EC ключі — "
-                "підпис ДСТУ 4145 буде реалізовано на наступному етапі."
+            # ДСТУ 4145-2002: підпис виконує крипто-ядро ІІТ (SDK EUSignCP).
+            # Ключ/сертифікати читаються напряму з JKS (EUGetJKSPrivateKeyFile),
+            # тому тут зберігаємо лише шлях/пароль для лінивого завантаження.
+            self._backend = "iit"
+            self._iit_jks_path = self.key_path
+            self._iit_jks_password = self.key_password
+            logger.info(
+                "PRRO_CRYPTO | JKS містить ДСТУ 4145-2002 ключ (alias=%s) — "
+                "бекенд ІІТ SDK", alias,
             )
+            return None, None
 
         try:
             private_key = serialization.load_der_private_key(
@@ -532,11 +549,16 @@ class PrroCryptoSigner:
 
         Returns:
             bytes — підписаний XML: до кореневого елемента додається
-            тег <ds:Signature> (enveloped).
+            тег <ds:Signature> (enveloped). Для ДСТУ 4145 (бекенд ІІТ) —
+            бінарний CAdES-BES підпис від XML (формат офіційного семпла
+            programika/prro_sample: `ee.SignInternal(true, data)`).
 
         Raises:
             PrroCryptoError: якщо підписання не вдалося.
         """
+        if self._backend == "iit":
+            return self._sign_iit(xml_bytes)
+
         try:
             root = etree.fromstring(xml_bytes)
         except etree.XMLSyntaxError as exc:
@@ -573,12 +595,66 @@ class PrroCryptoSigner:
         Returns:
             bool — True, якщо підпис валідний.
         """
+        if self._backend == "iit":
+            return self._verify_iit(signed_xml)
+
         try:
             verifier = XMLVerifier()
             verifier.verify(signed_xml, x509_cert=self._cert_pem())
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("PRRO_CRYPTO | перевірка підпису не пройшла: %s", exc)
+            return False
+
+    # ─── ДСТУ 4145-2002 (бекенд ІІТ SDK) ──────────────────────────────────
+
+    def _ensure_iit(self) -> None:
+        """Ліниво завантажує JKS-ключ у крипто-ядро ІІТ (один раз)."""
+        if self._iit_loaded:
+            return
+        if self._backend != "iit":
+            return
+        if self._iit_jks_path is None:
+            raise PrroCryptoError(
+                "ДСТУ 4145 ключ: не задано шлях до JKS"
+            )
+        try:
+            IitSdk.get().load_jks_key(
+                self._iit_jks_path, self._iit_jks_password
+            )
+            self._iit_loaded = True
+        except IitSdkError as exc:
+            raise PrroCryptoError(
+                f"Не вдалося завантажити ДСТУ 4145 ключ у крипто-ядро ІІТ: {exc}"
+            ) from exc
+
+    def _sign_iit(self, xml_bytes: bytes) -> bytes:
+        """
+        Підписує XML через крипто-ядро ІІТ (ДСТУ 4145-2002 + Стрибог-256).
+
+        Returns:
+            bytes — CAdES-BES підпис (ContentInfo/signedData), який ДПС
+            очікує в `Check.check_sign` (формат `ee.SignInternal(true, data)`
+            з офіційного семпла programika/prro_sample).
+        """
+        self._ensure_iit()
+        try:
+            return IitSdk.get().sign_data_internal(xml_bytes)
+        except IitSdkError as exc:
+            raise PrroCryptoError(f"Помилка підпису ДСТУ 4145: {exc}") from exc
+
+    def _verify_iit(self, signed_xml: bytes) -> bool:
+        """Перевіряє CAdES-BES підпис через крипто-ядро ІІТ.
+
+        Дані знаходяться всередині підпису (CAdES-BES internal), тому
+        перевіряється лише криптографічна валідність (дані витягуються
+        успішно — отже, підпис цілісний і належить завантаженому ключу).
+        """
+        self._ensure_iit()
+        try:
+            return IitSdk.get().verify_data_internal(signed_xml, None)
+        except IitSdkError as exc:
+            logger.warning("PRRO_CRYPTO | verify(ІІТ): %s", exc)
             return False
 
     # ─── Дані підписанта ───────────────────────────────────────────────────
@@ -590,6 +666,11 @@ class PrroCryptoSigner:
         Returns:
             str — наприклад, "3F2A9C01B7D4E8A2".
         """
+        if self._backend == "iit":
+            self._ensure_iit()
+            return IitSdk.get().get_signer_serial()
+        if self._certificate is None:
+            raise PrroCryptoError("Сертифікат не завантажено")
         return format(self._certificate.serial_number, "X")
 
     def get_signer_name(self) -> str:
@@ -602,6 +683,11 @@ class PrroCryptoSigner:
         Returns:
             str — ПІБ або порожній рядок, якщо визначити не вдалося.
         """
+        if self._backend == "iit":
+            self._ensure_iit()
+            return IitSdk.get().get_signer_name()
+        if self._certificate is None:
+            return ""
         subject = self._certificate.subject
 
         cn = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)

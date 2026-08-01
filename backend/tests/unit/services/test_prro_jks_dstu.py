@@ -67,16 +67,57 @@ class TestDetectPkcs8Algorithm:
 @pytest.mark.skipif(not os.path.isfile(TEST_JKS), reason="Тестовий JKS-ключ відсутній")
 class TestLoadJks:
     def test_dstu_jks_loads_and_detects(self, tmp_path):
-        """JKS з ДСТУ 4145 ключем читається і дає зрозумілу помилку."""
+        """JKS з ДСТУ 4145 ключем читається, визначається і перемикає бекенд на ІІТ.
+
+        Раніше (до інтеграції крипто-ядра ІІТ SDK) цей ключ викликав
+        PrroCryptoError з повідомленням про необхідність SDK EUSign.
+        Тепер ключ приймається: бекенд = "iit", матеріали ключа
+        завантажуються ліниво через IitSdk.
+        """
         import shutil
 
         dst = tmp_path / "pb.jks"
         shutil.copy(TEST_JKS, dst)
-        from app.infrastructure.services.prro.crypto_signer import PrroCryptoError
+        signer = PrroCryptoSigner(
+            key_path=str(dst),
+            key_password=JKS_PASSWORD,
+        )
+        assert signer._backend == "iit"
+        assert signer._iit_jks_path is not None
+        assert signer._iit_jks_password == JKS_PASSWORD
 
-        with pytest.raises(PrroCryptoError) as ei:
-            PrroCryptoSigner(
-                key_path=str(dst),
-                key_password=JKS_PASSWORD,
-            )
-        assert "ДСТУ 4145-2002" in str(ei.value)
+    def test_dstu_jks_signs_and_verifies_via_iit(self, tmp_path):
+        """ДСТУ 4145 підпис через крипто-ядро ІІТ (інтеграційний, skip без SDK).
+
+        Перевіряє повний ланцюжок: JKS → IitSdk → CAdES-BES підпис →
+        самоперевірка підпису. Виконується лише якщо SDK встановлено
+        (backend/vendor/iit-sdk/opt/iit/eu/sw/euscp.so).
+        """
+        from app.infrastructure.services.prro.iit_sdk import IitSdk
+
+        IitSdk.reset()
+        sdk = IitSdk.get()
+        if not sdk.available:
+            pytest.skip("Крипто-ядро ІІТ не встановлено (backend/scripts/setup_iit_sdk.sh)")
+
+        import shutil
+
+        dst = tmp_path / "pb.jks"
+        shutil.copy(TEST_JKS, dst)
+        signer = PrroCryptoSigner(
+            key_path=str(dst),
+            key_password=JKS_PASSWORD,
+        )
+        xml = (
+            '<?xml version="1.0" encoding="windows-1251"?>\n'
+            '<RQ V="1">\n<DAT DI="162292" DT="0" FN="4000000001" '
+            'TN="\u041f\u041d 2080903659" V="1" ZN="402342434">\n'
+            '<C T="111">\n</C>\n<TS>20260801160000</TS>\n</DAT>\n</RQ>\n'
+        ).encode("cp1251")
+        signature = signer.sign(xml)
+        assert len(signature) > 100
+        # CAdES-BES: ContentInfo з signedData (1.2.840.113549.1.7.2)
+        assert signature[:4] == b"\x30\x82" or signature[0] == 0x30
+        assert signer.verify(signature) is True
+        assert signer.get_serial_number()
+        assert signer.get_signer_name()

@@ -97,3 +97,7 @@ Cert-6.dat
 # ── ПРРО: master-ключ та сховище налаштувань ключа (секрети) ──
 .prro_master.key
 .prro_keystore.json
+
+# ІІТ SDK (крипто-ядро EUSignCP) — встановлюється scripts/setup_iit_sdk.sh
+backend/vendor/iit-sdk/etc/
+backend/vendor/iit-sdk/opt/iit/eu/sw/euscpnmh

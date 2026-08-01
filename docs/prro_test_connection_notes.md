@@ -151,3 +151,63 @@ JNI до нативної бібліотеки). Відкритих Python-ре�
 ```
 
 (500 більше немає — помилка повертається зрозумілим JSON.)
+
+---
+
+## ✅ РЕАЛІЗОВАНО: ДСТУ 4145-2002 підпис через ІІТ SDK (2026-08-01, 19:00)
+
+### Що зроблено
+
+1. **Завантажено та розпаковано крипто-ядро ІІТ** (SDK EUSignCP):
+   `https://iit.com.ua/download/productfiles/euswi.64.deb` →
+   `backend/vendor/iit-sdk/opt/iit/eu/sw/euscp.so` (2.4 МБ, без root).
+   Бібліотека експортує повний C API (EUInitialize, EUGetJKSPrivateKeyFile,
+   EUReadPrivateKeyBinary, EUSignDataInternal, EUVerifyDataInternal...).
+
+2. **Новий модуль `app/infrastructure/services/prro/iit_sdk.py`** — ctypes-обгортка:
+   - `load_jks_key(path, password)` — читає JKS-ключ ДСТУ 4145 напряму
+     (EUGetJKSPrivateKeyFile), зберігає сертифікати у файлове сховище
+     (EUSaveCertificate), завантажує ключ у ядро (EUReadPrivateKeyBinary);
+   - `sign_data_internal(xml)` — **CAdES-BES підпис** (ДСТУ 4145-2002 +
+     Стрибог-256) — точно формат офіційного семпла
+     `ee.SignInternal(true, data)` (programika/prro_sample);
+   - `verify_data_internal(signature, data)` — самоперевірка підпису;
+   - `get_signer_serial()/get_signer_name()` — реквізити підписанта
+     (МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА, ПриватБанк).
+
+3. **`crypto_signer.py`** — JKS з ДСТУ 4145 ключем більше НЕ блокується:
+   - визначається OID (pyjks + ручний DER-парсер);
+   - `_backend = "iit"` → `sign()`/`verify()`/реквізити йдуть через ІІТ SDK;
+   - RSA/EC ключі — як і раніше, signxml (XAdES).
+
+4. **Скрипт встановлення** `backend/scripts/setup_iit_sdk.sh` —
+   завантажує deb з iit.com.ua та розпаковує у vendor/ (без root).
+
+### Результат test-connection (JKS, тепер)
+
+```json
+{"status": -13, "ok": false,
+ "error": "ПРРО не зареєстровано (ERROR_NOT_REGISTERED_RRO). Зареєструйте ПРРО в кабінеті платника податків."}
+```
+
+**-13 ERROR_NOT_REGISTERED_RRO** — найкращий можливий результат:
+- ✅ сервер розпізнав ДСТУ 4145-2002 підпис (криптографічно валідний);
+- ✅ сертифікат підписанта ЗАРЕЄСТРОВАНО в тестовому середовищі ДПС
+  (ПриватБанк, TINUA-3791505547);
+- ✅ XML СЗЗД T=111 розібрано;
+- ❌ лишилось одне: **зареєструвати сам ПРРО** (FN) у тестовому середовищі
+  (кабінет платника податків). Після реєстрації очікується `status: 1 OK`.
+
+### Валідація
+
+- Самоперевірка підпису: `EUVerifyDataInternal` → OK (дані збігаються).
+- Експерименти проти тестового API:
+  - FN=4000000001 → -14 ERROR_NOT_REGISTERED_SIGNER (раніше);
+  - FN з налаштувань → **-13 ERROR_NOT_REGISTERED_RRO** (тепер).
+- Повний набір тестів: **454 passed, 0 failed**.
+- Тести: `test_iit_sdk.py` (7), `test_prro_jks_dstu.py` (інтеграція sign/verify).
+
+### Важливо
+
+- SDK (vendor/) у .gitignore — встановлюється скриптом; секрети (certs/) теж.
+- Залежностей SDK: тільки libosi.so (у пакеті) + стандартні libc — без root.
