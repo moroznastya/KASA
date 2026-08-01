@@ -29,7 +29,7 @@ class CategoryResponse(BaseModel):
     id: UUID
     name: str
     parent_id: UUID | None = None
-    description: str = ""
+    description: str | None = None
     sort_order: int = 0
     is_active: bool = True
 
@@ -40,7 +40,7 @@ class CategoryTreeResponse(BaseModel):
     id: UUID
     name: str
     parent_id: UUID | None = None
-    description: str = ""
+    description: str | None = None
     children: list[CategoryTreeResponse] = []
 
     model_config = {"from_attributes": True}

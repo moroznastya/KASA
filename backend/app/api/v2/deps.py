@@ -96,6 +96,7 @@ async def get_ledger_use_cases(
     """Отримати LedgerUseCases з поточною сесією БД."""
     return LedgerUseCases(
         ledger_repo=SQLAlchemyLedgerRepository(session=session),
+        supplier_repo=SQLAlchemySupplierRepository(session=session),
         event_bus=request.app.state.di_container.resolve("event_bus"),
         unit_of_work=SQLAlchemyUnitOfWork(session=session),
     )

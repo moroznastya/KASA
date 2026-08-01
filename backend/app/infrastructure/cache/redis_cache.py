@@ -13,9 +13,15 @@ Infrastructure Layer: RedisCacheService — реалізація ICacheService.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Optional
+from uuid import UUID
+
+from pydantic import BaseModel
 
 from app.domain.services.cache_service import ICacheService
 
@@ -126,6 +132,33 @@ class RedisCacheService(ICacheService):
             logger.debug("Помилка читання кешу [%s]: %s", key, e)
             return None
 
+    @staticmethod
+    def _default_serializer(obj: Any) -> Any:
+        """
+        Серіалізація складних типів у JSON-сумісні значення.
+
+        - Pydantic v2 BaseModel → dict (model_dump(mode="json"))
+        - dataclass (напр. ProductDTO, ReceiptDTO) → dict зі значеннями полів
+        - UUID / Decimal → str
+        - datetime / date → ISO-рядок
+        - вкладені значення обробляються json.dumps рекурсивно через default
+
+        Returns:
+            JSON-сумісне значення.
+        """
+        if isinstance(obj, BaseModel):
+            return obj.model_dump(mode="json")
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return {
+                f.name: getattr(obj, f.name)
+                for f in dataclasses.fields(obj)
+            }
+        if isinstance(obj, (UUID, Decimal)):
+            return str(obj)
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return str(obj)
+
     async def set(
         self,
         key: str,
@@ -135,6 +168,9 @@ class RedisCacheService(ICacheService):
         """
         Зберегти значення в кеш.
 
+        Pydantic-моделі, UUID, Decimal, datetime автоматично конвертуються
+        у JSON-сумісні значення (щоб Cache HIT повертав коректні dict).
+
         Returns:
             True при успіху, False при помилці.
         """
@@ -142,7 +178,7 @@ class RedisCacheService(ICacheService):
             return False
         try:
             ttl_sec = ttl or self._default_ttl
-            serialized = json.dumps(value, default=str)
+            serialized = json.dumps(value, default=self._default_serializer)
             await self._redis.setex(key, ttl_sec, serialized)  # type: ignore
             return True
         except Exception as e:

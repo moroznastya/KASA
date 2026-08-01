@@ -11,7 +11,10 @@ from pydantic import BaseModel, Field
 from app.application.use_cases import ReceiptUseCases
 from app.application.use_cases.prro.prro_use_cases import PrroUseCases
 from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
-from .deps import get_prro_use_cases, get_receipt_use_cases
+from .deps import get_prro_use_cases, get_receipt_use_cases, get_cache_service
+from app.domain.services.cache_service import ICacheService
+from app.config import settings
+from .cache_utils import cached, invalidate_receipt_cache, invalidate_product_cache
 
 router = APIRouter(prefix="/receipts", tags=["receipts_v2"])
 
@@ -168,33 +171,59 @@ async def list_receipts(
     payment_method: str | None = None,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
     prro: PrroUseCases = Depends(get_prro_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати список чеків з пагінацією та фільтрацією."""
-    receipts, total = await use_cases.get_receipts(
-        query=search,
-        date_from=date_from,
-        date_to=date_to,
-        payment_method=payment_method,
-        page=page,
-        size=size,
+    """Отримати список чеків з пагінацією та кешуванням (TTL: 15s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:list",
+        ttl=settings.CACHE_TTL_RECEIPTS,
     )
-    prro_fn = await prro.get_prro_fn()
-    for receipt in receipts:
-        receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
-    return {
-        "items": receipts,
-        "total": total,
-        "page": page,
-        "size": size,
-    }
+    async def _fetch(
+        page: int, size: int,
+        search: str | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        payment_method: str | None,
+    ):
+        receipts, total = await use_cases.get_receipts(
+            query=search,
+            date_from=date_from,
+            date_to=date_to,
+            payment_method=payment_method,
+            page=page,
+            size=size,
+        )
+        prro_fn = await prro.get_prro_fn()
+        for receipt in receipts:
+            receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
+        return {
+            "items": receipts,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
+
+    return await _fetch(page, size, search, date_from, date_to, payment_method)
 
 
 @router.get("/stats/today", response_model=ReceiptTodayStatsResponse)
 async def get_today_stats(
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Статистика чеків за сьогодні (продажі, повернення, прибуток, ПДВ)."""
-    return await use_cases.get_today_stats()
+    """Статистика чеків за сьогодні з кешуванням (TTL: 10s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:stats",
+        ttl=settings.CACHE_TTL_RECEIPT_STATS,
+    )
+    async def _fetch():
+        return await use_cases.get_today_stats()
+
+    return await _fetch()
 
 
 @router.get("/search", response_model=ReceiptSearchResponse)
@@ -206,26 +235,43 @@ async def search_receipts(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Пошук чеків для повернень (за номером чеку або назвою товару)."""
-    try:
-        items, total = await use_cases.search_receipts(
-            q=q,
-            date_from=date_from,
-            date_to=date_to,
-            receipt_type=receipt_type,
-            page=page,
-            size=size,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": page,
-            "page_size": size,
-            "pages": max(1, (total + size - 1) // size) if total > 0 else 1,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Пошук чеків для повернень з кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:search",
+        ttl=settings.CACHE_TTL_RECEIPT_DETAIL,
+    )
+    async def _fetch(
+        q: str,
+        date_from: datetime | None,
+        date_to: datetime | None,
+        receipt_type: str | None,
+        page: int,
+        size: int,
+    ):
+        try:
+            items, total = await use_cases.search_receipts(
+                q=q,
+                date_from=date_from,
+                date_to=date_to,
+                receipt_type=receipt_type,
+                page=page,
+                size=size,
+            )
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "page_size": size,
+                "pages": max(1, (total + size - 1) // size) if total > 0 else 1,
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    return await _fetch(q, date_from, date_to, receipt_type, page, size)
 
 
 @router.get("/by-product/{query}/recent-sales", response_model=ProductRecentSalesListResponse)
@@ -233,37 +279,67 @@ async def get_recent_sales_by_product(
     query: str,
     limit: int = Query(5, ge=1, le=20, description="Кількість останніх продажів"),
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Останні продажі товару за штрих-кодом або назвою (для повернення без чеку)."""
-    try:
-        items = await use_cases.get_recent_sales_by_product(query, limit)
-        return {"items": items, "total": len(items)}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Останні продажі товару з кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:by-product",
+        ttl=settings.CACHE_TTL_RECEIPT_DETAIL,
+    )
+    async def _fetch(query: str, limit: int):
+        try:
+            items = await use_cases.get_recent_sales_by_product(query, limit)
+            return {"items": items, "total": len(items)}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(query, limit)
 
 
 @router.get("/products/{product_id}/returnable-quantity", response_model=ReturnableQuantityResponse)
 async def get_returnable_quantity(
     product_id: UUID,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Скільки одиниць товару можна повернути (продано - вже повернуто)."""
-    try:
-        return await use_cases.get_returnable_quantity(product_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Скільки одиниць товару можна повернути з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:returnable",
+        ttl=settings.CACHE_TTL_RECEIPTS,
+    )
+    async def _fetch(product_id: UUID):
+        try:
+            return await use_cases.get_returnable_quantity(product_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(product_id)
 
 
 @router.get("/{receipt_id}/items", response_model=list[ReceiptItemsResponse])
 async def get_receipt_items(
     receipt_id: UUID,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Позиції чеку (для вибору товарів при поверненні)."""
-    try:
-        return await use_cases.get_receipt_items(receipt_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Позиції чеку з кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:items",
+        ttl=settings.CACHE_TTL_RECEIPT_DETAIL,
+    )
+    async def _fetch(receipt_id: UUID):
+        try:
+            return await use_cases.get_receipt_items(receipt_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(receipt_id)
 
 
 @router.get("/{receipt_id}", response_model=ReceiptResponse)
@@ -271,15 +347,25 @@ async def get_receipt(
     receipt_id: UUID,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
     prro: PrroUseCases = Depends(get_prro_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати чек за ID."""
-    try:
-        receipt = await use_cases.get_receipt(receipt_id)
-        prro_fn = await prro.get_prro_fn()
-        receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
-        return receipt
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Отримати чек за ID з кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="receipts:detail",
+        ttl=settings.CACHE_TTL_RECEIPT_DETAIL,
+    )
+    async def _fetch(receipt_id: UUID):
+        try:
+            receipt = await use_cases.get_receipt(receipt_id)
+            prro_fn = await prro.get_prro_fn()
+            receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
+            return receipt
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(receipt_id)
 
 
 @router.post("/sale", response_model=ReceiptResponse, status_code=201)
@@ -287,6 +373,7 @@ async def create_sale_receipt(
     data: CreateReceiptRequest,
     background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
     """Створити чек продажу (зменшує залишки товарів).
 
@@ -314,7 +401,10 @@ async def create_sale_receipt(
             customer_id=data.customer_id,
             notes=data.notes,
         )
-        return await use_cases.create_sale_receipt(dto, background_tasks=background_tasks)
+        result = await use_cases.create_sale_receipt(dto, background_tasks=background_tasks)
+        await invalidate_receipt_cache(cache)
+        await invalidate_product_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -324,6 +414,7 @@ async def create_return_receipt(
     data: CreateReceiptRequest,
     background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
     """Створити чек повернення (збільшує залишки товарів).
 
@@ -351,7 +442,10 @@ async def create_return_receipt(
             customer_id=data.customer_id,
             notes=data.notes,
         )
-        return await use_cases.create_return_receipt(dto, background_tasks=background_tasks)
+        result = await use_cases.create_return_receipt(dto, background_tasks=background_tasks)
+        await invalidate_receipt_cache(cache)
+        await invalidate_product_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

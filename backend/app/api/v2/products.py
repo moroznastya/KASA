@@ -1,8 +1,9 @@
 """Product API v2 — використовує ProductUseCases з кешуванням.
 
 Кешування:
-- GET /products — кеш списку (TTL: 60s), інвалідація при POST
-- GET /products/{id} — кеш продукту (TTL: 300s), інвалідація при PUT/DELETE
+- GET /products — кеш списку (TTL: 30s), інвалідація при POST
+- GET /products/{id} — кеш продукту (TTL: 60s), інвалідація при PUT/DELETE
+- GET /products/barcode/{barcode} — кеш пошуку за штрих-кодом (TTL: 30s)
 - POST/PUT/DELETE — інвалідація відповідних кешів
 """
 
@@ -141,18 +142,28 @@ async def list_products(
 async def get_product_by_barcode(
     barcode: str,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати товар за штрих-кодом (основне поле або додатковий штрих-код)."""
-    try:
-        product = await use_cases.get_product_by_barcode(barcode)
-        if product is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Товар зі штрих-кодом '{barcode}' не знайдено",
-            )
-        return product
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Отримати товар за штрих-кодом (основне поле або додатковий штрих-код) з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="products:barcode",
+        ttl=settings.CACHE_TTL_BARCODE,
+    )
+    async def _fetch(barcode: str):
+        try:
+            product = await use_cases.get_product_by_barcode(barcode)
+            if product is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Товар зі штрих-кодом '{barcode}' не знайдено",
+                )
+            return product
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(barcode)
 
 
 @router.post("/{product_id}/images", response_model=ProductImageResponse)

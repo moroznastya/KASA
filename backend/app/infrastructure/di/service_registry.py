@@ -15,6 +15,8 @@ from app.infrastructure.event_bus import LocalEventBus
 
 # ─── Cache ───────────────────────────────────────────────────────────────────
 from app.infrastructure.cache import RedisCacheService
+from app.infrastructure.cache.redis_cache import REDIS_AVAILABLE
+from app.infrastructure.cache.memory_cache import MemoryCacheService
 
 # ─── Repository Implementations & Unit of Work ──────────────────────────────
 from app.infrastructure.persistence.repositories import (
@@ -104,12 +106,17 @@ def register_all_services(container: DIContainer) -> None:
     event_bus = LocalEventBus()
     container.register_instance("event_bus", event_bus)
 
-    # Cache Service — singleton, один пул з'єднань з Redis
+    # Cache Service — singleton
+    # Якщо redis.asyncio доступний — Redis, інакше in-memory TTL-кеш (fallback)
     from app.config import settings as app_settings
-    cache_service = RedisCacheService(
-        url=app_settings.REDIS_ACTUAL_URL,
-        default_ttl=app_settings.CACHE_TTL_DEFAULT,
-    )
+    if REDIS_AVAILABLE:
+        cache_service = RedisCacheService(
+            url=app_settings.REDIS_ACTUAL_URL,
+            default_ttl=app_settings.CACHE_TTL_DEFAULT,
+        )
+    else:
+        logger.warning("⚠️ redis.asyncio недоступний — використовується MemoryCacheService (in-memory TTL)")
+        cache_service = MemoryCacheService(default_ttl=app_settings.CACHE_TTL_DEFAULT)
     container.register_instance("cache_service", cache_service)
 
     # ПРРО — singleton компоненти (gRPC-канали, сховище ключів)

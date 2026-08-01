@@ -52,6 +52,8 @@ app.middleware_stack = None
 from app.database import Base, get_session
 from app.infrastructure.persistence.models.user import User, UserRole
 from app.domain.services.auth_service import AuthService
+from app.api.v2.deps import get_cache_service
+from app.infrastructure.cache.memory_cache import MemoryCacheService
 
 
 # ─── Тестова БД ──────────────────────────────────────────────────────────────
@@ -90,6 +92,15 @@ async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
+
+    # Кешування: in-memory MemoryCacheService — ізоляція від Redis у тестах
+    test_cache = MemoryCacheService(default_ttl=60)
+
+    async def override_get_cache_service():
+        return test_cache
+
+    app.dependency_overrides[get_cache_service] = override_get_cache_service
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as ac:
         yield ac

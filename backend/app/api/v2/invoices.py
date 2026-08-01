@@ -10,7 +10,10 @@ from pydantic import BaseModel, Field
 
 from app.application.use_cases import InvoiceUseCases
 from app.schemas.print import InvoicePrintRequest, InvoicePrintResponse
-from .deps import get_invoice_print_use_cases, get_invoice_use_cases
+from .deps import get_invoice_print_use_cases, get_invoice_use_cases, get_cache_service
+from app.domain.services.cache_service import ICacheService
+from app.config import settings
+from .cache_utils import cached, invalidate_invoice_cache, invalidate_product_cache, invalidate_ledger_cache
 
 router = APIRouter(prefix="/invoices", tags=["invoices_v2"])
 
@@ -108,44 +111,72 @@ async def list_invoices(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати список накладних з пагінацією та фільтрацією."""
-    invoices, total = await use_cases.get_invoices(
-        query=search,
-        supplier_id=supplier_id,
-        status=status,
-        date_from=date_from,
-        date_to=date_to,
-        page=page,
-        size=size,
+    """Отримати список накладних з пагінацією та кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="invoices:list",
+        ttl=settings.CACHE_TTL_INVOICES,
     )
-    return {
-        "items": invoices,
-        "total": total,
-        "page": page,
-        "size": size,
-    }
+    async def _fetch(
+        page: int, size: int,
+        search: str | None,
+        supplier_id: UUID | None,
+        status: str | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+    ):
+        invoices, total = await use_cases.get_invoices(
+            query=search,
+            supplier_id=supplier_id,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+            page=page,
+            size=size,
+        )
+        return {
+            "items": invoices,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
+
+    return await _fetch(page, size, search, supplier_id, status, date_from, date_to)
 
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
 async def get_invoice(
     invoice_id: UUID,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати накладну за ID."""
-    try:
-        invoice = await use_cases.get_invoice(invoice_id)
-        return invoice
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Отримати накладну за ID з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="invoices:detail",
+        ttl=settings.CACHE_TTL_INVOICES,
+    )
+    async def _fetch(invoice_id: UUID):
+        try:
+            invoice = await use_cases.get_invoice(invoice_id)
+            return invoice
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(invoice_id)
 
 
 @router.post("", response_model=InvoiceResponse, status_code=201)
 async def create_invoice(
     data: CreateInvoiceRequest,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Створити нову прибуткову накладну."""
+    """Створити нову прибуткову накладну (інвалідує invoice-кеш)."""
     try:
         from app.application.dto.invoice_dto import InvoiceCreateDTO, InvoiceItemDTO
         items = [
@@ -164,7 +195,9 @@ async def create_invoice(
             items=items,
             notes=data.notes,
         )
-        return await use_cases.create_invoice(dto)
+        result = await use_cases.create_invoice(dto)
+        await invalidate_invoice_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -173,10 +206,15 @@ async def create_invoice(
 async def confirm_invoice(
     data: ConfirmInvoiceRequest,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Підтвердити прибуткову накладну (оновлює залишки та баланс)."""
+    """Підтвердити прибуткову накладну (інвалідує invoices/products/ledger кеш)."""
     try:
-        return await use_cases.confirm_invoice(data)
+        result = await use_cases.confirm_invoice(data)
+        await invalidate_invoice_cache(cache)
+        await invalidate_product_cache(cache)
+        await invalidate_ledger_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -186,8 +224,9 @@ async def update_invoice(
     invoice_id: UUID,
     data: UpdateInvoiceRequest,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Оновити прибуткову накладну (тільки чернетку)."""
+    """Оновити прибуткову накладну (тільки чернетку, інвалідує invoice-кеш)."""
     try:
         from app.application.dto.invoice_dto import InvoiceUpdateDTO, InvoiceItemDTO
         items = None
@@ -210,7 +249,9 @@ async def update_invoice(
             invoice_date=data.invoice_date,
             items=items,
         )
-        return await use_cases.update_invoice(invoice_id, dto)
+        result = await use_cases.update_invoice(invoice_id, dto)
+        await invalidate_invoice_cache(cache)
+        return result
     except ValueError as e:
         detail = str(e)
         status_code = 404 if "не знайдено" in detail else 400
@@ -221,10 +262,12 @@ async def update_invoice(
 async def delete_invoice(
     invoice_id: UUID,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Видалити прибуткову накладну (тільки чернетку)."""
+    """Видалити прибуткову накладну (тільки чернетку, інвалідує invoice-кеш)."""
     try:
         await use_cases.delete_invoice(invoice_id)
+        await invalidate_invoice_cache(cache)
     except ValueError as e:
         detail = str(e)
         status_code = 404 if "не знайдено" in detail else 400
@@ -235,24 +278,44 @@ async def delete_invoice(
 async def get_invoice_payment_info(
     invoice_id: UUID,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Інформація про оплату накладної (сплачено/залишок)."""
-    try:
-        return await use_cases.get_invoice_payment_info(invoice_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Інформація про оплату накладної з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="invoices:payment",
+        ttl=settings.CACHE_TTL_INVOICES,
+    )
+    async def _fetch(invoice_id: UUID):
+        try:
+            return await use_cases.get_invoice_payment_info(invoice_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(invoice_id)
 
 
 @router.get("/{invoice_id}/price-changes", response_model=list[PriceChangeItemResponse])
 async def get_invoice_price_changes(
     invoice_id: UUID,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Зміни цін товарів у накладній (порівняно з ціною до надходження)."""
-    try:
-        return await use_cases.get_invoice_price_changes(invoice_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Зміни цін товарів у накладній з кешуванням (TTL: 60s)."""
+
+    @cached(
+        cache,
+        prefix="invoices:price",
+        ttl=settings.CACHE_TTL_INVOICE_PRICE,
+    )
+    async def _fetch(invoice_id: UUID):
+        try:
+            return await use_cases.get_invoice_price_changes(invoice_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(invoice_id)
 
 
 @router.post("/{invoice_id}/print-items", response_model=InvoicePrintResponse)
@@ -285,9 +348,14 @@ async def render_invoice_print_items(
 async def cancel_invoice(
     invoice_id: UUID,
     use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Скасувати прибуткову накладну (відкочує залишки та баланс)."""
+    """Скасувати прибуткову накладну (інвалідує invoices/products/ledger кеш)."""
     try:
-        return await use_cases.cancel_invoice(invoice_id)
+        result = await use_cases.cancel_invoice(invoice_id)
+        await invalidate_invoice_cache(cache)
+        await invalidate_product_cache(cache)
+        await invalidate_ledger_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

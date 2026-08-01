@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import LedgerUseCases
-from .deps import get_ledger_use_cases
+from app.domain.services.cache_service import ICacheService
+from app.config import settings
+from .deps import get_ledger_use_cases, get_cache_service
+from .cache_utils import cached, invalidate_ledger_cache
 
 router = APIRouter(prefix="/ledger", tags=["ledger_v2"])
 
@@ -64,30 +67,47 @@ async def list_ledger_entries(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     use_cases: LedgerUseCases = Depends(get_ledger_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати журнал взаєморозрахунків з пагінацією та фільтрацією."""
-    entries, total = await use_cases.get_ledger_history(
-        supplier_id=supplier_id,
-        operation_type=operation_type,
-        date_from=date_from,
-        date_to=date_to,
-        page=page,
-        size=size,
+    """Отримати журнал взаєморозрахунків з пагінацією та кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="ledger:entries",
+        ttl=settings.CACHE_TTL_LEDGER,
     )
-    return {
-        "items": entries,
-        "total": total,
-        "page": page,
-        "size": size,
-    }
+    async def _fetch(
+        page: int, size: int,
+        supplier_id: UUID | None,
+        operation_type: str | None,
+        date_from: datetime | None,
+        date_to: datetime | None,
+    ):
+        entries, total = await use_cases.get_ledger_history(
+            supplier_id=supplier_id,
+            operation_type=operation_type,
+            date_from=date_from,
+            date_to=date_to,
+            page=page,
+            size=size,
+        )
+        return {
+            "items": entries,
+            "total": total,
+            "page": page,
+            "size": size,
+        }
+
+    return await _fetch(page, size, supplier_id, operation_type, date_from, date_to)
 
 
 @router.post("/entries", response_model=LedgerEntryResponse, status_code=201)
 async def create_ledger_entry(
     data: CreateLedgerEntryRequest,
     use_cases: LedgerUseCases = Depends(get_ledger_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Створити новий запис у журналі взаєморозрахунків."""
+    """Створити новий запис у журналі взаєморозрахунків (інвалідує ledger-кеш)."""
     try:
         from app.application.dto.ledger_dto import LedgerCreateDTO
         dto = LedgerCreateDTO(
@@ -98,7 +118,9 @@ async def create_ledger_entry(
             document_number=data.document_number,
             notes=data.notes,
         )
-        return await use_cases.create_entry(dto)
+        result = await use_cases.create_entry(dto)
+        await invalidate_ledger_cache(cache)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -107,22 +129,41 @@ async def create_ledger_entry(
 async def get_supplier_balance(
     supplier_id: UUID,
     use_cases: LedgerUseCases = Depends(get_ledger_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати поточний баланс постачальника."""
-    try:
-        balance = await use_cases.get_supplier_balance(supplier_id)
-        return {
-            "supplier_id": str(supplier_id),
-            "balance": balance,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Отримати поточний баланс постачальника з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="ledger:balance",
+        ttl=settings.CACHE_TTL_LEDGER,
+    )
+    async def _fetch(supplier_id: UUID):
+        try:
+            balance = await use_cases.get_supplier_balance(supplier_id)
+            return {
+                "supplier_id": str(supplier_id),
+                "balance": balance,
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    return await _fetch(supplier_id)
 
 
 @router.get("/balances", response_model=list[SupplierBalanceResponse])
 async def get_all_balances(
     use_cases: LedgerUseCases = Depends(get_ledger_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
-    """Отримати баланси всіх постачальників."""
-    balances = await use_cases.get_all_balances()
-    return balances
+    """Отримати баланси всіх постачальників з кешуванням (TTL: 30s)."""
+
+    @cached(
+        cache,
+        prefix="ledger:balances",
+        ttl=settings.CACHE_TTL_LEDGER,
+    )
+    async def _fetch():
+        return await use_cases.get_all_balances()
+
+    return await _fetch()

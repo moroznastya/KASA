@@ -115,12 +115,29 @@ async def invalidate_cache(
 
 
 async def invalidate_product_cache(cache_service: ICacheService) -> None:
-    """Інвалідувати всі кеші, пов'язані з продуктами."""
-    await invalidate_cache(cache_service, "products:list:*")
+    """Інвалідувати всі кеші, пов'язані з продуктами (списки, деталі, штрих-коди)."""
+    await invalidate_cache(cache_service, "products:*")
     await invalidate_cache(cache_service, "product:*")
 
 
 async def invalidate_category_cache(cache_service: ICacheService) -> None:
-    """Інвалідувати всі кеші, пов'язані з категоріями."""
-    await invalidate_cache(cache_service, "categories:list:*")
+    """Інвалідувати всі кеші, пов'язані з категоріями (список, дерево, деталі)."""
+    await invalidate_cache(cache_service, "categories:*")
     await invalidate_cache(cache_service, "category:*")
+
+
+async def invalidate_ledger_cache(cache_service: ICacheService) -> None:
+    """Інвалідувати всі кеші ledger (історія операцій, баланси постачальників)."""
+    await invalidate_cache(cache_service, "ledger:*")
+
+
+async def invalidate_receipt_cache(cache_service: ICacheService) -> None:
+    """Інвалідувати всі кеші чеків (списки, статистика, пошук, деталі)."""
+    await invalidate_cache(cache_service, "receipts:*")
+    await invalidate_cache(cache_service, "receipt:*")
+
+
+async def invalidate_invoice_cache(cache_service: ICacheService) -> None:
+    """Інвалідувати всі кеші накладних (списки, деталі, оплати, зміни цін)."""
+    await invalidate_cache(cache_service, "invoices:*")
+    await invalidate_cache(cache_service, "invoice:*")

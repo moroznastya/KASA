@@ -12,7 +12,12 @@ from app.domain.events import (
     ProductDeleted,
     StockChanged,
     InvoiceCreated,
+    InvoiceUpdated,
+    InvoiceDeleted,
     InvoiceApproved,
+    ReceiptCreated,
+    ReceiptRefunded,
+    LedgerEntryCreated,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,23 +32,42 @@ class CacheInvalidationHandler:
     async def handle(self, event: BaseDomainEvent) -> None:
         """Інвалідувати відповідний кеш."""
 
-        if isinstance(event, ProductCreated):
-            await self._invalidate_product_cache(event.product_id)
-            logger.debug(f"🧹 Кеш продукту {event.product_id} інвалідовано (створено)")
-        elif isinstance(event, ProductUpdated):
-            await self._invalidate_product_cache(event.product_id)
-            logger.debug(f"🧹 Кеш продукту {event.product_id} інвалідовано (оновлено)")
-        elif isinstance(event, ProductDeleted):
-            await self._invalidate_product_cache(event.product_id)
-            logger.debug(f"🧹 Кеш продукту {event.product_id} інвалідовано (видалено)")
-        elif isinstance(event, StockChanged):
-            await self._invalidate_product_cache(event.product_id)
-            logger.debug(f"🧹 Кеш залишків {event.product_id} інвалідовано")
-        elif isinstance(event, InvoiceCreated) or isinstance(event, InvoiceApproved):
-            logger.debug(f"🧹 Кеш накладних інвалідовано")
+        if isinstance(event, (ProductCreated, ProductUpdated, ProductDeleted, StockChanged)):
+            await self._invalidate_product_cache(getattr(event, "product_id", None))
+            logger.debug(f"🧹 Кеш продуктів інвалідовано ({type(event).__name__})")
+        elif isinstance(event, (InvoiceCreated, InvoiceUpdated, InvoiceDeleted, InvoiceApproved)):
+            await self._invalidate_invoice_cache()
+            logger.debug(f"🧹 Кеш накладних інвалідовано ({type(event).__name__})")
+        elif isinstance(event, (ReceiptCreated, ReceiptRefunded)):
+            await self._invalidate_receipt_cache()
+            await self._invalidate_product_cache(None)  # залишки змінюються
+            logger.debug(f"🧹 Кеш чеків інвалідовано ({type(event).__name__})")
+        elif isinstance(event, LedgerEntryCreated):
+            await self._invalidate_ledger_cache()
+            logger.debug("🧹 Кеш ledger інвалідовано (LedgerEntryCreated)")
 
     async def _invalidate_product_cache(self, product_id: Any) -> None:
-        """Інвалідувати кеш для конкретного продукту."""
+        """Інвалідувати кеш продуктів (списки, деталі, штрих-коди)."""
+        if not self._cache:
+            return
+        if product_id is not None:
+            await self._cache.clear_pattern(f"product:{product_id}:*")
+        await self._cache.clear_pattern("products:*")
+        await self._cache.clear_pattern("product:*")
+
+    async def _invalidate_invoice_cache(self) -> None:
+        """Інвалідувати кеш накладних."""
         if self._cache:
-            await self._cache.delete(f"product:{product_id}")
-            await self._cache.delete("products:list")
+            await self._cache.clear_pattern("invoices:*")
+            await self._cache.clear_pattern("invoice:*")
+
+    async def _invalidate_receipt_cache(self) -> None:
+        """Інвалідувати кеш чеків."""
+        if self._cache:
+            await self._cache.clear_pattern("receipts:*")
+            await self._cache.clear_pattern("receipt:*")
+
+    async def _invalidate_ledger_cache(self) -> None:
+        """Інвалідувати кеш ledger (баланси, історія)."""
+        if self._cache:
+            await self._cache.clear_pattern("ledger:*")
