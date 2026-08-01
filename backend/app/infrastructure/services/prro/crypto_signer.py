@@ -72,6 +72,99 @@ def _is_pkcs12(data: bytes) -> bool:
     return data.startswith(_PKCS12_MAGIC) and len(data) > 4
 
 
+# OID ІІТ «ЦСК-1» (1.3.6.1.4.1.19398.*) — контейнер ключа КЕП виробництва
+# «Інститут інформаційних технологій» (Використовується АЦСК «Україна»,
+# ДПС тощо). .1 — RSA, .2 — ДСТУ 4145-2002.
+_IIT_CONTAINER_OID = "1.3.6.1.4.1.19398"
+
+
+def _parse_oid(der: bytes, offset: int) -> tuple[str | None, int]:
+    """
+    Наївний парсер одного OID з DER-послідовності.
+
+    Args:
+        der: DER-байти.
+        offset: позиція, з якої починається TLV (tag вже зчитано).
+
+    Returns:
+        (oid_str, next_offset) або (None, offset) при помилці.
+    """
+    if offset >= len(der):
+        return None, offset
+    length = der[offset]
+    offset += 1
+    if length & 0x80:
+        num = length & 0x7F
+        if num > 4 or offset + num > len(der):
+            return None, offset
+        length = int.from_bytes(der[offset:offset + num], "big")
+        offset += num
+    if offset + length > len(der):
+        return None, offset
+
+    content = der[offset:offset + length]
+    # Перші два арки: first*40 + second
+    parts: list[int] = []
+    value = 0
+    first = True
+    for byte in content:
+        value = (value << 7) | (byte & 0x7F)
+        if not (byte & 0x80):
+            if first:
+                parts.extend(divmod(value, 40) if value < 80 else (2, value - 80))
+                first = False
+            else:
+                parts.append(value)
+            value = 0
+    if first:  # жодної завершеної арки
+        return None, offset
+    return ".".join(str(p) for p in parts), offset + length
+
+
+def _is_iit_container(data: bytes) -> bool:
+    """
+    Визначає, чи файл є контейнером ІІТ «ЦСК-1» (Key-6.dat).
+
+    Структура контейнера (ASN.1 DER):
+        SEQUENCE {
+          SEQUENCE {
+            OBJECT IDENTIFIER 1.3.6.1.4.1.19398.1.1.1.{1|2}
+            SEQUENCE { OCTET STRING S1, OCTET STRING S2 }
+          }
+          OCTET STRING (зашифровані дані)
+        }
+
+    Returns:
+        True, якщо це ІІТ-контейнер.
+    """
+    if len(data) < 20 or data[0] != 0x30:  # SEQUENCE
+        return False
+    # tag SEQUENCE (0x30), потім довжина (може бути 2-байтова 0x82)
+    offset = 1
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        num = length & 0x7F
+        if num > 2 or offset + num > len(data):
+            return False
+        offset += num
+    # Внутрішня SEQUENCE (0x30) з OID
+    if offset >= len(data) or data[offset] != 0x30:
+        return False
+    offset += 1
+    inner_len = data[offset]
+    offset += 1
+    if inner_len & 0x80:
+        num = inner_len & 0x7F
+        if num > 2 or offset + num > len(data):
+            return False
+        offset += num
+    if offset >= len(data) or data[offset] != 0x06:  # OBJECT IDENTIFIER
+        return False
+    oid, _ = _parse_oid(data, offset + 1)
+    return bool(oid) and oid.startswith(_IIT_CONTAINER_OID)
+
+
 class PrroCryptoSigner:
     """
     XAdES-підписант XML-документів ПРРО з авто-визначенням формату ключа.
@@ -201,6 +294,16 @@ class PrroCryptoSigner:
         Однак деякі .dat-файли насправді є PKCS#12-контейнерами —
         у цьому разі вони завантажуються через load_pkcs12.
         """
+        if _is_iit_container(data):
+            raise PrroCryptoError(
+                "Файл ключа є контейнером ІІТ «ЦСК-1» (Key-6.dat, ДСТУ 4145-2002). "
+                "Цей формат використовує закрите крипто-ядро ІІТ (SDK EUSign), "
+                "яке недоступне для Python. Будь ласка, конвертуйте ключ у "
+                "PKCS#12 (.pfx/.p12) або PEM (наприклад, через KeyConverter / "
+                "програмне забезпечення ІІТ «Користувач ЦСК-1») і повторіть "
+                "налаштування ПРРО."
+            )
+
         if _is_pkcs12(data):
             logger.info(
                 "PRRO_CRYPTO | %s визначено як PKCS#12-контейнер (у .dat)",
@@ -209,11 +312,9 @@ class PrroCryptoSigner:
             return self._load_from_pkcs12(data)
 
         raise PrroCryptoError(
-            "Формат ключа .dat (ІІТ «ЦСК-1», Key-6.dat) не підтримується "
-            "відкритими бібліотеками. Будь ласка, конвертуйте ключ у "
-            "PKCS#12 (.pfx/.p12) або PEM і вкажіть його шлях у налаштуваннях ПРРО. "
-            "Якщо ваш .dat-файл насправді є PKCS#12 — він буде завантажений "
-            "автоматично."
+            "Невідомий формат ключа .dat. Очікувався контейнер ІІТ «ЦСК-1» "
+            "(Key-6.dat) або PKCS#12. Перевірте файл ключа та спробуйте "
+            "конвертувати його у PKCS#12 (.pfx/.p12) або PEM."
         )
 
     def _load_from_jks(self) -> tuple[PrivateKeyTypes, x509.Certificate]:

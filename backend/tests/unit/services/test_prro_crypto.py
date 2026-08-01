@@ -188,6 +188,29 @@ class TestSignerData:
 
 # ─── Формат .dat ───────────────────────────────────────────────────────────
 
+# ─── ІІТ «ЦСК-1» контейнер ─────────────────────────────────────────────────
+
+# OID 1.3.6.1.4.1.19398.1.1.1.2 (ДСТУ 4145-2002) у DER-кодуванні
+_IIT_OID_DER = bytes([
+    0x06, 0x0C,  # OBJECT IDENTIFIER, len=12
+    0x2B, 0x06, 0x01, 0x04, 0x01, 0x81, 0x97, 0x46, 0x01, 0x01, 0x01, 0x02,
+])
+
+
+def _make_iit_container() -> bytes:
+    """Синтетичний контейнер ІІТ «ЦСК-1» (структура Key-6.dat)."""
+    inner_meta = (
+        bytes([0x30, 0x1C])           # SEQUENCE (28 bytes)
+        + _IIT_OID_DER
+        + bytes([0x30, 0x0C])         # SEQUENCE (12 bytes)
+        + bytes([0x04, 0x04]) + b"\xaa\xfc\x26\x0f"   # S1
+        + bytes([0x04, 0x04]) + b"\x1b\x65\x10\x5c"   # S2
+    )
+    blob = bytes([0x04, 0x82, 0x03, 0x8C]) + b"\x00" * 908  # OCTET STRING
+    body = inner_meta + blob
+    return bytes([0x30, 0x82, 0x03, 0xAE]) + body  # SEQUENCE (942)
+
+
 class TestDatFormat:
     """Обмеження формату .dat (ІІТ «ЦСК-1»)."""
 
@@ -202,6 +225,22 @@ class TestDatFormat:
         message = str(exc_info.value)
         assert "Key-6.dat" in message or "ЦСК" in message
         assert "PKCS#12" in message or "PEM" in message
+
+    def test_dat_iit_container_raises_documented_error(self, tmp_path):
+        """ІІТ «ЦСК-1» контейнер (Key-6.dat, OID 19398) → документована
+        помилка з поясненням, а не плутаний PKCS#12-ексепшн."""
+        dat_file = tmp_path / "Key-6_test3.dat"
+        dat_file.write_bytes(_make_iit_container())
+
+        with pytest.raises(PrroCryptoError) as exc_info:
+            PrroCryptoSigner(key_path=dat_file, key_password="tect3")
+
+        message = str(exc_info.value)
+        assert "ІІТ" in message or "ЦСК" in message
+        assert "ДСТУ 4145" in message
+        assert "PKCS#12" in message and "PEM" in message
+        assert "Key-6.dat" in message
+        assert "PKCS12 data" not in message  # не сирий ексепшн cryptography
 
     def test_dat_that_is_pkcs12_loads(self, pfx_key, tmp_path):
         """Якщо .dat насправді є PKCS#12 — завантажується."""

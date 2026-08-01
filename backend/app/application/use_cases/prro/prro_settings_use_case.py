@@ -5,7 +5,10 @@ Application Layer: PrroSettingsUseCase — налаштування ПРРО.
   - get_settings()      — повертає PrroSettingsDTO (пароль замасковано);
   - save_settings(...)  — збереження ключа КЕП (копіювання у certs/),
                           пароля (Fernet через key_store), реквізитів ПРРО;
-  - test_connection()   — перевірка зв'язку з фіскальним сервером (ping).
+  - test_connection()   — перевірка зв'язку з фіскальним сервером (ping):
+                          формує службовий XML T=111, підписує КЕП (якщо
+                          доступний) та повертає статус сервера зі
+                          зрозумілим поясненням.
 
 ВАЖЛИВО:
   - пароль ключа НІКОЛИ не повертається — тільки маска "••••";
@@ -31,6 +34,7 @@ from app.infrastructure.services.prro.key_store import (
     PrroKeyStoreError,
     PASSWORD_MASK,
 )
+from app.infrastructure.services.prro.xml_builder import SERVICE_PING
 from app.application.use_cases.prro.context import (
     PrroContextFactory,
     KEY_PRRO_FN,
@@ -291,20 +295,98 @@ class PrroSettingsUseCase:
 
     # ─── Перевірка зв'язку ─────────────────────────────────────────────────
 
+    # Людською мовою пояснення статусів CheckResponse (prro_pb2).
+    _STATUS_MESSAGES: dict[int, str] = {
+        1: "Зв'язок із фіскальним сервером встановлено (OK).",
+        -1: "Помилка перевірки підпису/розбору XML (ERROR_VEREFY). "
+            "Найчастіші причини: (1) ключ КЕП не завантажено або його "
+            "формат не підтримується; (2) XML у check_sign порожній або "
+            "непідписаний; (3) сертифікат підписанта не зареєстровано "
+            "в тестовому середовищі ДПС.",
+        -2: "Помилка перевірки ПРРО (ERROR_CHECK). Перевірте реквізити ПРРО.",
+        -3: "Помилка запису на сервері (ERROR_SAVE). Спробуйте пізніше.",
+        -4: "Загальна помилка сервера (ERROR_UNKNOWN).",
+        -5: "Помилка типу посилки (ERROR_TYPE). Перевірте check_type.",
+        -6: "Немає Z-звіту за попередній день (ERROR_NOT_PREV_ZREPORT).",
+        -7: "Невірний формат XML (ERROR_XML).",
+        -8: "Дата не відповідає Check.date (ERROR_XML_DATE).",
+        -9: "Невірний формат XML чеку (ERROR_XML_CHK).",
+        -10: "Невірний формат Z-звіту (ERROR_XML_ZREPORT).",
+        -11: "Перевищено ліміт 168 годин офлайну (ERROR_OFFLINE_168).",
+        -12: "Невірний хеш попереднього чеку (ERROR_BAD_HASH_PREV).",
+        -13: "ПРРО не зареєстровано (ERROR_NOT_REGISTERED_RRO). "
+             "Зареєструйте ПРРО в кабінеті платника податків.",
+        -14: "Підписант не зареєстрований (ERROR_NOT_REGISTERED_SIGNER). "
+             "Зареєструйте сертифікат підписанта в кабінеті платника.",
+        -15: "Не відкрита зміна (ERROR_NOT_OPEN_SHIFT). "
+             "Відкрийте зміну (POST /api/v2/prro/shift/open).",
+        -16: "Невірний офлайн ID (ERROR_OFFLINE_ID).",
+    }
+
+    @staticmethod
+    def _status_message(status: int) -> str:
+        """Повертає зрозуміле пояснення статусу сервера."""
+        return PrroSettingsUseCase._STATUS_MESSAGES.get(
+            status, "Невідомий статус фіскального сервера."
+        )
+
+    async def _build_ping_check_sign(self) -> tuple[bytes | None, str | None]:
+        """
+        Формує XML службового чеку T=111 для ping.
+
+        Returns:
+            (check_sign, error):
+              - check_sign: підписаний XML (якщо КЕП прочитано) або
+                непідписаний XML (якщо ключ недоступний);
+              - error: пояснення, чому ключ не вдалося використати
+                (None, якщо ключ прочитано успішно).
+        """
+        xml_builder = await self._context.build_xml_builder()
+        dat_xml = xml_builder.build_service_check_xml(
+            service_type=SERVICE_PING
+        )
+        # Згідно з документацією: «XML з типом <CT="111">. MAC не заповнюється».
+        message = xml_builder.build_message(dat_xml, include_mac=False)
+
+        try:
+            crypto = await self._context.build_crypto_signer()
+            signed = crypto.sign(message.encode("utf-8"))
+            return signed, None
+        except Exception as exc:  # noqa: BLE001 — ключ може бути будь-якого формату
+            logger.warning("PRRO_SETTINGS | не вдалося підписати ping XML: %s", exc)
+            return message.encode("utf-8"), str(exc)
+
     async def test_connection(self) -> dict:
         """
         Перевіряє зв'язок з фіскальним сервером (ping).
+
+        Формує службовий XML T=111, підписує його КЕП (якщо ключ доступний)
+        і надсилає через метод ping. Повертає статус сервера зі зрозумілим
+        поясненням.
 
         Returns:
             dict: {"status": int, "ok": bool, "error": str | None}.
         """
         try:
+            check_sign, sign_error = await self._build_ping_check_sign()
             client = await self._context.grpc_client()
-            response = await client.ping()
+            response = await client.ping(check_sign=check_sign)
+
+            status = int(response.status)
+            server_error = response.error_message or None
+
+            # Складаємо пояснення: помилка підпису + текст сервера + маппінг
+            parts: list[str] = []
+            if sign_error:
+                parts.append(f"КЕП не вдалося використати: {sign_error}")
+            if server_error:
+                parts.append(f"Відповідь сервера: {server_error}")
+            parts.append(self._status_message(status))
+
             return {
-                "status": int(response.status),
-                "ok": response.status == 1,
-                "error": response.error_message or None,
+                "status": status,
+                "ok": status == 1,
+                "error": " | ".join(parts),
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("PRRO_SETTINGS | ping не вдався: %s", exc)

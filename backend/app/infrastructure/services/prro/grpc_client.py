@@ -18,12 +18,30 @@ XML СЗЗД:  docs/scr/SZZD_RRO_Protokol_peredach_nformats_2_1_7.doc
   - для відкриття зміни local_number == 0;
   - для перевірки зв'язку local_number == 0x7FFFFFFF, check_type=SERVICECHK;
   - підписаний XML (check_sign) формується в xml_builder.py (Фаза 1).
+
+ФОРМАТ DATE_TIME:
+  Офіційний семпл ДПС (github.com/programika/prro_sample, Sender.java)
+  передає `date_time` у форматі `yyyyMMddHHmmss` (14 цифр, локальний час),
+  а НЕ Unix epoch:
+      long dateTime = Long.parseLong(
+          new SimpleDateFormat("yyyyMMddHHmmss").format(check.getDate()));
+  Тому тут використовується той самий формат (див. _check_date_time).
+
+PING (перевірка зв'язку):
+  Документація API (docs/scr/_site_text.txt):
+    «Для перевірки зв'язку використовується метод ping (Check) який повертає
+     CheckResponse та XML з типом <CT="111">. MAC не заповнюється.»
+  Тобто check_sign МАЄ містити XML службового чеку T=111 (не порожній!).
+  Якщо КЕП доступний — XML підписується (XAdES); інакше передається
+  непідписаний (сервер поверне ERROR_VEREFY -1, доки підписант
+  не буде зареєстрований / ключ не буде прочитано).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import TypeVar
 
 import grpc
@@ -36,6 +54,17 @@ logger = logging.getLogger(__name__)
 
 # Максимальне значення int32 — використовується для перевірки зв'язку (ping)
 PING_LOCAL_NUMBER = 0x7FFFFFFF
+
+
+def _check_date_time(date_time: datetime | None = None) -> int:
+    """
+    Повертає date_time у форматі, який очікує фіскальний сервер ДПС.
+
+    Офіційний семпл (programika/prro_sample, Sender.java) передає час у
+    форматі `yyyyMMddHHmmss` (14 цифр), а не Unix epoch. Цей формат
+    підтверджено оригінальним клієнтом ДПС — використовуємо його.
+    """
+    return int((date_time or datetime.now()).strftime("%Y%m%d%H%M%S"))
 
 # Кількість спроб та початкова затримка для ретраїв
 DEFAULT_MAX_RETRIES = 3
@@ -95,10 +124,8 @@ class PrroGrpcClient:
         Returns:
             prro_pb2.Check — готове повідомлення для відправки.
         """
-        import time as _time
-
         if date_time is None:
-            date_time = int(_time.time())
+            date_time = _check_date_time()
 
         return prro_pb2.Check(
             rro_fn=self._rro_fn or "",
@@ -193,6 +220,7 @@ class PrroGrpcClient:
     async def ping(
         self,
         *,
+        check_sign: bytes = b"",
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> prro_pb2.CheckResponse:
         """
@@ -201,7 +229,15 @@ class PrroGrpcClient:
         Формує службовий Check:
           - local_number = 0x7FFFFFFF (максимальне значення int32);
           - check_type = SERVICECHK;
-          - check_sign = порожній (MAC не заповнюється).
+          - check_sign = XML службового чеку T=111 (підписаний, якщо КЕП
+            доступний; MAC не заповнюється — згідно з документацією API:
+            «XML з типом <CT=\"111\">. MAC не заповнюється»).
+
+        Args:
+            check_sign: XML-документ СЗЗД службового чеку (T=111).
+                Якщо порожній — сервер поверне ERROR_VEREFY (-1),
+                бо не зможе розібрати повідомлення.
+            timeout: таймаут виклику в секундах.
 
         Returns:
             CheckResponse — відповідь сервера. Навіть якщо ПРРО не
@@ -212,11 +248,14 @@ class PrroGrpcClient:
             grpc.RpcError: якщо з'єднання неможливе (після всіх ретраїв).
         """
         check = self._make_check(
-            check_sign=b"",
+            check_sign=check_sign,
             local_number=PING_LOCAL_NUMBER,
             check_type=prro_pb2.Check.SERVICECHK,
         )
-        logger.info("PRRO_PING | rro_fn=%s", check.rro_fn)
+        logger.info(
+            "PRRO_PING | rro_fn=%s check_sign_len=%d",
+            check.rro_fn, len(check_sign),
+        )
         return await self._call_with_retry(self._stub.ping, check, timeout=timeout)
 
     async def status(
