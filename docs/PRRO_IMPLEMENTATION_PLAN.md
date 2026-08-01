@@ -446,3 +446,17 @@ backend/app/
 - 🔑 **Потрібно від користувача:** конвертувати ключ у **PKCS#12 (.pfx/.p12)** або **PEM** (KeyConverter / «Користувач ЦСК-1») та завантажити його в Налаштуваннях ПРРО.
 - Деталі: `docs/prro_test_connection_notes.md`.
 
+**✅ ДСТУ 4145-2002 підпис РЕАЛІЗОВАНО (коміт `23d3ee6`):**
+- Крипто-ядро **ІІТ SDK EUSignCP** (`euscp.so`) завантажується з iit.com.ua
+  (`scripts/setup_iit_sdk.sh`) у `backend/vendor/iit-sdk/` без root.
+- `iit_sdk.py` (ctypes): читання **JKS-ключа ДСТУ 4145** (EUGetJKSPrivateKeyFile),
+  збереження сертифікатів у сховище, **CAdES-BES підпис** (ДСТУ 4145-2002 +
+  Стрибог-256) — формат офіційного семпла ДПС (`ee.SignInternal(true, data)`).
+- `crypto_signer.py`: JKS з ДСТУ 4145 OID більше не блокується — бекенд `iit`;
+  RSA/EC ключі працюють як раніше (signxml).
+- **`POST /api/v2/prro/test-connection`** з ключем ПриватБанку →
+  **`-13 ERROR_NOT_REGISTERED_RRO`** (було `-1 ERROR_VEREFY`): сервер розпізнав
+  підпис і зареєстрованого підписанта; лишилось зареєструвати сам ПРРО.
+- Тести: **454 passed** (`test_iit_sdk.py`, інтеграція sign/verify у
+  `test_prro_jks_dstu.py`).
+
