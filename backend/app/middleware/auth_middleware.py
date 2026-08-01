@@ -102,12 +102,6 @@ class AuthMiddleware:
 
         token = auth_header[7:]  # Видаляємо "Bearer "
 
-        # ═══════════════════════════════════════════════════════════════
-        # ДІАГНОСТИКА: логимо перші символи токена
-        # ═══════════════════════════════════════════════════════════════
-        print(f"[AUTH_MIDDLEWARE] Path: {path}, Method: {method}, TokenFirstChars: {token[:20]}...", flush=True)
-        # ═══════════════════════════════════════════════════════════════
-
         try:
             # Декодуємо токен
             payload = AuthService.decode_access_token(token)

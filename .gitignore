@@ -82,3 +82,18 @@ backend/keys.txt
 *.db-journal
 *.sqlite
 *.sqlite3
+
+# ── ПРРО: електронні ключі (КЕП) та сертифікати ──
+certs/
+*.pem
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.key
+Key-6.dat
+Cert-6.dat
+
+# ── ПРРО: master-ключ та сховище налаштувань ключа (секрети) ──
+.prro_master.key
+.prro_keystore.json
