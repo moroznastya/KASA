@@ -37,6 +37,7 @@ KEY_LAST_SHIFT_NUMBER = "last_shift_number"
 KEY_LAST_PACKET_ID = "last_packet_id"
 KEY_LAST_MAC_NUMBER = "last_mac_number"
 KEY_AUTO_FISCALIZE = "auto_fiscalize"
+KEY_PRRO_STUB_MODE = "prro_stub_mode"
 
 # Типи чеків (збігаються з enum Check.Type у prro.proto)
 CHECK_TYPE_CHK = "CHK"
@@ -241,6 +242,7 @@ __all__ = [
     "KEY_LAST_PACKET_ID",
     "KEY_LAST_MAC_NUMBER",
     "KEY_AUTO_FISCALIZE",
+    "KEY_PRRO_STUB_MODE",
     "CHECK_TYPE_CHK",
     "CHECK_TYPE_ZREPORT",
     "CHECK_TYPE_SERVICECHK",

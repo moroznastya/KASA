@@ -105,7 +105,19 @@ class FiscalizeResponseDTO(BaseModel):
 
     receipt_id: UUID
     fiscal_status: str = Field(
-        description="Статус: none / sent / failed / pending",
+        description="Статус: none / sent / failed / pending / fiscalized",
+    )
+    status: str = Field(
+        default="success",
+        description="Загальний статус операції: success / error",
+    )
+    fiscal_date: datetime | None = Field(
+        default=None,
+        description="Дата/час фіскалізації (для заглушки — поточна дата)",
+    )
+    message: str | None = Field(
+        default=None,
+        description="Людиночитабельне повідомлення про результат",
     )
     fiscal_number: str | None = Field(
         default=None,

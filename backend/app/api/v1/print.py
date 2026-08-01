@@ -16,9 +16,11 @@ API роутер для рендеру цінників та етикеток.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import logging
+import subprocess
 from typing import Literal
 from uuid import UUID
 
@@ -555,6 +557,58 @@ async def _test_print_price_tag_or_label(
         preview_html=html,
         template_name=template.name,
     )
+
+
+# ─── ЕНДПОІНТ: Список принтерів (CUPS) ──────────────────────────────────────────
+
+
+@router.get("/printers")
+async def list_printers():
+    """
+    Список доступних принтерів (CUPS).
+
+    Виконує системну команду `lpstat -e` у фоновому потоці
+    (run_in_executor), щоб не блокувати event loop. Якщо lpstat
+    недоступний або сталася помилка — повертає порожній список
+    зі статусом 200 (бекенд не падає).
+
+    Returns:
+        {"printers": ["PrinterName1", "PrinterName2", ...]}
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        printers = await loop.run_in_executor(None, _list_printers_sync)
+        return {"printers": printers}
+    except Exception:  # noqa: BLE001
+        logger.exception("Помилка отримання списку принтерів (lpstat)")
+        return {"printers": []}
+
+
+def _list_printers_sync() -> list[str]:
+    """
+    Синхронне отримання списку принтерів через `lpstat -e` (CUPS).
+
+    Returns:
+        Список назв доступних принтерів; порожній — якщо CUPS
+        недоступний або команда завершилась помилкою.
+    """
+    try:
+        result = subprocess.run(
+            ["lpstat", "-e"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return []
+        return [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 # ─── ЕНДПОІНТ: Тестовий друк ─────────────────────────────────────────────────

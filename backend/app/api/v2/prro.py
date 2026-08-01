@@ -37,7 +37,9 @@ from app.application.use_cases.prro import (
     PrroShiftError,
     PrroUseCases,
 )
-from .deps import get_prro_use_cases
+from app.domain.services.cache_service import ICacheService
+from .cache_utils import invalidate_receipt_cache
+from .deps import get_cache_service, get_prro_use_cases
 
 router = APIRouter(prefix="/prro", tags=["ПРРО"])
 
@@ -180,13 +182,20 @@ async def fiscalize_receipt(
     receipt_id: UUID,
     data: Optional[FiscalizeRequestDTO] = None,
     prro: PrroUseCases = Depends(get_prro_use_cases),
+    cache: ICacheService = Depends(get_cache_service),
 ):
     """Фіскалізувати чек (ручна фіскалізація)."""
     try:
-        return await prro.fiscalize_receipt(
-            receipt_id, manual=(data.manual if data else False)
+        # Якщо тіло не передано — вважаємо ручною фіскалізацією (юзер натиснув кнопку)
+        result = await prro.fiscalize_receipt(
+            receipt_id, manual=(data.manual if data else True)
         )
+        # Інвалідуємо кеш чеку/списків, щоб GET показував актуальний
+        # фіскальний стан одразу після фіскалізації
+        await invalidate_receipt_cache(cache)
+        return result
     except PrroFiscalizeError as e:
+        await invalidate_receipt_cache(cache)
         raise HTTPException(status_code=400, detail=str(e))
 
 

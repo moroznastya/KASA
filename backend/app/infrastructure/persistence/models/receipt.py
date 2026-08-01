@@ -37,6 +37,7 @@ class FiscalStatus(str, PyEnum):
     PENDING = "pending"  # Очікує відправки у податкову
     SENT = "sent"        # Успішно відправлено у податкову
     FAILED = "failed"    # Помилка при відправці у податкову
+    FISCALIZED = "fiscalized"  # Тимчасова заглушка: чек позначено фіскалізованим (ПРРО не підключений)
 
 
 class Receipt(Base):

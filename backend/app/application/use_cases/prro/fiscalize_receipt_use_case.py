@@ -35,6 +35,8 @@ Application Layer: FiscalizeReceiptUseCase — фіскалізація чеку
 from __future__ import annotations
 
 import logging
+import os
+import time
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
@@ -47,6 +49,7 @@ from sqlalchemy.orm import selectinload
 from app.application.dto.prro_dto import FiscalizeResponseDTO
 from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.receipt import (
+    FiscalStatus,
     Receipt,
     ReceiptItem,
 )
@@ -69,6 +72,7 @@ from app.application.use_cases.prro.context import (
     CHECK_TYPE_CHK as _CHK,
     KEY_AUTO_FISCALIZE,
     KEY_PRRO_FN,
+    KEY_PRRO_STUB_MODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,22 +142,35 @@ class FiscalizeReceiptUseCase:
             PrroFiscalizeError: чек не знайдено, зміна не відкрита,
                 ПРРО не налаштований, чек вже фіскалізований або сума ≤ 0.
         """
-        # 0. Авто-фіскалізація: якщо вимкнена і виклик не ручний — без дій
-        if not manual and not await self._auto_fiscalize_enabled():
+        # 0. Режим заглушки (stub): реальний ПРРО не підключений.
+        #    Для РУЧНОГО виклику фіскалізуємо ЗАВЖДИ; для АВТО — лише якщо
+        #    увімкнено auto_fiscalize (щоб не фіскалізувати чеки проти
+        #    налаштувань). Успішна фіскалізація без реальних викликів ПРРО.
+        auto_enabled = await self._auto_fiscalize_enabled()
+        if await self._stub_mode_enabled() and (manual or auto_enabled):
+            receipt = await self._load_receipt(receipt_id)
+            if receipt is None:
+                raise PrroFiscalizeError(
+                    f"Чек з ID '{receipt_id}' не знайдено", code="RECEIPT_NOT_FOUND"
+                )
+            return await self._fiscalize_stub(receipt)
+
+        # 1. Авто-фіскалізація: якщо вимкнена і виклик не ручний — без дій
+        if not manual and not auto_enabled:
             return FiscalizeResponseDTO(
                 receipt_id=receipt_id,
                 fiscal_status="none",
                 error="Авто-фіскалізація вимкнена (auto_fiscalize=false)",
             )
 
-        # 1. Завантажуємо чек з позиціями
+        # 2. Завантажуємо чек з позиціями
         receipt = await self._load_receipt(receipt_id)
         if receipt is None:
             raise PrroFiscalizeError(
                 f"Чек з ID '{receipt_id}' не знайдено", code="RECEIPT_NOT_FOUND"
             )
 
-        # 2. Фіскальні позиції (fiscal_quantity > 0)
+        # 3. Фіскальні позиції (fiscal_quantity > 0)
         fiscal_items = [
             item for item in receipt.items
             if getattr(item, "fiscal_quantity", 0) and item.fiscal_quantity > 0
@@ -287,6 +304,66 @@ class FiscalizeReceiptUseCase:
             or f"ПРРО: статус {response.status}",
             split_receipt_id=split_receipt_id,
             warnings=warnings,
+        )
+
+    # ─── Режим заглушки (тимчасово, ПРРО не підключений) ──────────────────
+
+    async def _stub_mode_enabled(self) -> bool:
+        """
+        Режим заглушки фіскалізації (stub).
+
+        Активний, якщо увімкнено ХОЧ ОДИН з джерел:
+          - налаштування системи `prro_stub_mode` = 'true' або '1';
+          - env-змінна PRRO_STUB = true.
+
+        Returns:
+            True — stub активний (реальні виклики ПРРО не виконуються).
+        """
+        try:
+            value = await self._settings_repo.get(KEY_PRRO_STUB_MODE)
+            if value and str(value).strip().lower() in ("true", "1"):
+                return True
+        except Exception:  # noqa: BLE001
+            logger.debug("Не вдалося прочитати prro_stub_mode", exc_info=True)
+        return os.getenv("PRRO_STUB", "").strip().lower() in ("true", "1")
+
+    async def _fiscalize_stub(self, receipt: Receipt) -> FiscalizeResponseDTO:
+        """
+        Тимчасова заглушка фіскалізації: без реальних викликів ПРРО.
+
+        - Генерує фіскальний номер STUB-<номер чека>-<timestamp>;
+        - Позначає чек фіскалізованим (fiscalized, is_fiscal=True);
+        - Зберігає зміни у БД (commit);
+        - Повертає успішний FiscalizeResponseDTO.
+
+        Args:
+            receipt: чек продажу/повернення.
+
+        Returns:
+            FiscalizeResponseDTO — status='success'.
+        """
+        now = datetime.utcnow()
+        stub_number = f"STUB-{receipt.receipt_number}-{int(time.time())}"
+        receipt.fiscal_status = FiscalStatus.FISCALIZED
+        receipt.fiscal_number = stub_number
+        receipt.fiscal_serial = "STUB"
+        receipt.fiscal_sent_at = now
+        receipt.is_fiscal = True
+        receipt.fiscal_error = None
+        await self._session.commit()
+        logger.info(
+            "PRRO_STUB | чек %s позначено фіскалізованим: %s",
+            receipt.id, stub_number,
+        )
+        return FiscalizeResponseDTO(
+            receipt_id=receipt.id,
+            status="success",
+            fiscal_status=FiscalStatus.FISCALIZED.value,
+            fiscal_number=stub_number,
+            fiscal_serial="STUB",
+            fiscal_sent_at=now,
+            fiscal_date=now,
+            message="Фіскалізацію виконано (заглушка)",
         )
 
     # ─── Валідація (2.4) ───────────────────────────────────────────────────
