@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ReceiptUseCases
@@ -132,9 +132,15 @@ async def get_receipt(
 @router.post("/sale", response_model=ReceiptResponse, status_code=201)
 async def create_sale_receipt(
     data: CreateReceiptRequest,
+    background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
 ):
-    """Створити чек продажу (зменшує залишки товарів)."""
+    """Створити чек продажу (зменшує залишки товарів).
+
+    Авто-фіскалізація ПРРО виконується у фоні (BackgroundTasks):
+    HTTP-відповідь повертається одразу зі статусом "pending";
+    фактичний статус доступний через GET /receipts/{receipt_id}.
+    """
     try:
         from app.application.dto.receipt_dto import ReceiptCreateDTO, ReceiptItemDTO
         items = [
@@ -155,7 +161,7 @@ async def create_sale_receipt(
             customer_id=data.customer_id,
             notes=data.notes,
         )
-        return await use_cases.create_sale_receipt(dto)
+        return await use_cases.create_sale_receipt(dto, background_tasks=background_tasks)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -163,9 +169,15 @@ async def create_sale_receipt(
 @router.post("/return", response_model=ReceiptResponse, status_code=201)
 async def create_return_receipt(
     data: CreateReceiptRequest,
+    background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
 ):
-    """Створити чек повернення (збільшує залишки товарів)."""
+    """Створити чек повернення (збільшує залишки товарів).
+
+    Авто-фіскалізація ПРРО виконується у фоні (BackgroundTasks):
+    HTTP-відповідь повертається одразу зі статусом "pending";
+    фактичний статус доступний через GET /receipts/{receipt_id}.
+    """
     try:
         from app.application.dto.receipt_dto import ReceiptCreateDTO, ReceiptItemDTO
         items = [
@@ -186,7 +198,7 @@ async def create_return_receipt(
             customer_id=data.customer_id,
             notes=data.notes,
         )
-        return await use_cases.create_return_receipt(dto)
+        return await use_cases.create_return_receipt(dto, background_tasks=background_tasks)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

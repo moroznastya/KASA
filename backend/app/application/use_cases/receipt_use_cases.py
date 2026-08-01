@@ -6,8 +6,11 @@ Use Cases для Receipt (Чек продажу).
 - GetReceipts: отримання списку чеків з фільтрацією
 
 Інтеграція з ПРРО:
-- Після створення чеку (sale/return) викликається авто-фіскалізація
-  (fiscalize_receipt), якщо передано fiscalizer_factory.
+- Після створення чеку (sale/return) авто-фіскалізація
+  (fiscalize_receipt) ставиться у ФОН (FastAPI BackgroundTasks), якщо
+  передано background_tasks; інакше виконується синхронно (fallback).
+- HTTP-відповідь повертається одразу зі статусом "pending"; статус
+  фіскалізації оновлюється в БД та доступний через GET /receipts/{id}.
 - Фіскалізація обгорнута в try/except — проблеми з ПРРО НЕ блокують продаж.
 """
 
@@ -64,15 +67,45 @@ class ReceiptUseCases:
         self._event_bus = event_bus
         self._fiscalizer_factory = fiscalizer_factory
 
-    async def _auto_fiscalize(self, receipt_id: UUID) -> None:
+    async def _auto_fiscalize(
+        self,
+        receipt_id: UUID,
+        background_tasks=None,
+    ) -> None:
         """
-        Спроба автоматичної фіскалізації чеку (не блокує продаж).
+        Авто-фіскалізація чеку: у фон (BackgroundTasks) або синхронно.
+
+        Якщо передано background_tasks (FastAPI BackgroundTasks) — gRPC-виклик
+        ПРРО (таймаут 30с × 3 ретраї) виконується ПІСЛЯ HTTP-відповіді,
+        тому продаж не "зависає" до 90 секунд. HTTP-відповідь повертається
+        одразу, статус фіскалізації оновлюється в БД (fiscal_status) та
+        доступний через GET /receipts/{id}.
+
+        Якщо background_tasks не передано (CLI/тести) — виконується
+        синхронно (не блокує продаж при помилках ПРРО).
+
+        Args:
+            receipt_id: ID створеного чеку.
+            background_tasks: FastAPI BackgroundTasks або None.
+        """
+        if self._fiscalizer_factory is None:
+            return
+        if background_tasks is not None:
+            background_tasks.add_task(self._run_fiscalize, receipt_id)
+            logger.info(
+                "ПРРО: авто-фіскалізація чеку %s поставлена у фон", receipt_id
+            )
+            return
+        await self._run_fiscalize(receipt_id)
+
+    async def _run_fiscalize(self, receipt_id: UUID) -> None:
+        """
+        Виконує фіскалізацію (фонова задача або синхронний виклик).
 
         Args:
             receipt_id: ID створеного чеку.
         """
-        if self._fiscalizer_factory is None:
-            return
+        fiscalizer = None
         try:
             fiscalizer = self._fiscalizer_factory()
             await fiscalizer.fiscalize_receipt(receipt_id, manual=False)
@@ -81,13 +114,32 @@ class ReceiptUseCases:
                 "ПРРО: авто-фіскалізація чеку %s не вдалася "
                 "(продаж не заблоковано)", receipt_id
             )
+        finally:
+            # Сесія фіскалізації створюється фабрикою окремо від
+            # per-request сесії — закриваємо її після завершення.
+            if fiscalizer is not None:
+                session = getattr(fiscalizer, "session", None)
+                if session is not None:
+                    try:
+                        await session.close()
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "ПРРО: помилка закриття сесії фіскалізації",
+                            exc_info=True,
+                        )
 
-    async def create_sale_receipt(self, dto: ReceiptCreateDTO) -> ReceiptDTO:
+    async def create_sale_receipt(
+        self,
+        dto: ReceiptCreateDTO,
+        background_tasks=None,
+    ) -> ReceiptDTO:
         """
         Створює чек продажу (зменшує залишки товарів).
 
         Args:
             dto: DTO з даними для створення чеку.
+            background_tasks: FastAPI BackgroundTasks для авто-фіскалізації
+                у фоні (якщо None — фіскалізація виконується синхронно).
 
         Returns:
             ReceiptDTO створеного чеку.
@@ -130,17 +182,23 @@ class ReceiptUseCases:
         )
         await self._event_bus.publish(event)
 
-        # Авто-фіскалізація (не блокує продаж при проблемах з ПРРО)
-        await self._auto_fiscalize(saved.id)
+        # Авто-фіскалізація: у фон (BackgroundTasks) або синхронно
+        await self._auto_fiscalize(saved.id, background_tasks)
 
         return ReceiptMapper.entity_to_dto(saved)
 
-    async def create_return_receipt(self, dto: ReceiptCreateDTO) -> ReceiptDTO:
+    async def create_return_receipt(
+        self,
+        dto: ReceiptCreateDTO,
+        background_tasks=None,
+    ) -> ReceiptDTO:
         """
         Створює чек повернення (збільшує залишки товарів).
 
         Args:
             dto: DTO з даними для створення чеку повернення.
+            background_tasks: FastAPI BackgroundTasks для авто-фіскалізації
+                у фоні (якщо None — фіскалізація виконується синхронно).
 
         Returns:
             ReceiptDTO створеного чеку повернення.
@@ -174,8 +232,8 @@ class ReceiptUseCases:
         )
         await self._event_bus.publish(event)
 
-        # Авто-фіскалізація (не блокує продаж при проблемах з ПРРО)
-        await self._auto_fiscalize(saved.id)
+        # Авто-фіскалізація: у фон (BackgroundTasks) або синхронно
+        await self._auto_fiscalize(saved.id, background_tasks)
 
         return ReceiptMapper.entity_to_dto(saved)
 

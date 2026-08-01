@@ -122,3 +122,100 @@ class TestAutoFiscalizeIntegration:
 
         assert dto.id is not None
         fiscalizer.fiscalize_receipt.assert_awaited_once()
+
+
+class TestBackgroundFiscalize:
+    """Авто-фіскалізація у фоні (BackgroundTasks) — підзадача C."""
+
+    async def test_with_background_tasks_defers_fiscalize(self):
+        """З BackgroundTasks fiscalize НЕ викликається синхронно — ставиться у фон."""
+        fiscalizer = AsyncMock()
+        fiscalizer.fiscalize_receipt = AsyncMock(return_value=None)
+        # Mock зовнішнього фіскалізатора має властивість session (для close)
+        session_mock = AsyncMock()
+        fiscalizer.session = session_mock
+
+        # Мок BackgroundTasks (FastAPI/Starlette)
+        background_tasks = MagicMock()
+
+        use_cases = _build_use_cases(
+            fiscalizer_factory=lambda: fiscalizer
+        )
+
+        dto = await use_cases.create_sale_receipt(
+            _make_dto(), background_tasks=background_tasks
+        )
+
+        # HTTP-відповідь повернулась одразу
+        assert dto.id is not None
+        # fiscalize НЕ викликався під час запиту
+        fiscalizer.fiscalize_receipt.assert_not_awaited()
+        # Задача зареєстрована у фоні (callable + аргумент receipt_id)
+        background_tasks.add_task.assert_called_once()
+        args = background_tasks.add_task.call_args.args
+        assert callable(args[0])
+        assert args[1] == dto.id
+
+    async def test_background_task_runs_fiscalize(self):
+        """Запуск фонової задачі виконує фіскалізацію та закриває сесію."""
+        fiscalizer = AsyncMock()
+        fiscalizer.fiscalize_receipt = AsyncMock(return_value=None)
+        session_mock = AsyncMock()
+        fiscalizer.session = session_mock
+
+        background_tasks = MagicMock()
+        use_cases = _build_use_cases(
+            fiscalizer_factory=lambda: fiscalizer
+        )
+
+        dto = await use_cases.create_sale_receipt(
+            _make_dto(), background_tasks=background_tasks
+        )
+
+        # Імітуємо виконання фонової задачі FastAPI
+        task = background_tasks.add_task.call_args.args[0]
+        await task(dto.id)
+
+        fiscalizer.fiscalize_receipt.assert_awaited_once_with(dto.id, manual=False)
+        session_mock.close.assert_awaited_once()
+
+    async def test_background_task_error_does_not_break(self):
+        """Помилка ПРРО у фоні не кидає виключення назовні."""
+        fiscalizer = AsyncMock()
+        fiscalizer.fiscalize_receipt = AsyncMock(
+            side_effect=RuntimeError("ПРРО недоступний")
+        )
+        session_mock = AsyncMock()
+        fiscalizer.session = session_mock
+
+        background_tasks = MagicMock()
+        use_cases = _build_use_cases(
+            fiscalizer_factory=lambda: fiscalizer
+        )
+
+        dto = await use_cases.create_sale_receipt(
+            _make_dto(), background_tasks=background_tasks
+        )
+
+        task = background_tasks.add_task.call_args.args[0]
+        # Фонова задача не має кидати виключення (логуються всередині)
+        await task(dto.id)
+        session_mock.close.assert_awaited_once()
+
+    async def test_sync_fallback_without_background_tasks(self):
+        """Без background_tasks фіскалізація виконується синхронно (fallback)."""
+        fiscalizer = AsyncMock()
+        fiscalizer.fiscalize_receipt = AsyncMock(return_value=None)
+        session_mock = AsyncMock()
+        fiscalizer.session = session_mock
+
+        use_cases = _build_use_cases(
+            fiscalizer_factory=lambda: fiscalizer
+        )
+
+        dto = await use_cases.create_return_receipt(_make_dto())
+
+        assert dto.id is not None
+        fiscalizer.fiscalize_receipt.assert_awaited_once_with(dto.id, manual=False)
+        # Сесія закривається і при синхронному шляху
+        session_mock.close.assert_awaited_once()
