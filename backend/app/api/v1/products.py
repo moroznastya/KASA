@@ -12,6 +12,8 @@ API роутер для роботи з товарами (Products).
   - DELETE /products/{id}/images/{image_id} — видалити зображення товару
   - POST   /products/{id}/barcodes  — додати додатковий штрих-код
   - DELETE /products/{id}/barcodes/{barcode_id} — видалити додатковий штрих-код
+
+⚠️ DEPRECATED: цей v1-роутер залишено для зворотної сумісності — використовуйте /api/v2/products/*.
 """
 
 import os
@@ -75,7 +77,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=ProductListResponse)
+@router.get("", response_model=ProductListResponse, deprecated=True)
 async def list_products(
     query: str = Query(None, description="Пошуковий запит"),
     search: str = Query(None, description="Аліас для query (сумісність)"),
@@ -129,7 +131,7 @@ async def list_products(
     )
 
 
-@router.get("/barcode/{barcode}", response_model=ProductResponse)
+@router.get("/barcode/{barcode}", response_model=ProductResponse, deprecated=True)
 async def get_product_by_barcode(
     barcode: str,
     session: AsyncSession = Depends(get_session),
@@ -148,7 +150,7 @@ async def get_product_by_barcode(
     return ProductResponse.model_validate(full or product)
 
 
-@router.get("/{product_id}", response_model=ProductResponse)
+@router.get("/{product_id}", response_model=ProductResponse, deprecated=True)
 async def get_product(
     product_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -171,7 +173,7 @@ async def get_product(
     return ProductResponse.model_validate(product)
 
 
-@router.post("", response_model=ProductResponse, status_code=201)
+@router.post("", response_model=ProductResponse, status_code=201, deprecated=True)
 async def create_product(
     data: ProductCreate,
     session: AsyncSession = Depends(get_session),
@@ -185,7 +187,7 @@ async def create_product(
     return ProductResponse.model_validate(full or product)
 
 
-@router.put("/{product_id}", response_model=ProductResponse)
+@router.put("/{product_id}", response_model=ProductResponse, deprecated=True)
 async def update_product(
     product_id: UUID,
     data: ProductUpdate,
@@ -200,7 +202,7 @@ async def update_product(
     return ProductResponse.model_validate(full or product)
 
 
-@router.delete("/{product_id}", status_code=204)
+@router.delete("/{product_id}", status_code=204, deprecated=True)
 async def delete_product(
     product_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -214,7 +216,7 @@ async def delete_product(
 # ─── Зображення товару ───────────────────────────────────────────────────────
 
 
-@router.post("/{product_id}/images", response_model=ProductImageResponse)
+@router.post("/{product_id}/images", response_model=ProductImageResponse, deprecated=True)
 async def upload_product_image(
     product_id: UUID,
     file: UploadFile = File(...),
@@ -245,7 +247,7 @@ async def upload_product_image(
     return image
 
 
-@router.delete("/{product_id}/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{product_id}/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 async def delete_product_image(
     product_id: UUID,
     image_id: UUID,
@@ -274,7 +276,7 @@ class BarcodeCreate(BaseModel):
     is_primary: bool = Field(False, description="Чи є основним")
 
 
-@router.post("/{product_id}/barcodes", response_model=BarcodeResponse)
+@router.post("/{product_id}/barcodes", response_model=BarcodeResponse, deprecated=True)
 async def add_product_barcode(
     product_id: UUID,
     data: BarcodeCreate,
@@ -287,7 +289,7 @@ async def add_product_barcode(
     return barcode
 
 
-@router.delete("/{product_id}/barcodes/{barcode_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{product_id}/barcodes/{barcode_id}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 async def delete_product_barcode(
     product_id: UUID,
     barcode_id: UUID,

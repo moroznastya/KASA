@@ -10,6 +10,8 @@ API роутер для роботи з чеками продажу (Receipts).
   - GET    /receipts/{receipt_id}/items        — товари чеку
   - GET    /receipts/{id}              — отримати чек за ID
   - POST   /receipts                   — створити новий чек (продаж/повернення)
+
+⚠️ DEPRECATED: цей v1-роутер залишено для зворотної сумісності — використовуйте /api/v2/receipts/*.
 """
 
 from uuid import UUID
@@ -162,7 +164,7 @@ async def get_returnable_quantity_for_product(
 # ═══════════════════════════════════════════════════════════════════
 
 
-@router.get("/stats/today")
+@router.get("/stats/today", deprecated=True)
 async def get_today_stats(
     session: AsyncSession = Depends(get_session),
     current_user = Depends(AuthService.require_admin),
@@ -258,7 +260,7 @@ async def get_today_stats(
     }
 
 
-@router.get("/search", response_model=dict)
+@router.get("/search", response_model=dict, deprecated=True)
 async def search_receipts(
     q: str = Query("", min_length=0, max_length=100, description="Пошук за номером чеку або назвою товару"),
     date_from: datetime = Query(None, description="Початкова дата"),
@@ -355,7 +357,7 @@ async def search_receipts(
     }
 
 
-@router.get("/by-product/{query}/recent-sales")
+@router.get("/by-product/{query}/recent-sales", deprecated=True)
 async def get_recent_sales_by_product(
     query: str,
     limit: int = Query(5, ge=1, le=20, description="Кількість останніх продажів"),
@@ -454,7 +456,7 @@ async def get_recent_sales_by_product(
     ).model_dump()
 
 
-@router.get("/products/{product_id}/returnable-quantity")
+@router.get("/products/{product_id}/returnable-quantity", deprecated=True)
 async def get_returnable_quantity(
     product_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -504,7 +506,7 @@ async def get_returnable_quantity(
     }
 
 
-@router.get("/{receipt_id}/items", response_model=list[ReceiptItemResponse])
+@router.get("/{receipt_id}/items", response_model=list[ReceiptItemResponse], deprecated=True)
 async def get_receipt_items(
     receipt_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -546,7 +548,7 @@ async def get_receipt_items(
     return result
 
 
-@router.get("/{receipt_id}", response_model=ReceiptResponse)
+@router.get("/{receipt_id}", response_model=ReceiptResponse, deprecated=True)
 async def get_receipt(
     receipt_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -579,7 +581,7 @@ async def get_receipt(
     return resp
 
 
-@router.get("", response_model=dict)
+@router.get("", response_model=dict, deprecated=True)
 async def list_receipts(
     cashier_id: UUID = Query(None, description="Фільтр за касиром"),
     receipt_type: ReceiptType = Query(None, description="Фільтр за типом"),
@@ -658,7 +660,7 @@ async def list_receipts(
     }
 
 
-@router.post("", response_model=ReceiptResponse, status_code=201)
+@router.post("", response_model=ReceiptResponse, status_code=201, deprecated=True)
 async def create_receipt(
     data: ReceiptCreate,
     session: AsyncSession = Depends(get_session),

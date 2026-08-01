@@ -299,3 +299,162 @@ class ReceiptUseCases:
             Загальна сума.
         """
         return await self._receipt_repo.get_daily_total(date)
+
+    # ─── Статистика, пошук, повернення ─────────────────────────────────────
+
+    async def get_today_stats(self) -> dict:
+        """
+        Повертає статистику чеків за сьогодні (UTC).
+
+        Returns:
+            dict: {total_sales, total_returns, total_profit, total_vat,
+                   receipts_count, items_sold, date}.
+        """
+        return await self._receipt_repo.get_today_stats()
+
+    async def search_receipts(
+        self,
+        q: str = "",
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        receipt_type: Optional[str] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[list[dict], int]:
+        """
+        Пошук чеків для повернень (за номером або назвою товару).
+
+        Args:
+            q: Пошуковий запит.
+            date_from: Фільтр від дати.
+            date_to: Фільтр до дати.
+            receipt_type: Тип чеку ("sale"/"return").
+            page: Номер сторінки.
+            size: Кількість на сторінці.
+
+        Returns:
+            Кортеж (list[dict] спрощених чеків, загальна кількість).
+        """
+        from app.infrastructure.persistence.models.receipt import ReceiptType
+
+        type_enum = None
+        if receipt_type:
+            try:
+                type_enum = ReceiptType(receipt_type)
+            except ValueError:
+                raise ValueError(
+                    f"Невірний тип чеку '{receipt_type}'. Використовуйте 'sale' або 'return'"
+                )
+
+        receipts, total = await self._receipt_repo.search_with_details(
+            q=q,
+            date_from=date_from,
+            date_to=date_to,
+            receipt_type=type_enum,
+            page=page,
+            size=size,
+        )
+
+        items = []
+        for r in receipts:
+            items.append({
+                "id": r.id,
+                "receipt_number": r.receipt_number,
+                "receipt_type": r.receipt_type.value
+                if hasattr(r.receipt_type, "value")
+                else str(r.receipt_type),
+                "total_amount": float(r.total_amount or 0),
+                "created_at": r.created_at,
+                "cashier_name": r.cashier.name if r.cashier else "",
+                "items_count": len(r.items),
+            })
+        return items, total
+
+    async def get_recent_sales_by_product(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        """
+        Останні продажі товарів за штрих-кодом або назвою (для повернення).
+
+        Args:
+            query: Штрих-код або назва товару.
+            limit: Кількість останніх продажів (1-20).
+
+        Returns:
+            list[dict]: [{product, total_sold, total_returned,
+                          returnable, recent_sales}].
+
+        Raises:
+            ValueError: Якщо товарів за запитом не знайдено.
+        """
+        items = await self._receipt_repo.find_recent_sales_by_product(query, limit)
+        if not items:
+            raise ValueError(
+                f"Товарів за запитом '{query}' не знайдено. "
+                "Спробуйте ввести штрих-код або назву товару"
+            )
+        return items
+
+    async def get_returnable_quantity(self, product_id: UUID) -> dict:
+        """
+        Скільки одиниць товару можна повернути.
+
+        Args:
+            product_id: ID товару.
+
+        Returns:
+            dict: {product_id, total_sold, total_returned, returnable}.
+
+        Raises:
+            ValueError: Якщо товар не знайдено.
+        """
+        product = await self._product_repo.find_by_id(product_id)
+        if not product:
+            raise ValueError(f"Товар з ID '{product_id}' не знайдено")
+
+        total_sold, total_returned = await self._receipt_repo.get_sold_returned_totals(
+            product_id
+        )
+        returnable = await self._receipt_repo.get_returnable_quantity(product_id)
+
+        return {
+            "product_id": str(product_id),
+            "total_sold": float(total_sold),
+            "total_returned": float(total_returned),
+            "returnable": float(returnable),
+        }
+
+    async def get_receipt_items(self, receipt_id: UUID) -> list[dict]:
+        """
+        Отримує всі позиції чеку (для вибору товарів при поверненні).
+
+        Args:
+            receipt_id: ID чеку.
+
+        Returns:
+            list[dict]: позиції з product_name/product_barcode.
+
+        Raises:
+            ValueError: Якщо чек не знайдено.
+        """
+        receipt = await self._receipt_repo.find_by_id(receipt_id)
+        if not receipt:
+            raise ValueError(f"Чек з ID '{receipt_id}' не знайдено")
+
+        items = await self._receipt_repo.find_items_with_products(receipt_id)
+        result = []
+        for item in items:
+            result.append({
+                "id": item.id,
+                "product_id": item.product_id,
+                "product_name": item.product.title if item.product else "",
+                "product_barcode": item.product.barcode if item.product else None,
+                "quantity": float(item.quantity),
+                "price": float(item.price),
+                "total": float(item.total),
+                "purchase_price": item.purchase_price,
+                "created_at": item.created_at,
+            })
+        return result

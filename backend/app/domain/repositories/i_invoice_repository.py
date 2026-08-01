@@ -170,3 +170,19 @@ class IInvoiceRepository(Protocol):
             Кількість накладних.
         """
         ...
+
+    async def get_payment_info(self, invoice_id: UUID) -> dict:
+        """
+        Повертає інформацію про оплату накладної.
+
+        Args:
+            invoice_id: UUID накладної.
+
+        Returns:
+            dict: {invoice_id, invoice_number, invoice_date, total_amount,
+                   paid_amount, remaining} (Decimal значення).
+
+        Raises:
+            ValueError: Якщо накладну не знайдено.
+        """
+        ...

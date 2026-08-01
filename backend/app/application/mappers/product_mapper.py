@@ -16,33 +16,64 @@ from app.application.dto.product_dto import ProductDTO, ProductCreateDTO, Produc
 
 
 class ProductMapper:
-    """Статичний mapper для конвертації Product entity <-> DTO."""
+    """Статичний mapper для конвертації Product entity <-> DTO.
+
+    Підтримує як domain entity (price=Money, stock=Quantity, tax_rate=TaxRate),
+    так і ORM-модель (price=float, stock=float, tax_rate=float, title замість name).
+    """
+
+    @staticmethod
+    def _amount(value):
+        """Повертає float з Money або float/Decimal."""
+        if value is None:
+            return None
+        if hasattr(value, "amount"):
+            return float(value.amount)
+        return float(value)
+
+    @staticmethod
+    def _quantity(value):
+        """Повертає float з Quantity або float/Decimal."""
+        if value is None:
+            return None
+        if hasattr(value, "value"):
+            return float(value.value)
+        return float(value)
+
+    @staticmethod
+    def _tax_percent(value) -> int:
+        """Повертає відсоток з TaxRate або float/int."""
+        if value is None:
+            return 20
+        if hasattr(value, "percent"):
+            return int(value.percent)
+        return int(value)
 
     @staticmethod
     def entity_to_dto(entity: Product) -> ProductDTO:
         """
-        Конвертує Product entity в ProductDTO.
+        Конвертує Product entity (або ORM Product) в ProductDTO.
 
         Args:
-            entity: Product entity.
+            entity: Product entity або ORM-модель Product.
 
         Returns:
             ProductDTO.
         """
         return ProductDTO(
             id=entity.id,
-            name=entity.name,
+            name=getattr(entity, "name", None) or getattr(entity, "title", "") or "",
             barcode=str(entity.barcode) if entity.barcode else None,
-            price=float(entity.price.amount) if entity.price else None,
-            cost_price=float(entity.cost_price.amount) if entity.cost_price else None,
-            stock=float(entity.stock.value) if entity.stock else None,
+            price=ProductMapper._amount(entity.price),
+            cost_price=ProductMapper._amount(entity.cost_price),
+            stock=ProductMapper._quantity(entity.stock),
             category_id=entity.category_id,
             supplier_id=entity.supplier_id,
-            tax_rate=entity.tax_rate.percent if entity.tax_rate else 20,
-            sku=entity.sku,
-            unit=entity.unit,
-            is_active=entity.is_active,
-            description=entity.description,
+            tax_rate=ProductMapper._tax_percent(entity.tax_rate),
+            sku=getattr(entity, "sku", "") or "",
+            unit=getattr(entity, "unit", "шт") or "шт",
+            is_active=getattr(entity, "is_active", True),
+            description=getattr(entity, "description", "") or "",
         )
 
     @staticmethod

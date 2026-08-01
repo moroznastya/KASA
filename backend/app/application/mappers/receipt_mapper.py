@@ -20,15 +20,47 @@ from app.application.dto.receipt_dto import ReceiptDTO, ReceiptItemDTO, ReceiptC
 
 
 class ReceiptMapper:
-    """Статичний mapper для конвертації Receipt entity <-> DTO."""
+    """Статичний mapper для конвертації Receipt entity <-> DTO.
+
+    Підтримує як domain entity (quantity=Quantity, price=Money,
+    payment_method=PaymentMethod), так і ORM-модель (quantity=float,
+    price=float, receipt_number замість number, debtor_id замість customer_id).
+    """
+
+    @staticmethod
+    def _amount(value):
+        """Повертає float з Money або float/Decimal."""
+        if value is None:
+            return None
+        if hasattr(value, "amount"):
+            return float(value.amount)
+        return float(value)
+
+    @staticmethod
+    def _quantity(value):
+        """Повертає float з Quantity або float/Decimal."""
+        if value is None:
+            return 0.0
+        if hasattr(value, "value"):
+            return float(value.value)
+        return float(value)
+
+    @staticmethod
+    def _tax_percent(value) -> int:
+        """Повертає відсоток з TaxRate або float/int; ORM не зберігає tax_rate."""
+        if value is None:
+            return 20
+        if hasattr(value, "percent"):
+            return int(value.percent)
+        return int(value)
 
     @staticmethod
     def entity_to_dto(entity: Receipt) -> ReceiptDTO:
         """
-        Конвертує Receipt entity в ReceiptDTO.
+        Конвертує Receipt entity (або ORM Receipt) в ReceiptDTO.
 
         Args:
-            entity: Receipt entity.
+            entity: Receipt entity або ORM-модель Receipt.
 
         Returns:
             ReceiptDTO.
@@ -36,34 +68,38 @@ class ReceiptMapper:
         items = [
             ReceiptItemDTO(
                 product_id=item.product_id,
-                name=item.name,
-                quantity=float(item.quantity.value),
-                price=float(item.price.amount),
-                tax_rate=item.tax_rate.percent,
+                name=getattr(item, "name", "") or "",
+                quantity=ReceiptMapper._quantity(item.quantity),
+                price=ReceiptMapper._amount(item.price),
+                tax_rate=ReceiptMapper._tax_percent(getattr(item, "tax_rate", None)),
             )
             for item in entity.items
         ]
         return ReceiptDTO(
             id=entity.id,
-            number=entity.number,
+            number=getattr(entity, "number", None) or getattr(entity, "receipt_number", "") or "",
             items=items,
-            total=float(entity.total.amount) if entity.total else None,
-            payment_method=entity.payment_method.value,
-            created_at=entity.created_at,
-            cash_amount=float(entity.cash_amount.amount) if entity.cash_amount else None,
-            card_amount=float(entity.card_amount.amount) if entity.card_amount else None,
-            change_amount=float(entity.change_amount.amount) if entity.change_amount else None,
-            customer_id=entity.customer_id,
-            notes=entity.notes,
-            is_fiscal=entity.is_fiscal,
+            total=ReceiptMapper._amount(
+                getattr(entity, "total", None) or getattr(entity, "total_amount", None)
+            ),
+            payment_method=entity.payment_method.value
+            if hasattr(entity.payment_method, "value")
+            else str(entity.payment_method),
+            created_at=getattr(entity, "created_at", None),
+            cash_amount=ReceiptMapper._amount(getattr(entity, "cash_amount", None)),
+            card_amount=ReceiptMapper._amount(getattr(entity, "card_amount", None)),
+            change_amount=ReceiptMapper._amount(getattr(entity, "change_amount", None)),
+            customer_id=getattr(entity, "customer_id", None) or getattr(entity, "debtor_id", None),
+            notes=getattr(entity, "notes", "") or "",
+            is_fiscal=getattr(entity, "is_fiscal", False),
             fiscal_status=entity.fiscal_status.value
             if hasattr(entity.fiscal_status, "value")
             else str(entity.fiscal_status),
-            fiscal_number=entity.fiscal_number,
-            fiscal_serial=entity.fiscal_serial,
-            fiscal_sent_at=entity.fiscal_sent_at,
-            fiscal_error=entity.fiscal_error,
-            split_group_id=entity.split_group_id,
+            fiscal_number=getattr(entity, "fiscal_number", None),
+            fiscal_serial=getattr(entity, "fiscal_serial", None),
+            fiscal_sent_at=getattr(entity, "fiscal_sent_at", None),
+            fiscal_error=getattr(entity, "fiscal_error", None),
+            split_group_id=getattr(entity, "split_group_id", None),
         )
 
     @staticmethod

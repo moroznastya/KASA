@@ -18,6 +18,7 @@ from app.application.use_cases import (
     AuthUseCases,
     LedgerUseCases,
 )
+from app.application.use_cases.invoice_print_use_cases import InvoicePrintUseCases
 from app.application.use_cases.prro import PrroUseCases
 from app.domain.repositories import ICategoryRepository
 from app.domain.services.cache_service import ICacheService
@@ -30,6 +31,7 @@ from app.infrastructure.persistence.repositories import (
     SQLAlchemyUserRepository,
     SQLAlchemyLedgerRepository,
     SQLAlchemyCategoryRepository,
+    SQLAlchemySupplierRepository,
 )
 from app.infrastructure.persistence.unit_of_work import SQLAlchemyUnitOfWork
 from app.infrastructure.di.prro import build_prro_use_cases, build_fiscalize_use_case
@@ -54,6 +56,8 @@ async def get_invoice_use_cases(
     """Отримати InvoiceUseCases з поточною сесією БД."""
     return InvoiceUseCases(
         invoice_repo=SQLAlchemyInvoiceRepository(session=session),
+        product_repo=SQLAlchemyProductRepository(session=session),
+        supplier_repo=SQLAlchemySupplierRepository(session=session),
         event_bus=request.app.state.di_container.resolve("event_bus"),
         unit_of_work=SQLAlchemyUnitOfWork(session=session),
     )
@@ -125,3 +129,10 @@ async def get_prro_use_cases(
     а репозиторії прив'язані до per-request сесії.
     """
     return build_prro_use_cases(session)
+
+
+async def get_invoice_print_use_cases(
+    session: AsyncSession = Depends(get_session),
+) -> InvoicePrintUseCases:
+    """Отримати InvoicePrintUseCases (друк цінників/етикеток з накладної)."""
+    return InvoicePrintUseCases(session=session)

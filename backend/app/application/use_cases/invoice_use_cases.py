@@ -287,3 +287,177 @@ class InvoiceUseCases:
             size=size,
         )
         return [InvoiceMapper.entity_to_dto(inv) for inv in invoices], total
+
+    # ─── Оновлення / видалення / звіти ─────────────────────────────────────
+
+    async def update_invoice(
+        self,
+        invoice_id: UUID,
+        dto: InvoiceUpdateDTO,
+    ) -> InvoiceDTO:
+        """
+        Оновлює прибуткову накладну (тільки чернетку).
+
+        Args:
+            invoice_id: ID накладної.
+            dto: DTO з полями для оновлення (items повністю замінюють позиції).
+
+        Returns:
+            InvoiceDTO оновленої накладної.
+
+        Raises:
+            ValueError: Якщо накладну не знайдено або вона не в статусі DRAFT.
+        """
+        invoice = await self._invoice_repo.find_by_id(invoice_id)
+        if not invoice:
+            raise ValueError(f"Накладну з ID '{invoice_id}' не знайдено")
+        _is_draft = getattr(invoice, "is_draft", True)
+        if callable(_is_draft):
+            _is_draft = _is_draft()
+        if not _is_draft:
+            raise ValueError("Можна редагувати тільки чернетки")
+
+        # Оновлюємо скалярні поля
+        if dto.number is not None:
+            invoice.number = dto.number
+        if dto.supplier_id is not None:
+            invoice.supplier_id = dto.supplier_id
+        if dto.notes is not None:
+            invoice.notes = dto.notes
+        if dto.is_fiscal is not None:
+            invoice.is_fiscal = dto.is_fiscal
+        if dto.invoice_date is not None:
+            invoice.invoice_date = dto.invoice_date.replace(tzinfo=None)
+
+        # Повністю замінюємо позиції (cascade="all, delete-orphan")
+        if dto.items is not None:
+            invoice.items.clear()
+            for item_dto in dto.items:
+                from app.infrastructure.persistence.models.invoice import (
+                    InvoiceItem as ORMInvoiceItem,
+                )
+                quantity = float(item_dto.quantity)
+                price = float(item_dto.price)
+                invoice.items.append(ORMInvoiceItem(
+                    product_id=item_dto.product_id,
+                    quantity=quantity,
+                    price=price,
+                    total=quantity * price,
+                ))
+            invoice.total_amount = sum(
+                float(i.quantity) * float(i.price) for i in invoice.items
+            )
+
+        async with self._uow:
+            saved = await self._invoice_repo.update(invoice)
+            await self._uow.commit()
+
+        event = InvoiceUpdated(
+            invoice_id=saved.id,
+            changes={"updated": True},
+        )
+        await self._event_bus.publish(event)
+
+        return InvoiceMapper.entity_to_dto(saved)
+
+    async def delete_invoice(self, invoice_id: UUID) -> None:
+        """
+        Видаляє прибуткову накладну (тільки чернетку).
+
+        Args:
+            invoice_id: ID накладної.
+
+        Raises:
+            ValueError: Якщо накладну не знайдено або вона не в статусі DRAFT.
+        """
+        invoice = await self._invoice_repo.find_by_id(invoice_id)
+        if not invoice:
+            raise ValueError(f"Накладну з ID '{invoice_id}' не знайдено")
+        _is_draft = getattr(invoice, "is_draft", True)
+        if callable(_is_draft):
+            _is_draft = _is_draft()
+        if not _is_draft:
+            raise ValueError("Можна видалити тільки чернетку")
+
+        async with self._uow:
+            await self._invoice_repo.delete(invoice_id)
+            await self._uow.commit()
+
+    async def get_invoice_payment_info(self, invoice_id: UUID) -> dict:
+        """
+        Повертає інформацію про оплату накладної.
+
+        Args:
+            invoice_id: ID накладної.
+
+        Returns:
+            dict: {invoice_id, invoice_number, invoice_date, total_amount,
+                   paid_amount, remaining}.
+
+        Raises:
+            ValueError: Якщо накладну не знайдено.
+        """
+        return await self._invoice_repo.get_payment_info(invoice_id)
+
+    async def get_invoice_price_changes(self, invoice_id: UUID) -> list[dict]:
+        """
+        Повертає список товарів з накладної з інформацією про зміну цін.
+
+        Для кожного товару: product_id, title, barcode, article,
+        invoice_price, current_price, changed, difference.
+
+        Args:
+            invoice_id: ID накладної.
+
+        Returns:
+            list[dict] зі змінами цін.
+
+        Raises:
+            ValueError: Якщо накладну не знайдено.
+        """
+        from decimal import Decimal
+
+        def _dec(value) -> Decimal:
+            """Decimal з Money/float/None (quantize 0.01)."""
+            if value is None:
+                return Decimal("0.00")
+            if hasattr(value, "amount"):
+                value = value.amount
+            return Decimal(str(value)).quantize(Decimal("0.01"))
+
+        invoice = await self._invoice_repo.find_by_id(invoice_id)
+        if not invoice:
+            raise ValueError(f"Накладну з ID '{invoice_id}' не знайдено")
+
+        changes: list[dict] = []
+        for item in invoice.items:
+            product = item.product
+            if not product:
+                continue
+
+            invoice_price = item.price or 0
+            # previous_price — ціна товару ДО накладної
+            prev_price = item.previous_price or product.price or 0
+            current_price = product.price or 0
+
+            prev_price_dec = _dec(prev_price)
+            invoice_price_dec = _dec(invoice_price)
+            current_price_dec = _dec(current_price)
+            difference = (prev_price_dec - invoice_price_dec).quantize(Decimal("0.01"))
+
+            _title = getattr(product, "title", None) or getattr(product, "name", "") or ""
+            _barcode = getattr(product, "barcode", None)
+            if hasattr(_barcode, "value"):
+                _barcode = str(_barcode.value)
+            changes.append({
+                "product_id": product.id,
+                "title": _title,
+                "barcode": _barcode,
+                "article": getattr(product, "sku", "") or "",
+                "invoice_price": str(invoice_price_dec),
+                "current_price": str(current_price_dec),
+                "changed": difference != Decimal("0.00"),
+                "difference": str(difference),
+            })
+
+        return changes

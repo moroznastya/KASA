@@ -5,6 +5,7 @@ from .invoice_use_cases import InvoiceUseCases
 from .receipt_use_cases import ReceiptUseCases
 from .auth_use_cases import AuthUseCases
 from .ledger_use_cases import LedgerUseCases
+from .invoice_print_use_cases import InvoicePrintUseCases
 
 __all__ = [
     "ProductUseCases",
@@ -12,4 +13,5 @@ __all__ = [
     "ReceiptUseCases",
     "AuthUseCases",
     "LedgerUseCases",
+    "InvoicePrintUseCases",
 ]

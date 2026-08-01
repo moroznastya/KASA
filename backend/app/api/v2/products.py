@@ -8,9 +8,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import os
+import shutil
+import uuid as uuid_module
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ProductUseCases
@@ -72,6 +77,31 @@ class ProductListResponse(BaseModel):
     size: int
 
 
+class ProductImageResponse(BaseModel):
+    id: UUID
+    product_id: UUID | None = None
+    url: str
+    is_main: bool = False
+    sort_order: int = 0
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ProductBarcodeResponse(BaseModel):
+    id: UUID
+    product_id: UUID | None = None
+    barcode: str
+    is_primary: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class BarcodeCreateRequest(BaseModel):
+    barcode: str = Field(..., min_length=1, max_length=50)
+    is_primary: bool = False
+
+
 # ─── Ендпоінти ───────────────────────────────────────────────────────────────
 
 @router.get("", response_model=ProductListResponse)
@@ -105,6 +135,98 @@ async def list_products(
         }
 
     return await _fetch(page, size, search, category_id)
+
+
+@router.get("/barcode/{barcode}", response_model=ProductResponse)
+async def get_product_by_barcode(
+    barcode: str,
+    use_cases: ProductUseCases = Depends(get_product_use_cases),
+):
+    """Отримати товар за штрих-кодом (основне поле або додатковий штрих-код)."""
+    try:
+        product = await use_cases.get_product_by_barcode(barcode)
+        if product is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Товар зі штрих-кодом '{barcode}' не знайдено",
+            )
+        return product
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{product_id}/images", response_model=ProductImageResponse)
+async def upload_product_image(
+    product_id: UUID,
+    file: UploadFile = File(...),
+    is_main: bool = Form(False),
+    use_cases: ProductUseCases = Depends(get_product_use_cases),
+):
+    """Завантажити зображення товару.
+
+    Файл зберігається у uploads/products/{product_id}/, у БД — URL.
+    """
+    # Зберігаємо файл на диск (інфраструктурна операція)
+    upload_dir = os.path.join("uploads", "products", str(product_id))
+    os.makedirs(upload_dir, exist_ok=True)
+
+    ext = os.path.splitext(file.filename or "image.jpg")[1]
+    filename = f"{uuid_module.uuid4()}{ext}"
+    filepath = os.path.join(upload_dir, filename)
+
+    with open(filepath, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    url = f"/uploads/products/{product_id}/{filename}"
+    try:
+        return await use_cases.add_product_image(product_id, url, is_main)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/{product_id}/images/{image_id}", status_code=204)
+async def delete_product_image(
+    product_id: UUID,
+    image_id: UUID,
+    use_cases: ProductUseCases = Depends(get_product_use_cases),
+):
+    """Видалити зображення товару."""
+    try:
+        await use_cases.delete_product_image(image_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{product_id}/barcodes", response_model=ProductBarcodeResponse)
+async def add_product_barcode(
+    product_id: UUID,
+    data: BarcodeCreateRequest,
+    use_cases: ProductUseCases = Depends(get_product_use_cases),
+):
+    """Додати додатковий штрих-код до товару."""
+    try:
+        return await use_cases.add_product_barcode(
+            product_id,
+            data.barcode,
+            data.is_primary,
+        )
+    except ValueError as e:
+        detail = str(e)
+        status_code = 409 if "вже існує" in detail else 404
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+@router.delete("/{product_id}/barcodes/{barcode_id}", status_code=204)
+async def delete_product_barcode(
+    product_id: UUID,
+    barcode_id: UUID,
+    use_cases: ProductUseCases = Depends(get_product_use_cases),
+):
+    """Видалити додатковий штрих-код товару."""
+    try:
+        await use_cases.delete_product_barcode(barcode_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/{product_id}", response_model=ProductResponse)

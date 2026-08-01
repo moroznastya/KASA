@@ -80,6 +80,82 @@ class ReceiptListResponse(BaseModel):
     size: int
 
 
+class ReceiptTodayStatsResponse(BaseModel):
+    total_sales: float
+    total_returns: float
+    total_profit: float
+    total_vat: float
+    receipts_count: int
+    items_sold: int
+    date: str
+
+
+class ReceiptSearchItem(BaseModel):
+    id: UUID
+    receipt_number: str
+    receipt_type: str
+    total_amount: float
+    created_at: datetime | None = None
+    cashier_name: str = ""
+    items_count: int = 0
+
+
+class ReceiptSearchResponse(BaseModel):
+    items: list[ReceiptSearchItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class RecentSaleInfo(BaseModel):
+    receipt_id: UUID
+    receipt_number: str = ""
+    created_at: datetime | None = None
+    quantity: float
+    price: float
+
+
+class ProductBriefInfo(BaseModel):
+    id: UUID
+    title: str
+    barcode: str | None = None
+    price: float | None = None
+    unit: str | None = None
+
+
+class ProductRecentSalesItem(BaseModel):
+    product: ProductBriefInfo
+    total_sold: float
+    total_returned: float
+    returnable: float
+    recent_sales: list[RecentSaleInfo] = []
+
+
+class ProductRecentSalesListResponse(BaseModel):
+    items: list[ProductRecentSalesItem]
+    total: int
+
+
+class ReturnableQuantityResponse(BaseModel):
+    product_id: str
+    total_sold: float
+    total_returned: float
+    returnable: float
+
+
+class ReceiptItemsResponse(BaseModel):
+    id: UUID
+    product_id: UUID
+    product_name: str = ""
+    product_barcode: str | None = None
+    quantity: float
+    price: float
+    total: float
+    purchase_price: float | None = None
+    created_at: datetime | None = None
+
+
 # ─── Ендпоінти ───────────────────────────────────────────────────────────────
 
 @router.get("", response_model=ReceiptListResponse)
@@ -111,6 +187,83 @@ async def list_receipts(
         "page": page,
         "size": size,
     }
+
+
+@router.get("/stats/today", response_model=ReceiptTodayStatsResponse)
+async def get_today_stats(
+    use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+):
+    """Статистика чеків за сьогодні (продажі, повернення, прибуток, ПДВ)."""
+    return await use_cases.get_today_stats()
+
+
+@router.get("/search", response_model=ReceiptSearchResponse)
+async def search_receipts(
+    q: str = Query("", max_length=100, description="Пошук за номером чеку або назвою товару"),
+    date_from: datetime | None = Query(None, description="Початкова дата"),
+    date_to: datetime | None = Query(None, description="Кінцева дата"),
+    receipt_type: str | None = Query("sale", description="Тип чеку: sale/return"),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+):
+    """Пошук чеків для повернень (за номером чеку або назвою товару)."""
+    try:
+        items, total = await use_cases.search_receipts(
+            q=q,
+            date_from=date_from,
+            date_to=date_to,
+            receipt_type=receipt_type,
+            page=page,
+            size=size,
+        )
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": size,
+            "pages": max(1, (total + size - 1) // size) if total > 0 else 1,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/by-product/{query}/recent-sales", response_model=ProductRecentSalesListResponse)
+async def get_recent_sales_by_product(
+    query: str,
+    limit: int = Query(5, ge=1, le=20, description="Кількість останніх продажів"),
+    use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+):
+    """Останні продажі товару за штрих-кодом або назвою (для повернення без чеку)."""
+    try:
+        items = await use_cases.get_recent_sales_by_product(query, limit)
+        return {"items": items, "total": len(items)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/products/{product_id}/returnable-quantity", response_model=ReturnableQuantityResponse)
+async def get_returnable_quantity(
+    product_id: UUID,
+    use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+):
+    """Скільки одиниць товару можна повернути (продано - вже повернуто)."""
+    try:
+        return await use_cases.get_returnable_quantity(product_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{receipt_id}/items", response_model=list[ReceiptItemsResponse])
+async def get_receipt_items(
+    receipt_id: UUID,
+    use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+):
+    """Позиції чеку (для вибору товарів при поверненні)."""
+    try:
+        return await use_cases.get_receipt_items(receipt_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/{receipt_id}", response_model=ReceiptResponse)

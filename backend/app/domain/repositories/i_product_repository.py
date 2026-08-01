@@ -178,3 +178,71 @@ class IProductRepository(Protocol):
             True якщо існує.
         """
         ...
+
+    async def add_image(
+        self,
+        product_id: UUID,
+        url: str,
+        is_main: bool = False,
+    ):
+        """
+        Додає зображення до товару.
+
+        Args:
+            product_id: UUID товару.
+            url: URL або шлях до файлу зображення.
+            is_main: Чи є зображення головним.
+
+        Returns:
+            ProductImage (ORM модель).
+
+        Raises:
+            ValueError: Якщо товар не знайдено.
+        """
+        ...
+
+    async def delete_image(self, image_id: UUID) -> None:
+        """
+        Видаляє зображення товару.
+
+        Args:
+            image_id: UUID зображення.
+
+        Raises:
+            ValueError: Якщо зображення не знайдено.
+        """
+        ...
+
+    async def add_barcode(
+        self,
+        product_id: UUID,
+        barcode: str,
+        is_primary: bool = False,
+    ):
+        """
+        Додає додатковий штрих-код до товару.
+
+        Args:
+            product_id: UUID товару.
+            barcode: Значення штрих-коду.
+            is_primary: Чи є штрих-код основним.
+
+        Returns:
+            Barcode (ORM модель).
+
+        Raises:
+            ValueError: Якщо штрих-код вже існує або товар не знайдено.
+        """
+        ...
+
+    async def delete_barcode(self, barcode_id: UUID) -> None:
+        """
+        Видаляє додатковий штрих-код товару.
+
+        Args:
+            barcode_id: UUID штрих-коду.
+
+        Raises:
+            ValueError: Якщо штрих-код не знайдено.
+        """
+        ...

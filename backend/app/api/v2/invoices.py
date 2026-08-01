@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import InvoiceUseCases
-from .deps import get_invoice_use_cases
+from app.schemas.print import InvoicePrintRequest, InvoicePrintResponse
+from .deps import get_invoice_print_use_cases, get_invoice_use_cases
 
 router = APIRouter(prefix="/invoices", tags=["invoices_v2"])
 
@@ -64,6 +65,35 @@ class InvoiceListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+class UpdateInvoiceRequest(BaseModel):
+    number: str | None = Field(None, min_length=1, max_length=50)
+    supplier_id: UUID | None = None
+    notes: str | None = None
+    is_fiscal: bool | None = None
+    invoice_date: datetime | None = None
+    items: list[InvoiceItemRequest] | None = None
+
+
+class InvoicePaymentInfoResponse(BaseModel):
+    invoice_id: UUID
+    invoice_number: str
+    invoice_date: datetime | None = None
+    total_amount: float
+    paid_amount: float
+    remaining: float
+
+
+class PriceChangeItemResponse(BaseModel):
+    product_id: UUID
+    title: str
+    barcode: str | None = None
+    article: str = ""
+    invoice_price: str
+    current_price: str
+    changed: bool
+    difference: str
 
 
 # ─── Ендпоінти ───────────────────────────────────────────────────────────────
@@ -149,6 +179,106 @@ async def confirm_invoice(
         return await use_cases.confirm_invoice(data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{invoice_id}", response_model=InvoiceResponse)
+async def update_invoice(
+    invoice_id: UUID,
+    data: UpdateInvoiceRequest,
+    use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+):
+    """Оновити прибуткову накладну (тільки чернетку)."""
+    try:
+        from app.application.dto.invoice_dto import InvoiceUpdateDTO, InvoiceItemDTO
+        items = None
+        if data.items is not None:
+            items = [
+                InvoiceItemDTO(
+                    product_id=item.product_id,
+                    quantity=__import__('decimal').Decimal(str(item.quantity)),
+                    price=__import__('decimal').Decimal(str(item.price)),
+                    tax_rate=item.tax_rate,
+                    name=item.name,
+                )
+                for item in data.items
+            ]
+        dto = InvoiceUpdateDTO(
+            number=data.number,
+            supplier_id=data.supplier_id,
+            notes=data.notes,
+            is_fiscal=data.is_fiscal,
+            invoice_date=data.invoice_date,
+            items=items,
+        )
+        return await use_cases.update_invoice(invoice_id, dto)
+    except ValueError as e:
+        detail = str(e)
+        status_code = 404 if "не знайдено" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+@router.delete("/{invoice_id}", status_code=204)
+async def delete_invoice(
+    invoice_id: UUID,
+    use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+):
+    """Видалити прибуткову накладну (тільки чернетку)."""
+    try:
+        await use_cases.delete_invoice(invoice_id)
+    except ValueError as e:
+        detail = str(e)
+        status_code = 404 if "не знайдено" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+@router.get("/{invoice_id}/payment-info", response_model=InvoicePaymentInfoResponse)
+async def get_invoice_payment_info(
+    invoice_id: UUID,
+    use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+):
+    """Інформація про оплату накладної (сплачено/залишок)."""
+    try:
+        return await use_cases.get_invoice_payment_info(invoice_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{invoice_id}/price-changes", response_model=list[PriceChangeItemResponse])
+async def get_invoice_price_changes(
+    invoice_id: UUID,
+    use_cases: InvoiceUseCases = Depends(get_invoice_use_cases),
+):
+    """Зміни цін товарів у накладній (порівняно з ціною до надходження)."""
+    try:
+        return await use_cases.get_invoice_price_changes(invoice_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{invoice_id}/print-items", response_model=InvoicePrintResponse)
+async def render_invoice_print_items(
+    invoice_id: UUID,
+    data: InvoicePrintRequest,
+    use_cases: InvoicePrintUseCases = Depends(get_invoice_print_use_cases),
+):
+    """Друк цінників/етикеток з прибуткової накладної (тільки підтвердженої)."""
+    try:
+        return await use_cases.render_invoice_print_items(
+            invoice_id=invoice_id,
+            print_type=data.print_type,
+            only_changed=data.only_changed,
+            template_id=data.template_id,
+            width_mm=data.width_mm,
+            height_mm=data.height_mm,
+            gap_mm=data.gap_mm,
+            margin_mm=data.margin_mm,
+            barcode_type=data.barcode_type,
+            barcode_height_mm=data.barcode_height_mm,
+        )
+    except ValueError as e:
+        detail = str(e)
+        status_code = 404 if "не знайдено" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail)
 
 
 @router.post("/{invoice_id}/cancel", response_model=InvoiceResponse)

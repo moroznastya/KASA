@@ -233,3 +233,81 @@ class ProductUseCases:
         if not product:
             return None
         return ProductMapper.entity_to_dto(product)
+
+    # ─── Зображення товару ────────────────────────────────────────────────
+
+    async def add_product_image(
+        self,
+        product_id: UUID,
+        url: str,
+        is_main: bool = False,
+    ):
+        """
+        Додає зображення до товару.
+
+        Args:
+            product_id: ID товару.
+            url: URL або шлях до файлу зображення.
+            is_main: Чи є зображення головним.
+
+        Returns:
+            Об'єкт зображення (ProductImage).
+
+        Raises:
+            ValueError: Якщо товар не знайдено.
+        """
+        product = await self._product_repo.find_by_id(product_id)
+        if not product:
+            raise ValueError(f"Товар з ID '{product_id}' не знайдено")
+        return await self._product_repo.add_image(product_id, url, is_main)
+
+    async def delete_product_image(self, image_id: UUID) -> None:
+        """
+        Видаляє зображення товару.
+
+        Args:
+            image_id: ID зображення.
+
+        Raises:
+            ValueError: Якщо зображення не знайдено.
+        """
+        await self._product_repo.delete_image(image_id)
+
+    # ─── Додаткові штрих-коди ─────────────────────────────────────────────
+
+    async def add_product_barcode(
+        self,
+        product_id: UUID,
+        barcode: str,
+        is_primary: bool = False,
+    ):
+        """
+        Додає додатковий штрих-код до товару.
+
+        Args:
+            product_id: ID товару.
+            barcode: Значення штрих-коду.
+            is_primary: Чи є штрих-код основним.
+
+        Returns:
+            Об'єкт штрих-коду (Barcode).
+
+        Raises:
+            ValueError: Якщо товар не знайдено або штрих-код вже існує.
+        """
+        product = await self._product_repo.find_by_id(product_id)
+        if not product:
+            raise ValueError(f"Товар з ID '{product_id}' не знайдено")
+        return await self._product_repo.add_barcode(product_id, barcode, is_primary)
+
+    async def delete_product_barcode(self, barcode_id: UUID) -> None:
+        """
+        Видаляє додатковий штрих-код товару.
+
+        Args:
+            barcode_id: ID штрих-коду.
+
+        Raises:
+            ValueError: Якщо штрих-код не знайдено.
+        """
+        await self._product_repo.delete_barcode(barcode_id)

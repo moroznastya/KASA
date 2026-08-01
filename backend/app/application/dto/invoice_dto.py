@@ -52,3 +52,15 @@ class InvoiceCreateDTO:
 class InvoiceConfirmDTO:
     """DTO для підтвердження прибуткової накладної."""
     invoice_id: UUID
+
+
+@dataclass
+class InvoiceUpdateDTO:
+    """DTO для оновлення існуючої прибуткової накладної (тільки чернетки)."""
+    number: Optional[str] = None
+    supplier_id: Optional[UUID] = None
+    notes: Optional[str] = None
+    is_fiscal: Optional[bool] = None
+    invoice_date: Optional[datetime] = None
+    items: Optional[list[InvoiceItemDTO]] = None
+    """Якщо передано — повністю замінює позиції накладної."""

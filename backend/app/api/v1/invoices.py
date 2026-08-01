@@ -12,6 +12,8 @@ API роутер для роботи з прибутковими накладн�
   - POST   /invoices/{id}/cancel         — скасувати накладну
   - POST   /invoices/{id}/print-items    — друк цінників/етикеток з накладної
   - GET    /invoices/{id}/price-changes  — зміна цін в накладній
+
+⚠️ DEPRECATED: цей v1-роутер залишено для зворотної сумісності — використовуйте /api/v2/invoices/*.
 """
 
 import math
@@ -58,7 +60,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=dict)
+@router.get("", response_model=dict, deprecated=True)
 async def list_invoices(
     supplier_id: UUID = Query(None, description="Фільтр за постачальником (повертає тільки підтверджені накладні для оплати)"),
     page: int = Query(1, ge=1, description="Номер сторінки"),
@@ -120,7 +122,7 @@ async def list_invoices(
     }
 
 
-@router.get("/{invoice_id}", response_model=InvoiceResponse)
+@router.get("/{invoice_id}", response_model=InvoiceResponse, deprecated=True)
 async def get_invoice(
     invoice_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -146,7 +148,7 @@ async def get_invoice(
     return result_item
 
 
-@router.post("", response_model=InvoiceResponse, status_code=201)
+@router.post("", response_model=InvoiceResponse, status_code=201, deprecated=True)
 async def create_invoice(
     data: InvoiceCreate,
     session: AsyncSession = Depends(get_session),
@@ -217,7 +219,7 @@ async def create_invoice(
     return result_item
 
 
-@router.put("/{invoice_id}", response_model=InvoiceResponse)
+@router.put("/{invoice_id}", response_model=InvoiceResponse, deprecated=True)
 async def update_invoice(
     invoice_id: UUID,
     data: InvoiceUpdate,
@@ -298,7 +300,7 @@ async def update_invoice(
     return result_item
 
 
-@router.delete("/{invoice_id}", status_code=204)
+@router.delete("/{invoice_id}", status_code=204, deprecated=True)
 async def delete_invoice(
     invoice_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -323,7 +325,7 @@ async def delete_invoice(
     await session.flush()
 
 
-@router.get("/{invoice_id}/payment-info", response_model=InvoicePaymentInfo)
+@router.get("/{invoice_id}/payment-info", response_model=InvoicePaymentInfo, deprecated=True)
 async def get_invoice_payment_info(
     invoice_id: UUID,
     session: AsyncSession = Depends(get_session),
@@ -387,7 +389,7 @@ async def get_invoice_payment_info(
     )
 
 
-@router.post("/{invoice_id}/confirm", response_model=InvoiceResponse)
+@router.post("/{invoice_id}/confirm", response_model=InvoiceResponse, deprecated=True)
 async def confirm_invoice(
     invoice_id: UUID,
     data: InvoiceConfirmRequest,
@@ -434,7 +436,7 @@ async def confirm_invoice(
 # ─── ЕНДПОІНТ: Друк цінників/етикеток з накладної ────────────────────────────
 
 
-@router.post("/{invoice_id}/print-items", response_model=InvoicePrintResponse)
+@router.post("/{invoice_id}/print-items", response_model=InvoicePrintResponse, deprecated=True)
 async def render_invoice_print_items(
     invoice_id: UUID,
     data: InvoicePrintRequest,
@@ -658,7 +660,7 @@ async def render_invoice_print_items(
 # ─── ЕНДПОІНТ: Інформація про зміну цін в накладній ─────────────────────────
 
 
-@router.get("/{invoice_id}/price-changes", response_model=list[PriceChangeItem])
+@router.get("/{invoice_id}/price-changes", response_model=list[PriceChangeItem], deprecated=True)
 async def get_invoice_price_changes(
     invoice_id: UUID,
     session: AsyncSession = Depends(get_session),

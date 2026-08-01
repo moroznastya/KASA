@@ -14,15 +14,46 @@ from app.application.dto.invoice_dto import InvoiceDTO, InvoiceItemDTO, InvoiceC
 
 
 class InvoiceMapper:
-    """Статичний mapper для конвертації Invoice entity <-> DTO."""
+    """Статичний mapper для конвертації Invoice entity <-> DTO.
+
+    Підтримує як domain entity (quantity=Quantity, price=Money, tax_rate=TaxRate),
+    так і ORM-модель (quantity=float, price=float, tax_rate відсутній).
+    """
+
+    @staticmethod
+    def _amount(value):
+        """Повертає float з Money або float/Decimal."""
+        if value is None:
+            return None
+        if hasattr(value, "amount"):
+            return float(value.amount)
+        return float(value)
+
+    @staticmethod
+    def _quantity(value):
+        """Повертає float з Quantity або float/Decimal."""
+        if value is None:
+            return 0.0
+        if hasattr(value, "value"):
+            return float(value.value)
+        return float(value)
+
+    @staticmethod
+    def _tax_percent(value) -> int:
+        """Повертає відсоток з TaxRate або float/int; ORM не зберігає tax_rate."""
+        if value is None:
+            return 20
+        if hasattr(value, "percent"):
+            return int(value.percent)
+        return int(value)
 
     @staticmethod
     def entity_to_dto(entity: Invoice) -> InvoiceDTO:
         """
-        Конвертує Invoice entity в InvoiceDTO.
+        Конвертує Invoice entity (або ORM Invoice) в InvoiceDTO.
 
         Args:
-            entity: Invoice entity.
+            entity: Invoice entity або ORM-модель Invoice.
 
         Returns:
             InvoiceDTO.
@@ -30,10 +61,10 @@ class InvoiceMapper:
         items = [
             InvoiceItemDTO(
                 product_id=item.product_id,
-                quantity=float(item.quantity.value),
-                price=float(item.price.amount),
-                tax_rate=item.tax_rate.percent,
-                name=item.name,
+                quantity=InvoiceMapper._quantity(item.quantity),
+                price=InvoiceMapper._amount(item.price),
+                tax_rate=InvoiceMapper._tax_percent(getattr(item, "tax_rate", None)),
+                name=getattr(item, "name", "") or "",
             )
             for item in entity.items
         ]
@@ -42,12 +73,16 @@ class InvoiceMapper:
             number=entity.number,
             supplier_id=entity.supplier_id,
             items=items,
-            total=float(entity.total.amount) if entity.total else None,
-            status=entity.status.value,
-            created_at=entity.created_at,
-            confirmed_at=entity.confirmed_at,
-            notes=entity.notes,
-            is_fiscal=entity.is_fiscal,
+            total=InvoiceMapper._amount(
+                getattr(entity, "total", None) or getattr(entity, "total_amount", None)
+            ),
+            status=entity.status.value
+            if hasattr(entity.status, "value")
+            else str(entity.status),
+            created_at=getattr(entity, "created_at", None),
+            confirmed_at=getattr(entity, "confirmed_at", None),
+            notes=getattr(entity, "notes", "") or "",
+            is_fiscal=getattr(entity, "is_fiscal", False),
         )
 
     @staticmethod

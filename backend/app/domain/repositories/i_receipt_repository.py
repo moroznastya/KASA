@@ -130,3 +130,95 @@ class IReceiptRepository(Protocol):
             Загальна сума.
         """
         ...
+
+    async def get_today_stats(self) -> dict:
+        """
+        Повертає статистику чеків за сьогодні (UTC).
+
+        Returns:
+            dict: {total_sales, total_returns, total_profit, total_vat,
+                   receipts_count, items_sold, date}
+        """
+        ...
+
+    async def search_with_details(
+        self,
+        q: str = "",
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        receipt_type=None,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[list, int]:
+        """
+        Пошук чеків для повернень (за номером або назвою товару).
+
+        Args:
+            q: Пошуковий запит (номер чеку або назва товару).
+            date_from: Фільтр від дати.
+            date_to: Фільтр до дати.
+            receipt_type: Тип чеку (sale/return).
+            page: Номер сторінки.
+            size: Кількість на сторінці.
+
+        Returns:
+            Кортеж (список чеків, загальна кількість).
+        """
+        ...
+
+    async def find_recent_sales_by_product(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        """
+        Останні продажі товарів за штрих-кодом або назвою.
+
+        Args:
+            query: Штрих-код або назва товару.
+            limit: Кількість останніх продажів.
+
+        Returns:
+            list[dict]: [{product, total_sold, total_returned,
+                          returnable, recent_sales}]
+        """
+        ...
+
+    async def get_sold_returned_totals(
+        self,
+        product_id: UUID,
+    ) -> tuple:
+        """
+        Повертає (total_sold, total_returned) для товару.
+
+        Args:
+            product_id: UUID товару.
+
+        Returns:
+            Кортеж (продано, повернуто) у Decimal.
+        """
+        ...
+
+    async def get_returnable_quantity(self, product_id: UUID):
+        """
+        Скільки одиниць товару ще можна повернути.
+
+        Args:
+            product_id: UUID товару.
+
+        Returns:
+            Decimal: max(0, продано - повернуто).
+        """
+        ...
+
+    async def find_items_with_products(self, receipt_id: UUID) -> list:
+        """
+        Знаходить позиції чеку з підвантаженими товарами.
+
+        Args:
+            receipt_id: ID чеку.
+
+        Returns:
+            Список позицій (з .product).
+        """
+        ...
