@@ -24,11 +24,39 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // ── Кастомний протокол для друку HTML (print_html) ──────────────
+        // Обслуговує URL виду kasa-print://localhost/{token}/ — повертає
+        // HTML-документ з реєстру PRINT_HTML_REGISTRY (див. commands/print.rs).
+        .register_uri_scheme_protocol("kasa-print", |_ctx, req| {
+            // Витягуємо токен зі шляху: /{token}/index.html
+            let token = req
+                .uri()
+                .path()
+                .trim_start_matches('/')
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+
+            let html = crate::commands::print::take_print_html(&token);
+
+            tauri::http::Response::builder()
+                .header("Content-Type", "text/html; charset=utf-8")
+                .status(200)
+                .body(html.into_bytes())
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .body(Vec::new())
+                        .unwrap()
+                })
+        })
         // Реєстрація команд
         .invoke_handler(tauri::generate_handler![
             // ── Команди друку ──────────────────────────────────────────
             commands::print::print_image,
             commands::print::print_raster_image,
+            commands::print::print_html,
             commands::print::get_printers,
             commands::print::open_cash_drawer,
             commands::print::get_system_info,
