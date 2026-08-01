@@ -7,7 +7,12 @@ Mapper для Receipt entity.
 from decimal import Decimal
 from typing import Optional
 
-from app.domain.entities.receipt import Receipt, ReceiptItem, PaymentMethod
+from app.domain.entities.receipt import (
+    Receipt,
+    ReceiptItem,
+    PaymentMethod,
+    FiscalStatus,
+)
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate
@@ -50,6 +55,15 @@ class ReceiptMapper:
             change_amount=float(entity.change_amount.amount) if entity.change_amount else None,
             customer_id=entity.customer_id,
             notes=entity.notes,
+            is_fiscal=entity.is_fiscal,
+            fiscal_status=entity.fiscal_status.value
+            if hasattr(entity.fiscal_status, "value")
+            else str(entity.fiscal_status),
+            fiscal_number=entity.fiscal_number,
+            fiscal_serial=entity.fiscal_serial,
+            fiscal_sent_at=entity.fiscal_sent_at,
+            fiscal_error=entity.fiscal_error,
+            split_group_id=entity.split_group_id,
         )
 
     @staticmethod
@@ -73,6 +87,13 @@ class ReceiptMapper:
             change_amount=Money(Decimal(str(dto.change_amount))) if dto.change_amount is not None else None,
             customer_id=dto.customer_id,
             notes=dto.notes,
+            is_fiscal=dto.is_fiscal,
+            fiscal_status=FiscalStatus(dto.fiscal_status),
+            fiscal_number=dto.fiscal_number,
+            fiscal_serial=dto.fiscal_serial,
+            fiscal_sent_at=dto.fiscal_sent_at,
+            fiscal_error=dto.fiscal_error,
+            split_group_id=dto.split_group_id,
         )
         for item_dto in dto.items:
             receipt.add_item(ReceiptItem(
@@ -101,6 +122,9 @@ class ReceiptMapper:
             card_amount=Money(Decimal(str(dto.card_amount))) if dto.card_amount is not None else None,
             customer_id=dto.customer_id,
             notes=dto.notes,
+            is_fiscal=dto.is_fiscal,
+            fiscal_status=FiscalStatus.PENDING if dto.is_fiscal else FiscalStatus.NONE,
+            split_group_id=dto.split_group_id,
         )
         for item_dto in dto.items:
             receipt.add_item(ReceiptItem(

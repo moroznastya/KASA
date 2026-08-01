@@ -47,6 +47,7 @@ class InvoiceMapper:
             created_at=entity.created_at,
             confirmed_at=entity.confirmed_at,
             notes=entity.notes,
+            is_fiscal=entity.is_fiscal,
         )
 
     @staticmethod
@@ -68,6 +69,7 @@ class InvoiceMapper:
             created_at=dto.created_at,
             confirmed_at=dto.confirmed_at,
             notes=dto.notes,
+            is_fiscal=dto.is_fiscal,
         )
         for item_dto in dto.items:
             invoice.add_item(InvoiceItem(
@@ -94,6 +96,7 @@ class InvoiceMapper:
             number=dto.number,
             supplier_id=dto.supplier_id,
             notes=dto.notes,
+            is_fiscal=dto.is_fiscal,
         )
         for item_dto in dto.items:
             invoice.add_item(InvoiceItem(

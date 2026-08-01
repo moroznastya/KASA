@@ -162,6 +162,9 @@ class DocumentService:
                 product_id=item.product_id,
                 quantity_change=item.quantity,
             )
+            # Фіскальна накладна: товар надходить у фіскальний залишок
+            if invoice.is_fiscal:
+                await self._increase_fiscal_stock(item.product_id, item.quantity)
             # Оновлюємо собівартість товару (середньозважену або останню ціну закупівлі)
             if item.cost_price and item.cost_price > 0:
                 result = await self.session.execute(
@@ -245,6 +248,9 @@ class DocumentService:
                 product_id=item.product_id,
                 quantity_change=-item.quantity,
             )
+            # Відкат фіскального залишку (не нижче 0)
+            if invoice.is_fiscal:
+                await self._decrease_fiscal_stock(item.product_id, item.quantity)
 
         invoice.status = InvoiceStatus.CANCELLED
         await self.session.flush()
@@ -423,6 +429,10 @@ class DocumentService:
                 product_id=item.product_id,
                 quantity_change=-item.quantity,
             )
+            # Повернення постачальнику з фіскального документа:
+            # зменшуємо фіскальний залишок (не нижче 0)
+            if return_invoice.is_fiscal:
+                await self._decrease_fiscal_stock(item.product_id, item.quantity)
 
         # Виконуємо дію згідно з return_action
         action_label = RETURN_ACTION_LABELS.get(
@@ -597,10 +607,47 @@ class DocumentService:
                 product_id=item.product_id,
                 quantity_change=item.quantity,
             )
+            # Відкат фіскального залишку (повертаємо товар у fiscal_stock)
+            if return_invoice.is_fiscal:
+                await self._increase_fiscal_stock(item.product_id, item.quantity)
 
         return_invoice.status = ReturnInvoiceStatus.CANCELLED
         await self.session.flush()
         return return_invoice
+
+    # ─── Фіскальні залишки (fiscal_stock) ───────────────────────────────────
+
+    async def _increase_fiscal_stock(
+        self, product_id: UUID, quantity: Decimal
+    ) -> None:
+        """Збільшує fiscal_stock товару (позначає як фіскальний)."""
+        product = await self._get_product(product_id)
+        if product is None:
+            return
+        product.is_fiscal = True
+        current = Decimal(str(product.fiscal_stock or 0))
+        product.fiscal_stock = current + Decimal(str(quantity))
+        await self.session.flush()
+
+    async def _decrease_fiscal_stock(
+        self, product_id: UUID, quantity: Decimal
+    ) -> None:
+        """Зменшує fiscal_stock товару (не нижче 0)."""
+        product = await self._get_product(product_id)
+        if product is None:
+            return
+        current = Decimal(str(product.fiscal_stock or 0))
+        product.fiscal_stock = max(
+            Decimal("0"), current - Decimal(str(quantity))
+        )
+        await self.session.flush()
+
+    async def _get_product(self, product_id: UUID) -> Product | None:
+        """Завантажує товар за ID (або None)."""
+        result = await self.session.execute(
+            select(Product).where(Product.id == product_id)
+        )
+        return result.scalar_one_or_none()
 
     # ─── Інвентаризація (Inventory) ──────────────────────────────────────────
 

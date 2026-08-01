@@ -4,13 +4,19 @@ Use Cases для Receipt (Чек продажу).
 Реалізує бізнес-логіку для роботи з чеками продажу:
 - CreateReceipt: створення чеку продажу (sale/return)
 - GetReceipts: отримання списку чеків з фільтрацією
+
+Інтеграція з ПРРО:
+- Після створення чеку (sale/return) викликається авто-фіскалізація
+  (fiscalize_receipt), якщо передано fiscalizer_factory.
+- Фіскалізація обгорнута в try/except — проблеми з ПРРО НЕ блокують продаж.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from app.domain.entities.receipt import Receipt, PaymentMethod
@@ -20,6 +26,8 @@ from app.application.dto.receipt_dto import ReceiptDTO, ReceiptCreateDTO
 from app.application.mappers.receipt_mapper import ReceiptMapper
 from app.application.interfaces.i_event_bus import IEventBus
 from app.domain.events import ReceiptCreated, ReceiptRefunded
+
+logger = logging.getLogger(__name__)
 
 
 class ReceiptUseCases:
@@ -36,6 +44,7 @@ class ReceiptUseCases:
         product_repo: IProductRepository,
         unit_of_work: IUnitOfWork,
         event_bus: IEventBus,
+        fiscalizer_factory: Optional[Callable[[], object]] = None,
     ):
         """
         Ініціалізація Use Cases.
@@ -45,11 +54,33 @@ class ReceiptUseCases:
             product_repo: Репозиторій товарів.
             unit_of_work: Unit of Work для транзакцій.
             event_bus: Event Bus для публікації подій.
+            fiscalizer_factory: Опційна фабрика FiscalizeReceiptUseCase
+                для авто-фіскалізації після створення чеку. Якщо None —
+                фіскалізація не виконується.
         """
         self._receipt_repo = receipt_repo
         self._product_repo = product_repo
         self._uow = unit_of_work
         self._event_bus = event_bus
+        self._fiscalizer_factory = fiscalizer_factory
+
+    async def _auto_fiscalize(self, receipt_id: UUID) -> None:
+        """
+        Спроба автоматичної фіскалізації чеку (не блокує продаж).
+
+        Args:
+            receipt_id: ID створеного чеку.
+        """
+        if self._fiscalizer_factory is None:
+            return
+        try:
+            fiscalizer = self._fiscalizer_factory()
+            await fiscalizer.fiscalize_receipt(receipt_id, manual=False)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ПРРО: авто-фіскалізація чеку %s не вдалася "
+                "(продаж не заблоковано)", receipt_id
+            )
 
     async def create_sale_receipt(self, dto: ReceiptCreateDTO) -> ReceiptDTO:
         """
@@ -80,8 +111,10 @@ class ReceiptUseCases:
                         f"доступно {product.stock.value}, потрібно {item.quantity.value}"
                     )
 
-                # Зменшуємо залишок (від'ємна кількість)
-                product.update_stock(item.quantity * -1)
+                # Зменшуємо залишок (Quantity не допускає від'ємних значень —
+                # обчислюємо нове значення через віднімання)
+                if product.stock is not None:
+                    product.stock = product.stock - item.quantity
                 await self._product_repo.update(product)
 
             # Зберігаємо чек
@@ -91,11 +124,14 @@ class ReceiptUseCases:
         # Публікуємо подію ReceiptCreated
         event = ReceiptCreated(
             receipt_id=saved.id,
-            cashier_id=saved.cashier_id,
+            cashier_id=getattr(saved, "cashier_id", None),
             total_amount=saved.total or Decimal("0"),
             payment_method=saved.payment_method.value if hasattr(saved.payment_method, 'value') else str(saved.payment_method),
         )
         await self._event_bus.publish(event)
+
+        # Авто-фіскалізація (не блокує продаж при проблемах з ПРРО)
+        await self._auto_fiscalize(saved.id)
 
         return ReceiptMapper.entity_to_dto(saved)
 
@@ -137,6 +173,9 @@ class ReceiptUseCases:
             refund_amount=saved.total or Decimal("0"),
         )
         await self._event_bus.publish(event)
+
+        # Авто-фіскалізація (не блокує продаж при проблемах з ПРРО)
+        await self._auto_fiscalize(saved.id)
 
         return ReceiptMapper.entity_to_dto(saved)
 

@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ReceiptUseCases
-from .deps import get_receipt_use_cases
+from app.application.use_cases.prro.prro_use_cases import PrroUseCases
+from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
+from .deps import get_prro_use_cases, get_receipt_use_cases
 
 router = APIRouter(prefix="/receipts", tags=["receipts_v2"])
 
@@ -38,6 +40,18 @@ class ReceiptResponse(BaseModel):
     change_amount: float | None = None
     customer_id: UUID | None = None
     notes: str = ""
+    # ── Фіскалізація ────────────────────────────────────────────────────────
+    is_fiscal: bool = False
+    fiscal_status: str = "none"
+    fiscal_number: str | None = None
+    fiscal_serial: str | None = None
+    fiscal_sent_at: datetime | None = None
+    fiscal_error: str | None = None
+    split_group_id: UUID | None = None
+    fiscal_check_url: str | None = Field(
+        default=None,
+        description="URL перевірки фіскального чеку (для QR-коду)",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -77,6 +91,7 @@ async def list_receipts(
     date_to: datetime | None = None,
     payment_method: str | None = None,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    prro: PrroUseCases = Depends(get_prro_use_cases),
 ):
     """Отримати список чеків з пагінацією та фільтрацією."""
     receipts, total = await use_cases.get_receipts(
@@ -87,6 +102,9 @@ async def list_receipts(
         page=page,
         size=size,
     )
+    prro_fn = await prro.get_prro_fn()
+    for receipt in receipts:
+        receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
     return {
         "items": receipts,
         "total": total,
@@ -99,10 +117,13 @@ async def list_receipts(
 async def get_receipt(
     receipt_id: UUID,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
+    prro: PrroUseCases = Depends(get_prro_use_cases),
 ):
     """Отримати чек за ID."""
     try:
         receipt = await use_cases.get_receipt(receipt_id)
+        prro_fn = await prro.get_prro_fn()
+        receipt.fiscal_check_url = _fiscal_check_url(receipt, prro_fn)
         return receipt
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -168,3 +189,20 @@ async def create_return_receipt(
         return await use_cases.create_return_receipt(dto)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _fiscal_check_url(receipt, prro_fn: str | None) -> str | None:
+    """Формує URL перевірки фіскального чеку (QR) з даних ReceiptDTO."""
+    if (
+        not getattr(receipt, "fiscal_number", None)
+        or not prro_fn
+        or not getattr(receipt, "fiscal_sent_at", None)
+    ):
+        return None
+    return build_fiscal_check_url(
+        fiscal_number=receipt.fiscal_number,
+        amount=receipt.total or 0,
+        prro_fn=prro_fn,
+        sent_at=receipt.fiscal_sent_at,
+        mac=getattr(receipt, "fiscal_serial", None),
+    )

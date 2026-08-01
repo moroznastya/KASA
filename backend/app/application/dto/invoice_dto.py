@@ -33,6 +33,8 @@ class InvoiceDTO:
     created_at: Optional[datetime] = None
     confirmed_at: Optional[datetime] = None
     notes: str = ""
+    is_fiscal: bool = False
+    """Ознака: фіскальна накладна (товар оприбутковується у fiscal_stock)."""
 
 
 @dataclass
@@ -42,6 +44,8 @@ class InvoiceCreateDTO:
     supplier_id: UUID
     items: list[InvoiceItemDTO] = field(default_factory=list)
     notes: str = ""
+    is_fiscal: bool = False
+    """Фіскальна накладна: при підтвердженні збільшує fiscal_stock товарів."""
 
 
 @dataclass

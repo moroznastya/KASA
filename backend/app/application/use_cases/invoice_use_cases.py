@@ -16,6 +16,7 @@ from typing import Optional
 from uuid import UUID
 
 from app.domain.entities.invoice import Invoice, InvoiceStatus
+from app.domain.value_objects.quantity import Quantity
 from app.domain.repositories import IInvoiceRepository, IProductRepository, ISupplierRepository
 from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.invoice_dto import InvoiceDTO, InvoiceCreateDTO, InvoiceConfirmDTO
@@ -135,11 +136,15 @@ class InvoiceUseCases:
                 product = await self._product_repo.find_by_id(item.product_id)
                 if product:
                     product.update_stock(item.quantity)
+                    # Фіскальна накладна: товар надходить у фіскальний залишок
+                    if invoice.is_fiscal:
+                        product.mark_as_fiscal()
+                        product.update_fiscal_stock(item.quantity)
                     # Оновлюємо роздрібну ціну товару згідно з ціною в накладній
                     if item.price is not None:
                         product.change_price(item.price)
                     # Оновлюємо собівартість
-                    if item.cost_price is not None:
+                    if getattr(item, "cost_price", None) is not None:
                         product.change_cost_price(item.cost_price)
                     await self._product_repo.update(product)
 
@@ -193,8 +198,19 @@ class InvoiceUseCases:
             for item in invoice.items:
                 product = await self._product_repo.find_by_id(item.product_id)
                 if product:
-                    # Від'ємна кількість для зменшення залишку
-                    product.update_stock(item.quantity * -1)
+                    # Quantity не допускає від'ємних значень —
+                    # обчислюємо нове значення через віднімання
+                    if product.stock is not None:
+                        product.stock = product.stock - item.quantity
+                    # Відкат фіскального залишку (не нижче 0)
+                    if invoice.is_fiscal and product.fiscal_stock is not None:
+                        new_fiscal = max(
+                            Decimal("0"),
+                            product.fiscal_stock.value - item.quantity.value,
+                        )
+                        product.fiscal_stock = Quantity(
+                            new_fiscal, product.fiscal_stock.unit
+                        )
                     await self._product_repo.update(product)
 
             # Відкочуємо баланс постачальника
