@@ -34,6 +34,7 @@ from app.schemas.print_template import (
 )
 from app.domain.services.auth_service import AuthService
 from app.infrastructure.services.print_template_service import PrintTemplateService
+from app.infrastructure.services.print_font_service import PrintFontService
 
 router = APIRouter(
     prefix="/print-templates",
@@ -306,5 +307,9 @@ async def render_template(
         )
 
     html = PrintTemplateService.render_template(template.content, data.data)
+
+    # Застосовуємо вибраний шрифт (налаштування print_font_family) до чеку
+    font = await PrintFontService.get_font_family(session)
+    html = PrintFontService.apply_font_to_html(html, font)
 
     return TemplateRenderResponse(html=html)

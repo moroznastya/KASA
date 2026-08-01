@@ -31,6 +31,9 @@ from app.api.v1.users import limiter
 # ─── Інфраструктурні компоненти ─────────────────────────────────────────────
 import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+
+# Діагностичні логи рендеру цінників/етикеток (INFO)
+logging.getLogger("app.infrastructure.services.price_tag_print_service").setLevel(logging.INFO)
 from app.infrastructure.di import DIContainer, register_all_services
 from app.infrastructure.event_bus import LocalEventBus
 

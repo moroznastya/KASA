@@ -4,7 +4,7 @@ API роутер для рендеру цінників та етикеток.
 Ендпоінти:
   - POST /api/v1/print/price-tags/render  — рендер цінників на A4
   - POST /api/v1/print/labels/render      — рендер етикеток на термопринтер
-  - POST /api/v1/print/test               — тестовий друк
+  - POST /api/v1/print/test               — тестовий друк (чек / цінник / етикетка)
 
 Логіка:
   1. Отримуємо шаблон з БД за template_id
@@ -19,9 +19,11 @@ from __future__ import annotations
 import json
 import math
 import logging
+from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +39,8 @@ from app.schemas.print import (
 )
 from app.domain.services.auth_service import AuthService
 from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
+from app.infrastructure.services.print_template_service import PrintTemplateService
+from app.infrastructure.services.print_font_service import PrintFontService
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,60 @@ async def _get_fields_from_settings(
             logger.warning(f"Не вдалося розпарсити налаштування {key_name}: {setting.value}")
 
     return default_fields
+
+
+# ─── Допоміжна функція: нормалізація ціни ────────────────────────────────────
+
+def _format_price(price) -> str:
+    """
+    Нормалізує ціну товару до рядка з двома десятковими знаками.
+
+    Використовується при формуванні products_dicts для друку цінників/етикеток,
+    щоб у шаблоні "{{price}} грн" виводилось "25.00 грн", а не "25.0 грн".
+
+    Args:
+        price: ціна товару (float, str або None).
+
+    Returns:
+        Рядок виду "25.00", "45.50". Якщо price None або нечисловий — "0.00".
+    """
+    if price is None or price == "":
+        return "0.00"
+    try:
+        return f"{float(price):.2f}"
+    except (ValueError, TypeError):
+        return "0.00"
+
+
+# ─── Допоміжна функція: демо-товари для тестового друку ──────────────────────
+
+def _build_demo_products() -> list[dict]:
+    """
+    Формує демо-товари для тестового друку цінників/етикеток.
+
+    Returns:
+        Список словників з даними товарів (id, title, price, barcode, ...).
+    """
+    return [
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "Тестовий товар №1",
+            "price": _format_price("25.00"),
+            "barcode": "4820012345678",
+            "article": "ТЕСТ-001",
+            "category": "Тестова категорія",
+            "copies": 1,
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "title": "Тестовий товар №2",
+            "price": _format_price("45.50"),
+            "barcode": "4820012345679",
+            "article": "ТЕСТ-002",
+            "category": "Тестова категорія",
+            "copies": 1,
+        },
+    ]
 
 
 # ─── ЕНДПОІНТ: Рендер цінників на A4 ─────────────────────────────────────────
@@ -145,7 +203,7 @@ async def render_price_tags(
         products_dicts.append({
             "id": str(p.id),
             "title": p.title,
-            "price": p.price,
+            "price": _format_price(p.price),
             "barcode": p.barcode or "",
             "article": p.article or "",
             "category": p.category or "",
@@ -171,6 +229,12 @@ async def render_price_tags(
         products_dicts,
         settings,
     )
+
+    # ─── 5а. Застосовуємо вибраний шрифт (налаштування print_font_family) ───
+    # Шрифт читається з БД один раз на запит і застосовується до всього HTML,
+    # що йде на друк (inline style + <style> блоки).
+    font = await PrintFontService.get_font_family(session)
+    html = PrintFontService.apply_font_to_html(html, font)
 
     # ─── 6. Обчислюємо мета-інформацію ──────────────────────────────────────
     total_labels = sum(p.copies for p in data.products)
@@ -253,7 +317,7 @@ async def render_labels(
         products_dicts.append({
             "id": str(p.id),
             "title": p.title,
-            "price": p.price,
+            "price": _format_price(p.price),
             "barcode": p.barcode or "",
             "article": p.article or "",
             "category": p.category or "",
@@ -277,6 +341,10 @@ async def render_labels(
         settings,
     )
 
+    # ─── 5а. Застосовуємо вибраний шрифт (налаштування print_font_family) ───
+    font = await PrintFontService.get_font_family(session)
+    html = PrintFontService.apply_font_to_html(html, font)
+
     # ─── 6. Обчислюємо мета-інформацію ──────────────────────────────────────
     total_labels = sum(p.copies for p in data.products)
 
@@ -289,9 +357,54 @@ async def render_labels(
 # ─── Тестовий друк ────────────────────────────────────────────────────────────
 
 class TestPrintRequest(BaseModel):
-    """Запит на тестовий друк."""
-    printer_name: str = ""
-    template_type: str = "receipt_58mm"
+    """
+    Запит на тестовий друк.
+
+    Підтримує три типи друку:
+    - receipt    — тестовий чек (зворотна сумісність)
+    - price_tag  — тестовий цінник на A4
+    - label      — тестова етикетка на термопринтер
+    """
+    print_type: Literal["receipt", "price_tag", "label"] = Field(
+        "receipt",
+        description="Тип друку: receipt (чек), price_tag (цінник A4), label (етикетка)",
+    )
+    printer_name: str = Field(
+        "", description="Назва принтера (для повідомлення; друк поки що не виконується)"
+    )
+    template_type: str = Field(
+        "receipt_58mm",
+        description="Тип шаблону для чека: receipt_58mm, receipt_80mm, return_receipt_58mm, fiscal, custom",
+    )
+    # ── Параметри для price_tag / label ─────────────────────────────────────
+    template_id: UUID | None = Field(
+        None,
+        description="ID шаблону цінника/етикетки. Якщо не передано — береться з налаштувань або за замовчуванням",
+    )
+    width_mm: float | None = Field(
+        None, ge=10, le=200,
+        description="Ширина цінника/етикетки в мм (за замовчуванням: 40 для цінника, 58 для етикетки)",
+    )
+    height_mm: float | None = Field(
+        None, ge=10, le=200,
+        description="Висота цінника/етикетки в мм (за замовчуванням: 25 для цінника, 40 для етикетки)",
+    )
+    gap_mm: float | None = Field(
+        None, ge=0, le=20,
+        description="Проміжок між цінниками/етикетками в мм (за замовчуванням: 3)",
+    )
+    margin_mm: float | None = Field(
+        None, ge=0, le=50,
+        description="Поля сторінки в мм, тільки для price_tag (за замовчуванням: 10)",
+    )
+    barcode_type: Literal["code128", "qr"] = Field(
+        "code128",
+        description="Тип кодування штрих-коду: code128 (лінійний) або qr",
+    )
+    barcode_height_mm: float = Field(
+        12, ge=4, le=40,
+        description="Висота штрих-коду в мм (для code128) або розмір (для QR)",
+    )
 
 
 class TestPrintResponse(BaseModel):
@@ -299,7 +412,152 @@ class TestPrintResponse(BaseModel):
     status: str
     message: str
     preview_html: str | None = None
+    template_name: str | None = Field(
+        None, description="Назва використаного шаблону"
+    )
 
+
+# ─── Допоміжна функція: тестовий друк цінника/етикетки ───────────────────────
+
+async def _test_print_price_tag_or_label(
+    data: TestPrintRequest,
+    session: AsyncSession,
+) -> TestPrintResponse:
+    """
+    Генерує тестовий цінник (A4) або етикетку (термопринтер).
+
+    Args:
+        data: запит на тестовий друк.
+        session: асинхронна сесія БД.
+
+    Returns:
+        TestPrintResponse з preview_html та template_name.
+
+    Raises:
+        HTTPException 404: Якщо шаблон не знайдено.
+    """
+    is_price_tag = data.print_type == "price_tag"
+    template_type = "price_tag" if is_price_tag else "label"
+
+    # ─── 1. Отримуємо шаблон ────────────────────────────────────────────────
+    template = None
+
+    # 1a. Якщо template_id передано — використовуємо його
+    if data.template_id:
+        result = await session.execute(
+            select(PrintTemplate).where(PrintTemplate.id == data.template_id)
+        )
+        template = result.scalar_one_or_none()
+
+        if not template or not template.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Шаблон з ID '{data.template_id}' не знайдено або він неактивний",
+            )
+
+    # 1b. Інакше — пробуємо взяти з налаштувань (price_tag_template_id / label_template_id)
+    if template is None:
+        setting_key = "price_tag_template_id" if is_price_tag else "label_template_id"
+        result = await session.execute(
+            select(SystemSetting).where(SystemSetting.key == setting_key)
+        )
+        setting = result.scalar_one_or_none()
+        if setting and setting.value:
+            try:
+                template_id = UUID(setting.value.strip())
+                result = await session.execute(
+                    select(PrintTemplate).where(PrintTemplate.id == template_id)
+                )
+                candidate = result.scalar_one_or_none()
+                if candidate and candidate.is_active:
+                    template = candidate
+            except ValueError:
+                logger.warning(f"Невірний UUID у налаштуванні {setting_key}: {setting.value}")
+
+    # 1c. Інакше — шаблон за замовчуванням для типу
+    if template is None:
+        service = PrintTemplateService(session)
+        template = await service.get_default_for_type(template_type)
+
+        if not template:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=(
+                    f"Не знайдено шаблону для типу '{template_type}'. "
+                    f"Створіть шаблон у розділі «Шаблони друку» або передайте template_id."
+                ),
+            )
+
+    # ─── 2. Отримуємо налаштування полів ────────────────────────────────────
+    fields_key = "price_tag_fields" if is_price_tag else "label_fields"
+    fields = await _get_fields_from_settings(
+        session,
+        fields_key,
+        ["title", "price", "barcode"],
+    )
+
+    # ─── 3. Демо-товари ──────────────────────────────────────────────────────
+    products = _build_demo_products()
+
+    # ─── 4. Формуємо налаштування для сервісу ────────────────────────────────
+    # Розміри за замовчуванням залежать від типу друку
+    if is_price_tag:
+        width_mm = data.width_mm if data.width_mm is not None else 40
+        height_mm = data.height_mm if data.height_mm is not None else 25
+        gap_mm = data.gap_mm if data.gap_mm is not None else 3
+        margin_mm = data.margin_mm if data.margin_mm is not None else 10
+    else:
+        width_mm = data.width_mm if data.width_mm is not None else 58
+        height_mm = data.height_mm if data.height_mm is not None else 40
+        gap_mm = data.gap_mm if data.gap_mm is not None else 3
+        margin_mm = data.margin_mm if data.margin_mm is not None else 0
+
+    settings = {
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+        "gap_mm": gap_mm,
+        "margin_mm": margin_mm,
+        "page_width_mm": 210,   # A4 (тільки для price_tag)
+        "page_height_mm": 297,  # A4 (тільки для price_tag)
+        "fields": fields,
+        "barcode_type": data.barcode_type,
+        "barcode_height_mm": data.barcode_height_mm,
+    }
+
+    # ─── 5. Рендеримо HTML ───────────────────────────────────────────────────
+    if is_price_tag:
+        html = PriceTagPrintService.render_price_tags_grid(
+            template.content,
+            products,
+            settings,
+        )
+        label_word = "цінник"
+    else:
+        html = PriceTagPrintService.render_labels_sequential(
+            template.content,
+            products,
+            settings,
+        )
+        label_word = "етикетка"
+
+    # ─── 6. Застосовуємо вибраний шрифт (налаштування print_font_family) ───
+    # Покриває обидві гілки тестового друку: цінники (render_price_tags_grid)
+    # та етикетки (render_labels_sequential).
+    font = await PrintFontService.get_font_family(session)
+    html = PrintFontService.apply_font_to_html(html, font)
+
+    return TestPrintResponse(
+        status="success",
+        message=(
+            f"Тестовий {label_word} згенеровано "
+            f"(шаблон: {template.name}, принтер: {data.printer_name or 'системний'})"
+        ),
+        preview_html=html,
+        template_name=template.name,
+    )
+
+
+# ─── ЕНДПОІНТ: Тестовий друк ─────────────────────────────────────────────────
 
 @router.post("/test", response_model=TestPrintResponse)
 async def test_print(
@@ -308,21 +566,42 @@ async def test_print(
     current_user: User = Depends(AuthService.get_current_user),
 ):
     """
-    Тестовий друк — генерує тестовий чек з демо-даними та повертає HTML.
+    Тестовий друк — генерує тестовий документ та повертає HTML для перегляду.
 
-    Якщо передано printer_name — спроба відправити на друк (в майбутньому).
-    Зараз повертає HTML для попереднього перегляду.
+    Підтримує три типи друку (print_type):
+    - "receipt"    (за замовчуванням) — тестовий чек з демо-даними;
+      використовує template_type (receipt_58mm, receipt_80mm, ...) та printer_name.
+    - "price_tag"  — тестовий цінник на A4; використовує PriceTagPrintService
+      з параметрами template_id/width_mm/height_mm/gap_mm/margin_mm/barcode_type.
+    - "label"      — тестова етикетка на термопринтер; ті самі параметри,
+      але без margin_mm (поля сторінки).
 
-    Тіло запиту:
+    Приклад для чека (зворотна сумісність):
     ```json
     {
       "printer_name": "EPSON TM-T20",
       "template_type": "receipt_58mm"
     }
     ```
-    """
-    from app.infrastructure.services.print_template_service import PrintTemplateService
 
+    Приклад для цінника:
+    ```json
+    {
+      "print_type": "price_tag",
+      "width_mm": 40,
+      "height_mm": 25,
+      "barcode_type": "code128"
+    }
+    ```
+
+    Якщо template_id не передано — шаблон береться з налаштувань
+    (price_tag_template_id / label_template_id) або за замовчуванням для типу.
+    """
+    # ─── Тест цінника / етикетки ─────────────────────────────────────────────
+    if data.print_type in ("price_tag", "label"):
+        return await _test_print_price_tag_or_label(data, session)
+
+    # ─── Тестовий чек (зворотна сумісність) ──────────────────────────────────
     # 1. Отримуємо дефолтний шаблон для вказаного типу
     service = PrintTemplateService(session)
     template = await service.get_default_for_type(data.template_type)
@@ -370,8 +649,13 @@ async def test_print(
     # 3. Рендеримо HTML
     html = PrintTemplateService.render_template(template.content, test_data)
 
+    # Застосовуємо вибраний шрифт (налаштування print_font_family) до чеку
+    font = await PrintFontService.get_font_family(session)
+    html = PrintFontService.apply_font_to_html(html, font)
+
     return TestPrintResponse(
         status="success",
         message=f"Тестовий чек згенеровано (шаблон: {template.name}, принтер: {data.printer_name or 'системний'})",
         preview_html=html,
+        template_name=template.name,
     )
