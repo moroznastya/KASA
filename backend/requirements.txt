@@ -10,8 +10,8 @@ asyncpg>=0.29.0
 alembic>=1.13.0
 
 # ── Аутентифікація ─────────────────────────────
-passlib[bcrypt]>=1.7.4
-python-jose[cryptography]>=3.3.0
+bcrypt>=4.1.0
+PyJWT>=2.8.0
 
 # ── Rate Limiting ───────────────────────────────
 slowapi>=0.1.9

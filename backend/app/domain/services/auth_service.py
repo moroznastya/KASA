@@ -2,9 +2,9 @@
 Сервіс авторизації користувачів.
 
 Забезпечує:
-  - Логін за паролем (bcrypt через passlib)
-  - Логін за PIN-кодом (bcrypt через passlib)
-  - Генерацію JWT токенів (через python-jose)
+  - Логін за паролем (bcrypt напряму)
+  - Логін за PIN-кодом (bcrypt напряму)
+  - Генерацію JWT токенів (через PyJWT)
   - Верифікацію токенів
   - Оновлення токенів (refresh)
   - Перевірку прав доступу (permissions)
@@ -16,8 +16,9 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,10 +30,6 @@ from app.infrastructure.persistence.models.permission import Permission, ADMIN_P
 # Схема Bearer токена для Swagger
 # auto_error=False — дозволяє передати None в get_current_user_optional
 security_scheme = HTTPBearer(auto_error=False)
-
-# Контекст хешування паролів (bcrypt)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def get_default_permissions(role: UserRole) -> list[str]:
     """
@@ -53,8 +50,8 @@ class AuthService:
     """
     Сервіс авторизації та аутентифікації.
 
-    Використовує passlib (bcrypt) для хешування паролів та PIN-кодів,
-    та JWT (HS256 через python-jose) для генерації токенів доступу.
+    Використовує bcrypt (напряму) для хешування паролів та PIN-кодів,
+    та JWT (HS256 через PyJWT) для генерації токенів доступу.
     """
 
     def __init__(self, session: AsyncSession):
@@ -66,7 +63,7 @@ class AuthService:
     @staticmethod
     def hash_password(password: str) -> str:
         """
-        Хешує пароль за допомогою bcrypt (через passlib).
+        Хешує пароль за допомогою bcrypt (напряму).
 
         Args:
             password: Пароль у відкритому вигляді.
@@ -74,7 +71,9 @@ class AuthService:
         Returns:
             Закодований bcrypt хеш (str).
         """
-        return pwd_context.hash(password)
+        return bcrypt.hashpw(
+            password.encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
 
     @staticmethod
     def verify_password(password: str, hashed: str) -> bool:
@@ -88,7 +87,13 @@ class AuthService:
         Returns:
             True якщо пароль співпадає, інакше False.
         """
-        return pwd_context.verify(password, hashed)
+        try:
+            return bcrypt.checkpw(
+                password.encode("utf-8"), hashed.encode("utf-8")
+            )
+        except ValueError:
+            # Невалідний/пошкоджений хеш — вважаємо пароль невірним
+            return False
 
     # ─── JWT ─────────────────────────────────────────────────────────────────
 
@@ -192,7 +197,7 @@ class AuthService:
                 algorithms=["HS256"],
             )
             return payload
-        except JWTError:
+        except InvalidTokenError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Недійсний або прострочений токен",
@@ -404,7 +409,7 @@ class AuthService:
 
             return user
 
-        except (HTTPException, JWTError, ValueError):
+        except (HTTPException, InvalidTokenError, ValueError):
             # Якщо токен недійсний або будь-яка інша помилка — повертаємо None
             return None
 

@@ -472,8 +472,8 @@ alembic            — Міграції БД
 asyncpg            — Драйвер PostgreSQL
 pydantic           — Валідація даних
 pydantic-settings  — Конфігурація
-python-jose[cryptography] — JWT токени
-passlib[bcrypt]    — Хешування паролів
+PyJWT               — JWT токени
+bcrypt              — Хешування паролів
 python-multipart   — Form data
 uvicorn            — ASGI сервер
 ```
