@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useReceipt } from '@/hooks/useReceipts';
 import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
-import { ArrowLeft, Printer, Receipt, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Printer, Receipt, ExternalLink, FileCheck2, Loader2, RefreshCw } from 'lucide-react';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import { prroService } from '@/services/prroService';
+import { getFiscalStatusLabel } from '@/types/receipt';
 import PrintReceiptDialog from '@/components/pos/PrintReceiptDialog';
 const ReceiptDetailPage: React.FC = () => {
   const navigate = useNavigate();
@@ -13,6 +16,40 @@ const ReceiptDetailPage: React.FC = () => {
   const [showPrintDialog, setShowPrintDialog] = useState(false);
   const { id } = useParams<{ id: string }>();
   const { data: receipt, isLoading } = useReceipt(id || '');
+
+  // ── Фіскальні реквізити (з v2) ─────────────────────────────────
+  const [fiscalInfo, setFiscalInfo] = useState<{
+    fiscal_status: string;
+    fiscal_number: string | null;
+    fiscal_sent_at: string | null;
+    fiscal_error: string | null;
+    fiscal_check_url: string | null;
+  } | null>(null);
+  const [fiscalLoading, setFiscalLoading] = useState(false);
+
+  const loadFiscalInfo = async () => {
+    if (!id) return;
+    setFiscalLoading(true);
+    try {
+      const fiscal = await prroService.getReceiptFiscalInfo(id);
+      setFiscalInfo({
+        fiscal_status: fiscal.fiscal_status,
+        fiscal_number: fiscal.fiscal_number,
+        fiscal_sent_at: fiscal.fiscal_sent_at,
+        fiscal_error: fiscal.fiscal_error,
+        fiscal_check_url: fiscal.fiscal_check_url,
+      });
+    } catch {
+      setFiscalInfo(null);
+    } finally {
+      setFiscalLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFiscalInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
@@ -118,6 +155,107 @@ const ReceiptDetailPage: React.FC = () => {
             </span>
           </div>
         </div>
+
+        {/* Фіскальні реквізити (ПРРО) */}
+        {(fiscalLoading || fiscalInfo || receipt?.fiscal_status) && (
+          <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                Фіскалізація (ПРРО)
+              </h3>
+              <button
+                onClick={loadFiscalInfo}
+                className="text-xs text-gray-400 hover:text-primary-600 transition-colors inline-flex items-center gap-1"
+                title="Оновити статус"
+              >
+                {fiscalLoading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+
+            {fiscalLoading && !fiscalInfo ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : (fiscalInfo || receipt) ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-40">Статус:</span>
+                  {(fiscalInfo?.fiscal_status || receipt?.fiscal_status) === 'sent' && (
+                    <Badge variant="success">
+                      {getFiscalStatusLabel(fiscalInfo?.fiscal_status || receipt?.fiscal_status)}
+                    </Badge>
+                  )}
+                  {(fiscalInfo?.fiscal_status || receipt?.fiscal_status) === 'pending' && (
+                    <Badge variant="warning">
+                      {getFiscalStatusLabel(fiscalInfo?.fiscal_status || receipt?.fiscal_status)}
+                    </Badge>
+                  )}
+                  {(fiscalInfo?.fiscal_status || receipt?.fiscal_status) === 'failed' && (
+                    <Badge variant="danger">
+                      {getFiscalStatusLabel(fiscalInfo?.fiscal_status || receipt?.fiscal_status)}
+                    </Badge>
+                  )}
+                  {(!fiscalInfo?.fiscal_status || fiscalInfo.fiscal_status === 'none') &&
+                    (!receipt?.fiscal_status || receipt.fiscal_status === 'none') && (
+                    <Badge variant="default">
+                      {getFiscalStatusLabel(fiscalInfo?.fiscal_status || receipt?.fiscal_status || 'none')}
+                    </Badge>
+                  )}
+                </div>
+
+                {(fiscalInfo?.fiscal_number || receipt?.fiscal_number) && (
+                  <div className="flex items-center gap-3">
+                    <FileCheck2 className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-500 dark:text-gray-400 w-40">Фіскальний номер:</span>
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                      {fiscalInfo?.fiscal_number || receipt?.fiscal_number}
+                    </span>
+                  </div>
+                )}
+
+                {(fiscalInfo?.fiscal_sent_at || receipt?.fiscal_sent_at) && (
+                  <div className="flex items-center gap-3">
+                    <FileCheck2 className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-500 dark:text-gray-400 w-40">Дата фіскалізації:</span>
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                      {formatDate(fiscalInfo?.fiscal_sent_at || receipt?.fiscal_sent_at || '')}
+                    </span>
+                  </div>
+                )}
+
+                {(fiscalInfo?.fiscal_error || receipt?.fiscal_error) && (
+                  <div className="flex items-start gap-3">
+                    <FileCheck2 className="w-4 h-4 text-danger-500 mt-0.5" />
+                    <span className="text-sm text-gray-500 dark:text-gray-400 w-40">Помилка:</span>
+                    <span className="text-sm text-danger-600 dark:text-danger-400">
+                      {fiscalInfo?.fiscal_error || receipt?.fiscal_error}
+                    </span>
+                  </div>
+                )}
+
+                {(fiscalInfo?.fiscal_check_url || receipt?.fiscal_check_url) && (
+                  <div className="mt-2">
+                    <a
+                      href={fiscalInfo?.fiscal_check_url || receipt?.fiscal_check_url || '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400 underline"
+                    >
+                      Перевірити чек на сайті ДПС →
+                    </a>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">Немає даних про фіскалізацію</p>
+            )}
+          </div>
+        )}
 
         {/* Items */}
         <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700">

@@ -93,6 +93,13 @@ const RECEIPT_VARIABLES: VariableDef[] = [
   { key: 'payment_type', label: 'Тип оплати', example: 'Готівка' },
   { key: 'payment_amount', label: 'Сплачено', example: '200.00' },
   { key: 'change', label: 'Решта', example: '46.50' },
+  // ── Фіскальні змінні (Фаза 3.8: QR ДПС) ──
+  { key: 'fiscal_number', label: 'Фіскальний № чека', example: '12345' },
+  { key: 'fiscal_fn', label: 'ФН (фіскальний номер ПРРО)', example: '4538765845' },
+  { key: 'fiscal_date_time', label: 'Дата/час фіскалізації', example: '30.07.2026 14:30' },
+  { key: 'fiscal_check_url', label: 'URL перевірки чеку ДПС', example: 'https://cabinet.tax.gov.ua/cashregs/check?...' },
+  { key: 'qr_code', label: 'QR-код (img data-URI)', example: '<img src="data:image/svg+xml,...">' },
+  { key: 'fiscal_block', label: 'Фіскальний блок (ФН + № + дата/час + QR ДПС)', example: '<div>ФН: ...<img src="data:...">...</div>' },
 ];
 
 /** Отримати список змінних для типу шаблону */
@@ -165,6 +172,13 @@ const DEMO_RENDER_DATA_RECEIPT: Record<string, string> = {
   payment_type: 'Готівка',
   payment_amount: '250.00',
   change: '0.50',
+  // Фіскальний блок: порожній → прев'ю показує звичайний (нефіскальний) чек без QR
+  fiscal_number: '',
+  fiscal_fn: '',
+  fiscal_date_time: '',
+  fiscal_check_url: '',
+  qr_code: '',
+  fiscal_block: '',
 };
 
 const DEMO_RENDER_DATA_PRICE_TAG: Record<string, string> = {

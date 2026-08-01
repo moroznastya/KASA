@@ -1,10 +1,54 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { QRCodeSVG } from 'qrcode.react';
 import { printTemplateService } from '@/services/printTemplateService';
 import { settingsService } from '@/services/settingsService';
 import type { PrintTemplate } from '@/types/printTemplate';
 import type { Receipt, ReceiptItem } from '@/types/receipt';
 import { usePrintAsImage } from '@/hooks/usePrintAsImage';
 import { isTauri } from '@/hooks/useTauri';
+
+// ── QR-код ───────────────────────────────────
+/**
+ * Згенерувати SVG data-URI QR-коду (для вбудовування в HTML-шаблон друку).
+ * Повертає порожній рядок, якщо значення порожнє.
+ */
+export function generateQrCodeDataUri(value: string | null | undefined, size = 60): string {
+  if (!value) return '';
+  try {
+    const svg = renderToStaticMarkup(
+      createElement(QRCodeSVG, { value, size, level: 'M', includeMargin: false })
+    );
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  } catch {
+    return '';
+  }
+}
+
+// ── Фіскальні реквізити (Фаза 3.8: QR ДПС) ──
+
+/** Видобути ФН (фіскальний номер ПРРО) з URL перевірки чеку (параметр fn=...). */
+function parseFiscalFn(checkUrl: string): string {
+  if (!checkUrl) return '';
+  try {
+    return new URL(checkUrl).searchParams.get('fn') || '';
+  } catch {
+    return '';
+  }
+}
+
+/** Відформатувати дату/час фіскалізації (fiscal_sent_at) у форматі чеку. */
+function formatFiscalDateTime(value: string | null | undefined): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '';
+  const dateStr = d.toLocaleDateString('uk-UA');
+  const timeStr = d.toLocaleTimeString('uk-UA', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${dateStr} ${timeStr}`;
+}
 
 // ── Інтерфейси ───────────────────────────────
 export interface UseReceiptPrinterOptions {
@@ -80,9 +124,44 @@ export function receiptToRenderData(
         ? 'Змішаний'
         : 'Готівка';
 
+  // ── Фіскалізація: URL перевірки + QR-код (для шаблону 58мм) ──
+  const fiscalCheckUrl = receipt.fiscal_check_url || '';
+  const qrDataUri = generateQrCodeDataUri(fiscalCheckUrl);
+  const fiscalNumber = receipt.fiscal_number || '';
+  const fiscalStatus = receipt.fiscal_status || 'none';
+  // ФН (фіскальний номер ПРРО) — беремо з параметра fn= у URL перевірки ДПС
+  const fiscalFn = fiscalCheckUrl ? parseFiscalFn(fiscalCheckUrl) : '';
+  // Дата/час фіскалізації (fiscal_sent_at)
+  const fiscalDateTime = formatFiscalDateTime(receipt.fiscal_sent_at);
+
+  // HTML-блок QR-коду для вставки в шаблон (порожній, якщо немає URL)
+  const qrCodeHtml = qrDataUri
+    ? `<div style="text-align:center; margin:4px 0;">
+        <img src="${qrDataUri}" width="60" height="60" alt="QR" style="display:inline-block;" />
+        <div style="font-size:8px; color:#555;">Для перевірки чеку</div>
+      </div>`
+    : '';
+
+  // Повний фіскальний блок: реквізити (ФН, № фіскального чека, дата/час) + QR.
+  // Порожній, якщо fiscal_check_url відсутній → звичайні (нефіскальні) чеки
+  // друкуються БЕЗ QR та без будь-яких змін.
+  const fiscalBlockHtml = fiscalCheckUrl
+    ? `<div style="border-top:1px dashed #000; margin:6px 0 4px 0;"></div>
+<div style="text-align:center; font-size:8px; line-height:1.5;">
+  ${fiscalFn ? `<div>ФН: ${escapeHtml(fiscalFn)}</div>` : ''}
+  ${fiscalNumber ? `<div>Фіскальний №: ${escapeHtml(fiscalNumber)}</div>` : ''}
+  ${fiscalDateTime ? `<div>${escapeHtml(fiscalDateTime)}</div>` : ''}
+  <div style="margin-top:4px;">
+    <img src="${qrDataUri}" width="60" height="60" alt="QR" style="display:inline-block;" />
+  </div>
+  <div style="margin-top:2px;">Для перевірки чеку</div>
+</div>`
+    : '';
+
   return {
     shop_name: name,
     shop_address: address,
+    tax_id: taxId,
     receipt_number: receipt.receipt_number,
     date: dateStr,
     time: timeStr,
@@ -94,6 +173,16 @@ export function receiptToRenderData(
     change: change.toFixed(2),
     original_receipt_number: receipt.original_receipt_number || '',
     return_reason: receipt.return_reason || '',
+    // ── Фіскальні змінні ──
+    fiscal_check_url: fiscalCheckUrl,
+    fiscal_number: fiscalNumber,
+    fiscal_status: fiscalStatus,
+    fiscal_fn: fiscalFn,
+    fiscal_date_time: fiscalDateTime,
+    // HTML-блок QR (img з data-URI) — шаблон може вставити {{qr_code}}
+    qr_code: qrCodeHtml,
+    // HTML-блок фіскальних реквізитів + QR — шаблон може вставити {{fiscal_block}}
+    fiscal_block: fiscalBlockHtml,
     // ⚠️ footer НЕ передаємо — шаблони вже містять потрібний текст в HTML
     // footer: isReturn ? 'Повернення оформлено' : 'Дякуємо за покупку!',
     // Додаткові змінні (наприклад show_logo) — зливаємо зверху

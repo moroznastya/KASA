@@ -1,3 +1,5 @@
+import { generateQrCodeDataUri } from '@/hooks/useReceiptPrinter';
+
 /**
  * Генератор HTML-шаблонів для друку чеків
  *
@@ -297,7 +299,17 @@ export function generateReceiptHtml(data: ReceiptData): string {
     ${change !== undefined ? `<tr><td>Решта:</td><td class="text-right">${formatMoney(change)}</td></tr>` : ''}
   </table>
 
-  ${qrCode ? `<div class="qr-code">${escapeHtml(qrCode)}</div>` : ''}
+  ${
+    qrCode
+      ? `<div class="qr-code">${
+          qrCode.startsWith('data:image')
+            ? `<img src="${qrCode}" width="60" height="60" alt="QR" style="display:inline-block;" />`
+            : generateQrCodeDataUri(qrCode)
+              ? `<img src="${generateQrCodeDataUri(qrCode)}" width="60" height="60" alt="QR" style="display:inline-block;" />`
+              : escapeHtml(qrCode)
+        }</div>`
+      : ''
+  }
 
   <div class="divider"></div>
 

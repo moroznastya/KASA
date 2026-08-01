@@ -1,11 +1,14 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock } from 'lucide-react';
+import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { receiptService } from '@/services/receiptService';
 import { debtorService, Debtor } from '@/services/debtorService';
 import { settingsService } from '@/services/settingsService';
+import { prroService } from '@/services/prroService';
+import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';
 import { Button } from '@/components/ui/Button';
+import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency, formatUnit } from '@/utils/format';
@@ -100,6 +103,13 @@ const PosPage: React.FC = () => {
   const [showPrintDialog, setShowPrintDialog] = useState(false);
   const [lastReceipt, setLastReceipt] = useState<Receipt | null>(null);
   const [autoPrintReceipt, setAutoPrintReceipt] = useState(true);
+  const [fiscalStatus, setFiscalStatus] = useState<{
+    receipt_id: string;
+    fiscal_status: string;
+    fiscal_number: string | null;
+    fiscal_error: string | null;
+    fiscal_check_url: string | null;
+  } | null>(null);
   
   // Стани для модалок повернення
   const [showSearchReceiptModal, setShowSearchReceiptModal] = useState(false);
@@ -123,6 +133,18 @@ const PosPage: React.FC = () => {
       return null;
     }
   });
+
+  // Статус ПРРО для індикатора в шапці POS
+  const prroStatus = usePrroStore((s) => s.status);
+  const loadPrroStatus = usePrroStore((s) => s.loadStatus);
+  const prroFiscalizing = usePrroStore((s) => s.fiscalizing);
+
+  // Авто-оновлення статусу ПРРО (кожні 30 секунд)
+  useEffect(() => {
+    loadPrroStatus();
+    const stopPolling = startPrroStatusPolling();
+    return stopPolling;
+  }, [loadPrroStatus]);
 
   // Save cart to sessionStorage on change
   useEffect(() => {
@@ -558,6 +580,45 @@ const PosPage: React.FC = () => {
     toast.success(`Борг ${amount.toFixed(2)} грн додано до чеку`);
   };
 
+  // Отримати фіскальні реквізити чеку (статус, номер, QR URL) з v2 API
+  const fetchFiscalInfo = useCallback(async (receiptId: string): Promise<Receipt | null> => {
+    try {
+      const fiscal = await prroService.getReceiptFiscalInfo(receiptId);
+      setFiscalStatus({
+        receipt_id: fiscal.id,
+        fiscal_status: fiscal.fiscal_status,
+        fiscal_number: fiscal.fiscal_number,
+        fiscal_error: fiscal.fiscal_error,
+        fiscal_check_url: fiscal.fiscal_check_url,
+      });
+      return {
+        id: fiscal.id,
+        receipt_number: '',
+        receipt_type: 'sale',
+        items: [],
+        total_amount: '0',
+        vat_amount: '0',
+        payment_method: null,
+        payment_status: 'paid',
+        cash_amount: '0',
+        card_amount: '0',
+        change_amount: '0',
+        cashier_id: '',
+        created_by: '',
+        created_at: '',
+        is_fiscal: fiscal.is_fiscal,
+        fiscal_status: fiscal.fiscal_status,
+        fiscal_number: fiscal.fiscal_number,
+        fiscal_serial: fiscal.fiscal_serial,
+        fiscal_sent_at: fiscal.fiscal_sent_at,
+        fiscal_error: fiscal.fiscal_error,
+        fiscal_check_url: fiscal.fiscal_check_url,
+      } as Receipt;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const handlePayment = async () => {
     if (cart.length === 0) {
       toast.error('Кошик порожній');
@@ -623,6 +684,11 @@ const PosPage: React.FC = () => {
       };
 
       const response = await receiptService.createReceipt(receiptData);
+
+      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      void fetchFiscalInfo(response.id).then((fiscal) => {
+        setLastReceipt(fiscal || response);
+      });
 
       // Очищуємо стан перед показом діалогу друку
       setCart([]);
@@ -729,6 +795,11 @@ const PosPage: React.FC = () => {
 
       const response = await receiptService.createReceipt(receiptData);
 
+      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      void fetchFiscalInfo(response.id).then((fiscal) => {
+        setLastReceipt(fiscal || response);
+      });
+
       // Очищуємо стан перед показом діалогу друку
       setCart([]);
       sessionStorage.removeItem('pos_cart');
@@ -794,6 +865,11 @@ const PosPage: React.FC = () => {
       const response = await receiptService.createReceipt(receiptData);
 
       toast.success('Повернення оформлено');
+
+      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      void fetchFiscalInfo(response.id).then((fiscal) => {
+        setLastReceipt(fiscal || response);
+      });
 
       // Показуємо діалог друку
       setLastReceipt(response);
@@ -883,10 +959,128 @@ const PosPage: React.FC = () => {
     }
   }, [isProcessing, cart.length, handlePayment]);
 
+  // Ручна фіскалізація чеку
+  const handleManualFiscalize = useCallback(async () => {
+    if (!fiscalStatus) return;
+    const result = await usePrroStore.getState().fiscalize(fiscalStatus.receipt_id);
+    if (result) {
+      setFiscalStatus({
+        receipt_id: result.receipt_id,
+        fiscal_status: result.fiscal_status,
+        fiscal_number: result.fiscal_number,
+        fiscal_error: result.error,
+        fiscal_check_url: result.fiscal_check_url,
+      });
+    }
+  }, [fiscalStatus]);
+
   return (
     <>
       {/* Category browser - horizontal bar above search and cart */}
       <CategoryBrowser onProductSelect={handleProductSelect} />
+
+      {/* ─── Індикатор статусу ПРРО в шапці POS ─────────────────────── */}
+      <div className="flex items-center justify-between px-4 py-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl -mt-2 mb-1">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            ПРРО
+          </span>
+          {prroStatus ? (
+            <div className="flex items-center gap-2">
+              {prroStatus.online ? (
+                <Badge variant="success">
+                  <Wifi className="w-3 h-3 mr-1" /> Онлайн
+                </Badge>
+              ) : (
+                <Badge variant="danger">
+                  <WifiOff className="w-3 h-3 mr-1" /> Офлайн
+                </Badge>
+              )}
+              {prroStatus.open_shift ? (
+                <Badge variant="primary">
+                  <PlayCircle className="w-3 h-3 mr-1" /> Зміна відкрита
+                </Badge>
+              ) : (
+                <Badge variant="warning">
+                  <StopCircle className="w-3 h-3 mr-1" /> Зміна закрита
+                </Badge>
+              )}
+              {prroStatus.fn && (
+                <span className="text-xs text-gray-400 hidden md:inline">ФН: {prroStatus.fn}</span>
+              )}
+            </div>
+          ) : (
+            <span className="text-xs text-gray-400">Статус недоступний</span>
+          )}
+        </div>
+        <button
+          onClick={() => navigate('/prro')}
+          className="text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 hover:underline"
+        >
+          Відкрити вікно ПРРО →
+        </button>
+      </div>
+
+      {/* ─── Банер статусу фіскалізації останнього чеку ─────────────── */}
+      {fiscalStatus && (
+        <div
+          className={`
+            flex items-center gap-3 px-4 py-2.5 rounded-xl border
+            ${fiscalStatus.fiscal_status === 'sent'
+              ? 'bg-success-50 dark:bg-success-900/20 border-success-200 dark:border-success-700'
+              : fiscalStatus.fiscal_status === 'failed'
+                ? 'bg-danger-50 dark:bg-danger-900/20 border-danger-200 dark:border-danger-700'
+                : 'bg-warning-50 dark:bg-warning-900/20 border-warning-200 dark:border-warning-700'
+            }
+          `}
+        >
+          <FileCheck2
+            className={`
+              w-5 h-5 flex-shrink-0
+              ${fiscalStatus.fiscal_status === 'sent'
+                ? 'text-success-600'
+                : fiscalStatus.fiscal_status === 'failed'
+                  ? 'text-danger-600'
+                  : 'text-warning-600'
+              }
+            `}
+          />
+          <div className="flex-1 min-w-0">
+            <p className={`text-sm font-medium ${fiscalStatus.fiscal_status === 'sent' ? 'text-success-700 dark:text-success-400' : fiscalStatus.fiscal_status === 'failed' ? 'text-danger-700 dark:text-danger-400' : 'text-warning-700 dark:text-warning-400'}`}>
+              {fiscalStatus.fiscal_status === 'sent' && (
+                <>Чек фіскалізовано №{fiscalStatus.fiscal_number || ''}</>
+              )}
+              {fiscalStatus.fiscal_status === 'pending' && (
+                <>Чек очікує фіскалізації (офлайн-черга)</>
+              )}
+              {fiscalStatus.fiscal_status === 'failed' && (
+                <>Помилка фіскалізації: {fiscalStatus.fiscal_error || 'невідома'}</>
+              )}
+              {fiscalStatus.fiscal_status === 'none' && (
+                <>Чек не фіскалізовано</>
+              )}
+            </p>
+          </div>
+          {fiscalStatus.fiscal_status !== 'sent' && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleManualFiscalize}
+              isLoading={prroFiscalizing}
+            >
+              <FileCheck2 className="w-4 h-4" />
+              Фіскалізувати
+            </Button>
+          )}
+          <button
+            onClick={() => setFiscalStatus(null)}
+            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            title="Закрити"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       <div className="flex h-[calc(100vh-8rem)] gap-4">
         {/* Left panel - Product search / Categories */}

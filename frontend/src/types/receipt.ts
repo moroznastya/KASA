@@ -1,3 +1,6 @@
+/** Тип статусу фіскалізації чеку */
+export type FiscalStatus = 'none' | 'pending' | 'sent' | 'failed';
+
 export interface Receipt {
   id: string;
   receipt_number: string;
@@ -19,6 +22,16 @@ export interface Receipt {
   total_profit?: number;
   original_receipt_number?: string;   // номер оригінального чеку (для повернення)
   return_reason?: string;              // причина повернення
+
+  // ── Фіскалізація (ПРРО) ─────────────────────────────────────────────
+  is_fiscal?: boolean;
+  fiscal_status?: FiscalStatus | string;
+  fiscal_number?: string | null;
+  fiscal_serial?: string | null;
+  fiscal_sent_at?: string | null;
+  fiscal_error?: string | null;
+  /** URL перевірки фіскального чеку (для QR-коду на друку) */
+  fiscal_check_url?: string | null;
 }
 
 export interface ReceiptItem {
@@ -105,4 +118,17 @@ export interface ProductRecentSalesResponse {
 export interface ProductRecentSalesListResponse {
   items: ProductRecentSalesResponse[];
   total: number;
+}
+
+/** Зручні функції для статусу фіскалізації */
+export const FISCAL_STATUS_LABELS: Record<string, string> = {
+  none: 'Не фіскалізовано',
+  pending: 'Очікує',
+  sent: 'Фіскалізовано',
+  failed: 'Помилка',
+};
+
+export function getFiscalStatusLabel(status?: string | null): string {
+  if (!status) return FISCAL_STATUS_LABELS.none;
+  return FISCAL_STATUS_LABELS[status] || status;
 }

@@ -17,6 +17,7 @@ import {
   Settings,
   Clock,
   Printer,
+  FileCheck2,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
@@ -120,6 +121,13 @@ const navItems: NavItem[] = [
     icon: <UserCog className="w-5 h-5" />,
     module: 'users',
     roles: ['admin'],
+  },
+  {
+    path: '/prro',
+    label: 'ПРРО',
+    icon: <FileCheck2 className="w-5 h-5" />,
+    module: 'settings',
+    roles: ['admin', 'cashier'],
   },
   {
     path: '/settings',

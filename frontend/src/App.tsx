@@ -32,6 +32,8 @@ const ReceiptDetailPage = lazy(() => import('@/pages/receipts/ReceiptDetailPage'
 const DebtorsPage = lazy(() => import('@/pages/debtors/DebtorsPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
+const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
+const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
 const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
 const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
@@ -250,6 +252,16 @@ const App: React.FC = () => {
             <Route path="settings/print-templates" element={
               <RoleRoute roles={['admin']}>
                 <PrintTemplatesPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/prro" element={
+              <RoleRoute roles={['admin']}>
+                <PrroSettings />
+              </RoleRoute>
+            } />
+            <Route path="prro" element={
+              <RoleRoute roles={['admin', 'cashier']}>
+                <PrroPage />
               </RoleRoute>
             } />
             <Route path="work-time" element={<WorkTimePage />} />
