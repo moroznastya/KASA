@@ -82,16 +82,38 @@ async def session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+# ─── DI-контейнер для v2 ендпоінтів ──────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def di_container():
+    """
+    DI-контейнер для v2 ендпоінтів (app.state.di_container).
+
+    V2 deps (app/api/v2/deps.py) резолвлять event_bus/cache_service
+    через request.app.state.di_container, який у продакшні створюється
+    у lifespan. Тут створюємо його явно (без запуску lifespan).
+    """
+    from app.infrastructure.di.container import DIContainer
+    from app.infrastructure.di.service_registry import register_all_services
+
+    container = DIContainer()
+    register_all_services(container)
+    return container
+
+
 # ─── Фікстура HTTP клієнта ───────────────────────────────────────────────────
 
 @pytest_asyncio.fixture
-async def client(session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    """AsyncClient з override get_session."""
+async def client(session: AsyncSession, di_container) -> AsyncGenerator[AsyncClient, None]:
+    """AsyncClient з override get_session + DI-контейнер для v2."""
 
     async def override_get_session():
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
+
+    # V2 deps вимагають app.state.di_container (у продакшні — з lifespan)
+    app.state.di_container = di_container
 
     # Кешування: in-memory MemoryCacheService — ізоляція від Redis у тестах
     test_cache = MemoryCacheService(default_ttl=60)

@@ -336,4 +336,7 @@ async def delete_product(
         # Інвалідація кешу
         await invalidate_product_cache(cache)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=404 if "не знайдено" in str(e) else 400,
+            detail=str(e),
+        )

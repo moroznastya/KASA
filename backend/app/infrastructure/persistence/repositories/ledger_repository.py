@@ -2,21 +2,30 @@
 Repository Implementation: SQLAlchemyLedgerRepository.
 
 Реалізація ILedgerRepository з використанням SQLAlchemy.
+
+Оптимізація N+1:
+  - ledger → supplier (to-one) → joinedload (LEFT OUTER JOIN, 1 запит)
 """
 
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.domain.repositories import ILedgerRepository
-from app.infrastructure.persistence.models.supplier_ledger import (
-    SupplierLedger,
-    LedgerOperationType,
-)
 from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier_ledger import (
+    LedgerOperationType,
+    SupplierLedger,
+)
+
+# Спільні опції eager-loading для записів журналу
+_LEDGER_OPTIONS = (
+    joinedload(SupplierLedger.supplier),
+)
 
 
 class SQLAlchemyLedgerRepository(ILedgerRepository):
@@ -36,8 +45,12 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         return entry
 
     async def find_by_id(self, entry_id: UUID) -> Optional[SupplierLedger]:
-        """Знаходить запис за ID."""
-        stmt = select(SupplierLedger).where(SupplierLedger.id == entry_id)
+        """Знаходить запис за ID (з постачальником)."""
+        stmt = (
+            select(SupplierLedger)
+            .where(SupplierLedger.id == entry_id)
+            .options(*_LEDGER_OPTIONS)
+        )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -47,7 +60,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[SupplierLedger], int]:
-        """Знаходить записи для постачальника."""
+        """Знаходить записи для постачальника (з постачальником)."""
         base_stmt = select(SupplierLedger).where(
             SupplierLedger.supplier_id == supplier_id
         )
@@ -59,6 +72,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         offset = (page - 1) * size
         stmt = (
             base_stmt
+            .options(*_LEDGER_OPTIONS)
             .offset(offset)
             .limit(size)
             .order_by(SupplierLedger.operation_date.desc())
@@ -74,7 +88,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[SupplierLedger], int]:
-        """Знаходить записи за типом операції."""
+        """Знаходить записи за типом операції (з постачальником)."""
         base_stmt = select(SupplierLedger).where(
             SupplierLedger.operation_type == operation_type
         )
@@ -86,6 +100,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         offset = (page - 1) * size
         stmt = (
             base_stmt
+            .options(*_LEDGER_OPTIONS)
             .offset(offset)
             .limit(size)
             .order_by(SupplierLedger.operation_date.desc())
@@ -102,7 +117,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[SupplierLedger], int]:
-        """Знаходить записи за діапазоном дат."""
+        """Знаходить записи за діапазоном дат (з постачальником)."""
         base_stmt = select(SupplierLedger).where(
             SupplierLedger.operation_date >= date_from,
             SupplierLedger.operation_date <= date_to,
@@ -115,6 +130,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         offset = (page - 1) * size
         stmt = (
             base_stmt
+            .options(*_LEDGER_OPTIONS)
             .offset(offset)
             .limit(size)
             .order_by(SupplierLedger.operation_date.desc())
@@ -133,7 +149,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[SupplierLedger], int]:
-        """Розширений пошук записів журналу."""
+        """Розширений пошук записів журналу (з постачальником)."""
         base_stmt = select(SupplierLedger)
 
         if supplier_id is not None:
@@ -160,6 +176,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         offset = (page - 1) * size
         stmt = (
             base_stmt
+            .options(*_LEDGER_OPTIONS)
             .offset(offset)
             .limit(size)
             .order_by(SupplierLedger.operation_date.desc())

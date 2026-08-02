@@ -40,20 +40,61 @@ class SQLAlchemyProductRepository(IProductRepository):
     SQLAlchemy реалізація репозиторію товарів.
 
     Працює безпосередньо з ORM моделями Product та Barcode.
+    Приймає як ORM-модель Product, так і доменну entity Product
+    (конвертується в ORM через _to_orm).
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    @staticmethod
+    def _to_orm(product) -> "Product":
+        """Конвертує доменну Product entity в ORM Product (якщо це не ORM)."""
+        if isinstance(product, Product):
+            return product
+        from app.domain.value_objects.money import Money
+        from app.domain.value_objects.quantity import Quantity
+
+        def _num(value):
+            """Money/Quantity/Decimal/float -> float | None."""
+            if value is None:
+                return None
+            if isinstance(value, Money):
+                return float(value.amount)
+            if isinstance(value, Quantity):
+                return float(value.value)
+            if hasattr(value, "percent"):  # TaxRate
+                return float(value.percent)
+            return float(value)
+
+        return Product(
+            id=product.id,
+            barcode=str(product.barcode) if product.barcode else None,
+            sku=product.sku or None,
+            title=product.name,
+            description=product.description or None,
+            price=_num(product.price),
+            cost_price=_num(product.cost_price),
+            stock=_num(product.stock),
+            unit=product.unit or None,
+            category_id=product.category_id,
+            supplier_id=product.supplier_id,
+            tax_rate=_num(product.tax_rate) if product.tax_rate is not None else None,
+            is_fiscal=product.is_fiscal,
+            fiscal_stock=_num(product.fiscal_stock) or 0,
+        )
+
     async def save(self, product: Product) -> Product:
-        """Зберігає новий товар у БД."""
-        self._session.add(product)
+        """Зберігає новий товар у БД (доменну entity або ORM-модель)."""
+        orm = self._to_orm(product)
+        self._session.add(orm)
         await self._session.flush()
-        return product
+        return orm
 
     async def update(self, product: Product) -> Product:
         """Оновлює існуючий товар у БД."""
-        merged = await self._session.merge(product)
+        orm = self._to_orm(product)
+        merged = await self._session.merge(orm)
         await self._session.flush()
         return merged
 
@@ -177,10 +218,21 @@ class SQLAlchemyProductRepository(IProductRepository):
 
     async def delete(self, product_id: UUID) -> None:
         """Видаляє товар за ID."""
+        from sqlalchemy.exc import IntegrityError
+        from app.infrastructure.persistence.models.receipt import ReceiptItem
+
+        # Якщо товар фігурує у чеках (receipt_items) — видалення неможливе
+        # (жорстке видалення знищило б історію продажів).
         product = await self.find_by_id(product_id)
         if product is not None:
-            await self._session.delete(product)
-            await self._session.flush()
+            try:
+                await self._session.delete(product)
+                await self._session.flush()
+            except IntegrityError as exc:
+                await self._session.rollback()
+                raise ValueError(
+                    f"Товар має пов'язані записи (чеки/накладні) — видалення неможливе"
+                ) from exc
 
     async def count(self) -> int:
         """Повертає загальну кількість товарів."""

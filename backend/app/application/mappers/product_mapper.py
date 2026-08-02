@@ -134,29 +134,46 @@ class ProductMapper:
         """
         Застосовує оновлення з ProductUpdateDTO до існуючої Product entity.
 
+        Працює як з доменною entity (name/price/stock у вигляді value objects),
+        так і з ORM-моделлю Product (title/price/stock — скалярні значення):
+        визначає тип за наявністю атрибута ``title`` (ORM) замість ``name``.
+
         Args:
-            entity: Існуюча Product entity.
+            entity: Існуюча Product entity (доменна або ORM).
             dto: ProductUpdateDTO з полями для оновлення.
 
         Returns:
             Оновлена Product entity.
         """
+        is_orm = hasattr(entity, "title") and not hasattr(entity, "name")
+
         if dto.name is not None:
-            entity.name = dto.name
+            if is_orm:
+                entity.title = dto.name
+            else:
+                entity.name = dto.name
         if dto.barcode is not None:
-            entity.barcode = Barcode(dto.barcode) if dto.barcode else None
+            barcode = dto.barcode or None
+            entity.barcode = barcode if is_orm else (Barcode(barcode) if barcode else None)
         if dto.price is not None:
-            entity.price = Money(Decimal(str(dto.price)))
+            entity.price = float(dto.price) if is_orm else Money(Decimal(str(dto.price)))
         if dto.cost_price is not None:
-            entity.cost_price = Money(Decimal(str(dto.cost_price)))
+            entity.cost_price = (
+                float(dto.cost_price) if is_orm else Money(Decimal(str(dto.cost_price)))
+            )
         if dto.stock is not None:
-            entity.stock = Quantity(Decimal(str(dto.stock)), dto.unit or entity.unit)
+            unit = dto.unit or getattr(entity, "unit", None) or "шт"
+            entity.stock = (
+                float(dto.stock) if is_orm else Quantity(Decimal(str(dto.stock)), unit)
+            )
         if dto.category_id is not None:
             entity.category_id = dto.category_id
         if dto.supplier_id is not None:
             entity.supplier_id = dto.supplier_id
         if dto.tax_rate is not None:
-            entity.tax_rate = TaxRate(Decimal(str(dto.tax_rate)))
+            entity.tax_rate = (
+                float(dto.tax_rate) if is_orm else TaxRate(Decimal(str(dto.tax_rate)))
+            )
         if dto.sku is not None:
             entity.sku = dto.sku
         if dto.unit is not None:

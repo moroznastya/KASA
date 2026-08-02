@@ -87,9 +87,10 @@ class ProductUseCases:
             await self._uow.commit()
 
         # Публікуємо подію ProductCreated
+        # saved може бути доменною entity (name) або ORM Product (title)
         event = ProductCreated(
             product_id=saved.id,
-            name=saved.name,
+            name=getattr(saved, "name", None) or getattr(saved, "title", "") or "",
             barcode=saved.barcode or "",
             category_id=saved.category_id,
             supplier_id=saved.supplier_id,
@@ -159,6 +160,15 @@ class ProductUseCases:
         product = await self._product_repo.find_by_id(product_id)
         if not product:
             raise ValueError(f"Товар з ID '{product_id}' не знайдено")
+
+        # Бізнес-правило: товар можна видалити тільки з нульовим залишком
+        stock = getattr(product, "stock", None)
+        stock_value = float(stock.value) if hasattr(stock, "value") else (float(stock) if stock is not None else 0.0)
+        if stock_value != 0:
+            name = getattr(product, "name", None) or getattr(product, "title", "") or ""
+            raise ValueError(
+                f"Неможливо видалити товар '{name}': залишок на складі {stock_value} шт."
+            )
 
         async with self._uow:
             await self._product_repo.delete(product_id)

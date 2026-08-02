@@ -27,6 +27,11 @@ class ProductDTO:
     is_active: bool = True
     description: str = ""
 
+    @property
+    def quantity(self) -> Optional[Decimal]:
+        """Аліас для сумісності з ProductResponse (API v2 використовує quantity)."""
+        return self.stock
+
 
 @dataclass
 class ProductCreateDTO:

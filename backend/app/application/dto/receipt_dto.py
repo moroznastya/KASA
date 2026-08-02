@@ -60,6 +60,8 @@ class ReceiptCreateDTO:
     cash_amount: Optional[Decimal] = None
     card_amount: Optional[Decimal] = None
     customer_id: Optional[UUID] = None
+    cashier_id: Optional[UUID] = None
+    """ID касира (береться з JWT-токена запиту)."""
     notes: str = ""
     # ── Фіскалізація ────────────────────────────────────────────────────────
     is_fiscal: bool = False

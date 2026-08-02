@@ -82,6 +82,10 @@ class Receipt:
     items: list[ReceiptItem] = field(default_factory=list)
     total: Optional[Money] = None
     payment_method: PaymentMethod = PaymentMethod.CASH
+    receipt_type: str = "sale"
+    """Тип чеку: 'sale' (продаж) або 'return' (повернення)."""
+    cashier_id: Optional[UUID] = None
+    """ID касира, який створив чек."""
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     cash_amount: Optional[Money] = None
     card_amount: Optional[Money] = None

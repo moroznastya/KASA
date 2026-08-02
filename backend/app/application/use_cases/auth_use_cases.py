@@ -71,10 +71,10 @@ class AuthUseCases:
         if not user.is_active:
             raise ValueError("Користувач деактивований")
 
-        # Тут має бути перевірка пароля через хешування
-        # (реальна перевірка в сервісному шарі — bcrypt через AuthService)
-        # Для цього Use Case потрібен PasswordHasher interface
-        # Поки що повертаємо заглушку
+        # Перевірка пароля через bcrypt (AuthService)
+        stored_hash = getattr(user, "password_hash", "") or ""
+        if not AuthService.verify_password(password, stored_hash):
+            raise ValueError("Невірний логін або пароль")
 
         # Оновлюємо час останнього входу
         user.record_login()
@@ -114,6 +114,11 @@ class AuthUseCases:
 
         if not user.is_active:
             raise ValueError("Користувач деактивований")
+
+        # Перевірка PIN-коду через bcrypt (AuthService)
+        stored_pin = getattr(user, "pin_code", None)
+        if not stored_pin or not AuthService.verify_password(pin_code, stored_pin):
+            raise ValueError("Невірний логін або PIN-код")
 
         # Оновлюємо час останнього входу
         user.record_login()

@@ -20,7 +20,7 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.domain.entities.receipt import Receipt, PaymentMethod
 from app.domain.repositories import IReceiptRepository, IProductRepository
@@ -149,6 +149,10 @@ class ReceiptUseCases:
         """
         # Конвертуємо DTO в Entity
         receipt = ReceiptMapper.create_dto_to_entity(dto)
+        receipt.receipt_type = "sale"
+        receipt.cashier_id = dto.cashier_id
+        if not receipt.number:
+            receipt.number = f"RCPT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
 
         async with self._uow:
             # Перевіряємо наявність товарів та оновлюємо залишки
@@ -157,16 +161,16 @@ class ReceiptUseCases:
                 if not product:
                     raise ValueError(f"Товар з ID '{item.product_id}' не знайдено")
 
-                if product.stock and product.stock < item.quantity:
+                stock = _stock_as_float(product.stock)
+                if stock is not None and stock < float(item.quantity.value):
                     raise ValueError(
-                        f"Недостатньо залишку товару '{product.name}': "
-                        f"доступно {product.stock.value}, потрібно {item.quantity.value}"
+                        f"Недостатньо залишку товару '{getattr(product, 'name', getattr(product, 'title', ''))}': "
+                        f"доступно {stock}, потрібно {item.quantity.value}"
                     )
 
-                # Зменшуємо залишок (Quantity не допускає від'ємних значень —
-                # обчислюємо нове значення через віднімання)
-                if product.stock is not None:
-                    product.stock = product.stock - item.quantity
+                # Зменшуємо залишок (ORM Product зберігає stock як число)
+                if stock is not None:
+                    product.stock = stock - float(item.quantity.value)
                 await self._product_repo.update(product)
 
             # Зберігаємо чек
@@ -177,7 +181,9 @@ class ReceiptUseCases:
         event = ReceiptCreated(
             receipt_id=saved.id,
             cashier_id=getattr(saved, "cashier_id", None),
-            total_amount=saved.total or Decimal("0"),
+            total_amount=(
+                getattr(saved, "total", None) or getattr(saved, "total_amount", None) or Decimal("0")
+            ),
             payment_method=saved.payment_method.value if hasattr(saved.payment_method, 'value') else str(saved.payment_method),
         )
         await self._event_bus.publish(event)
@@ -208,6 +214,10 @@ class ReceiptUseCases:
         """
         # Конвертуємо DTO в Entity
         receipt = ReceiptMapper.create_dto_to_entity(dto)
+        receipt.receipt_type = "return"
+        receipt.cashier_id = dto.cashier_id
+        if not receipt.number:
+            receipt.number = f"RCPT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
 
         async with self._uow:
             # Повертаємо товари на склад (збільшуємо залишки)
@@ -216,8 +226,9 @@ class ReceiptUseCases:
                 if not product:
                     raise ValueError(f"Товар з ID '{item.product_id}' не знайдено")
 
-                # Збільшуємо залишок
-                product.update_stock(item.quantity)
+                # Збільшуємо залишок (ORM Product зберігає stock як число)
+                stock = _stock_as_float(product.stock)
+                product.stock = (stock or 0) + float(item.quantity.value)
                 await self._product_repo.update(product)
 
             # Зберігаємо чек
@@ -228,7 +239,9 @@ class ReceiptUseCases:
         event = ReceiptRefunded(
             receipt_id=saved.id,
             original_receipt_id=getattr(saved, 'original_receipt_id', saved.id) or saved.id,
-            refund_amount=saved.total or Decimal("0"),
+            refund_amount=(
+                getattr(saved, "total", None) or getattr(saved, "total_amount", None) or Decimal("0")
+            ),
         )
         await self._event_bus.publish(event)
 
@@ -458,3 +471,12 @@ class ReceiptUseCases:
                 "created_at": item.created_at,
             })
         return result
+
+
+def _stock_as_float(stock) -> float | None:
+    """Повертає float з ORM-поля stock або доменного Quantity."""
+    if stock is None:
+        return None
+    if hasattr(stock, "value"):
+        return float(stock.value)
+    return float(stock)

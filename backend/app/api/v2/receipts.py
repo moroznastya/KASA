@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ReceiptUseCases
@@ -371,6 +371,7 @@ async def get_receipt(
 @router.post("/sale", response_model=ReceiptResponse, status_code=201)
 async def create_sale_receipt(
     data: CreateReceiptRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
     cache: ICacheService = Depends(get_cache_service),
@@ -399,6 +400,7 @@ async def create_sale_receipt(
             cash_amount=__import__('decimal').Decimal(str(data.cash_amount)) if data.cash_amount else None,
             card_amount=__import__('decimal').Decimal(str(data.card_amount)) if data.card_amount else None,
             customer_id=data.customer_id,
+            cashier_id=_uuid_or_none(request.scope.get("user_id")),
             notes=data.notes,
         )
         result = await use_cases.create_sale_receipt(dto, background_tasks=background_tasks)
@@ -412,6 +414,7 @@ async def create_sale_receipt(
 @router.post("/return", response_model=ReceiptResponse, status_code=201)
 async def create_return_receipt(
     data: CreateReceiptRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     use_cases: ReceiptUseCases = Depends(get_receipt_use_cases),
     cache: ICacheService = Depends(get_cache_service),
@@ -440,6 +443,7 @@ async def create_return_receipt(
             cash_amount=__import__('decimal').Decimal(str(data.cash_amount)) if data.cash_amount else None,
             card_amount=__import__('decimal').Decimal(str(data.card_amount)) if data.card_amount else None,
             customer_id=data.customer_id,
+            cashier_id=_uuid_or_none(request.scope.get("user_id")),
             notes=data.notes,
         )
         result = await use_cases.create_return_receipt(dto, background_tasks=background_tasks)
@@ -465,3 +469,15 @@ def _fiscal_check_url(receipt, prro_fn: str | None) -> str | None:
         sent_at=receipt.fiscal_sent_at,
         mac=getattr(receipt, "fiscal_serial", None),
     )
+
+
+def _uuid_or_none(value):
+    """Конвертує значення з JWT scope (str/UUID/None) у UUID | None."""
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None

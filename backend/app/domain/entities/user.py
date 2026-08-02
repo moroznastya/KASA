@@ -37,6 +37,10 @@ class User:
     id: UUID = field(default_factory=uuid4)
     name: str = ""
     login: str = ""
+    password_hash: str = ""
+    """bcrypt-хеш пароля користувача."""
+    pin_code: Optional[str] = None
+    """bcrypt-хеш PIN-коду (для швидкого входу на касі)."""
     role: UserRole = UserRole.CASHIER
     is_active: bool = True
     email: str = ""

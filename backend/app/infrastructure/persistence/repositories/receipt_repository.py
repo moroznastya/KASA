@@ -12,7 +12,7 @@ Repository Implementation: SQLAlchemyReceiptRepository.
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,11 +50,52 @@ class SQLAlchemyReceiptRepository(IReceiptRepository):
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    @staticmethod
+    def _to_orm(receipt) -> "Receipt":
+        """Конвертує доменну Receipt entity в ORM Receipt (якщо це не ORM)."""
+        if isinstance(receipt, Receipt):
+            return receipt
+        from app.infrastructure.persistence.models.receipt import (
+            FiscalStatus as OrmFiscalStatus,
+        )
+
+        orm = Receipt(
+            id=receipt.id,
+            receipt_number=receipt.number or f"RCPT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}",
+            receipt_type=ReceiptType.SALE
+            if getattr(receipt, "receipt_type", "sale") == "sale"
+            else ReceiptType.RETURN,
+            cashier_id=receipt.cashier_id,
+            total_amount=float(receipt.total.amount) if receipt.total is not None else 0.0,
+            change_amount=float(receipt.change_amount.amount) if receipt.change_amount is not None else None,
+            is_return=getattr(receipt, "receipt_type", "sale") == "return",
+            notes=receipt.notes or None,
+            payment_method=ReceiptPaymentMethod(receipt.payment_method.value)
+            if hasattr(receipt.payment_method, "value")
+            else ReceiptPaymentMethod(receipt.payment_method),
+            is_fiscal=receipt.is_fiscal,
+            fiscal_status=OrmFiscalStatus(receipt.fiscal_status.value)
+            if hasattr(receipt.fiscal_status, "value")
+            else OrmFiscalStatus(receipt.fiscal_status),
+            split_group_id=receipt.split_group_id,
+        )
+        orm.items = [
+            ReceiptItem(
+                product_id=item.product_id,
+                quantity=float(item.quantity.value),
+                price=float(item.price.amount),
+                total=float(item.total.amount),
+            )
+            for item in receipt.items
+        ]
+        return orm
+
     async def save(self, receipt: Receipt) -> Receipt:
-        """Зберігає новий чек."""
-        self._session.add(receipt)
+        """Зберігає новий чек (доменну entity або ORM-модель)."""
+        orm = self._to_orm(receipt)
+        self._session.add(orm)
         await self._session.flush()
-        return receipt
+        return orm
 
     async def find_by_id(self, receipt_id: UUID) -> Optional[Receipt]:
         """Знаходить чек за ID (з позиціями, товарами, касиром, боржником)."""

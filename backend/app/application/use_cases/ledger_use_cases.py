@@ -14,13 +14,13 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from app.application.dto.ledger_dto import LedgerCreateDTO, LedgerEntryDTO
+from app.application.interfaces.i_event_bus import IEventBus
+from app.application.mappers.ledger_mapper import LedgerMapper
 from app.domain.entities.ledger_entry import OperationType
+from app.domain.events import LedgerEntryCreated
 from app.domain.repositories import ILedgerRepository, ISupplierRepository
 from app.domain.repositories.i_unit_of_work import IUnitOfWork
-from app.application.dto.ledger_dto import LedgerEntryDTO, LedgerCreateDTO
-from app.application.mappers.ledger_mapper import LedgerMapper
-from app.application.interfaces.i_event_bus import IEventBus
-from app.domain.events import LedgerEntryCreated
 
 
 class LedgerUseCases:
@@ -75,7 +75,6 @@ class LedgerUseCases:
 
         # Розраховуємо баланс після операції
         current_balance = await self._ledger_repo.get_supplier_balance(dto.supplier_id)
-        from decimal import Decimal
         from app.domain.value_objects.money import Money
         entry.balance_after = Money(Decimal(str(current_balance))) + entry.amount
 
@@ -89,8 +88,10 @@ class LedgerUseCases:
             supplier_id=saved.supplier_id,
             amount=saved.amount.amount if hasattr(saved.amount, 'amount') else Decimal("0"),
             entry_type=saved.operation_type.value if hasattr(saved.operation_type, 'value') else str(saved.operation_type),
-            reference_type=saved.reference_type or "",
-            reference_id=saved.reference_id or saved.id,
+            reference_type=getattr(saved, "reference_type", None)
+            or (getattr(saved, "document_number", None) or ""),
+            reference_id=getattr(saved, "reference_id", None)
+            or (getattr(saved, "document_id", None) or saved.id),
         )
         await self._event_bus.publish(event)
 
