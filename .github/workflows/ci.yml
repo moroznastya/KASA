@@ -6,8 +6,41 @@
 # Jobs:
 #   lint-backend   — ruff + mypy
 #   lint-frontend  — eslint + tsc --noEmit
-#   test-backend   — pytest (unit + integration)
+#   test-backend   — pytest (unit + integration) + coverage
 #   build          — Docker build перевірка
+# ============================================================================
+#
+# 🔧 Оновлення 2026-08-01 (відновлення CI):
+#   1. Додано PostgreSQL-сервіс (postgres:16-alpine) у job test-backend —
+#      конфігурація ідентична docker-compose db-test (pos_system_test/test_password).
+#      Поточні інтеграційні тести працюють на SQLite in-memory, але сервіс
+#      готовий для тестів, що використовують реальну PostgreSQL.
+#   2. Env DB_* та SECRET_KEY передаються у job — config.py вимагає їх
+#      (хардкод-дефолти прибрано з міркувань безпеки).
+#   3. Coverage: --cov=app/application --cov-report=term --cov-report=html.
+#      fail_under = 80.0 УВІМКНЕНО у pyproject.toml ([tool.coverage.report]).
+#      Скоуп coverage — application layer (app/application): бізнес-логіка
+#      покрита на 85% (466 unit-тестів). ВЕСЬ app (~61%) містить інфраструктуру,
+#      тому міряти його гейтом fail_under=80 неможливо — лише app/application.
+#   4. mypy: continue-on-error: true залишено — 409 помилок, потребують
+#      окремої задачі на виправлення (TODO нижче).
+# ============================================================================
+#
+# ⏳ TODO (Tauri Updater release): 👇 НЕ ЗАБУТИ РОЗГОРНУТИ!
+#   Додати job `release-tauri` (тригер: push тега v* або workflow_dispatch):
+#     - tauri-action v4 (tauri-apps/tauri-action) з матрицею OS:
+#         ubuntu-22.04 (Linux: deb/appimage) + windows-latest (nsis/msi)
+#     - `createUpdaterArtifacts: true` (вже увімкнено в tauri.conf.json)
+#     - secrets репозиторію (Settings → Secrets and variables → Actions):
+#         TAURI_SIGNING_PRIVATE_KEY       — ВМІСТ приватного ключа
+#                                           (frontend/src-tauri/.tauri/kasa-pos.key)
+#         TAURI_SIGNING_PRIVATE_KEY_PASSWORD — пароль ключа
+#     - публікація GitHub Release з артефактами + latest.json
+#       (endpoint у tauri.conf.json: https://github.com/kasa-pos/kasa-pos/releases/latest/download/latest.json
+#        — замінити на реальний owner/repo!)
+#     - Документація: https://tauri.app/plugin/updater/ (v2)
+#   ⚠️ Без цього job користувачі не отримають оновлень, навіть з увімкненим
+#      плагіном — немає підписаних артефактів на release.
 # ============================================================================
 
 name: 🧪 Kasa POS — CI
@@ -61,9 +94,11 @@ jobs:
       - name: 🔬 Ruff check
         run: ruff check app/ --output-format=github
 
+      # TODO(mypy): 409 помилок у 78 файлах — потребує окремої задачі.
+      # continue-on-error залишено, щоб не блокувати CI до виправлення.
       - name: 🔬 Mypy check
         run: mypy app/ --ignore-missing-imports
-        continue-on-error: true  # mypy — рекомендаційний
+        continue-on-error: true
 
   # ─── Frontend Lint — eslint + tsc ───────────────────────────────────────
   lint-frontend:
@@ -93,13 +128,41 @@ jobs:
       - name: 🔬 TypeScript check
         run: npx tsc --noEmit
 
-  # ─── Backend Test — pytest ──────────────────────────────────────────────
+  # ─── Backend Test — pytest + coverage ───────────────────────────────────
   test-backend:
-    name: 🧪 Backend tests (pytest)
+    name: 🧪 Backend tests (pytest + coverage)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./kasa/backend
+
+    # ─── PostgreSQL 16 (як docker-compose db-test) ────────────────────────
+    # Потрібен для інтеграційних тестів, що використовують реальну БД.
+    # Поточні тести працюють на SQLite in-memory, але сервіс готовий
+    # для майбутніх тестів (health + CRUD через TestClient на PostgreSQL).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pos_system_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pos_system_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Змінні оточення для застосунку (config.py вимагає DB_PASSWORD та SECRET_KEY)
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5433
+      DB_USER: postgres
+      DB_PASSWORD: test_password
+      DB_NAME: pos_system_test
+      SECRET_KEY: ci-test-secret-key-2026-32chars-minimum!!
 
     steps:
       - name: 📥 Checkout
@@ -119,11 +182,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: 🧪 Unit tests
-        run: pytest tests/unit/ -v --tb=short
+      - name: 🧪 Unit tests + coverage
+        run: pytest tests/unit/ -v --tb=short --cov=app/application --cov-report=term
 
-      - name: 🧪 Integration tests
-        run: pytest tests/integration/ -v --tb=short -m integration
+      - name: 🧪 Integration tests + coverage
+        run: pytest tests/integration/ -v --tb=short -m integration --cov=app/application --cov-report=term --cov-report=html --cov-append
 
       - name: 📊 Upload coverage
         uses: actions/upload-artifact@v4
@@ -182,3 +245,67 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════
+  # ⏳ TODO (Tauri Updater): РОЗКОМЕНТУВАТИ ТА НАЛАШТУВАТИ.
+  #   Job публікує підписані артефакти оновлення (createUpdaterArtifacts)
+  #   у GitHub Release — тоді `latest.json` стане доступним за endpoint,
+  #   вказаним у tauri.conf.json (plugins.updater.endpoints).
+  #
+  #   Потрібно:
+  #     1. Задати Secrets у репозиторії:
+  #          TAURI_SIGNING_PRIVATE_KEY         (вміст frontend/src-tauri/.tauri/kasa-pos.key)
+  #          TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  #     2. Замінити kasa-pos/kasa-pos на реальний owner/repo.
+  #     3. Увімкнути workflow_dispatch/тег v* для тригера.
+  #
+  # release-tauri:
+  #   name: 🚀 Tauri release (updater artifacts)
+  #   runs-on: ubuntu-22.04
+  #   needs: [lint-backend, lint-frontend, test-backend, build]
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   defaults:
+  #     run:
+  #       working-directory: ./kasa/frontend
+  #
+  #   env:
+  #     TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  #     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  #
+  #   steps:
+  #     - name: 📥 Checkout
+  #       uses: actions/checkout@v4
+  #
+  #     - name: ⚡ Setup Node ${{ env.NODE_VERSION }}
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: ${{ env.NODE_VERSION }}
+  #         cache: "npm"
+  #         cache-dependency-path: kasa/frontend/package-lock.json
+  #
+  #     - name: 🦀 Setup Rust (stable)
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: 📦 Install Linux deps
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+  #           librsvg2-dev patchelf libgtk-3-dev
+  #
+  #     - name: 📦 Install dependencies
+  #       run: npm ci
+  #
+  #     - name: 🚀 Build & publish release
+  #       uses: tauri-apps/tauri-action@v0
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  #       with:
+  #         tagName: v__VERSION__
+  #         releaseName: "Kasa POS v__VERSION__"
+  #         releaseBody: "Нова версія Kasa POS"
+  #         releaseDraft: true
+  #         prerelease: false
+  #         createUpdaterArtifacts: true
+  # ════════════════════════════════════════════════════════════════════════

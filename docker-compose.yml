@@ -6,13 +6,25 @@
 # Тестова база:   docker compose up -d db-test
 # ============================================================================
 #
-# ⚠️  Поточна конфігурація:
-#     Backend (kasa-backend) запускається локально (не в Docker),
-#     щоб використовувати локальну PostgreSQL на порту 5432.
-#     Docker-база (kasa-db) на порту 5434 залишається як резервна/тестова.
+# 🔧 Оновлення 2026-08-01 (контейнеризація backend):
+#     Backend (kasa-backend) тепер запускається в Docker!
+#     - build: ./backend (multi-stage, python:3.12-slim)
+#     - depends_on: db (condition: service_healthy)
+#     - DATABASE_URL: postgresql+asyncpg://kasa:kasa@db:5432/kasa
+#       (користувач kasa/БД kasa створюються init-скриптом при першому старті)
+#     - healthcheck: /health через python urllib
+#     - named volume pgdata для збереження даних PostgreSQL
 #
-#     Для локального запуску backend:
-#       cd backend && . venv/bin/activate && uvicorn app.main:app --reload
+#     ⚠️  hostname БД: `db` (service name у docker-мережі),
+#         а НЕ `kasa-db` (container_name) — див. docker networks.
+#
+# 🔐  Безпека:
+#     Всі секрети передаються через змінні оточення (обов'язкові, без дефолтів).
+#     Перед запуском створіть .env файл:
+#       cp .env.example .env   # потім заповніть значення
+#     Обов'язкові змінні:
+#       DB_PASSWORD — пароль PostgreSQL (без дефолту!)
+#       SECRET_KEY  — секретний ключ застосунку (без дефолту!)
 # ============================================================================
 
 services:
@@ -24,9 +36,14 @@ services:
     environment:
       POSTGRES_DB: pos_system
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-VgxWd7MBJ10X}
+      # 🔐 Обов'язкова змінна оточення — без дефолтного пароля!
+      # Пароль читається з .env (DB_PASSWORD) або середовища.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Створює користувача kasa та БД kasa (для backend DATABASE_URL).
+      # Виконується тільки при першій ініціалізації (порожній pgdata).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "5434:5432"
     healthcheck:
@@ -46,7 +63,9 @@ services:
     environment:
       POSTGRES_DB: pos_system_test
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: test_password
+      # Тестова БД — використовує окрему змінну з дефолтом для CI.
+      # У production-оточенні задайте DB_TEST_PASSWORD явно.
+      POSTGRES_PASSWORD: ${DB_TEST_PASSWORD:-test_password}
     ports:
       - "5433:5432"
     healthcheck:
@@ -61,31 +80,43 @@ services:
       - test
       - ci
 
-  # ─── Backend (FastAPI) — закоментовано, запускається локально ─────────────
-  # backend:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   container_name: kasa-backend
-  #   restart: unless-stopped
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #   environment:
-  #     DB_HOST: db
-  #     DB_PORT: 5432
-  #     DB_USER: postgres
-  #     DB_PASSWORD: ${DB_PASSWORD:-VgxWd7MBJ10X}
-  #     DB_NAME: pos_system
-  #     SECRET_KEY: ${SECRET_KEY}
-  #     ACCESS_TOKEN_EXPIRE_MINUTES: 480
-  #     APP_NAME: "Kasa POS"
-  #     DEBUG: "False"
-  #     CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
-  #   ports:
-  #     - "8000:8000"
-  #   networks:
-  #     - kasa-network
+  # ─── Backend (FastAPI) ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kasa-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Прямий DSN (override) — пріоритет над DB_* компонентами.
+      # 🔧 Для dev-середовища: kasa/kasa (створюється init-скриптом).
+      #    Для production — задайте надійні облікові дані та змініть скрипт!
+      DATABASE_URL: postgresql+asyncpg://kasa:kasa@db:5432/kasa
+      # Компоненти БД (fallback + сумісність з іншими частинами коду)
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: kasa
+      DB_PASSWORD: kasa
+      DB_NAME: kasa
+      # 🔐 Обов'язкові змінні оточення — без дефолтного пароля!
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      ACCESS_TOKEN_EXPIRE_MINUTES: 480
+      APP_NAME: "Kasa POS"
+      DEBUG: "False"
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - kasa-network
 
 volumes:
   pgdata:

@@ -32,6 +32,13 @@ yarn-error.log*
 frontend/src-tauri/target/
 frontend/src-tauri/bin/
 
+# ── Tauri Updater: ключі підпису (СЕКРЕТИ!) ───
+# Приватний ключ + папка ключів НЕ повинні потрапити в git!
+frontend/src-tauri/.tauri/
+frontend/src-tauri/*.key
+frontend/src-tauri/*.key.pub
+frontend/src-tauri/.env
+
 # ── Environment Variables ──────────────────────
 .env
 .env.local
@@ -55,6 +62,7 @@ Thumbs.db
 *.pid.lock
 *.sqlite3
 coverage/
+.coverage
 htmlcov/
 .tox/
 .mypy_cache/
