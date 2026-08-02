@@ -38,6 +38,31 @@ class LedgerMapper:
         )
 
     @staticmethod
+    def orm_to_dto(entity) -> LedgerEntryDTO:
+        """
+        Конвертує ORM-модель SupplierLedger (з репозиторію) в LedgerEntryDTO.
+
+        Args:
+            entity: ORM-об'єкт SupplierLedger (amount/balance_after — числові).
+
+        Returns:
+            LedgerEntryDTO.
+        """
+        return LedgerEntryDTO(
+            id=entity.id,
+            supplier_id=entity.supplier_id,
+            amount=float(entity.amount.amount if hasattr(entity.amount, "amount") else entity.amount),
+            operation_type=entity.operation_type.value if hasattr(entity.operation_type, "value") else str(entity.operation_type),
+            balance_after=float(
+                entity.balance_after.amount if hasattr(entity.balance_after, "amount") else entity.balance_after
+            ) if entity.balance_after is not None else None,
+            created_at=entity.created_at,
+            document_id=entity.document_id,
+            document_number=entity.document_number or "",
+            notes=entity.notes,
+        )
+
+    @staticmethod
     def dto_to_entity(dto: LedgerEntryDTO) -> LedgerEntry:
         """
         Конвертує LedgerEntryDTO назад в LedgerEntry entity.

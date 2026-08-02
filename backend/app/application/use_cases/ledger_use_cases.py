@@ -95,7 +95,7 @@ class LedgerUseCases:
         )
         await self._event_bus.publish(event)
 
-        return LedgerMapper.entity_to_dto(saved)
+        return LedgerMapper.orm_to_dto(saved)
 
     async def get_ledger_history(
         self,
@@ -130,7 +130,7 @@ class LedgerUseCases:
             page=page,
             size=size,
         )
-        return [LedgerMapper.entity_to_dto(e) for e in entries], total
+        return [LedgerMapper.orm_to_dto(e) for e in entries], total
 
     async def get_supplier_balance(self, supplier_id: UUID) -> float:
         """
