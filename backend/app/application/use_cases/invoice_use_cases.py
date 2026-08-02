@@ -275,7 +275,7 @@ class InvoiceUseCases:
         Returns:
             Кортеж (список InvoiceDTO, загальна кількість).
         """
-        invoice_status = InvoiceStatus(status) if status else None
+        invoice_status = InvoiceStatus(status).value if status else None
 
         invoices, total = await self._invoice_repo.search(
             query=query,

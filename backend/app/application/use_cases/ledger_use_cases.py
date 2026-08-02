@@ -120,7 +120,7 @@ class LedgerUseCases:
         Returns:
             Кортеж (список LedgerEntryDTO, загальна кількість).
         """
-        op_type = OperationType(operation_type) if operation_type else None
+        op_type = OperationType(operation_type).value if operation_type else None
 
         entries, total = await self._ledger_repo.search(
             supplier_id=supplier_id,
