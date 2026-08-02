@@ -2,11 +2,11 @@
 Pydantic схеми для моделі WorkSession (робоча сесія користувача).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
 
 
 class WorkSessionResponse(BaseModel):
@@ -20,9 +20,28 @@ class WorkSessionResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @field_serializer('login_time', 'logout_time')
+    def _serialize_utc(self, dt, _info):
+        """Серіалізація datetime як UTC з маркером 'Z'.
+
+        Модель зберігає naive UTC (datetime.utcnow без tzinfo). Без маркера
+        фронтенд (JavaScript) інтерпретує рядок без зсуву як ЛОКАЛЬНИЙ час
+        (UTC+3) → помилка рівно на 3 години. 'Z' змушує JS трактувати час
+        як UTC і коректно конвертувати в локальний пояс користувача.
+        """
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            # naive datetime вважаємо UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
 
 class WorkSessionDetail(WorkSessionResponse):
-    """Розширена відповідь з ім'ям користувача."""
+    """Розширена відповідь з ім'ям користувача.
+
+    Успадковує серіалізатори login_time/logout_time від WorkSessionResponse.
+    """
     user_name: Optional[str] = None
 
 
