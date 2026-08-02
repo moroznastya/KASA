@@ -16,6 +16,8 @@ class WriteOffItemCreate(BaseModel):
     """Схема створення позиції списання."""
     product_id: UUID = Field(..., description="ID товару")
     quantity: Decimal = Field(..., max_digits=10, decimal_places=3, description="Кількість")
+    cost_price: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Собівартість одиниці товару")
+    price: Optional[Decimal] = Field(None, max_digits=12, decimal_places=2, description="Ціна продажу одиниці товару")
 
 
 class WriteOffItemResponse(BaseModel):
@@ -24,6 +26,8 @@ class WriteOffItemResponse(BaseModel):
     write_off_id: UUID
     product_id: UUID
     quantity: Decimal
+    cost_price: Decimal = Field(default=0, description="Собівартість одиниці товару")
+    price: Decimal = Field(default=0, description="Ціна продажу одиниці товару")
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

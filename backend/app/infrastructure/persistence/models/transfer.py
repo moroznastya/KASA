@@ -136,6 +136,20 @@ class TransferItem(Base):
         comment="Кількість товару",
     )
 
+    # ── Ціни на момент переміщення ─────────────
+    cost_price: Mapped[float] = mapped_column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+        comment="Собівартість одиниці товару",
+    )
+    price: Mapped[float] = mapped_column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+        comment="Ціна продажу одиниці товару",
+    )
+
     # ── Timestamps ──────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,

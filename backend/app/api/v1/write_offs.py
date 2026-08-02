@@ -10,6 +10,7 @@ API роутер для роботи зі списаннями товару (Wri
   - POST   /write-offs/{id}/confirm — підтвердити списання
 """
 
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_session
 from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.infrastructure.persistence.models.product import Product
 from app.schemas.write_off import (
     WriteOffCreate,
     WriteOffUpdate,
@@ -52,6 +54,30 @@ router = APIRouter(
     prefix="/write-offs",
     tags=["Списання"],
 )
+
+
+async def _resolve_item_prices(
+    session: AsyncSession,
+    item_data,
+) -> tuple[Decimal, Decimal]:
+    """
+    Повертає (cost_price, price) для позиції списання.
+
+    Бере значення з item_data; якщо вони None або 0 — fallback
+    на ціни продукту (product.cost_price / product.price).
+    """
+    cost_price = item_data.cost_price
+    price = item_data.price
+
+    if cost_price in (None, 0) or price in (None, 0):
+        product = await session.get(Product, item_data.product_id)
+        if product is not None:
+            if cost_price in (None, 0):
+                cost_price = product.cost_price
+            if price in (None, 0):
+                price = product.price
+
+    return cost_price or Decimal("0"), price or Decimal("0")
 
 
 @router.get("", response_model=dict)
@@ -143,10 +169,13 @@ async def create_write_off(
     await session.flush()
 
     for item_data in data.items:
+        cost_price, price = await _resolve_item_prices(session, item_data)
         item = WriteOffItem(
             write_off_id=write_off.id,
             product_id=item_data.product_id,
             quantity=item_data.quantity,
+            cost_price=cost_price,
+            price=price,
         )
         session.add(item)
 
@@ -193,14 +222,21 @@ async def update_write_off(
         for old_item in write_off.items:
             await session.delete(old_item)
         for item_data in data.items:
+            cost_price, price = await _resolve_item_prices(session, item_data)
             item = WriteOffItem(
                 write_off_id=write_off.id,
                 product_id=item_data.product_id,
                 quantity=item_data.quantity,
+                cost_price=cost_price,
+                price=price,
             )
             session.add(item)
 
     await session.flush()
+
+    # Скидаємо кешовану колекцію items, щоб selectinload перезавантажив
+    # оновлені позиції (інакше відповідь міститиме старі items з identity map).
+    session.expire(write_off, ["items"])
 
     result = await session.execute(
         select(WriteOff)
