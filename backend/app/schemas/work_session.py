@@ -16,6 +16,7 @@ class WorkSessionResponse(BaseModel):
     login_time: datetime
     logout_time: Optional[datetime] = None
     duration_hours: Optional[float] = None
+    is_active: bool = False  # True — сесія ще триває (logout_time IS NULL)
 
     model_config = ConfigDict(from_attributes=True)
 

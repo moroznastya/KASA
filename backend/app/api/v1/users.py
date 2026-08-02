@@ -64,6 +64,36 @@ class HourlyRateUpdate(BaseModel):
     hourly_rate: float = Field(..., gt=0, description="Погодинна ставка (грн/год)")
 
 
+
+# ─── Робочі сесії ─────────────────────────────────────────────────────────────
+
+async def _close_active_work_sessions(session: AsyncSession, user_id: UUID) -> None:
+    """
+    Закриває всі активні робочі сесії користувача (logout_time IS NULL).
+
+    Викликається ПЕРЕД створенням нової сесії при login / login-pin:
+    якщо користувач закрив вікно/програму без явного logout, попередня
+    сесія назавжди лишалась «активною» (logout_time NULL, duration_hours NULL)
+    і її час не потрапляв у звіт. Тут ми її коректно завершуємо.
+    """
+
+    result = await session.execute(
+        select(WorkSession)
+        .where(WorkSession.user_id == user_id)
+        .where(WorkSession.logout_time.is_(None))
+    )
+    active_sessions = result.scalars().all()
+    if not active_sessions:
+        return
+
+    now = datetime.utcnow()
+    for work_session in active_sessions:
+        work_session.logout_time = now
+        work_session.duration_hours = round(
+            (now - work_session.login_time).total_seconds() / 3600, 2
+        )
+
+
 # ─── Авторизація ─────────────────────────────────────────────────────────────
 
 @auth_router.post("/login", response_model=UserTokenResponse)
@@ -82,6 +112,9 @@ async def login(
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_password(data.login, data.password)
+
+    # Закриваємо попередні активні сесії (якщо користувач не вийшов явно)
+    await _close_active_work_sessions(session, user.id)
 
     # Створюємо робочу сесію
     work_session = WorkSession(
@@ -117,6 +150,9 @@ async def login_pin(
     """
     auth_service = AuthService(session)
     user, token = await auth_service.login_by_pin(data.login, data.pin_code)
+
+    # Закриваємо попередні активні сесії (якщо користувач не вийшов явно)
+    await _close_active_work_sessions(session, user.id)
 
     # Створюємо робочу сесію
     work_session = WorkSession(
