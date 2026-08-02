@@ -131,7 +131,7 @@ const LoginPage: React.FC = () => {
             // Step 2: Enter password
             <form onSubmit={handleSubmit}>
               <div className="flex items-center justify-between mb-4">
-                <button
+                <button aria-label="Назад"
                   type="button"
                   onClick={handleBack}
                   className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"

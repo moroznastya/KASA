@@ -1,6 +1,12 @@
 /**
  * Хук для взаємодії з Tauri Desktop API
  *
+ * ⚠️ Це ТОНКА ОБГОРТКА над правильним шаром Tauri-команд:
+ *   - src/services/tauri/print.ts   (друк: print_image, print_html, get_printers …)
+ *   - src/services/tauri/offline.ts (офлайн: cache_products, save_receipt_offline,
+ *                                    get_cached_products(search), set_setting,
+ *                                    check_online …)
+ *
  * Надає зручний інтерфейс для:
  *   - Print-as-Image (єдиний шлях друку: html2canvas → PNG → Rust)
  *   - Офлайн-режиму (кеш товарів, збереження чеків)
@@ -9,6 +15,11 @@
 
 import { useCallback, useState } from 'react';
 
+// ─── Правильний шар Tauri-команд (snake_case структури) ────────────────────
+import * as tauriOffline from '@/services/tauri/offline';
+import * as tauriPrint from '@/services/tauri/print';
+import { receiptService } from '@/services/receiptService';
+
 /**
  * Перевіряє, чи запущено в Tauri
  */
@@ -16,56 +27,47 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/**
- * Викликає Tauri команду з TypeScript безпекою
- */
-async function invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!isTauri()) {
-    throw new Error('Tauri не доступний — застосунок запущено в браузері');
-  }
-
-  // Динамічний імпорт Tauri API
-  const { invoke: tauriInvoke } = await import('@tauri-apps/api/core');
-  return tauriInvoke<T>(cmd, args);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Друк
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Отримати список доступних принтерів
+ * Отримати список доступних принтерів.
+ *
+ * ✅ Делегує в services/tauri/print.ts → invoke('get_printers')
  */
 export async function getPrinters(): Promise<string[]> {
-  try {
-    return await invoke<string[]>('get_printers');
-  } catch {
-    return [];
-  }
+  return tauriPrint.getPrinters();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Офлайн-режим
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Кешувати товари локально.
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('cache_products', { productsJson })
+ */
 export async function cacheProducts(products: unknown[]): Promise<number> {
   try {
-    const result = await invoke<string>('cache_products', {
-      productsJson: JSON.stringify(products),
-    });
-    const match = result.match(/\d+/);
-    return match ? parseInt(match[0], 10) : 0;
+    return await tauriOffline.cacheProducts(products);
   } catch {
     return 0;
   }
 }
 
-export async function getCachedProducts(query?: string): Promise<unknown[]> {
+/**
+ * Отримати кешовані товари.
+ *
+ * ⚠️ ВИПРАВЛЕНО: раніше передавав `query` — правильний параметр команди
+ *    get_cached_products — `search` (і `limit`).
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('get_cached_products', { search, limit })
+ */
+export async function getCachedProducts(query?: string, limit?: number): Promise<unknown[]> {
   try {
-    const data = await invoke<string>('get_cached_products', {
-      query: query ?? null,
-    });
-    return JSON.parse(data);
+    return await tauriOffline.getCachedProducts(query, limit);
   } catch {
     return [];
   }
@@ -76,30 +78,60 @@ export interface OfflineReceipt {
   data: string;
 }
 
+/**
+ * Зберегти чек локально.
+ *
+ * ⚠️ ВИПРАВЛЕНО: Rust повертає `i64` (id чеку) НАПРЯМУ — не потрібно
+ *    парсити `#(\d+)` з рядка. Раніше повертало `null` завжди.
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('save_receipt_offline', { receiptJson })
+ */
 export async function saveReceiptOffline(receipt: unknown): Promise<number | null> {
   try {
-    const result = await invoke<string>('save_receipt_offline', {
-      receiptJson: JSON.stringify(receipt),
-    });
-    const match = result.match(/#(\d+)/);
-    return match ? parseInt(match[1], 10) : null;
+    return await tauriOffline.saveReceiptOffline(receipt);
   } catch {
     return null;
   }
 }
 
+/**
+ * Отримати несинхронізовані чеки.
+ *
+ * ⚠️ ВИПРАВЛЕНО: раніше `invoke<string>` — команда повертає МАСИВ
+ *    `[{ id: number, data: string }]`, тому JSON.parse перетворював
+ *    масив у рядок і чеки ніколи не знаходились (завжди []).
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('get_unsynced_receipts')
+ */
 export async function getUnsyncedReceipts(): Promise<OfflineReceipt[]> {
   try {
-    const data = await invoke<string>('get_unsynced_receipts');
-    return JSON.parse(data);
+    return await tauriOffline.getUnsyncedReceipts();
   } catch {
     return [];
   }
 }
 
+/**
+ * Отримати кількість несинхронізованих чеків (для індикатора SyncStatus).
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('get_unsynced_count')
+ */
+export async function getUnsyncedCount(): Promise<number> {
+  try {
+    return await tauriOffline.getUnsyncedCount();
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Позначити чек як синхронізований.
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('mark_receipt_synced', { receiptId })
+ */
 export async function markReceiptSynced(receiptId: number): Promise<boolean> {
   try {
-    await invoke('mark_receipt_synced', { receiptId });
+    await tauriOffline.markReceiptSynced(receiptId);
     return true;
   } catch {
     return false;
@@ -110,26 +142,47 @@ export async function markReceiptSynced(receiptId: number): Promise<boolean> {
 // Налаштування
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Зберегти локальне налаштування.
+ *
+ * ⚠️ ВИПРАВЛЕНО: команда називається `set_setting` (не `save_setting`).
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('set_setting', { key, value })
+ */
 export async function saveLocalSetting(key: string, value: string): Promise<boolean> {
   try {
-    await invoke('save_setting', { key, value });
+    await tauriOffline.setSetting(key, value);
     return true;
   } catch {
     return false;
   }
 }
 
+/**
+ * Отримати локальне налаштування.
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('get_setting', { key })
+ */
 export async function getLocalSetting(key: string): Promise<string | null> {
   try {
-    return await invoke<string | null>('get_setting', { key });
+    return await tauriOffline.getSetting(key);
   } catch {
     return null;
   }
 }
 
+/**
+ * Перевірити доступність інтернету.
+ *
+ * ⚠️ ВИПРАВЛЕНО: команда називається `check_online` (не `is_online`).
+ *    Раніше `invoke('is_online')` завжди кидав помилку і статус падав
+ *    на `navigator.onLine`.
+ *
+ * ✅ Делегує в services/tauri/offline.ts → invoke('check_online')
+ */
 export async function checkOnlineStatus(): Promise<boolean> {
   try {
-    return await invoke<boolean>('is_online');
+    return await tauriOffline.checkOnline();
   } catch {
     return navigator.onLine;
   }
@@ -188,15 +241,14 @@ export function useTauri(): TauriState & TauriActions {
     let synced = 0;
     for (const receipt of receipts) {
       try {
-        const response = await fetch('/api/v1/receipts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: receipt.data,
-        });
-        if (response.ok) {
-          await markReceiptSynced(receipt.id);
-          synced++;
-        }
+        // ⚠️ Відправляємо через receiptService.createReceipt, а не напряму fetch:
+        //   1) axios-інтерцептор додає Bearer-токен (раніше fetch ходив без auth)
+        //   2) маршрутизація v1/v2: звичайні чеки → v2 POST /receipts/sale|return,
+        //      боргові / з original_receipt_id → v1 POST /receipts.
+        const data = JSON.parse(receipt.data) as Parameters<typeof receiptService.createReceipt>[0];
+        await receiptService.createReceipt(data);
+        await markReceiptSynced(receipt.id);
+        synced++;
       } catch {
         continue;
       }

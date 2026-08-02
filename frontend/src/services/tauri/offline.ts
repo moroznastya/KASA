@@ -29,6 +29,15 @@ export async function isOfflineAvailable(): Promise<boolean> {
 }
 
 /**
+ * Перевірити доступність інтернету через Tauri.
+ *
+ * ⚠️ Правильна назва команди: `check_online` (не `is_online`).
+ */
+export async function checkOnline(): Promise<boolean> {
+  return invoke<boolean>('check_online');
+}
+
+/**
  * Отримати кількість несинхронізованих чеків.
  */
 export async function getUnsyncedCount(): Promise<number> {
@@ -46,6 +55,18 @@ export async function cacheProducts(products: unknown[]): Promise<number> {
   return invoke<number>('cache_products', {
     productsJson: JSON.stringify(products),
   });
+}
+
+/**
+ * Записати помилку фронтенду у /tmp/kasa-frontend.log (діагностика).
+ * Використовується пасткою window.onerror / unhandledrejection у main.tsx.
+ */
+export async function logFrontendError(message: string): Promise<void> {
+  try {
+    await invoke('log_frontend_error', { message });
+  } catch {
+    // Лог — некритичний: якщо команда недоступна, мовчки ігноруємо
+  }
 }
 
 /**

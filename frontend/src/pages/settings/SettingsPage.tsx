@@ -25,7 +25,20 @@ import {
   Ruler,
   Eye,
   Loader2,
+  Monitor,
+  Rocket,
+  RefreshCw,
+  Download,
+  ChevronDown,
 } from 'lucide-react';
+import { isTauri } from '@/hooks/useTauri';
+import { getPrinters } from '@/services/tauri/print';
+import {
+  enable as enableAutostart,
+  disable as disableAutostart,
+  isEnabled as isAutostartEnabled,
+} from '@tauri-apps/plugin-autostart';
+import { useUpdater } from '@/hooks/useUpdater';
 
 // ── Типи ──────────────────────────────────────
 interface SystemSetting {
@@ -96,26 +109,6 @@ const ROUNDING_LABELS: Record<string, string> = {
   '100': '1 грн',
   '500': '5 грн',
 };
-
-// ── Опції шрифтів для друку (PrintFontService застосовує до чеків/етикеток/цінників) ──
-const PRINT_FONT_OPTIONS = [
-  { value: 'Arial, sans-serif', label: 'Arial (Liberation Sans)' },
-  { value: 'Times New Roman, serif', label: 'Times New Roman (Liberation Serif)' },
-  { value: 'Courier New, monospace', label: 'Courier New (Liberation Mono)' },
-  { value: 'DejaVu Sans', label: 'DejaVu Sans' },
-  { value: 'DejaVu Serif', label: 'DejaVu Serif' },
-  { value: 'DejaVu Sans Mono', label: 'DejaVu Sans Mono' },
-  { value: 'Liberation Sans Narrow', label: 'Liberation Sans Narrow' },
-  { value: 'Nimbus Sans', label: 'Nimbus Sans' },
-  { value: 'Nimbus Roman', label: 'Nimbus Roman' },
-  { value: 'Nimbus Mono PS', label: 'Nimbus Mono PS' },
-  { value: 'Noto Mono', label: 'Noto Mono' },
-  { value: 'Bad Script, cursive', label: 'Bad Script (Google Fonts, рукописний)' },
-  { value: 'sans-serif', label: 'Sans-serif (системний)' },
-  { value: 'serif', label: 'Serif (системний)' },
-  { value: 'monospace', label: 'Monospace (системний)' },
-  { value: 'custom', label: '✏️ Інший (ввести вручну)...' },
-];
 
 // ── Компонент поля налаштування ──────────────
 const SettingField: React.FC<{
@@ -319,6 +312,162 @@ const SizeInputs: React.FC<{
   );
 };
 
+// ── Компонент: Desktop-налаштування (Tauri) ──
+// Тільки в десктоп-обгортці: автозапуск, single-instance, автооновлення.
+const DesktopSettingsCard: React.FC = () => {
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
+  const [autostartLoading, setAutostartLoading] = useState<boolean>(true);
+  const { checking, installing, available, checkForUpdates, install } = useUpdater();
+
+  // Поточний стан автозапуску (лише у Tauri-режимі)
+  useEffect(() => {
+    if (!isTauri()) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const enabled = await isAutostartEnabled();
+        if (mounted) setAutostartEnabled(enabled);
+      } catch (err) {
+        console.error('Не вдалося отримати стан автозапуску:', err);
+      } finally {
+        if (mounted) setAutostartLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleAutostartToggle = async (next: boolean) => {
+    setAutostartLoading(true);
+    try {
+      if (next) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+      setAutostartEnabled(next);
+      toast.success(next ? 'Автозапуск увімкнено' : 'Автозапуск вимкнено');
+    } catch (err) {
+      console.error('Помилка зміни автозапуску:', err);
+      toast.error('Помилка зміни автозапуску');
+    } finally {
+      setAutostartLoading(false);
+    }
+  };
+
+  const handleCheckUpdates = async () => {
+    const info = await checkForUpdates();
+    if (info) {
+      toast.success(`Доступна версія ${info.version}`);
+    } else {
+      toast('Оновлень немає — у вас актуальна версія');
+    }
+  };
+
+  // У браузерній версії налаштування десктоп-обгортки не показуємо
+  if (!isTauri()) return null;
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
+      {/* Заголовок */}
+      <div className="px-6 py-4 border-b border-gray-200 dark:border-slate-700 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-lg bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center text-primary-600 dark:text-primary-400">
+          <Monitor className="w-5 h-5" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Робоче місце (Desktop)
+          </h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Налаштування десктоп-обгортки POS
+          </p>
+        </div>
+      </div>
+
+      {/* Поля */}
+      <div className="px-6 py-4 space-y-5">
+        {/* ── Автозапуск ──────────── */}
+        <div className="flex items-center justify-between">
+          <div className="pr-4">
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Автозапуск при вході в систему
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              POS-каса запускатиметься автоматично разом із системою
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autostartEnabled}
+            disabled={autostartLoading}
+            onClick={() => handleAutostartToggle(!autostartEnabled)}
+            className={`
+              relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full
+              border-2 border-transparent transition-colors duration-200 ease-in-out
+              focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
+              disabled:opacity-50 disabled:cursor-not-allowed
+              ${autostartEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-slate-600'}
+            `}
+          >
+            <span
+              className={`
+                pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow
+                ring-0 transition duration-200 ease-in-out
+                ${autostartEnabled ? 'translate-x-5' : 'translate-x-0'}
+              `}
+            />
+          </button>
+        </div>
+
+        {/* ── Автооновлення ──────────── */}
+        <hr className="border-gray-200 dark:border-slate-700" />
+        <div className="flex items-center justify-between">
+          <div className="pr-4">
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Автооновлення
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {available
+                ? `Доступна версія ${available.version} (поточна ${available.currentVersion})`
+                : 'Перевірка та встановлення нових версій застосунку'}
+            </p>
+          </div>
+          {available ? (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={installing}
+              onClick={() => install()}
+              icon={installing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            >
+              {installing ? 'Встановлення...' : 'Встановити та перезапустити'}
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={checking}
+              onClick={handleCheckUpdates}
+              icon={checking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            >
+              {checking ? 'Перевірка...' : 'Перевірити оновлення'}
+            </Button>
+          )}
+        </div>
+
+        {/* ── Інфо про single-instance ──────────── */}
+        <p className="text-xs text-gray-500 dark:text-gray-400 flex items-start gap-1.5">
+          <Rocket className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+          Захист від подвійного запуску: при повторному відкритті програми
+          фокусується вже запущена каса.
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ── Секція модуля ─────────────────────────────
 const ModuleSection: React.FC<{
   moduleKey: string;
@@ -361,6 +510,49 @@ const ModuleSection: React.FC<{
   const [previewTagLabelHtml, setPreviewTagLabelHtml] = useState<string | null>(null);
   const [previewTagLabelType, setPreviewTagLabelType] = useState<'price_tag' | 'label'>('price_tag');
   const [isTestLoading, setIsTestLoading] = useState<'price_tag' | 'label' | null>(null);
+
+  // ── Реальний список принтерів системи ──
+  const [printers, setPrinters] = useState<string[]>([]);
+  const [printersLoading, setPrintersLoading] = useState<boolean>(false);
+
+  // Завантаження реальних принтерів:
+  //  1) Tauri (desktop) → invoke get_printers (нативний список)
+  //  2) Браузер → GET /api/v1/print/printers (повертає { printers: [...] })
+  useEffect(() => {
+    let cancelled = false;
+    const loadPrinters = async () => {
+      setPrintersLoading(true);
+      try {
+        let list: string[] = [];
+        if (isTauri()) {
+          list = await getPrinters();
+        } else {
+          const res = await api.get('/print/printers');
+          list = res.data?.printers ?? [];
+        }
+        if (!cancelled) setPrinters(Array.isArray(list) ? list : []);
+      } catch {
+        // Помилка отримання списку — лишаємо порожнім (системний + ручний ввід)
+        if (!cancelled) setPrinters([]);
+      } finally {
+        if (!cancelled) setPrintersLoading(false);
+      }
+    };
+    void loadPrinters();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Об'єднуємо реальний список + збережене значення (щоб вибір не губився)
+  const printerOptions = useMemo(() => {
+    const current = values.printer_name || '';
+    const merged = [...printers];
+    if (current && current !== 'custom' && !merged.includes(current)) {
+      merged.push(current);
+    }
+    return merged;
+  }, [printers, values.printer_name]);
 
   // ── Тестовий друк / прев'ю цінника чи етикетки ──
   const handleTestPrintPreview = useCallback(async (testType: 'price_tag' | 'label') => {
@@ -478,24 +670,26 @@ const ModuleSection: React.FC<{
             Виберіть принтер зі списку або введіть назву вручну
           </p>
           <div className="flex gap-2">
+            <div className="relative flex-1">
             <select
               value={values.printer_name || ''}
               onChange={(e) => onFieldChange('printer_name', e.target.value)}
-              className="flex-1 rounded-lg border border-gray-300 dark:border-slate-600 
+              className="w-full appearance-none cursor-pointer pr-10 rounded-lg border border-gray-300 dark:border-slate-600 
                 bg-white dark:bg-slate-800 px-3 py-2 text-sm
                 text-gray-900 dark:text-gray-100
                 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
             >
               <option value="">— Системний за замовчуванням —</option>
-              <option value="EPSON TM-T20">EPSON TM-T20</option>
-              <option value="EPSON TM-T20II">EPSON TM-T20II</option>
-              <option value="EPSON TM-T70">EPSON TM-T70</option>
-              <option value="EPSON TM-T88">EPSON TM-T88</option>
-              <option value="POS-58">POS-58 (USB)</option>
-              <option value="POS-80">POS-80 (USB)</option>
-              <option value="Star TSP100">Star TSP100</option>
+              {printerOptions.map((printer) => (
+                <option key={printer} value={printer}>{printer}</option>
+              ))}
+              {printersLoading && (
+                <option disabled>Завантаження списку принтерів…</option>
+              )}
               <option value="custom">🔧 Інший (ввести вручну)...</option>
             </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            </div>
           </div>
           {values.printer_name === 'custom' && (
             <input
@@ -509,46 +703,6 @@ const ModuleSection: React.FC<{
                 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
             />
           )}
-        </div>
-
-        {/* ── 🖋 Шрифт для друку ──────────── */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Шрифт для друку
-          </label>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-            Застосовується до всього друку: чеки, етикетки, цінники
-          </p>
-          <select
-            value={values.print_font_family || 'Arial, sans-serif'}
-            onChange={(e) => onFieldChange('print_font_family', e.target.value)}
-            className="flex-1 rounded-lg border border-gray-300 dark:border-slate-600 
-              bg-white dark:bg-slate-800 px-3 py-2 text-sm
-              text-gray-900 dark:text-gray-100
-              focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-          >
-            {PRINT_FONT_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-          {(() => {
-            const currentFont = values.print_font_family || 'Arial, sans-serif';
-            const isCustom = currentFont === 'custom' ||
-              !PRINT_FONT_OPTIONS.some(o => o.value === currentFont);
-            if (!isCustom) return null;
-            return (
-              <input
-                type="text"
-                value={currentFont === 'custom' ? '' : currentFont}
-                onChange={(e) => onFieldChange('print_font_family', e.target.value)}
-                placeholder="Введіть font-family (наприклад: Ubuntu, sans-serif)"
-                className="mt-2 w-full rounded-lg border border-gray-300 dark:border-slate-600 
-                  bg-white dark:bg-slate-800 px-3 py-2 text-sm
-                  text-gray-900 dark:text-gray-100
-                  focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-              />
-            );
-          })()}
         </div>
 
         {/* ── 🔄 Тип чеку повернення ──────────── */}
@@ -770,7 +924,7 @@ const ModuleSection: React.FC<{
                 sandbox="allow-same-origin"
               />
             ) : (
-              <div className="flex items-center justify-center h-[200px] text-gray-400 dark:text-gray-500">
+              <div className="flex items-center justify-center h-[200px] text-gray-500 dark:text-gray-400">
                 <div className="text-center">
                   <FileText className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">Натисніть "Оновити прев'ю", щоб побачити чек</p>
@@ -827,7 +981,7 @@ const ModuleSection: React.FC<{
                 sandbox="allow-same-origin"
               />
             ) : (
-              <div className="flex items-center justify-center h-[200px] text-gray-400 dark:text-gray-500">
+              <div className="flex items-center justify-center h-[200px] text-gray-500 dark:text-gray-400">
                 <div className="text-center">
                   <Tag className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">
@@ -952,13 +1106,15 @@ const SettingsPage: React.FC = () => {
       </div>
 
       {/* Таби модулів */}
-      <div className="flex flex-wrap gap-2">
+      <div role="tablist" aria-label="Модулі налаштувань" className="flex flex-wrap gap-2">
         {moduleKeys.map((key) => {
           const config = MODULE_CONFIG[key];
           if (!config) return null;
           return (
             <button
               key={key}
+              role="tab"
+              aria-selected={activeTab === key}
               onClick={() => setActiveTab(key)}
               className={`
                 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
@@ -984,15 +1140,20 @@ const SettingsPage: React.FC = () => {
         })}
       </div>
 
+      {/* Desktop-налаштування (Tauri): автозапуск + single-instance + оновлення */}
+      <DesktopSettingsCard />
+
       {/* Контент активного модуля */}
       {activeTab && modules[activeTab] && (
-        <ModuleSection
-          moduleKey={activeTab}
-          settings={modules[activeTab]}
-          values={values}
-          onFieldChange={handleFieldChange}
-          onNavigate={navigate}
-        />
+        <div role="tabpanel" aria-label={MODULE_CONFIG[activeTab]?.label || activeTab}>
+          <ModuleSection
+            moduleKey={activeTab}
+            settings={modules[activeTab]}
+            values={values}
+            onFieldChange={handleFieldChange}
+            onNavigate={navigate}
+          />
+        </div>
       )}
 
       {!activeTab && moduleKeys.length === 0 && (

@@ -16,11 +16,15 @@ import {
  * API-клієнт для роботи з ПРРО (програмний РРО).
  *
  * Всі запити йдуть на `/api/v2/prro/*` — для цього використовуємо
- * per-request `baseURL: '/api/v2'` поверх спільного axios-інстансу
+ * per-request `baseURL: `${API_ROOT}/api/v2`` (DEV — відносний, production — абсолютний)
  * (зберігаються auth-інтерцептори: токен та refresh).
  */
 
-const V2 = { baseURL: '/api/v2' } as const;
+// API_ROOT: у DEV лишається відносний шлях (dev-проксі Vite),
+// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://localhost:8000,
+// щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
+const API_ROOT = import.meta.env.DEV ? '' : 'http://localhost:8000';
+const V2 = { baseURL: `${API_ROOT}/api/v2` } as const;
 
 /** Помилка відповіді бекенду (detail може бути строкою або масивом) */
 function extractErrorMessage(error: unknown): string {

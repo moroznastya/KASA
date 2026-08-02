@@ -49,14 +49,14 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
 
   // Завантаження збережених налаштувань для користувача
   useEffect(() => {
-    if (!categoryTree || categoryTree.length === 0 || isInitialized) return;
+    if (!Array.isArray(categoryTree) || categoryTree.length === 0 || isInitialized) return;
 
     const saved = loadSettings(userId);
     const allIds = new Set<string>();
     const collectIds = (cats: any[]) => {
       cats.forEach((cat: any) => {
         allIds.add(cat.id);
-        if (cat.children) collectIds(cat.children);
+        if (Array.isArray(cat.children)) collectIds(cat.children);
       });
     };
     collectIds(categoryTree);
@@ -124,7 +124,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
   // Допоміжна: зібрати всі ID категорії та її підкатегорій рекурсивно
   const collectCategoryAndChildrenIds = useCallback((cat: any): string[] => {
     const ids = [cat.id];
-    if (cat.children) {
+    if (Array.isArray(cat.children)) {
       cat.children.forEach((child: any) => {
         ids.push(...collectCategoryAndChildrenIds(child));
       });
@@ -145,7 +145,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
   }, []);
 
   const toggleCategoryVisibility = useCallback((categoryId: string) => {
-    if (!categoryTree) return;
+    if (!Array.isArray(categoryTree)) return;
     const category = findCategoryById(categoryTree, categoryId);
     if (!category) return;
 
@@ -165,12 +165,12 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
   }, [categoryTree, collectCategoryAndChildrenIds, findCategoryById]);
 
   const selectAllCategories = useCallback(() => {
-    if (!categoryTree) return;
+    if (!Array.isArray(categoryTree)) return;
     const allIds = new Set<string>();
     const collectIds = (cats: any[]) => {
       cats.forEach((cat: any) => {
         allIds.add(cat.id);
-        if (cat.children) collectIds(cat.children);
+        if (Array.isArray(cat.children)) collectIds(cat.children);
       });
     };
     collectIds(categoryTree);
@@ -182,7 +182,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
   }, []);
 
   const renderCategoryItem = (category: any, depth: number = 0) => {
-    const hasChildren = category.children && category.children.length > 0;
+    const hasChildren = Array.isArray(category.children) && category.children.length > 0;
     const isExpanded = expandedCategories.has(category.id);
     const isSelected = selectedCategoryId === category.id;
     const isVisible = visibleCategories.has(category.id);
@@ -226,7 +226,7 @@ export const CategoryBrowser: React.FC<CategoryBrowserProps> = ({ onProductSelec
 
   const renderSettingsCategoryItem = (category: any, depth: number = 0) => {
     const isVisible = visibleCategories.has(category.id);
-    const hasChildren = category.children && category.children.length > 0;
+    const hasChildren = Array.isArray(category.children) && category.children.length > 0;
 
     return (
       <div key={category.id} className="select-none">

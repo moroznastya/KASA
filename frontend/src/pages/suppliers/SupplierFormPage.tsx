@@ -77,7 +77,7 @@ const SupplierFormPage: React.FC = () => {
   return (
     <div className="max-w-xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
-        <button
+        <button aria-label="Назад"
           onClick={goBack}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
         >

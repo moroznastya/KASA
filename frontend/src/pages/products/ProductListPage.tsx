@@ -42,7 +42,7 @@ const ProductListPage: React.FC = () => {
         <div>
           <p className="font-medium text-gray-900 dark:text-gray-100">{item.title}</p>
           {item.barcode && (
-            <p className="text-xs text-gray-400">ШК: {item.barcode}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">ШК: {item.barcode}</p>
           )}
         </div>
       ),
@@ -86,18 +86,22 @@ const ProductListPage: React.FC = () => {
               e.stopPropagation();
               navigate(`/products/${item.id}/edit`);
             }}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors"
+            aria-label={`Редагувати товар: ${item.title}`}
+            title={`Редагувати: ${item.title}`}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
           >
-            <Edit className="w-4 h-4" />
+            <Edit className="w-4 h-4" aria-hidden="true" />
           </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
               setDeleteId(item.id);
             }}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors"
+            aria-label={`Видалити товар: ${item.title}`}
+            title={`Видалити: ${item.title}`}
+            className="p-1.5 rounded-lg text-gray-400 hover:text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-danger-500"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
       ),
@@ -150,6 +154,7 @@ const ProductListPage: React.FC = () => {
               setPageState({ search: v, page: 1 });
             }}
             placeholder="Пошук за назвою або штрих-кодом..."
+            label="Пошук за назвою або штрих-кодом"
             className="w-full"
           />
         </div>

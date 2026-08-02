@@ -76,7 +76,7 @@ const CategoryListPage: React.FC = () => {
   };
 
   const renderCategory = (category: Category, depth: number = 0) => {
-    const hasChildren = category.children && category.children.length > 0;
+    const hasChildren = Array.isArray(category.children) && category.children.length > 0;
     const isExpanded = expandedIds.has(category.id);
 
     return (
@@ -133,7 +133,7 @@ const CategoryListPage: React.FC = () => {
         </div>
         {hasChildren && isExpanded && (
           <div>
-            {category.children!.map((child) => renderCategory(child, depth + 1))}
+            {Array.isArray(category.children) && category.children.map((child) => renderCategory(child, depth + 1))}
           </div>
         )}
       </div>
@@ -171,7 +171,7 @@ const CategoryListPage: React.FC = () => {
       </div>
 
       <div className="card divide-y divide-gray-200 dark:divide-slate-700">
-        {!categories || categories.length === 0 ? (
+        {!Array.isArray(categories) || categories.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <FolderOpen className="w-12 h-12 mx-auto mb-2 opacity-50" />
             <p>Категорії не створені</p>

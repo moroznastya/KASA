@@ -99,6 +99,7 @@ const ReceiptListPage: React.FC = () => {
             <input
               type="text"
               placeholder="Пошук за номером..."
+              aria-label="Пошук за номером чеку"
               value={searchQuery}
               onChange={(e) => { setPageState({ searchQuery: e.target.value, page: 1 }); }}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
@@ -111,6 +112,7 @@ const ReceiptListPage: React.FC = () => {
               onChange={(e) => { setPageState({ dateFrom: e.target.value, page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="Від дати"
+              aria-label="Від дати"
             />
           </div>
           <div>
@@ -120,6 +122,7 @@ const ReceiptListPage: React.FC = () => {
               onChange={(e) => { setPageState({ dateTo: e.target.value, page: 1 }); }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               placeholder="До дати"
+              aria-label="До дати"
             />
           </div>
           <div>
@@ -211,7 +214,7 @@ const ReceiptListPage: React.FC = () => {
                           {paymentMethodLabels[receipt.payment_method] || receipt.payment_method}
                         </span>
                       ) : (
-                        <span className="text-xs text-gray-400">—</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">

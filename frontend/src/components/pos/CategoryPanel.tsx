@@ -58,7 +58,7 @@ const flattenCategories = (nodes: CategoryNode[]): CategoryNode[] => {
   const result: CategoryNode[] = [];
   for (const node of nodes) {
     result.push(node);
-    if (node.children && node.children.length > 0) {
+    if (Array.isArray(node.children) && node.children.length > 0) {
       result.push(...flattenCategories(node.children));
     }
   }
@@ -108,6 +108,11 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
       setLoading(true);
       try {
         const tree = await categoryService.getCategoryTree();
+        if (!Array.isArray(tree)) {
+          console.error('Категорії: некоректна відповідь API (не масив)');
+          setCategories([]);
+          return;
+        }
         setCategories(tree as unknown as CategoryNode[]);
       } catch (err) {
         console.error('Помилка завантаження категорій:', err);

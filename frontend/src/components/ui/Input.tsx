@@ -9,11 +9,11 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, helperText, icon, className = '', inputClassName = '', value, onChange, placeholder, ...props }, ref) => {
+  ({ label, error, helperText, icon, className = '', inputClassName = '', value, onChange, placeholder, id, ...props }, ref) => {
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+          <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
             {label}
           </label>
         )}
@@ -25,10 +25,15 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
           <input
             ref={ref}
+            id={id}
             value={value}
             onChange={onChange}
             placeholder={placeholder}
             onWheel={(e) => (e.target as HTMLInputElement).blur()}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={
+              error ? (id ? `${id}-error` : undefined) : helperText ? (id ? `${id}-helper` : undefined) : undefined
+            }
             className={`
               input-field
               [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none
@@ -40,9 +45,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
         </div>
-        {error && <p className="mt-1 text-sm text-danger-600">{error}</p>}
+        {error && <p id={id ? `${id}-error` : undefined} className="mt-1 text-sm text-danger-600">{error}</p>}
         {helperText && !error && (
-          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{helperText}</p>
+          <p id={id ? `${id}-helper` : undefined} className="mt-1 text-sm text-gray-500 dark:text-gray-400">{helperText}</p>
         )}
       </div>
     );

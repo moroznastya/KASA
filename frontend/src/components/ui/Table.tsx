@@ -27,6 +27,14 @@ interface TableProps<T> {
   keyExtractor: (item: T) => string | number;
 }
 
+/** Обробка Enter/Space для клікабельних рядків таблиці (a11y) */
+function handleRowKeyDown(e: React.KeyboardEvent, onRowClick: () => void) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    onRowClick();
+  }
+}
+
 export function Table<T>({
   columns,
   data,
@@ -75,6 +83,7 @@ export function Table<T>({
                   key={col.key}
                   className={`table-header ${col.className || ''}`}
                   style={{ width: col.width }}
+                  scope="col"
                 >
                   {col.header}
                 </th>
@@ -89,11 +98,14 @@ export function Table<T>({
                   transition-colors duration-150
                   ${
                     onRowClick
-                      ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/50'
+                      ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/50 focus:outline-none focus-visible:bg-gray-50 dark:focus-visible:bg-slate-700/50'
                       : ''
                   }
                 `}
                 onClick={() => onRowClick?.(item)}
+                onKeyDown={onRowClick ? (e) => handleRowKeyDown(e, () => onRowClick(item)) : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                aria-label={onRowClick ? 'Відкрити запис (Enter)' : undefined}
               >
                 {columns.map((col) => (
                   <td key={col.key} className={`table-cell ${col.className || ''}`}>
@@ -116,33 +128,41 @@ export function Table<T>({
             <button
               onClick={() => onPageChange?.(1)}
               disabled={page === 1}
-              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-label="Перша сторінка"
+              title="Перша сторінка"
+              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              <ChevronsLeft className="w-4 h-4" />
+              <ChevronsLeft className="w-4 h-4" aria-hidden="true" />
             </button>
             <button
               onClick={() => onPageChange?.(page - 1)}
               disabled={page === 1}
-              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-label="Попередня сторінка"
+              title="Попередня сторінка"
+              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-4 h-4" aria-hidden="true" />
             </button>
-            <span className="px-3 py-1 text-sm text-gray-600 dark:text-gray-300">
+            <span className="px-3 py-1 text-sm text-gray-600 dark:text-gray-300" aria-live="polite">
               {page} / {totalPages}
             </span>
             <button
               onClick={() => onPageChange?.(page + 1)}
               disabled={page === totalPages}
-              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-label="Наступна сторінка"
+              title="Наступна сторінка"
+              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-4 h-4" aria-hidden="true" />
             </button>
             <button
               onClick={() => onPageChange?.(totalPages)}
               disabled={page === totalPages}
-              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-label="Остання сторінка"
+              title="Остання сторінка"
+              className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
-              <ChevronsRight className="w-4 h-4" />
+              <ChevronsRight className="w-4 h-4" aria-hidden="true" />
             </button>
           </div>
         </div>

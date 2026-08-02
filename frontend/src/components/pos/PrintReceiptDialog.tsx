@@ -196,7 +196,7 @@ const PrintReceiptDialog: React.FC<PrintReceiptDialogProps> = ({
               </p>
             </div>
           </div>
-          <button
+          <button aria-label="Закрити діалог друку"
             onClick={onClose}
             className="p-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
           >

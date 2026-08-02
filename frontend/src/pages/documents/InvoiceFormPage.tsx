@@ -756,7 +756,7 @@ const InvoiceFormPage: React.FC = () => {
       {/* Заголовок */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <button
+          <button aria-label="Назад"
             onClick={goBack}
             className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
           >
@@ -1106,14 +1106,14 @@ const InvoiceFormPage: React.FC = () => {
                     label="Категорія"
                     options={[
                       { value: '', label: 'Без категорії' },
-                      ...(categoryTree ? (() => {
+                      ...(Array.isArray(categoryTree) ? (() => {
                         const buildOpts = (cats: Category[], depth = 0): { value: string; label: string; disabled?: boolean }[] => {
                           const opts: { value: string; label: string; disabled?: boolean }[] = [];
                           for (const cat of cats) {
-                            const hasChildren = cat.children && cat.children.length > 0;
+                            const hasChildren = Array.isArray(cat.children) && cat.children.length > 0;
                             if (hasChildren) {
                               opts.push({ value: cat.id, label: `${'  '.repeat(depth)}▶ ${cat.name}`, disabled: true });
-                              opts.push(...buildOpts(cat.children!, depth + 1));
+                              opts.push(...buildOpts(cat.children ?? [], depth + 1));
                             } else {
                               opts.push({ value: cat.id, label: `${'  '.repeat(depth)}└── ${cat.name}`, disabled: false });
                             }

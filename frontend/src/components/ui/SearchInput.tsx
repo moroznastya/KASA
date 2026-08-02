@@ -7,6 +7,8 @@ interface SearchInputProps {
   placeholder?: string;
   debounceMs?: number;
   className?: string;
+  /** aria-label для пошукового поля (для скрінрідерів) */
+  label?: string;
 }
 
 export const SearchInput: React.FC<SearchInputProps> = ({
@@ -15,6 +17,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   placeholder = 'Пошук...',
   debounceMs = 300,
   className = '',
+  label,
 }) => {
   const [localValue, setLocalValue] = useState(value);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -52,20 +55,23 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   return (
     <div className={`relative ${className}`}>
       {/* Іконка лінзи завжди зліва */}
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden="true" />
       <input
         type="text"
         value={localValue}
         onChange={handleChange}
         placeholder={placeholder}
+        aria-label={label || placeholder}
         className="input-field pl-10 pr-8"
       />
       {localValue && (
         <button
           onClick={handleClear}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          aria-label="Очистити пошук"
+          title="Очистити пошук"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded"
         >
-          <X className="w-4 h-4" />
+          <X className="w-4 h-4" aria-hidden="true" />
         </button>
       )}
     </div>

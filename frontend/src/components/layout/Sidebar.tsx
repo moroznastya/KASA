@@ -172,7 +172,7 @@ export const Sidebar: React.FC = () => {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
+      <nav aria-label="Головна навігація" className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
         {visibleItems.map((item) => (
           <NavLink
             key={item.path}

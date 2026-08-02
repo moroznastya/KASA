@@ -2,9 +2,10 @@
  * Хук для автоматичної синхронізації офлайн-даних
  *
  * При поновленні інтернет-з'єднання автоматично:
- *   1. Перевіряє наявність несинхронізованих чеків
- *   2. Відправляє їх на сервер
- *   3. Позначає як синхронізовані
+ *   1. Перевіряє наявність несинхронізованих чеків (get_unsynced_count)
+ *   2. Відправляє їх на сервер (get_unsynced_receipts → receiptService.createReceipt:
+ *      звичайні чеки → v2 /receipts/sale|return, боргові → v1 /receipts)
+ *   3. Позначає як синхронізовані (mark_receipt_synced)
  */
 
 import { useEffect, useCallback, useState } from 'react';
@@ -30,6 +31,37 @@ export function useOfflineSync() {
     syncedCount: 0,
     error: null,
   });
+
+  // ── Лічильник pending-чеків (get_unsynced_count) ────────────────────
+  // Одразу при завантаженні показуємо скільки чеків очікують у SQLite-черзі.
+  // Також оновлюємося, коли PosPage зберігає новий чек офлайн
+  // (подія 'kasa:offline-receipt-saved').
+  useEffect(() => {
+    if (!inTauri) return;
+    let cancelled = false;
+
+    const refreshPendingCount = async () => {
+      try {
+        const { getUnsyncedCount } = await import('./useTauri');
+        const count = await getUnsyncedCount();
+        if (!cancelled) {
+          setState((prev) => ({ ...prev, pendingCount: count }));
+        }
+      } catch {
+        // Ігноруємо — наступне оновлення виправить
+      }
+    };
+
+    refreshPendingCount();
+
+    const handleOfflineReceiptSaved = () => refreshPendingCount();
+    window.addEventListener('kasa:offline-receipt-saved', handleOfflineReceiptSaved);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('kasa:offline-receipt-saved', handleOfflineReceiptSaved);
+    };
+  }, [inTauri]);
 
   // Запустити синхронізацію вручну
   const sync = useCallback(async () => {
@@ -118,6 +150,7 @@ export const SyncStatus: React.FC = () => {
         <button
           onClick={sync}
           className="text-yellow-600 hover:text-yellow-700 dark:text-yellow-400 underline"
+          title="Натисніть, щоб синхронізувати зараз"
         >
           {pendingCount} чеків очікують синхронізації
         </button>

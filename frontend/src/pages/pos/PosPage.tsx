@@ -2,11 +2,15 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
-import { receiptService } from '@/services/receiptService';
 import { debtorService, Debtor } from '@/services/debtorService';
 import { settingsService } from '@/services/settingsService';
 import { prroService } from '@/services/prroService';
+import { productService } from '@/services/productService';
+import { createReceiptWithOfflineFallback } from '@/services/tauri/offlineReceiptService';
+import { isTauri, cacheProducts } from '@/hooks/useTauri';
 import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';
+import { useAuthStore } from '@/store/authStore';
+import type { Product } from '@/types/product';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
@@ -23,6 +27,20 @@ import type { ReturnCartItem } from '@/components/pos/SelectItemsFromReceipt';
 import ReturnWithoutReceipt from '@/components/pos/ReturnWithoutReceipt';
 import type { ReceiptSearchResult } from '@/types/receipt';
 
+/** Фіскальні реквізити чеку — ЄДИНІ поля, які мерджимо поверх реального чеку.
+ *  Жодних сумарних/позиційних даних тут немає, щоб не перезаписувати
+ *  реальний чек нульовим об'єктом у PrintReceiptDialog. */
+type FiscalFields = Pick<
+  Receipt,
+  | 'is_fiscal'
+  | 'fiscal_status'
+  | 'fiscal_number'
+  | 'fiscal_serial'
+  | 'fiscal_sent_at'
+  | 'fiscal_error'
+  | 'fiscal_check_url'
+>;
+
 interface CartItem {
   product_id: string;
   product_title: string;
@@ -35,6 +53,18 @@ interface CartItem {
   stock: number;
   unit: string;
   original_receipt_id?: string;  // ID оригінального чеку (для товарів повернення)
+}
+
+/** Мінімальні дані позиції для локальної копії чеку (офлайн-друк) */
+interface LocalReceiptItemInput {
+  product_id: string;
+  product_name: string;
+  product_barcode: string | null;
+  quantity: number;
+  price: number;
+  tax_rate: number;
+  is_weight?: boolean;
+  original_receipt_id?: string;
 }
 
 interface PaymentOption {
@@ -281,6 +311,58 @@ const PosPage: React.FC = () => {
     });
   }, []);
 
+  // ── Офлайн-режим (Tauri SQLite): кешуємо товари при завантаженні POS ──
+  // Щоб каса працювала без інтернету: товари зберігаються локально через
+  // cache_products() і стають доступними для пошуку офлайн (get_cached_products).
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+
+    const cacheProductsForOffline = async () => {
+      try {
+        const allProducts: Product[] = [];
+        const pageSize = 500;
+        let page = 1;
+        // Завантажуємо всі сторінки товарів (пагінація)
+        for (;;) {
+          const res = await productService.getProducts({ page, size: pageSize });
+          allProducts.push(...res.items);
+          if (page >= res.pages || res.items.length === 0) break;
+          page++;
+        }
+        if (cancelled) return;
+
+        // ── ЧАНКІНГ замість одного великого JSON ──
+        // Раніше всі 4001 товарів (~2.4 МБ) передавались одним викликом
+        // cache_products(allProducts). Великий POST через кастомний протокол
+        // Tauri IPC на Linux ЗАВИСАЄ/блокує веб-процес (перевірено тестом
+        // WebKitGTK) → сторінка завмирає → «синій екран» у касира.
+        // Тому передаємо ЧАНКАМИ по 300 — кожен IPC-пейлоад ~180 КБ.
+        const CHUNK_SIZE = 300;
+        for (let i = 0; i < allProducts.length; i += CHUNK_SIZE) {
+          const chunk = allProducts.slice(i, i + CHUNK_SIZE);
+          const count = await cacheProducts(chunk);
+          // Літерал CHUNK_SIZE у лозі: рядок не мініфікується і лишається в бандлі
+          // (мініфікатор скорочує саму змінну, тому grep по бандлу шукає літерал)
+          console.log(`[Offline] CHUNK_SIZE=${CHUNK_SIZE} Кешовано чанк ${i / CHUNK_SIZE + 1}: ${count}`);
+        }
+      } catch {
+        // Мережа недоступна — кеш із минулого сеансу вже існує в SQLite
+      }
+    };
+
+    cacheProductsForOffline();
+
+    // Оновлюємо кеш при поновленні інтернету
+    const handleOnline = () => cacheProductsForOffline();
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
   // Search debtors in unified search
   useEffect(() => {
     if (!query.trim() || query.trim().length < 2) {
@@ -507,6 +589,88 @@ const PosPage: React.FC = () => {
     0
   );
 
+  // ── Локальна копія чеку для друку в офлайн-режимі ───────────────────
+  // Коли чек збережено в Tauri SQLite-чергу (ще не на сервері), друк все одно
+  // працює локально — клієнт отримує паперовий чек одразу.
+  const cartToDisplayItems = (items: CartItem[]): LocalReceiptItemInput[] =>
+    items.map((item) => ({
+      product_id: item.product_id,
+      product_name: item.product_title,
+      product_barcode: item.product_barcode,
+      quantity: item.quantity,
+      price: item.price,
+      tax_rate: item.tax_rate,
+      is_weight: item.is_weight,
+      original_receipt_id: item.original_receipt_id,
+    }));
+
+  const returnItemsToDisplay = (items: ReturnCartItem[]): LocalReceiptItemInput[] =>
+    items.map((item) => ({
+      product_id: item.product_id,
+      product_name: item.product_title,
+      product_barcode: item.product_barcode,
+      quantity: item.quantity,
+      price: item.price,
+      tax_rate: item.tax_rate || 20,
+      is_weight: false,
+      original_receipt_id: item.original_receipt_id,
+    }));
+
+  const buildLocalReceipt = (
+    data: ReceiptCreate,
+    displayItems: LocalReceiptItemInput[],
+    payMethod: PaymentMethod,
+    cash: string,
+    card: string,
+  ): Receipt => {
+    const now = new Date().toISOString();
+    const user = useAuthStore.getState().user;
+    const total = displayItems.reduce(
+      (sum, it) => sum + (it.is_weight ? Math.ceil(it.quantity * it.price) : it.quantity * it.price),
+      0,
+    );
+    const vat = displayItems.reduce(
+      (sum, it) => sum + (it.quantity * it.price * it.tax_rate) / (100 + it.tax_rate),
+      0,
+    );
+    const paid = parseFloat(data.paid_amount || '0') || total;
+    const cashNum = parseFloat(cash) || 0;
+    const cardNum = parseFloat(card) || 0;
+    const change = payMethod === 'cash' && cashNum >= total ? cashNum - total : 0;
+    return {
+      id: `offline-${Date.now()}`,
+      receipt_number: `OFF-${String(Date.now()).slice(-6)}`,
+      receipt_type: data.receipt_type,
+      items: displayItems.map((item, idx) => ({
+        id: `offline-item-${idx}`,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        product_barcode: item.product_barcode,
+        quantity: item.quantity,
+        price: item.price.toFixed(2),
+        total: (item.is_weight ? Math.ceil(item.quantity * item.price) : item.quantity * item.price).toFixed(2),
+        vat_rate: item.tax_rate,
+        vat_amount: ((item.quantity * item.price * item.tax_rate) / (100 + item.tax_rate)).toFixed(2),
+      })),
+      total_amount: total.toFixed(2),
+      paid_amount: paid.toFixed(2),
+      vat_amount: vat.toFixed(2),
+      payment_method: payMethod,
+      payment_status: paid >= total ? 'paid' : 'partially_paid',
+      cash_amount: (payMethod === 'cash' || payMethod === 'mixed' ? cashNum : 0).toFixed(2),
+      card_amount: (payMethod === 'card' || payMethod === 'mixed' ? cardNum : 0).toFixed(2),
+      change_amount: change.toFixed(2),
+      cashier_id: user?.id || '',
+      cashier_name: user?.name,
+      created_by: user?.id || '',
+      created_by_name: user?.name,
+      created_at: now,
+      original_receipt_number: data.receipt_number,
+      is_fiscal: false,
+      fiscal_status: 'none',
+    };
+  };
+
   const handleDebtPaymentSelect = (debtor: Debtor) => {
     setSelectedDebtPaymentDebtor(debtor);
     setDebtPaymentQuery(debtor.name);
@@ -580,8 +744,10 @@ const PosPage: React.FC = () => {
     toast.success(`Борг ${amount.toFixed(2)} грн додано до чеку`);
   };
 
-  // Отримати фіскальні реквізити чеку (статус, номер, QR URL) з v2 API
-  const fetchFiscalInfo = useCallback(async (receiptId: string): Promise<Receipt | null> => {
+  // Отримати фіскальні реквізити чеку (статус, номер, QR URL) з v2 API.
+  // Повертає ЛИШЕ фіскальні поля (або null при помилці) — НІКОЛИ не створює
+  // об'єкт Receipt з нульовими сумами, щоб не перезаписувати реальний чек.
+  const fetchFiscalInfo = useCallback(async (receiptId: string): Promise<FiscalFields | null> => {
     try {
       const fiscal = await prroService.getReceiptFiscalInfo(receiptId);
       setFiscalStatus({
@@ -592,20 +758,6 @@ const PosPage: React.FC = () => {
         fiscal_check_url: fiscal.fiscal_check_url,
       });
       return {
-        id: fiscal.id,
-        receipt_number: '',
-        receipt_type: 'sale',
-        items: [],
-        total_amount: '0',
-        vat_amount: '0',
-        payment_method: null,
-        payment_status: 'paid',
-        cash_amount: '0',
-        card_amount: '0',
-        change_amount: '0',
-        cashier_id: '',
-        created_by: '',
-        created_at: '',
         is_fiscal: fiscal.is_fiscal,
         fiscal_status: fiscal.fiscal_status,
         fiscal_number: fiscal.fiscal_number,
@@ -613,7 +765,7 @@ const PosPage: React.FC = () => {
         fiscal_sent_at: fiscal.fiscal_sent_at,
         fiscal_error: fiscal.fiscal_error,
         fiscal_check_url: fiscal.fiscal_check_url,
-      } as Receipt;
+      };
     } catch {
       return null;
     }
@@ -683,11 +835,22 @@ const PosPage: React.FC = () => {
         } : undefined,
       };
 
-      const response = await receiptService.createReceipt(receiptData);
+      const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
+        receiptData,
+        () => buildLocalReceipt(receiptData, cartToDisplayItems(cart), paymentMethod, cashAmount, cardAmount),
+      );
+      if (savedOffline) {
+        window.dispatchEvent(new Event('kasa:offline-receipt-saved'));
+        toast.success('Чек збережено в офлайн-черзі — буде синхронізовано автоматично');
+      }
 
-      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      // Фіскальні реквізити з v2 мерджимо поверх РЕАЛЬНОГО чеку (без гонки):
+      // функціональний апдейт завжди бере останній стан lastReceipt,
+      // тому суми/позиції/номер з response ніколи не затираються.
       void fetchFiscalInfo(response.id).then((fiscal) => {
-        setLastReceipt(fiscal || response);
+        if (fiscal) {
+          setLastReceipt((prev) => (prev ? { ...prev, ...fiscal } : null));
+        }
       });
 
       // Очищуємо стан перед показом діалогу друку
@@ -793,11 +956,22 @@ const PosPage: React.FC = () => {
         } : undefined,
       };
 
-      const response = await receiptService.createReceipt(receiptData);
+      const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
+        receiptData,
+        () => buildLocalReceipt(receiptData, cartToDisplayItems(cart), paymentMethod, cashAmount, cardAmount),
+      );
+      if (savedOffline) {
+        window.dispatchEvent(new Event('kasa:offline-receipt-saved'));
+        toast.success('Чек збережено в офлайн-черзі — буде синхронізовано автоматично');
+      }
 
-      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      // Фіскальні реквізити з v2 мерджимо поверх РЕАЛЬНОГО чеку (без гонки):
+      // функціональний апдейт завжди бере останній стан lastReceipt,
+      // тому суми/позиції/номер з response ніколи не затираються.
       void fetchFiscalInfo(response.id).then((fiscal) => {
-        setLastReceipt(fiscal || response);
+        if (fiscal) {
+          setLastReceipt((prev) => (prev ? { ...prev, ...fiscal } : null));
+        }
       });
 
       // Очищуємо стан перед показом діалогу друку
@@ -862,13 +1036,24 @@ const PosPage: React.FC = () => {
         })),
       };
 
-      const response = await receiptService.createReceipt(receiptData);
+      const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
+        receiptData,
+        () => buildLocalReceipt(receiptData, returnItemsToDisplay(items), 'cash', totalAmount.toFixed(2), '0'),
+      );
+      if (savedOffline) {
+        window.dispatchEvent(new Event('kasa:offline-receipt-saved'));
+        toast.success('Повернення збережено в офлайн-черзі — буде синхронізовано автоматично');
+      }
 
       toast.success('Повернення оформлено');
 
-      // Отримуємо фіскальні реквізити з v2 (статус фіскалізації, QR)
+      // Фіскальні реквізити з v2 мерджимо поверх РЕАЛЬНОГО чеку (без гонки):
+      // функціональний апдейт завжди бере останній стан lastReceipt,
+      // тому суми/позиції/номер з response ніколи не затираються.
       void fetchFiscalInfo(response.id).then((fiscal) => {
-        setLastReceipt(fiscal || response);
+        if (fiscal) {
+          setLastReceipt((prev) => (prev ? { ...prev, ...fiscal } : null));
+        }
       });
 
       // Показуємо діалог друку
@@ -1006,11 +1191,11 @@ const PosPage: React.FC = () => {
                 </Badge>
               )}
               {prroStatus.fn && (
-                <span className="text-xs text-gray-400 hidden md:inline">ФН: {prroStatus.fn}</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400 hidden md:inline">ФН: {prroStatus.fn}</span>
               )}
             </div>
           ) : (
-            <span className="text-xs text-gray-400">Статус недоступний</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">Статус недоступний</span>
           )}
         </div>
         <button
@@ -1095,6 +1280,7 @@ const PosPage: React.FC = () => {
               value={query}
               onChange={(e) => handleSearchChange(e.target.value)}
               placeholder="Пошук товару за назвою або штрих-кодом..."
+              aria-label="Пошук товару за назвою або штрих-кодом"
               className="input-field pl-10 pr-10"
               id="unified-search"
               name="unified-search"
@@ -1106,9 +1292,11 @@ const PosPage: React.FC = () => {
             {query && !isSearching && (
               <button
                 onClick={() => { resetSearch(); searchInputRef.current?.focus(); }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded"
+                aria-label="Очистити пошук"
+                title="Очистити пошук"
               >
-                <X className="w-4 h-4" />
+                <X className="w-4 h-4" aria-hidden="true" />
               </button>
             )}
           </div>
@@ -1148,7 +1336,7 @@ const PosPage: React.FC = () => {
                   {result.product.title}
                 </p>
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-gray-400">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
                     {result.product.barcode || 'Без ШК'} | {result.product.stock} {formatUnit(result.product.unit)}
                     {isOutOfStock && (
                       <span className="ml-1 text-danger-500 font-medium">(немає)</span>
@@ -1189,7 +1377,7 @@ const PosPage: React.FC = () => {
                       </span>
                     </div>
                     {debtor.phone && (
-                      <p className="text-xs text-gray-400 mt-0.5 ml-6">{debtor.phone}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 ml-6">{debtor.phone}</p>
                     )}
                   </button>
                 ))}
@@ -1198,7 +1386,7 @@ const PosPage: React.FC = () => {
           )}
 
           {query.length >= 2 && results.length === 0 && !isSearching && !error && (
-            <div className="text-center py-8 text-gray-400 text-sm">
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400 text-sm">
               Товари не знайдено
             </div>
           )}
@@ -1379,6 +1567,7 @@ const PosPage: React.FC = () => {
                           step={item.is_weight ? '0.001' : '1'}
                           id={`cart-qty-${item.product_id}`}
                           name={`cart-qty-${item.product_id}`}
+                          aria-label={`Кількість: ${item.product_title}`}
                         />
                         <button
                           onClick={() => updateQuantity(item.product_id, 1)}
@@ -1689,7 +1878,7 @@ const PosPage: React.FC = () => {
           {/* Debtor selection — показано коли сума менша за чек */}
           {(showDebtorField || selectedDebtor) && (
             <div ref={debtorSearchRef} className="relative">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              <label htmlFor="debtor-name" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 {isPartialPayment ? 'Боржник (обов\'язково)' : 'Боржник (необов\'язково)'}
               </label>
               <div className="relative">
@@ -1839,6 +2028,7 @@ const PosPage: React.FC = () => {
                   id="debtor-modal-name"
                   name="debtor-modal-name"
                   autoComplete="off"
+                  aria-label="Пошук боржника"
                 />
                 <UserPlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 {isSearchingDebtorModal && (
@@ -1950,6 +2140,7 @@ const PosPage: React.FC = () => {
               id="debt-payment-search"
               name="debt-payment-search"
               autoComplete="off"
+              aria-label="Пошук боржника для оплати боргу"
             />
             <Users className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             {isSearchingDebtPayment && (

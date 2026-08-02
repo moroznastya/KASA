@@ -79,7 +79,7 @@ function buildCategoryOptions(categories: Category[], depth: number = 0): Select
   const options: SelectOption[] = [];
 
   for (const cat of categories) {
-    const hasChildren = cat.children && cat.children.length > 0;
+    const hasChildren = Array.isArray(cat.children) && cat.children.length > 0;
 
     if (hasChildren) {
       // Основна категорія — не вибирається, показуємо як заголовок
@@ -89,7 +89,7 @@ function buildCategoryOptions(categories: Category[], depth: number = 0): Select
         disabled: true,
       });
       // Додаємо підкатегорії
-      options.push(...buildCategoryOptions(cat.children!, depth + 1));
+      options.push(...buildCategoryOptions(cat.children ?? [], depth + 1));
     } else {
       // Кінцева підкатегорія — вибирається
       options.push({
@@ -290,7 +290,7 @@ const ProductFormPage: React.FC = () => {
   // Будуємо ієрархічний список категорій
   const categoryOptions: SelectOption[] = [
     { value: '', label: 'Без категорії' },
-    ...(categoryTree ? buildCategoryOptions(categoryTree) : []),
+    ...(Array.isArray(categoryTree) ? buildCategoryOptions(categoryTree) : []),
   ];
 
   const supplierOptions = [
@@ -309,7 +309,7 @@ const ProductFormPage: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="flex items-center gap-4">
-        <button
+        <button aria-label="Назад"
           onClick={goBack}
           className="p-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors"
         >

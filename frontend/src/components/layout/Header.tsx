@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogOut, Moon, Sun, User, Clock } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
+import { SyncStatus } from '@/hooks/useOfflineSync';
 import { useAuthStore } from '@/store/authStore';
 import { authService } from '@/services/authService';
 
@@ -50,6 +51,9 @@ export const Header: React.FC = () => {
 
       {/* Right side */}
       <div className="flex items-center gap-4">
+        {/* Індикатор офлайн-синхронізації (Tauri SQLite черга; null у браузері) */}
+        <SyncStatus />
+
         {/* Clock */}
         <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
           <Clock className="w-4 h-4" />

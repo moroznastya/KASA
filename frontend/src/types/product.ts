@@ -3,8 +3,9 @@ export interface Category {
   name: string;
   parent_id: string | null;
   children?: Category[];
-  created_at: string;
-  updated_at: string;
+  /** v2 API (categories) не повертає ці поля — зроблено опціональними */
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CategoryCreate {
