@@ -29,7 +29,6 @@ import {
   Rocket,
   RefreshCw,
   Download,
-  ChevronDown,
 } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { getPrinters } from '@/services/tauri/print';
@@ -485,6 +484,7 @@ const ModuleSection: React.FC<{
       'label_fields', 'label_width', 'label_height',
       'printer_name', 'print_copies', 'return_receipt_template_type',
       'receipt_print_copies', 'report_print_copies'].includes(s.key)
+    && !s.key.startsWith('print_font_')
   );
   const priceTagFields = settings.find(s => s.key === 'price_tag_fields');
   const priceTagWidth = settings.find(s => s.key === 'price_tag_width');
@@ -597,6 +597,20 @@ const ModuleSection: React.FC<{
     }
   }, [values]);
 
+  // Опції вибору принтера для кастомного Select
+  const printerOptionsArr: SelectOption[] = [
+    { value: '', label: '— Системний за замовчуванням —' },
+    ...printerOptions.map(p => ({ value: p, label: p })),
+  ];
+  if (printersLoading) {
+    printerOptionsArr.push({
+      value: '__loading__',
+      label: 'Завантаження списку принтерів…',
+      disabled: true,
+    });
+  }
+  printerOptionsArr.push({ value: 'custom', label: '🔧 Інший (ввести вручну)...' });
+
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
       {/* Заголовок модуля */}
@@ -669,28 +683,11 @@ const ModuleSection: React.FC<{
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
             Виберіть принтер зі списку або введіть назву вручну
           </p>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-            <select
-              value={values.printer_name || ''}
-              onChange={(e) => onFieldChange('printer_name', e.target.value)}
-              className="w-full appearance-none cursor-pointer pr-10 rounded-lg border border-gray-300 dark:border-slate-600 
-                bg-white dark:bg-slate-800 px-3 py-2 text-sm
-                text-gray-900 dark:text-gray-100
-                focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-            >
-              <option value="">— Системний за замовчуванням —</option>
-              {printerOptions.map((printer) => (
-                <option key={printer} value={printer}>{printer}</option>
-              ))}
-              {printersLoading && (
-                <option disabled>Завантаження списку принтерів…</option>
-              )}
-              <option value="custom">🔧 Інший (ввести вручну)...</option>
-            </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            </div>
-          </div>
+          <Select
+            options={printerOptionsArr}
+            value={values.printer_name || ''}
+            onChange={(e) => onFieldChange('printer_name', e.target.value)}
+          />
           {values.printer_name === 'custom' && (
             <input
               type="text"
@@ -724,18 +721,11 @@ const ModuleSection: React.FC<{
               <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
                 {returnSetting.description}
               </p>
-              <select
+              <Select
+                options={returnOptions}
                 value={values.return_receipt_template_type || returnSetting.value || 'return_receipt_58mm'}
                 onChange={(e) => onFieldChange('return_receipt_template_type', e.target.value)}
-                className="w-full rounded-lg border border-gray-300 dark:border-slate-600 
-                  bg-white dark:bg-slate-800 px-3 py-2 text-sm
-                  text-gray-900 dark:text-gray-100
-                  focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-              >
-                {returnOptions.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+              />
             </div>
           );
         })()}
