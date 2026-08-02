@@ -21,6 +21,16 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-process = "2"
 tauri-plugin-global-shortcut = "2"
+# ── Автозапуск: POS стартує разом із системою ────────────────────────────
+# На Linux створює ~/.config/autostart/*.desktop, на Windows — запис у реєстрі,
+# на macOS — LaunchAgent (~/Library/LaunchAgents).
+tauri-plugin-autostart = "2"
+# ── Single-instance: захист від подвійного запуску каси на одній машині ──
+tauri-plugin-single-instance = "2"
+# ── Автооновлення (updater): перевірка/завантаження/встановлення оновлень ──
+# Дозволяє користувачам отримувати нові версії без ручного встановлення.
+# Конфігурація (endpoints/pubkey) — у tauri.conf.json → plugins.updater.
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }

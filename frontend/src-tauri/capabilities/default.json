@@ -1,15 +1,33 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window (merged default + main)",
+  "local": true,
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:event:default",
     "shell:allow-open",
     "dialog:default",
+    "dialog:allow-message",
+    "dialog:allow-ask",
     "notification:default",
+    "notification:allow-notify",
     "clipboard-manager:default",
     "fs:default",
-    "process:default"
+    "process:default",
+    "process:allow-restart",
+    "process:allow-exit",
+    "global-shortcut:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "autostart:default",
+    "updater:default"
   ]
 }

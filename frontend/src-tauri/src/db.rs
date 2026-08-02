@@ -94,29 +94,52 @@ impl OfflineDatabase {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Кешувати товари (масив JSON)
+    ///
+    /// Вся серія вставок виконується в ОДНІЙ транзакції (BEGIN/COMMIT):
+    /// без транзакції кожна з 4001 вставок проходить окремий write-цикл SQLite,
+    /// що блокує головний потік на секунди. При помилці — ROLLBACK.
     pub fn cache_products(&self, products_json: &str) -> Result<usize, String> {
         let products: Vec<serde_json::Value> = serde_json::from_str(products_json)
             .map_err(|e| format!("Помилка парсингу JSON: {}", e))?;
 
+        // Починаємо транзакцію (ручний BEGIN, бо Connection::transaction вимагає &mut)
+        self.conn.execute("BEGIN", params![])
+            .map_err(|e| format!("Помилка початку транзакції: {}", e))?;
+
         let mut count = 0;
-        for product in &products {
-            let id = product["id"].as_str()
-                .or_else(|| product["barcode"].as_str())
-                .unwrap_or("unknown");
+        let result = (|| {
+            for product in &products {
+                let id = product["id"].as_str()
+                    .or_else(|| product["barcode"].as_str())
+                    .unwrap_or("unknown");
 
-            let data = serde_json::to_string(product)
-                .map_err(|e| format!("Помилка серіалізації: {}", e))?;
+                let data = serde_json::to_string(product)
+                    .map_err(|e| format!("Помилка серіалізації: {}", e))?;
 
-            self.conn.execute(
-                "INSERT INTO products (id, data, updated_at) VALUES (?1, ?2, datetime('now'))
-                 ON CONFLICT(id) DO UPDATE SET data = ?2, updated_at = datetime('now')",
-                params![id, data],
-            ).map_err(|e| format!("Помилка вставки товару: {}", e))?;
+                self.conn.execute(
+                    "INSERT INTO products (id, data, updated_at) VALUES (?1, ?2, datetime('now'))
+                     ON CONFLICT(id) DO UPDATE SET data = ?2, updated_at = datetime('now')",
+                    params![id, data],
+                ).map_err(|e| format!("Помилка вставки товару: {}", e))?;
 
-            count += 1;
+                count += 1;
+            }
+            Ok(count)
+        })();
+
+        match result {
+            Ok(c) => {
+                // Фіксуємо транзакцію — всі вставки однією операцією
+                self.conn.execute("COMMIT", params![])
+                    .map_err(|e| format!("Помилка COMMIT: {}", e))?;
+                Ok(c)
+            }
+            Err(e) => {
+                // Відкочуємо транзакцію при будь-якій помилці вставки
+                let _ = self.conn.execute("ROLLBACK", params![]);
+                Err(e)
+            }
         }
-
-        Ok(count)
     }
 
     /// Отримати кешовані товари

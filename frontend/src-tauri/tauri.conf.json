@@ -25,19 +25,32 @@
     ],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "iconPath": "icons/32x32.png",
-      "iconAsTemplate": true
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "publisher": "Kasa POS",
     "icon": [
+      "icons/icon.ico",
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["Ukrainian", "English"],
+        "displayLanguageSelector": true
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFN0RBMkE3OEVGMkY3RApSV1I5TCs5NEt0cm5DOTJqU0k5dTFNZ0FOZkZBNmc2Z2F5UGxFRGRONGRKZExmWmRNcHk0MTVaUwo=",
+      "endpoints": [
+        "https://github.com/kasa-pos/kasa-pos/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

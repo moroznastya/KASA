@@ -7,6 +7,7 @@
 //   - Сканер штрих-кодів (інформація про підключення)
 //   - Статус системи (онлайн/офлайн, версія)
 //   - Автозапуск
+//   - Системні сповіщення (синхронізація, помилки ПРРО тощо)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,4 +143,29 @@ pub fn get_keyboard_layout() -> Result<String, String> {
         .or_else(|_| std::env::var("LC_ALL"))
         .unwrap_or_else(|_| "unknown".to_string());
     Ok(layout)
+}
+
+/// Відправити системне сповіщення
+///
+/// Використовується frontend для повідомлень про:
+///   - синхронізацію офлайн-даних
+///   - помилки ПРРО / фіскалізації
+///   - завершення резервного копіювання тощо.
+///
+/// Приклад виклику з frontend:
+///   invoke('send_notification', { title: 'Синхронізація', body: 'Дані оновлено' })
+#[tauri::command]
+pub fn send_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("Помилка відправки сповіщення: {e}"))
 }

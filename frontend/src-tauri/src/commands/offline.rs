@@ -42,6 +42,25 @@ pub fn cache_products(products_json: String) -> Result<usize, String> {
     db.cache_products(&products_json)
 }
 
+/// Логувати помилку фронтенду у /tmp/kasa-frontend.log
+/// (діагностика «синього екрану»: пастка window.onerror / unhandledrejection)
+#[tauri::command]
+pub fn log_frontend_error(message: String) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/kasa-frontend.log")
+    {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            message
+        );
+    }
+}
+
 /// Отримати кешовані товари (JSON-рядок)
 #[tauri::command]
 pub fn get_cached_products(search: Option<String>, limit: Option<usize>) -> Result<String, String> {
