@@ -62,6 +62,10 @@ def _make_uow() -> MagicMock:
     uow.__aenter__ = __aenter__
     uow.__aexit__ = __aexit__
     uow.commit = AsyncMock()
+    # confirm_invoice створює INVOICE-запис у supplier_ledger через uow.ledger
+    uow.ledger = MagicMock()
+    uow.ledger.get_supplier_balance = AsyncMock(return_value=0.0)
+    uow.ledger.save = AsyncMock(return_value=MagicMock())
     return uow
 
 

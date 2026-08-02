@@ -22,6 +22,10 @@ from app.domain.repositories.i_unit_of_work import IUnitOfWork
 from app.application.dto.invoice_dto import InvoiceDTO, InvoiceCreateDTO, InvoiceConfirmDTO
 from app.application.mappers.invoice_mapper import InvoiceMapper
 from app.application.interfaces.i_event_bus import IEventBus
+from app.infrastructure.persistence.models.supplier_ledger import (
+    LedgerOperationType,
+    SupplierLedger,
+)
 from app.domain.events import (
     InvoiceCreated,
     InvoiceUpdated,
@@ -148,11 +152,33 @@ class InvoiceUseCases:
                         product.change_cost_price(item.cost_price)
                     await self._product_repo.update(product)
 
-            # Оновлюємо баланс постачальника
-            supplier = await self._supplier_repo.find_by_id(invoice.supplier_id)
-            if supplier and invoice.total:
-                supplier.update_balance(invoice.total)
-                await self._supplier_repo.update(supplier)
+            # Створюємо INVOICE-запис у журналі взаєморозрахунків (борг +)
+            invoice_amount = getattr(invoice, "total_amount", None)
+            if invoice_amount is None:
+                invoice_amount = getattr(
+                    getattr(invoice, "total", None), "amount", None
+                )
+            invoice_amount = (
+                Decimal(str(invoice_amount))
+                if invoice_amount is not None
+                else Decimal("0")
+            )
+            current_balance = await self._uow.ledger.get_supplier_balance(
+                invoice.supplier_id
+            )
+            ledger_entry = SupplierLedger(
+                supplier_id=invoice.supplier_id,
+                operation_type=LedgerOperationType.INVOICE,
+                document_id=invoice.id,
+                document_number=invoice.number,
+                amount=invoice_amount,
+                operation_date=(
+                    getattr(invoice, "invoice_date", None) or invoice.created_at
+                ),
+                notes=f"Прибуткова накладна №{invoice.number}",
+                balance_after=Decimal(str(current_balance)) + invoice_amount,
+            )
+            await self._uow.ledger.save(ledger_entry)
 
             # Зберігаємо накладну
             saved = await self._invoice_repo.update(invoice)

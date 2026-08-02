@@ -195,7 +195,11 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
         stmt = (
             select(SupplierLedger.balance_after)
             .where(SupplierLedger.supplier_id == supplier_id)
-            .order_by(SupplierLedger.operation_date.desc())
+            .order_by(
+                SupplierLedger.operation_date.desc(),
+                SupplierLedger.created_at.desc(),
+                SupplierLedger.id.desc(),
+            )
             .limit(1)
         )
         result = await self._session.execute(stmt)
@@ -230,6 +234,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
             .join(
                 latest_entry_subq,
                 Supplier.id == latest_entry_subq.c.supplier_id,
+                isouter=True,
             )
             .join(
                 SupplierLedger,
@@ -238,6 +243,7 @@ class SQLAlchemyLedgerRepository(ILedgerRepository):
                     SupplierLedger.operation_date
                     == latest_entry_subq.c.max_date
                 ),
+                isouter=True,
             )
             .order_by(Supplier.name)
         )
