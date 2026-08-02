@@ -10,6 +10,7 @@
   - Оновлення залишків при підтвердженні інвентаризації
 """
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Union
 from uuid import UUID
@@ -28,6 +29,10 @@ from app.infrastructure.persistence.models.inventory import Inventory, Inventory
 from app.infrastructure.persistence.models.product import Product
 from app.domain.services.product_service import ProductService
 from app.domain.services.ledger_service import LedgerService
+from app.infrastructure.persistence.models.supplier_ledger import (
+    LedgerOperationType,
+    SupplierLedger,
+)
 
 
 # Тип документа для узагальненої роботи
@@ -180,36 +185,31 @@ class DocumentService:
                     product.price = item.price
                     await self.session.flush()
 
-        # Створюємо запис у SupplierLedger ТІЛЬКИ якщо обрано "в борг" (credit)
-        # Або якщо спосіб оплати не вказано (для зворотної сумісності)
-        if invoice.total_amount and invoice.total_amount > 0:
-            should_create_debt = (
-                invoice.payment_method is None or
-                invoice.payment_method == PaymentMethod.CREDIT
-            )
-
-            if should_create_debt:
-                # Додаємо інформацію про спосіб оплати в нотатки
-                notes = f"Прибуткова накладна №{invoice.number}"
-                if invoice.payment_method:
-                    method_label = PAYMENT_METHOD_LABELS.get(
-                        invoice.payment_method, invoice.payment_method.value
-                    )
-                    notes += f" ({method_label})"
-
-                await self.ledger_service.create_ledger_entry(
-                    supplier_id=invoice.supplier_id,
-                    operation_type="invoice",
-                    document_id=invoice.id,
-                    document_number=invoice.number,
-                    amount=invoice.total_amount,
-                    operation_date=invoice.invoice_date,
-                    notes=notes,
-                )
-
         # Змінюємо статус
         invoice.status = InvoiceStatus.CONFIRMED
         await self.session.flush()
+
+        # Створюємо INVOICE-запис у журналі взаєморозрахунків (борг +) ЗАВЖДИ,
+        # у тій самій сесії/транзакції
+        invoice_amount = (
+            invoice.total_amount if invoice.total_amount is not None else 0
+        )
+        notes = f"Прибуткова накладна №{invoice.number}"
+        if invoice.payment_method:
+            method_label = PAYMENT_METHOD_LABELS.get(
+                invoice.payment_method, invoice.payment_method.value
+            )
+            notes += f" ({method_label})"
+
+        await self.ledger_service.create_ledger_entry(
+            supplier_id=invoice.supplier_id,
+            operation_type="invoice",
+            amount=Decimal(str(invoice_amount)),
+            operation_date=invoice.invoice_date or invoice.created_at,
+            document_id=invoice.id,
+            document_number=invoice.number,
+            notes=notes,
+        )
         return invoice
 
     async def cancel_invoice(self, invoice_id: UUID) -> Invoice:
@@ -251,6 +251,31 @@ class DocumentService:
             # Відкат фіскального залишку (не нижче 0)
             if invoice.is_fiscal:
                 await self._decrease_fiscal_stock(item.product_id, item.quantity)
+
+        # Компенсуємо ledger-запис: якщо для накладної існує INVOICE-запис,
+        # створюємо CORRECTION-запис (відкат боргу) — інакше нічого не робимо
+        # (накладні, підтверджені до появи журналу, не дублюємо)
+        ledger_result = await self.session.execute(
+            select(SupplierLedger).where(
+                SupplierLedger.document_id == invoice.id,
+                SupplierLedger.operation_type == LedgerOperationType.INVOICE,
+            )
+        )
+        invoice_ledger_entry = ledger_result.scalars().first()
+
+        if invoice_ledger_entry is not None:
+            invoice_amount = (
+                invoice.total_amount if invoice.total_amount is not None else 0
+            )
+            await self.ledger_service.create_ledger_entry(
+                supplier_id=invoice.supplier_id,
+                operation_type="correction",
+                amount=-Decimal(str(invoice_amount)),
+                operation_date=datetime.utcnow(),
+                document_id=invoice.id,
+                document_number=invoice.number,
+                notes=f"Скасування накладної №{invoice.number}",
+            )
 
         invoice.status = InvoiceStatus.CANCELLED
         await self.session.flush()
