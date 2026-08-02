@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Clock, User, DollarSign, Calendar } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
@@ -7,11 +7,13 @@ import {
   WorkSession,
   WorkSessionReport,
   MySessionsResponse,
+  UserSessionsResponse,
 } from '@/services/workSessionService';
 import { formatCurrency } from '@/utils/format';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { Select, SelectOption } from '@/components/ui/Select';
+import { Modal } from '@/components/ui/Modal';
 import toast from 'react-hot-toast';
 
 const monthNames: string[] = [
@@ -27,8 +29,18 @@ const WorkTimePage: React.FC = () => {
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [editingRate, setEditingRate] = useState<Record<string, string>>({});
+  // Поточний час для «живих» тривалостей активних сесій (оновлюється кожні 30 с)
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  // Користувач, чиї сесії відкриті в модалці (адмін)
+  const [selectedUser, setSelectedUser] = useState<{ userId: string; userName: string } | null>(null);
 
   const isAdmin = user?.role === 'admin';
+
+  // Live-оновлення тривалості активних сесій (каса + модалка адміна)
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // --- Опції для селекторів ---
   const monthOptions: SelectOption[] = useMemo(
@@ -67,6 +79,27 @@ const WorkTimePage: React.FC = () => {
     enabled: !isAdmin,
   });
 
+  // --- Сесії вибраного користувача для модалки адміна ---
+  const {
+    data: userSessionsData,
+    isLoading: userSessionsLoading,
+  } = useQuery<UserSessionsResponse>({
+    queryKey: [
+      'work-sessions',
+      'user',
+      selectedUser?.userId ?? '',
+      selectedMonth,
+      selectedYear,
+    ],
+    queryFn: () =>
+      workSessionService.getUserSessions(
+        selectedUser!.userId,
+        selectedMonth,
+        selectedYear
+      ),
+    enabled: !!selectedUser,
+  });
+
   // --- Мутація зміни ставки ---
   const rateMutation = useMutation({
     mutationFn: ({ userId, rate }: { userId: string; rate: number }) =>
@@ -86,18 +119,40 @@ const WorkTimePage: React.FC = () => {
   const hourlyRate = mySessionsData?.hourly_rate;
 
   // --- Форматування ---
-  const formatHours = (hours: number | null | undefined): string => {
-    if (hours == null) return '—';
-    return hours.toFixed(2) + ' год';
+  /** Формат тривалості: «7 год 30 хв», «45 хв», «2 год», null → «—» */
+  const formatDuration = (hours: number | null | undefined): string => {
+    if (hours == null || !isFinite(hours) || hours < 0) return '—';
+    const totalMinutes = Math.round(hours * 60);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    if (h === 0) return `${m} хв`;
+    if (m === 0) return `${h} год`;
+    return `${h} год ${m} хв`;
+  };
+
+  /**
+   * Парсинг дати з backend: backend повертає naive UTC без 'Z' ("2026-08-02T09:49:35"),
+   * але JS трактує такий рядок як локальний час → помилка часового поясу.
+   * Якщо рядок уже містить зсув (Z або +hh:mm) — парсимо як є, інакше вважаємо UTC.
+   */
+  const parseDate = (s: string): Date => {
+    if (!s) return new Date(NaN);
+    return /(Z|[+-]\d{2}:?\d{2})$/i.test(s) ? new Date(s) : new Date(s + 'Z');
+  };
+
+  /** «Жива» тривалість активної сесії (now - login_time, обрізана 24 год) */
+  const getLiveDurationHours = (loginTime: string, now: number): number => {
+    const diff = (now - parseDate(loginTime).getTime()) / 3600000;
+    return Math.min(Math.max(diff, 0), 24);
   };
 
   const formatTime = (dateStr: string): string => {
-    const d = new Date(dateStr);
+    const d = parseDate(dateStr);
     return d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
   };
 
   const formatDateShort = (dateStr: string): string => {
-    const d = new Date(dateStr);
+    const d = parseDate(dateStr);
     return d.toLocaleDateString('uk-UA', {
       day: '2-digit',
       month: '2-digit',
@@ -205,7 +260,11 @@ const WorkTimePage: React.FC = () => {
                 return (
                   <tr
                     key={item.user_id}
-                    className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors"
+                    onClick={() =>
+                      setSelectedUser({ userId: item.user_id, userName: item.user_name })
+                    }
+                    title="Переглянути сесії користувача"
+                    className="cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors"
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
@@ -218,7 +277,7 @@ const WorkTimePage: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                      {formatHours(item.total_hours)}
+                      {formatDuration(item.total_hours)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 max-w-[180px]">
@@ -294,7 +353,7 @@ const WorkTimePage: React.FC = () => {
                 Відпрацьовано за {monthNames[selectedMonth - 1].toLowerCase()}
               </p>
               <p className="text-3xl font-bold text-gray-900 dark:text-white mt-1">
-                {formatHours(totalHours)}
+                {formatDuration(totalHours)}
               </p>
               {hourlyRate != null && (
                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
@@ -355,7 +414,18 @@ const WorkTimePage: React.FC = () => {
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">
-                        {formatHours(session.duration_hours)}
+                        {session.is_active ? (
+                          <span className="flex items-center gap-2">
+                            <span className="text-green-600 font-medium">
+                              {formatDuration(getLiveDurationHours(session.login_time, nowTick))}
+                            </span>
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                              Активна
+                            </span>
+                          </span>
+                        ) : (
+                          formatDuration(session.duration_hours)
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -383,6 +453,90 @@ const WorkTimePage: React.FC = () => {
 
       {/* Контент */}
       {isAdmin ? renderAdminView() : renderCashierView()}
+
+      {/* Модалка: сесії користувача (адмін) */}
+      <Modal
+        isOpen={!!selectedUser}
+        onClose={() => setSelectedUser(null)}
+        title={selectedUser ? `Сесії користувача: ${selectedUser.userName}` : ''}
+        size="2xl"
+      >
+        {userSessionsLoading ? (
+          <div className="flex justify-center py-8">
+            <Spinner size="lg" />
+          </div>
+        ) : userSessionsData ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                Сесії за {monthNames[selectedMonth - 1].toLowerCase()} {selectedYear}
+              </span>
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                Всього: {formatDuration(userSessionsData.total_hours)}
+              </span>
+            </div>
+
+            {userSessionsData.sessions.length === 0 ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                <Clock className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">Немає сесій за обраний місяць</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-slate-700/50 border-b border-gray-200 dark:border-slate-700">
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Дата
+                      </th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Увійшов
+                      </th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Вийшов
+                      </th>
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                        Тривалість
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                    {userSessionsData.sessions.map((session) => (
+                      <tr key={session.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors">
+                        <td className="px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300">
+                          {formatDateShort(session.login_time)}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300">
+                          {formatTime(session.login_time)}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300">
+                          {session.logout_time ? formatTime(session.logout_time) : (
+                            <span className="text-green-600 font-medium">Активна</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm font-medium text-gray-900 dark:text-white">
+                          {session.is_active ? (
+                            <span className="flex items-center gap-2">
+                              <span className="text-green-600 font-medium">
+                                {formatDuration(getLiveDurationHours(session.login_time, nowTick))}
+                              </span>
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                                Активна
+                              </span>
+                            </span>
+                          ) : (
+                            formatDuration(session.duration_hours)
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 };

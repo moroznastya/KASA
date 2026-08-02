@@ -6,6 +6,7 @@ export interface WorkSession {
   login_time: string;
   logout_time: string | null;
   duration_hours: number | null;
+  is_active: boolean;
 }
 
 export interface WorkSessionDetail extends WorkSession {
@@ -32,6 +33,14 @@ export interface MySessionsResponse {
   hourly_rate: number | null;
 }
 
+/** Відповідь ендпоінта GET /work-sessions/user/{user_id} (адмін) */
+export interface UserSessionsResponse {
+  user_id: string;
+  user_name: string;
+  total_hours: number;
+  sessions: WorkSession[];
+}
+
 export const workSessionService = {
   /** Отримати мої сесії (для касира) */
   getMySessions: async (month?: number, year?: number) => {
@@ -45,6 +54,14 @@ export const workSessionService = {
   /** Отримати звіт по всіх (для адміна) */
   getReport: async (month: number, year: number) => {
     const res = await api.get<WorkSessionReport>('/work-sessions/report', {
+      params: { month, year },
+    });
+    return res.data;
+  },
+
+  /** Отримати сесії конкретного користувача за місяць (адмін) */
+  getUserSessions: async (userId: string, month: number, year: number) => {
+    const res = await api.get<UserSessionsResponse>(`/work-sessions/user/${userId}`, {
       params: { month, year },
     });
     return res.data;
