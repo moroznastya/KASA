@@ -337,6 +337,7 @@ async def render_invoice_print_items(
             margin_mm=data.margin_mm,
             barcode_type=data.barcode_type,
             barcode_height_mm=data.barcode_height_mm,
+            print_mode=data.print_mode,
         )
     except ValueError as e:
         detail = str(e)

@@ -85,6 +85,7 @@ class InvoicePrintUseCases:
         margin_mm: float,
         barcode_type: str,
         barcode_height_mm: float,
+        print_mode: str = "system",
     ) -> dict:
         """
         Рендерить цінники або етикетки для товарів з накладної.
@@ -225,6 +226,7 @@ class InvoicePrintUseCases:
             "fields": fields,
             "barcode_type": barcode_type,
             "barcode_height_mm": barcode_height_mm,
+            "print_mode": print_mode,
         }
 
         if print_type == "price_tag":

@@ -65,6 +65,13 @@ class LabelRenderRequest(BaseModel):
     barcode_height_mm: float = Field(
         12, ge=4, le=40, description="Висота штрих-коду в мм (для code128) або розмір (для QR)"
     )
+    print_mode: Literal["system", "escpos"] = Field(
+        "system",
+        description=(
+            "Режим друку: system (CUPS, повна ширина етикетки width_mm) "
+            "або escpos (58мм термо, обмеження 48мм)"
+        ),
+    )
 
 
 class LabelRenderResponse(BaseModel):
@@ -96,6 +103,13 @@ class InvoicePrintRequest(BaseModel):
     )
     barcode_height_mm: float = Field(
         12, ge=4, le=40, description="Висота штрих-коду в мм"
+    )
+    print_mode: Literal["system", "escpos"] = Field(
+        "system",
+        description=(
+            "Режим друку: system (CUPS, повна ширина етикетки width_mm) "
+            "або escpos (58мм термо, обмеження 48мм)"
+        ),
     )
 
 

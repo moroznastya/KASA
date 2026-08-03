@@ -609,6 +609,7 @@ async def render_invoice_print_items(
         "fields": fields,
         "barcode_type": data.barcode_type,
         "barcode_height_mm": data.barcode_height_mm,
+        "print_mode": data.print_mode,
     }
 
     if data.print_type == "price_tag":

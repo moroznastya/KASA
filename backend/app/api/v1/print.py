@@ -334,6 +334,7 @@ async def render_labels(
         "fields": fields,
         "barcode_type": data.barcode_type,
         "barcode_height_mm": data.barcode_height_mm,
+        "print_mode": data.print_mode,
     }
 
     # ─── 5. Рендеримо HTML ──────────────────────────────────────────────────
@@ -524,6 +525,9 @@ async def _test_print_price_tag_or_label(
         "fields": fields,
         "barcode_type": data.barcode_type,
         "barcode_height_mm": data.barcode_height_mm,
+        # Тестовий друк — на системному принтері (CUPS): повна ширина.
+        # render_price_tags_grid (A4) ігнорує print_mode.
+        "print_mode": "system",
     }
 
     # ─── 5. Рендеримо HTML ───────────────────────────────────────────────────

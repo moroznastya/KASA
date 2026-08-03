@@ -528,17 +528,25 @@ class PriceTagPrintService:
         width_mm: float,
         height_mm: float,
         gap_mm: float,
+        print_mode: str = "escpos",
     ) -> str:
         """Генерує HTML однієї етикетки (термопринтер).
 
-        Ширина ОБМЕЖУЄТЬСЯ 48мм — реальною друкованою областю 58мм
-        термопринтера (384 dots @203dpi). Це гарантує, що html2canvas
-        знімає canvas з пропорціями 48×40 = 384×320 dots, і Rust масштабує
-        його РІВНОМІРНО без спотворення. Для етикеток ≤48мм значення
-        не змінюється. (Тільки для термо-етикеток; A4-цінники
-        використовують render_price_tags_grid зі своєю сіткою.)
+        Ширина етикетки залежить від режиму друку (print_mode):
+          - 'system' → effective_width = width_mm (ПОВНА ширина етикетки,
+            без обмеження 48мм) — для системного друку (CUPS), напр.
+            Xprinter XP-420B (832 dots, друкована область 104мм).
+          - 'escpos' → effective_width = min(width_mm, 48.0) — реальна
+            друкована область 58мм термопринтера (384 dots @203dpi):
+            html2canvas знімає canvas з пропорціями 48×40 = 384×320 dots,
+            і Rust масштабує його РІВНОМІРНО без спотворення.
+        Для етикеток ≤48мм обидва режими збігаються. (Тільки для
+        термо-етикеток; A4-цінники використовують render_price_tags_grid
+        зі своєю сіткою.)
         """
-        effective_width = min(width_mm, 48.0)
+        effective_width = (
+            width_mm if print_mode == "system" else min(width_mm, 48.0)
+        )
         # padding: 2mm прибрано — шаблон сам керує відступами
         # (body padding/border); зовнішній padding створював «білу рамку»
         # між краєм канваса і рамкою етикетки; розмір не змінюється
@@ -706,8 +714,20 @@ body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 
         template_content: str,
         products: list[dict],
         settings: dict,
+        print_mode: str | None = None,
     ) -> str:
-        """Рендерить HTML з етикетками для термопринтера — одна за одною."""
+        """Рендерить HTML з етикетками для термопринтера — одна за одною.
+
+        Режим друку (print_mode):
+          - 'system' → effective_width = width_mm (ПОВНА ширина етикетки,
+            без обмеження 48мм) — для системного друку (CUPS), напр.
+            Xprinter XP-420B (832 dots, друкована область 104мм).
+          - 'escpos' → effective_width = min(width_mm, 48.0) — для 58мм
+            термопринтера (384 dots @203dpi).
+
+        Якщо print_mode не передано — береться з settings['print_mode'],
+        інакше 'escpos' (зворотна сумісність зі старою поведінкою).
+        """
         if not products or not template_content:
             return PriceTagPrintService._empty_html("label")
 
@@ -717,20 +737,28 @@ body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 
         fields = settings.get("fields", None)
         enabled_fields = set(fields) if fields else None
 
-        # Реальна друкована ширина термопринтера: для 58мм принтера друкована
-        # область = 48мм (384 dots @203dpi). Якщо етикетка ширша за 48мм
-        # (наприклад 58×40), рендеримо з ЕФЕКТИВНОЮ шириною 48мм:
-        #   - html2canvas знімає canvas 48×40мм (пропорції 1.2);
-        #   - Rust масштабує до 384×320 dots (пропорції 1.2) → РІВНОМІРНО,
-        #     БЕЗ спотворення вертикалі та штрих-коду.
-        # Якщо width_mm <= 48 (напр. 40×25) — min() не впливає, ширина
-        # лишається як задано. Зміна стосується ТІЛЬКИ термо-етикеток
+        # Режим друку: явний параметр → settings['print_mode'] → 'escpos'
+        # (стара поведінка min(width_mm, 48.0) для 58мм термо з 384 dots).
+        if print_mode is None:
+            print_mode = str(settings.get("print_mode", "escpos"))
+
+        # Ефективна ширина етикетки:
+        #   - 'system' (CUPS, напр. XP-420B з друкованою областю 104мм) →
+        #     ПОВНА ширина width_mm; контент заповнює всю етикетку;
+        #     @page = width_mm × height_mm.
+        #   - 'escpos' (58мм термо, 384 dots) → min(width_mm, 48.0):
+        #     html2canvas знімає canvas 48×40мм (пропорції 1.2), Rust
+        #     масштабує до 384×320 dots (1.2) РІВНОМІРНО, без спотворення.
+        # Якщо width_mm <= 48 (напр. 40×25) — обидва режими збігаються.
+        # Зміна стосується ТІЛЬКИ термо-етикеток
         # (render_labels_sequential/_build_label_html), НЕ A4-цінників.
-        effective_width = min(width_mm, 48.0)
+        effective_width = (
+            width_mm if print_mode == "system" else min(width_mm, 48.0)
+        )
 
         logger.info(
-            "PRICE_TAG_SEQUENTIAL | w=%.1f h=%.1f gap=%.1f eff_w=%.1f products=%d barcode_type=%s barcode_h=%.1f fields=%s",
-            width_mm, height_mm, gap_mm, effective_width, len(products),
+            "PRICE_TAG_SEQUENTIAL | w=%.1f h=%.1f gap=%.1f eff_w=%.1f print_mode=%s products=%d barcode_type=%s barcode_h=%.1f fields=%s",
+            width_mm, height_mm, gap_mm, effective_width, print_mode, len(products),
             settings.get('barcode_type'), settings.get('barcode_height_mm', 12),
             list(settings.get('fields') or []),
         )
@@ -764,7 +792,7 @@ body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 
                 extra_context=extra_context,
             )
             label = PriceTagPrintService._build_label_html(
-                rendered, effective_width, height_mm, gap_mm
+                rendered, effective_width, height_mm, gap_mm, print_mode=print_mode
             )
             if i < total_labels - 1:
                 label += '\n<div style="page-break-after: always;"></div>'
@@ -776,10 +804,13 @@ body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 
 <meta charset="UTF-8">
 <title>Етикетки термопринтер</title>
 <style>
-/* @page = ефективний розмір (48×40мм для 58мм принтера): html2canvas
-   знімає СТОРІНКУ цілком, тому і сторінка, і .label-item мають бути
-   48×40мм — інакше Rust масштабує canvas 58×40 (1.45) у 384×320 (1.2)
-   нерівномірно → спотворення. */
+/* @page = ефективний розмір етикетки:
+   - 'system' (CUPS): повна ширина width_mm × height_mm (напр. 104×40мм
+     для Xprinter XP-420B) — контент заповнює всю етикетку.
+   - 'escpos' (58мм термо): 48×40мм — html2canvas знімає СТОРІНКУ
+     цілком, тому і сторінка, і .label-item мають бути 48×40мм — інакше
+     Rust масштабує canvas 58×40 (1.45) у 384×320 (1.2) нерівномірно
+     → спотворення. */
 @page {{ size: {effective_width}mm {height_mm}mm; margin: 0mm; }}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: Arial, Helvetica, sans-serif; font-size: 7pt; line-height: 1.15; }}
