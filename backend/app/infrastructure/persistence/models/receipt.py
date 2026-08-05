@@ -115,6 +115,16 @@ class Receipt(Base):
         default=None,
         comment="Спосіб оплати: cash, card, mixed",
     )
+    cash_amount: Mapped[float | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment="Сума оплати готівкою (грн). Заповнюється для cash/mixed чеків",
+    )
+    card_amount: Mapped[float | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment="Сума оплати карткою (грн). Заповнюється для card/mixed чеків",
+    )
     original_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("receipts.id", ondelete="SET NULL"),
