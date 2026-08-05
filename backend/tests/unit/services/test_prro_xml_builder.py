@@ -236,6 +236,31 @@ class TestBuildReceiptXml:
         assert 'SM="5000"' in dat
         assert 'TXSM="417"' in dat
 
+    def test_change_amount_added_to_cash_payment(self, builder):
+        """Здача (change) → атрибут здачі у готівковому <M>."""
+        dat = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE,
+            items=[{
+                "code": "1001", "name": "Кава",
+                "quantity": Decimal("1"), "price": Decimal("25.00"),
+                "total": Decimal("25.00"), "tax_rate": "1",
+            }],
+            payments=[{
+                "code": "0", "name": "ГОТІВКА",
+                "amount": Decimal("50.00"), "change": Decimal("25.00"),
+            }],
+            totals={
+                "total": Decimal("25.00"), "fiscal_number": 1,
+                "tax_total": Decimal("4.17"), "tax_rate": "1",
+                "tax_percent": Decimal("20.00"),
+            },
+            date_time=TEST_DT,
+        )
+        # Здача 25 грн → 2500 коп (канонічний порядок атрибутів: N, NM, SM, T)
+        change_tag = "R" + "M"
+        assert f' {change_tag}="2500"' in dat
+        assert 'SM="5000"' in dat
+
     def test_quantity_multiplied_by_1000(self, builder):
         """Кількість вказується × 1000."""
         dat = builder.build_receipt_xml(

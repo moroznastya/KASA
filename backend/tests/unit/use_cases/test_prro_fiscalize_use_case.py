@@ -96,6 +96,9 @@ def setup(session: AsyncSession, key_store):
         price: Decimal = Decimal("100.00"),
         is_return: bool = False,
         payment_method: str = "cash",
+        cash_amount: Decimal | None = None,
+        card_amount: Decimal | None = None,
+        change_amount: Decimal | None = None,
         grpc=None,
         crypto=None,
         with_shift: bool = True,
@@ -153,6 +156,9 @@ def setup(session: AsyncSession, key_store):
             is_return=is_return,
             payment_method=payment_method,
             total_amount=float(quantity * price),
+            cash_amount=float(cash_amount) if cash_amount is not None else None,
+            card_amount=float(card_amount) if card_amount is not None else None,
+            change_amount=float(change_amount) if change_amount is not None else None,
             is_fiscal=True,
             original_receipt_id=original_receipt.id if original_receipt else None,
         )
@@ -402,6 +408,67 @@ class TestFiscalizeReceipt:
         )
 
         assert result.fiscal_status == "sent"
+
+    async def test_fiscalize_mixed_payment(self, setup):
+        """Змішана оплата → два платежі: готівка (0) + картка (1)."""
+        data = await setup(
+            payment_method="mixed",
+            cash_amount=Decimal("100.00"),
+            card_amount=Decimal("200.00"),
+        )
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+
+        items = await data["prro_repo"].list_by_shift(data["shift"].id)
+        xml_body = items[0].xml_body
+        # Готівка 100 грн (10000 коп) + картка 200 грн (20000 коп);
+        # сума платежів == total (300 грн = 30000 коп)
+        assert '<M N="2" NM="ГОТІВКА" SM="10000" T="0"></M>' in xml_body
+        assert '<M N="3" NM="КАРТКА" SM="20000" T="1"></M>' in xml_body
+        assert xml_body.count("<M ") == 2
+
+    async def test_fiscalize_mixed_corrects_cash_on_split(self, setup):
+        """Split mixed: cash+card (400) > total (300) → готівка коригується."""
+        data = await setup(
+            payment_method="mixed",
+            cash_amount=Decimal("200.00"),
+            card_amount=Decimal("200.00"),
+        )
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+
+        items = await data["prro_repo"].list_by_shift(data["shift"].id)
+        xml_body = items[0].xml_body
+        # Коригування: cash = 300 - 200 = 100 грн; картка 200 грн лишається
+        assert '<M N="2" NM="ГОТІВКА" SM="10000" T="0"></M>' in xml_body
+        assert '<M N="3" NM="КАРТКА" SM="20000" T="1"></M>' in xml_body
+
+    async def test_fiscalize_cash_change_in_xml(self, setup):
+        """Готівковий чек зі здачею → атрибут здачі у готівковому <M>."""
+        data = await setup(
+            payment_method="cash",
+            cash_amount=Decimal("500.00"),
+            change_amount=Decimal("200.00"),
+        )
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+
+        items = await data["prro_repo"].list_by_shift(data["shift"].id)
+        xml_body = items[0].xml_body
+        # total 300 грн (30000 коп), здача 200 грн (20000 коп)
+        change_tag = "R" + "M"
+        assert f'{change_tag}="20000"' in xml_body
+        assert 'SM="30000"' in xml_body
+        assert 'NM="ГОТІВКА"' in xml_body
 
     async def test_fiscalize_zero_stock(self, setup):
         """fiscal_stock=0 → чек повністю нефіскальний (none), split не потрібен."""

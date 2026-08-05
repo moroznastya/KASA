@@ -68,6 +68,8 @@ class SQLAlchemyReceiptRepository(IReceiptRepository):
             cashier_id=receipt.cashier_id,
             total_amount=float(receipt.total.amount) if receipt.total is not None else 0.0,
             change_amount=float(receipt.change_amount.amount) if receipt.change_amount is not None else None,
+            cash_amount=float(receipt.cash_amount.amount) if receipt.cash_amount is not None else None,
+            card_amount=float(receipt.card_amount.amount) if receipt.card_amount is not None else None,
             is_return=getattr(receipt, "receipt_type", "sale") == "return",
             notes=receipt.notes or None,
             payment_method=ReceiptPaymentMethod(receipt.payment_method.value)

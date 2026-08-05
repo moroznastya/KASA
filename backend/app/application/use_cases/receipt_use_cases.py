@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Callable, Optional
 from uuid import UUID, uuid4
 
@@ -154,6 +154,23 @@ class ReceiptUseCases:
         if not receipt.number:
             receipt.number = f"RCPT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
 
+        # Валідація сум оплати (mixed/cash/card) — доменна цілісність,
+        # яку mapper (пряме створення через конструктор) не виконує
+        self._validate_payment(receipt, dto)
+
+        # Здача для готівкових чеків: set_payment розраховує change_amount
+        # (cash_amount - total, якщо більше) і зберігає у entity; далі
+        # потрапляє у БД та у фіскальний XML як атрибут здачі <M>.
+        # Для боргових чеків (cash_amount < total) set_payment не викликаємо —
+        # він кинув би ValueError (сума оплати менша за суму чеку).
+        if (
+            dto.payment_method == "cash"
+            and receipt.cash_amount is not None
+            and receipt.total is not None
+            and receipt.cash_amount.amount >= receipt.total.amount
+        ):
+            receipt.set_payment(PaymentMethod.CASH, receipt.cash_amount)
+
         async with self._uow:
             # Перевіряємо наявність товарів та оновлюємо залишки
             for item in receipt.items:
@@ -249,6 +266,84 @@ class ReceiptUseCases:
         await self._auto_fiscalize(saved.id, background_tasks)
 
         return ReceiptMapper.entity_to_dto(saved)
+
+    @staticmethod
+    def _validate_payment(receipt: Receipt, dto: ReceiptCreateDTO) -> None:
+        """
+        Валідує суми оплати чеку продажу.
+
+        Правила:
+          - "mixed": cash_amount і card_amount обов'язкові (не None);
+                     cash + card == total (точно до копійки);
+          - "cash":  card_amount має бути None або 0;
+          - "card":  cash_amount має бути None або 0;
+          - сума оплати (cash+card для mixed, або paid для cash/card)
+            не менша за total — КРІМ чеків з боргом (customer_id задано);
+          - bank_transfer / credit / інші — без жорсткої перевірки сум.
+
+        Args:
+            receipt: Receipt entity (після create_dto_to_entity, total вже
+                перераховано з позицій).
+            dto: DTO створення чеку.
+
+        Raises:
+            ValueError: з українським описом порушення.
+        """
+        method = str(dto.payment_method or "").lower()
+        total = (
+            receipt.total.amount if receipt.total is not None else Decimal("0")
+        )
+        total = total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        # Покупка в борг (debtor) — оплата може бути неповною/частковою
+        is_debt = dto.customer_id is not None
+
+        cash: Optional[Decimal] = None
+        card: Optional[Decimal] = None
+        if dto.cash_amount is not None:
+            cash = Decimal(str(dto.cash_amount)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        if dto.card_amount is not None:
+            card = Decimal(str(dto.card_amount)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        if method == "mixed":
+            if cash is None or card is None:
+                raise ValueError(
+                    "Для змішаної оплати (mixed) обов'язково вкажіть "
+                    "cash_amount і card_amount"
+                )
+            paid = cash + card
+            if paid != total:
+                raise ValueError(
+                    f"Сума оплати (готівка {cash} + картка {card} = {paid}) "
+                    f"має дорівнювати сумі чеку ({total})"
+                )
+            return
+
+        if method == "cash":
+            if card is not None and card > 0:
+                raise ValueError(
+                    "Для оплати готівкою (cash) card_amount має бути "
+                    "0 або не вказаний"
+                )
+            paid = cash if cash is not None else total
+        elif method == "card":
+            if cash is not None and cash > 0:
+                raise ValueError(
+                    "Для оплати карткою (card) cash_amount має бути "
+                    "0 або не вказаний"
+                )
+            paid = card if card is not None else total
+        else:
+            # bank_transfer / credit — без жорсткої перевірки сум
+            return
+
+        if not is_debt and paid < total:
+            raise ValueError(
+                f"Сума оплати ({paid}) менша за суму чеку ({total})"
+            )
 
     async def get_receipt(self, receipt_id: UUID) -> ReceiptDTO:
         """

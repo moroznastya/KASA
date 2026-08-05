@@ -635,14 +635,88 @@ class FiscalizeReceiptUseCase:
         return items_xml, total, tax_groups
 
     def _build_payments(self, receipt, total: Decimal) -> list[dict]:
-        """Формує оплати для XML чеку за способом оплати."""
-        method = str(getattr(receipt, "payment_method", "") or "cash")
+        """Формує оплати для XML чеку за способом оплати.
+
+        Розбивка оплат відповідає способу оплати чеку (payment_method):
+          - "cash"  -> [{code:0, ГОТІВКА, total}] (+ здача change_amount, якщо > 0);
+          - "card"  -> [{code:1, КАРТКА, total}];
+          - "mixed" -> два платежі: [{code:0, ГОТІВКА, cash_amount},
+                                    {code:1, КАРТКА, card_amount}],
+                      сума яких = total (з округленням до 2 знаків; останній
+                      платіж коригується для уникнення копійчаних розбіжностей).
+                      Якщо cash+card != total (напр. split — фіскалізується
+                      частина чеку) — коригується ГОТІВКОВА частина.
+        """
+        method = str(getattr(receipt, "payment_method", "") or "cash").lower()
+        total = Decimal(str(total)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
         payments: list[dict] = []
-        if "card" in method:
+
+        if method == "mixed":
+            cash = self._payment_share(receipt, "cash_amount")
+            card = self._payment_share(receipt, "card_amount")
+
+            # Сума платежів має дорівнювати total. При розбіжності
+            # (наприклад, split: фіскалізується лише частина чеку)
+            # коригуємо ГОТІВКОВУ частину, щоб cash + card == total.
+            if cash + card != total:
+                if card > total:
+                    card = total
+                    cash = Decimal("0")
+                else:
+                    cash = total - card
+
+            # Копійчана корекція останнього (карткового) платежу:
+            # гарантуємо cash + card == total точно до копійки.
+            card = (total - cash).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+            if cash > 0:
+                payments.append(
+                    {"code": "0", "name": "ГОТІВКА", "amount": cash}
+                )
+            if card > 0:
+                payments.append(
+                    {"code": "1", "name": "КАРТКА", "amount": card}
+                )
+            if not payments:
+                # Обидві частини нульові (не мало статись після валідації)
+                payments.append({"code": "0", "name": "ГОТІВКА", "amount": total})
+
+        elif "card" in method:
             payments.append({"code": "1", "name": "КАРТКА", "amount": total})
+
         else:
-            payments.append({"code": "0", "name": "ГОТІВКА", "amount": total})
+            # Готівка та інші способи (bank_transfer тощо) — як готівковий платіж
+            cash_pay: dict = {"code": "0", "name": "ГОТІВКА", "amount": total}
+            change = self._payment_share(receipt, "change_amount")
+            if change > 0:
+                # Здача готівкою (для готівкових чеків зі здачею)
+                cash_pay["change"] = change
+            payments.append(cash_pay)
+
         return payments
+
+    @staticmethod
+    def _payment_share(receipt, attr: str) -> Decimal:
+        """Повертає суму (грн) з атрибута чеку.
+
+        Підтримує доменний Money (атрибут .amount), Decimal та float
+        (колонки БД Numeric). None -> Decimal("0").
+        """
+        value = getattr(receipt, attr, None)
+        if value is None:
+            return Decimal("0")
+        if hasattr(value, "amount"):
+            value = value.amount
+        try:
+            return Decimal(str(value)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        except (TypeError, ValueError, ArithmeticError):
+            return Decimal("0")
 
     # ─── Обробка успіху ────────────────────────────────────────────────────
 
