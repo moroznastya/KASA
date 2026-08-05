@@ -235,6 +235,9 @@ pub fn run() {
             commands::devices::get_detected_devices,
             commands::devices::get_scanners,
             commands::devices::terminal_payment,
+            commands::devices::terminal_refund,
+            commands::devices::terminal_cancel,
+            commands::devices::terminal_ping,
         ])
         .run(tauri::generate_context!())
         .expect("Помилка запуску Kasa POS");

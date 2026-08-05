@@ -257,6 +257,78 @@ const ReceiptDetailPage: React.FC = () => {
           </div>
         )}
 
+        {/* Банківська транзакція (картковий термінал ПриватБанк) */}
+        {receipt.terminal_rrn && (
+          <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700">
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
+              Банківська транзакція
+            </h3>
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <FileCheck2 className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-500 dark:text-gray-400 w-44">RRN:</span>
+                <span className="text-sm font-medium text-gray-900 dark:text-white font-mono">
+                  {receipt.terminal_rrn}
+                </span>
+              </div>
+              {receipt.terminal_approval_code && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">Код авторизації:</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white font-mono">
+                    {receipt.terminal_approval_code}
+                  </span>
+                </div>
+              )}
+              {receipt.terminal_invoice_number && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">Номер чека терміналу:</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {receipt.terminal_invoice_number}
+                  </span>
+                </div>
+              )}
+              {receipt.terminal_card_pan && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">Картка:</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white font-mono">
+                    {receipt.terminal_card_pan}
+                  </span>
+                </div>
+              )}
+              {receipt.terminal_payment_system && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">МПС:</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {receipt.terminal_payment_system}
+                  </span>
+                </div>
+              )}
+              {receipt.terminal_status && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">Статус:</span>
+                  <span className="text-sm font-medium text-green-600 dark:text-green-400 uppercase">
+                    {receipt.terminal_status}
+                  </span>
+                </div>
+              )}
+              {receipt.terminal_created_at && (
+                <div className="flex items-center gap-3">
+                  <FileCheck2 className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400 w-44">Дата транзакції:</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {formatDate(receipt.terminal_created_at)}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Items */}
         <div className="px-8 py-5 border-b border-gray-200 dark:border-slate-700">
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">

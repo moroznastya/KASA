@@ -125,6 +125,63 @@ class Receipt(Base):
         nullable=True,
         comment="Сума оплати карткою (грн). Заповнюється для card/mixed чеків",
     )
+
+    # ── Дані банківської транзакції карткового терміналу (ПриватБанк) ──
+    terminal_rrn: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="RRN транзакції терміналу (унікальний номер транзакції банку)",
+    )
+    terminal_approval_code: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        comment="Код авторизації терміналу",
+    )
+    terminal_invoice_number: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="Номер чека терміналу (може перевищувати 32-bit, зберігається як рядок)",
+    )
+    terminal_transaction_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Ідентифікатор транзакції в банку-емітенті (rrnExt / rid)",
+    )
+    terminal_response_code: Mapped[str | None] = mapped_column(
+        String(8),
+        nullable=True,
+        comment='ResponseCode відповіді терміналу ("0000" — успіх тощо)',
+    )
+    terminal_status: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        comment='Статус транзакції (trnStatus: "1" — успіх; або наш статус approved/declined/partial/cancelled)',
+    )
+    terminal_receipt: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Повний текст чека терміналу (для друку)",
+    )
+    terminal_card_pan: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="Маскований номер картки (pan)",
+    )
+    terminal_payment_system: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+        comment="Міжнародна платіжна система (VISA/MasterCard)",
+    )
+    terminal_merchant: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="Номер мерчанта",
+    )
+    terminal_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="Дата/час транзакції від терміналу",
+    )
     original_receipt_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("receipts.id", ondelete="SET NULL"),

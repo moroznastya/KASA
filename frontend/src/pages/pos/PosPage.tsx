@@ -3,6 +3,7 @@ import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { debtorService, Debtor } from '@/services/debtorService';
+import { receiptService } from '@/services/receiptService';
 import { settingsService } from '@/services/settingsService';
 import { prroService } from '@/services/prroService';
 import { productService } from '@/services/productService';
@@ -83,6 +84,39 @@ const paymentOptions: PaymentOption[] = [
 
 const DEBT_PRODUCT_ID = 'c230fe32-78ef-4501-a21d-71467a668fc4';
 
+// =====================================================================
+// Допоміжні функції для карткового терміналу (ПриватБанк)
+// =====================================================================
+
+/** Зібрати ISO-дату транзакції з transactionDate + transactionTime */
+function buildTerminalCreatedAt(result: TerminalPaymentResult): string | null {
+  if (!result.transactionDate || !result.transactionTime) return null;
+  const [d, m, y] = result.transactionDate.split('.').map(Number);
+  const [hh, mm, ss] = result.transactionTime.split(':').map(Number);
+  if (!d || !m || !y || hh === undefined || mm === undefined || ss === undefined) return null;
+  const date = new Date(y, m - 1, d, hh, mm, ss);
+  return isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * Поля terminal_* для payload чека з результату терміналу.
+ * Якщо результат відсутній або неуспішний — повертає порожній об'єкт.
+ */
+function terminalFieldsFrom(result: TerminalPaymentResult | null): Partial<ReceiptCreate> {
+  if (!result || !result.success) return {};
+  return {
+    terminal_rrn: result.rrn ?? null,
+    terminal_approval_code: result.approvalCode ?? null,
+    terminal_invoice_number: result.invoiceNumber ?? null,
+    terminal_response_code: result.responseCode ?? null,
+    terminal_status: result.success ? 'approved' : null,
+    terminal_receipt: result.receipt ?? null,
+    terminal_card_pan: result.pan ?? null,
+    terminal_merchant: result.terminalName ?? null,
+    terminal_created_at: buildTerminalCreatedAt(result),
+  };
+}
+
 const PosPage: React.FC = () => {
   const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -103,6 +137,17 @@ const PosPage: React.FC = () => {
   // Стан передачі суми на термінал (card / mixed)
   const [terminalState, setTerminalState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [terminalError, setTerminalError] = useState('');
+  // Результат успішної транзакції терміналу (оплата: card / mixed)
+  const [terminalResult, setTerminalResult] = useState<TerminalPaymentResult | null>(null);
+  // Результат повернення на картку (повернення: card / mixed)
+  const [refundResult, setRefundResult] = useState<TerminalPaymentResult | null>(null);
+  // RRN оригінальної транзакції для повернення на картку
+  const [returnRrn, setReturnRrn] = useState('');
+  // Рефи для СИНХРОННОГО доступу до результату терміналу:
+  // setState асинхронний, а payload чека будується одразу після автопередачі,
+  // тому результат зберігаємо і в state (UI), і в реф (payload)
+  const terminalResultRef = useRef<TerminalPaymentResult | null>(null);
+  const refundResultRef = useRef<TerminalPaymentResult | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Debtor state for payment
@@ -122,6 +167,13 @@ const PosPage: React.FC = () => {
     setShowDebtorField(false);
     setSelectedDebtor(null);
     setDebtorQuery('');
+    // Скидаємо стан терміналу (оплата / повернення) при закритті модалки
+    setTerminalState('idle');
+    setTerminalError('');
+    terminalResultRef.current = null;
+    setTerminalResult(null);
+    refundResultRef.current = null;
+    setRefundResult(null);
   }, []);
   
   // Debtor modal for partial payment
@@ -690,6 +742,18 @@ const PosPage: React.FC = () => {
       original_receipt_number: data.receipt_number,
       is_fiscal: false,
       fiscal_status: 'none',
+      // ── Картковий термінал (передаємо у локальну копію чеку) ──
+      terminal_rrn: data.terminal_rrn ?? null,
+      terminal_approval_code: data.terminal_approval_code ?? null,
+      terminal_invoice_number: data.terminal_invoice_number ?? null,
+      terminal_transaction_id: data.terminal_transaction_id ?? null,
+      terminal_response_code: data.terminal_response_code ?? null,
+      terminal_status: data.terminal_status ?? null,
+      terminal_receipt: data.terminal_receipt ?? null,
+      terminal_card_pan: data.terminal_card_pan ?? null,
+      terminal_payment_system: data.terminal_payment_system ?? null,
+      terminal_merchant: data.terminal_merchant ?? null,
+      terminal_created_at: data.terminal_created_at ?? null,
     };
   };
 
@@ -810,7 +874,44 @@ const PosPage: React.FC = () => {
       }
     }
 
-    // Визначаємо фактично сплачену суму
+    // ═══════════════════════════════════════════════════════════════════
+    // Картковий термінал (card / mixed): АВТОМАТИЧНА передача суми.
+    // Якщо підтвердження немає АБО сума змінилась — сума передається
+    // на термінал одразу, без ручного натискання кнопки.
+    // returnMode НЕ чіпаємо автоматикою — там ручний ввід RRN.
+    // ═══════════════════════════════════════════════════════════════════
+    const isCardPayment = paymentMethod === 'card' || paymentMethod === 'mixed';
+    if (isCardPayment) {
+      if (terminal) {
+        if (returnMode) {
+          // Повернення на картку: ручне підтвердження (refund за RRN)
+          if (!refundResult || refundResult.success !== true || !refundResult.rrn) {
+            toast.error('Повернення на картку не підтверджено терміналом');
+            return;
+          }
+        } else {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+          if (
+            !terminalResult ||
+            terminalResult.success !== true ||
+            !terminalResult.rrn ||
+            terminalResult.amount !== terminalAmount
+          ) {
+            setIsProcessing(true);
+            const ok = await handleTerminalPayment(terminalAmount);
+            setIsProcessing(false);
+            if (!ok) return; // помилка вже показана всередині handleTerminalPayment
+          }
+        }
+      } else {
+        // Термінал не налаштовано — дозволяємо чек без rrn,
+        // але попереджаємо, що дані транзакції не збережуться
+        toast('Термінал не налаштовано — дані транзакції не будуть збережені', { icon: '⚠️' });
+      }
+    }
+
+    // Визначаємо фактично сплачену суму (ПІСЛЯ термінального блоку —
+    // при partial (0010) paymentMethod міг змінитись на 'mixed')
     let paidAmount: number;
     if (paymentMethod === 'cash') {
       paidAmount = parseFloat(cashAmount) || 0;
@@ -841,6 +942,12 @@ const PosPage: React.FC = () => {
         sessionStorage.removeItem('pos_debt_payment');
       }
 
+      // terminal_* поля: для продажу — з terminalResult (реф), для повернення — з refundResult (реф).
+      // Реф дає актуальне значення одразу після автопередачі (setState асинхронний)
+      const terminalPayload = returnMode
+        ? terminalFieldsFrom(refundResultRef.current)
+        : terminalFieldsFrom(terminalResultRef.current);
+
       const receiptData: ReceiptCreate = {
         receipt_type: returnMode ? 'return' as const : 'sale' as const,
         total_amount: subtotal.toFixed(2),
@@ -855,6 +962,12 @@ const PosPage: React.FC = () => {
           debtor_id: debtPayment.debtor_id,
           amount: debtPayment.amount.toFixed(2),
         } : undefined,
+        // Спосіб оплати та суми (cash/card/mixed) — для коректного v2-запиту
+        payment_method: paymentMethod,
+        cash_amount: parseFloat(cashAmount) || 0,
+        card_amount: parseFloat(cardAmount) || 0,
+        // Дані карткового терміналу (якщо транзакція підтверджена)
+        ...terminalPayload,
       };
 
       const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
@@ -889,6 +1002,14 @@ const PosPage: React.FC = () => {
       setPaymentMethod('cash');
       setSelectedDebtor(null);
       setDebtorQuery('');
+      // Скидаємо стан терміналу та RRN після успішної оплати/повернення
+      setTerminalState('idle');
+      setTerminalError('');
+      terminalResultRef.current = null;
+      setTerminalResult(null);
+      refundResultRef.current = null;
+      setRefundResult(null);
+      setReturnRrn('');
 
       // Показуємо діалог друку (або друкуємо автоматично)
       setLastReceipt(response);
@@ -938,14 +1059,50 @@ const PosPage: React.FC = () => {
       toast.error('Введіть ім\'я боржника');
       return;
     }
-    
-    // Визначаємо фактично сплачену суму
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Картковий термінал (card / mixed): АВТОМАТИЧНА передача суми
+    // (така сама, як у handlePayment). returnMode — ручний refund за RRN.
+    // ═══════════════════════════════════════════════════════════════════
+    const isCardPayment = paymentMethod === 'card' || paymentMethod === 'mixed';
+    if (isCardPayment) {
+      if (terminal) {
+        if (returnMode) {
+          // Повернення на картку: ручне підтвердження (refund за RRN)
+          if (!refundResult || refundResult.success !== true || !refundResult.rrn) {
+            toast.error('Повернення на картку не підтверджено терміналом');
+            return;
+          }
+        } else {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+          if (
+            !terminalResult ||
+            terminalResult.success !== true ||
+            !terminalResult.rrn ||
+            terminalResult.amount !== terminalAmount
+          ) {
+            setIsProcessing(true);
+            const ok = await handleTerminalPayment(terminalAmount);
+            setIsProcessing(false);
+            if (!ok) return; // помилка вже показана всередині handleTerminalPayment
+          }
+        }
+      } else {
+        // Термінал не налаштовано — дозволяємо чек без rrn,
+        // але попереджаємо, що дані транзакції не збережуться
+        toast('Термінал не налаштовано — дані транзакції не будуть збережені', { icon: '⚠️' });
+      }
+    }
+
+    // Визначаємо фактично сплачену суму (ПІСЛЯ термінального блоку —
+    // при partial (0010) paymentMethod міг змінитись на 'mixed')
     let paidAmount: number;
     if (paymentMethod === 'cash') {
       paidAmount = parseFloat(cashAmount) || 0;
     } else if (paymentMethod === 'card') {
       paidAmount = subtotal;
     } else {
+      // mixed
       paidAmount = (parseFloat(cashAmount) || 0) + (parseFloat(cardAmount) || 0);
     }
     
@@ -962,6 +1119,12 @@ const PosPage: React.FC = () => {
         sessionStorage.removeItem('pos_debt_payment');
       }
 
+      // terminal_* поля: для продажу — з terminalResult (реф), для повернення — з refundResult (реф).
+      // Реф дає актуальне значення одразу після автопередачі (setState асинхронний)
+      const terminalPayload = returnMode
+        ? terminalFieldsFrom(refundResultRef.current)
+        : terminalFieldsFrom(terminalResultRef.current);
+
       const receiptData: ReceiptCreate = {
         receipt_type: returnMode ? 'return' as const : 'sale' as const,
         total_amount: subtotal.toFixed(2),
@@ -976,6 +1139,12 @@ const PosPage: React.FC = () => {
           debtor_id: debtPayment.debtor_id,
           amount: debtPayment.amount.toFixed(2),
         } : undefined,
+        // Спосіб оплати та суми (cash/card/mixed) — для коректного v2-запиту
+        payment_method: paymentMethod,
+        cash_amount: parseFloat(cashAmount) || 0,
+        card_amount: parseFloat(cardAmount) || 0,
+        // Дані карткового терміналу (якщо транзакція підтверджена)
+        ...terminalPayload,
       };
 
       const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
@@ -1013,6 +1182,14 @@ const PosPage: React.FC = () => {
       setDebtorModalQuery('');
       setSelectedDebtor(null);
       setDebtorQuery('');
+      // Скидаємо стан терміналу та RRN після успішної оплати/повернення
+      setTerminalState('idle');
+      setTerminalError('');
+      terminalResultRef.current = null;
+      setTerminalResult(null);
+      refundResultRef.current = null;
+      setRefundResult(null);
+      setReturnRrn('');
 
       // Показуємо діалог друку (або друкуємо автоматично)
       setLastReceipt(response);
@@ -1157,17 +1334,109 @@ const PosPage: React.FC = () => {
   const terminalAmount =
     paymentMethod === 'mixed' ? parseFloat(cardAmount) || 0 : subtotal;
 
-  const handleTerminalPayment = async (amount: number) => {
-    if (!terminal || amount <= 0) return;
+  /**
+   * Оплата карткою (sale): передає суму на термінал (terminalPayment).
+   * Успішний результат зберігається у terminalResult — він потрапляє
+   * у payload чека (terminal_rrn, terminal_approval_code тощо).
+   */
+  const handleTerminalPayment = async (amount: number): Promise<boolean> => {
+    if (!terminal || amount <= 0) return false;
     setTerminalState('sending');
     setTerminalError('');
     try {
-      await devicesApi.terminalPayment(amount);
-      setTerminalState('sent');
+      const result = await devicesApi.terminalPayment(amount);
+
+      if (result.success) {
+        // Зберігаємо і в state (для UI), і в реф (для payload чека)
+        terminalResultRef.current = result;
+        setTerminalResult(result);
+        setTerminalState('sent');
+
+        // Partial approval (0010): термінал схвалив ЧАСТКОВУ суму —
+        // даємо касиру вибір: прийняти часткову оплату карткою,
+        // а решту — готівкою (mixed), або скасувати.
+        if (result.responseCode === '0010') {
+          const partialAmount = result.amount > 0 ? result.amount : amount;
+          const rest = Math.max(0, subtotal - partialAmount);
+          const accepted = window.confirm(
+            `Термінал схвалив ЧАСТКОВУ оплату: ${formatCurrency(partialAmount)} грн.\n\n` +
+            `Прийняти часткову оплату карткою, а решту (${formatCurrency(rest)} грн) — готівкою?`
+          );
+          if (accepted) {
+            // Прийнято: paymentMethod стає 'mixed', cardAmount/cashAmount оновлюються
+            setCardAmount(partialAmount.toFixed(2));
+            setCashAmount(rest > 0 ? rest.toFixed(2) : '0');
+            setPaymentMethod('mixed');
+            toast.success(`Прийнято часткову оплату ${formatCurrency(partialAmount)} — решта готівкою`);
+            return true;
+          }
+          // Касир скасував — прибираємо результат, щоб чек не був створений
+          terminalResultRef.current = null;
+          setTerminalResult(null);
+          setTerminalState('idle');
+          toast.error('Часткову оплату скасовано');
+          return false;
+        }
+
+        // Успіх (0000) — транзакція повністю підтверджена
+        return true;
+      }
+
+      // Термінал відхилив транзакцію (responseCode не 0000/0010)
+      terminalResultRef.current = null;
+      setTerminalResult(null);
+      setTerminalState('error');
+      const code = result.responseCode ? `${result.responseCode}: ` : '';
+      const msg = code + (result.errorDescription || 'Транзакцію відхилено терміналом');
+      setTerminalError(msg);
+      toast.error(msg);
+      return false;
     } catch (e) {
+      terminalResultRef.current = null;
+      setTerminalResult(null);
       setTerminalState('error');
       setTerminalError(String(e));
       toast.error('Не вдалося передати суму на термінал');
+      return false;
+    }
+  };
+
+  /**
+   * Повернення на картку (return): виконує refund на терміналі
+   * за RRN оригінальної транзакції. Успішний результат зберігається
+   * у refundResult — він потрапляє у payload return-чека.
+   */
+  const handleTerminalRefund = async (amount: number) => {
+    if (!terminal || amount <= 0) return;
+    const rrn = returnRrn.trim();
+    if (!rrn) {
+      toast.error('Вкажіть RRN оригінальної транзакції');
+      return;
+    }
+    setTerminalState('sending');
+    setTerminalError('');
+    try {
+      const result = await devicesApi.terminalRefund(amount, rrn);
+
+      if (result.success) {
+        refundResultRef.current = result;
+        setRefundResult(result);
+        setTerminalState('sent');
+        toast.success('Повернення на картку виконано');
+      } else {
+        refundResultRef.current = null;
+        setRefundResult(null);
+        setTerminalState('error');
+        const msg = result.errorDescription || 'Повернення відхилено терміналом';
+        setTerminalError(msg);
+        toast.error(msg);
+      }
+    } catch (e) {
+      refundResultRef.current = null;
+      setRefundResult(null);
+      setTerminalState('error');
+      setTerminalError(String(e));
+      toast.error('Не вдалося виконати повернення на терміналі');
     }
   };
 
@@ -1462,7 +1731,13 @@ const PosPage: React.FC = () => {
                 РЕЖИМ ПОВЕРНЕННЯ
               </span>
               <button
-                onClick={() => setReturnMode(false)}
+                onClick={() => {
+                  setReturnMode(false);
+                  setReturnRrn('');
+                  setRefundResult(null);
+                  setTerminalState('idle');
+                  setTerminalError('');
+                }}
                 className="ml-auto text-danger-500 hover:text-danger-700"
               >
                 <X className="w-4 h-4" />
@@ -1782,7 +2057,16 @@ const PosPage: React.FC = () => {
               {paymentOptions.map((option) => (
                 <button
                   key={option.value}
-                  onClick={() => setPaymentMethod(option.value)}
+                  onClick={() => {
+                    setPaymentMethod(option.value);
+                    // Скидаємо результат терміналу при зміні способу оплати
+                    setTerminalState('idle');
+                    setTerminalError('');
+                    terminalResultRef.current = null;
+                    setTerminalResult(null);
+                    refundResultRef.current = null;
+                    setRefundResult(null);
+                  }}
                   className={`
                     flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border-2 transition-all
                     ${
@@ -1825,27 +2109,54 @@ const PosPage: React.FC = () => {
                   </div>
 
                   <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                    Сума до передачі:{' '}
+                    {returnMode ? 'Сума до повернення' : 'Сума до передачі'}:{' '}
                     <span className="font-semibold text-gray-900 dark:text-gray-100">
                       {formatCurrency(terminalAmount)}
                     </span>
                   </p>
 
+                  {/* RRN оригінальної транзакції — для повернення на картку */}
+                  {returnMode && (
+                    <div className="mb-3">
+                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                        RRN оригінальної транзакції
+                      </label>
+                      <input
+                        type="text"
+                        value={returnRrn}
+                        onChange={(e) => setReturnRrn(e.target.value)}
+                        placeholder="Введіть RRN або оберіть чек у пошуку..."
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                      {returnRrn.trim() === '' && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                          Без RRN повернення на картку неможливе (чек буде заблоковано)
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => handleTerminalPayment(terminalAmount)}
+                    onClick={() =>
+                      returnMode
+                        ? handleTerminalRefund(terminalAmount)
+                        : handleTerminalPayment(terminalAmount)
+                    }
                     disabled={terminalState === 'sending' || terminalAmount <= 0}
                     className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {terminalState === 'sending' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Передача на термінал...
+                        {returnMode ? 'Повернення на картку...' : 'Передача на термінал...'}
                       </>
                     ) : (
                       <>
                         <CreditCard className="w-4 h-4" />
-                        Передати суму на термінал
+                        {returnMode
+                          ? 'Повернути на картку'
+                          : 'Повторно передати суму на термінал'}
                       </>
                     )}
                   </button>
@@ -1853,13 +2164,18 @@ const PosPage: React.FC = () => {
                   {terminalState === 'sent' && (
                     <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 text-sm font-medium">
                       <FileCheck2 className="w-4 h-4" />
-                      Сума {formatCurrency(terminalAmount)} передана на термінал
+                      {returnMode
+                        ? `Повернення ${formatCurrency(terminalAmount)} на картку виконано`
+                        : `Сума ${formatCurrency(terminalAmount)} передана на термінал`}
                     </div>
                   )}
                   {terminalState === 'error' && terminalError && (
-                    <p className="mt-3 text-sm text-red-600 dark:text-red-400 line-clamp-2">
-                      {terminalError}
-                    </p>
+                    <div className="mt-3 flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+                      <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                      <p className="text-sm text-red-700 dark:text-red-300 leading-snug">
+                        {terminalError}
+                      </p>
+                    </div>
                   )}
                 </>
               ) : (
@@ -2390,6 +2706,15 @@ const PosPage: React.FC = () => {
           setSelectedSourceReceipt(receipt);
           setShowSearchReceiptModal(false);
           setShowSelectItemsModal(true);
+          // Автозаповнюємо RRN оригінальної транзакції (якщо чек безготівковий)
+          receiptService.getReceipt(receipt.id)
+            .then((fullReceipt) => {
+              setReturnRrn(fullReceipt.terminal_rrn || '');
+            })
+            .catch(() => {
+              // Чек не вдалося завантажити — RRN вводиться вручну
+              setReturnRrn('');
+            });
         }}
       />
 
@@ -2435,8 +2760,16 @@ const PosPage: React.FC = () => {
             setLastReceipt(null);
           }}
           receipt={lastReceipt}
-          // Для повернень — завжди питати, чи друкувати (autoPrint = false)
-          autoPrint={lastReceipt.receipt_type === 'return' ? false : autoPrintReceipt}
+          // Для повернень та чеків, оплачених карткою (payment_method 'card' / 'mixed') —
+          // ЗАВЖДИ питати, чи друкувати (autoPrint = false): діалог показує
+          // кнопки «Друкувати чек» / «Не друкувати». Для готівки — як раніше.
+          autoPrint={
+            lastReceipt.receipt_type === 'return' ||
+            lastReceipt.payment_method === 'card' ||
+            lastReceipt.payment_method === 'mixed'
+              ? false
+              : autoPrintReceipt
+          }
           onPrinted={() => {
             setShowPrintDialog(false);
             setLastReceipt(null);

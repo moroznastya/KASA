@@ -58,11 +58,37 @@ export interface DeviceStatus {
   lastWeight?: number | null;
 }
 
-/** Результат передачі суми на термінал (команда terminal_payment) */
+/** Результат фінансової операції термінала (terminal_payment / terminal_refund / terminal_cancel) */
 export interface TerminalPaymentResult {
   terminalName: string;
+  /** сума операції; при Partial approval (0010) — часткова сума від термінала */
   amount: number;
-  sent: boolean;
+  /** true — операція успішна (RC 0000 або часткове схвалення 0010) */
+  success: boolean;
+  /** "0000" успіх, "0010" Partial approval, "1000"/"1001" тощо */
+  responseCode?: string | null;
+  errorDescription?: string | null;
+  rrn?: string | null;
+  approvalCode?: string | null;
+  invoiceNumber?: string | null;
+  pan?: string | null;
+  /** текст чека (якщо друк чеків увімкнено в профілі термінала) */
+  receipt?: string | null;
+  /** дата транзакції (dd.MM.yyyy) */
+  transactionDate?: string | null;
+  /** час транзакції (HH:mm:ss) */
+  transactionTime?: string | null;
+  /** "1" = approved, "2" = declined, "3" = reversed, "4" = canceled */
+  trnStatus?: string | null;
+}
+
+/** Результат перевірки зв'язку з терміналом (terminal_ping) */
+export interface TerminalPingResult {
+  success: boolean;
+  responseCode?: string | null;
+  errorDescription?: string | null;
+  vendor?: string | null;
+  model?: string | null;
 }
 
 /** Payload події "weight-updated" */
@@ -149,12 +175,34 @@ export const devicesApi = {
     invoke<boolean>('test_connection', { deviceType, config }),
 
   /**
-   * Передати суму на підключений картковий термінал ПриватБанку.
-   * @param amount сума у гривнях (копійки не підтримуються терміналом)
-   * @returns TerminalPaymentResult ({ terminalName, amount, sent })
+   * Оплата карткою: передати суму на термінал ПриватБанку (метод Purchase).
+   * @param amount сума у гривнях (форматується як "0.00")
+   * @returns TerminalPaymentResult ({ terminalName, amount, success, responseCode, ... })
    */
   terminalPayment: (amount: number): Promise<TerminalPaymentResult> =>
     invoke<TerminalPaymentResult>('terminal_payment', { amount }),
+
+  /**
+   * Повернення коштів на картку (метод Refund).
+   * @param amount сума у гривнях
+   * @param rrn RRN оригінальної транзакції
+   */
+  terminalRefund: (amount: number, rrn: string): Promise<TerminalPaymentResult> =>
+    invoke<TerminalPaymentResult>('terminal_refund', { amount, rrn }),
+
+  /**
+   * Скасування транзакції в межах поточного пакета (метод Withdrawal).
+   * @param invoiceNumber номер чека оригінальної транзакції
+   */
+  terminalCancel: (invoiceNumber: string): Promise<TerminalPaymentResult> =>
+    invoke<TerminalPaymentResult>('terminal_cancel', { invoiceNumber }),
+
+  /**
+   * Перевірка зв'язку з терміналом (хендшейк PingDevice + Identify).
+   * @returns TerminalPingResult ({ success, responseCode, errorDescription, vendor, model })
+   */
+  terminalPing: (): Promise<TerminalPingResult> =>
+    invoke<TerminalPingResult>('terminal_ping'),
 
   /**
    * Отримати список CUPS-принтерів системи.

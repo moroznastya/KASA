@@ -101,6 +101,18 @@ function mapCreatedReceipt(raw: {
   fiscal_sent_at?: string | null;
   fiscal_error?: string | null;
   fiscal_check_url?: string | null;
+  // ── Картковий термінал ──
+  terminal_rrn?: string | null;
+  terminal_approval_code?: string | null;
+  terminal_invoice_number?: string | null;
+  terminal_transaction_id?: string | null;
+  terminal_response_code?: string | null;
+  terminal_status?: string | null;
+  terminal_receipt?: string | null;
+  terminal_card_pan?: string | null;
+  terminal_payment_system?: string | null;
+  terminal_merchant?: string | null;
+  terminal_created_at?: string | null;
 }, data: ReceiptCreate): Receipt {
   const total = raw.total ?? 0;
   const paid = (raw.cash_amount ?? 0) + (raw.card_amount ?? 0);
@@ -130,6 +142,18 @@ function mapCreatedReceipt(raw: {
     fiscal_sent_at: raw.fiscal_sent_at ?? null,
     fiscal_error: raw.fiscal_error ?? null,
     fiscal_check_url: raw.fiscal_check_url ?? null,
+    // ── Картковий термінал (проброс з відповіді бекенду) ──
+    terminal_rrn: raw.terminal_rrn ?? data.terminal_rrn ?? null,
+    terminal_approval_code: raw.terminal_approval_code ?? data.terminal_approval_code ?? null,
+    terminal_invoice_number: raw.terminal_invoice_number ?? data.terminal_invoice_number ?? null,
+    terminal_transaction_id: raw.terminal_transaction_id ?? data.terminal_transaction_id ?? null,
+    terminal_response_code: raw.terminal_response_code ?? data.terminal_response_code ?? null,
+    terminal_status: raw.terminal_status ?? data.terminal_status ?? null,
+    terminal_receipt: raw.terminal_receipt ?? data.terminal_receipt ?? null,
+    terminal_card_pan: raw.terminal_card_pan ?? data.terminal_card_pan ?? null,
+    terminal_payment_system: raw.terminal_payment_system ?? data.terminal_payment_system ?? null,
+    terminal_merchant: raw.terminal_merchant ?? data.terminal_merchant ?? null,
+    terminal_created_at: raw.terminal_created_at ?? data.terminal_created_at ?? null,
   };
 }
 
@@ -173,18 +197,45 @@ export const receiptService = {
     // v2 CreateReceiptRequest: items[{product_id, quantity, price}],
     // payment_method, cash_amount, card_amount (total/paid розраховує сервер)
     const endpoint = data.receipt_type === 'return' ? '/receipts/return' : '/receipts/sale';
+
+    // v2 CreateReceiptRequest: items[{product_id, quantity, price}],
+    // payment_method, cash_amount, card_amount (total/paid розраховує сервер)
+    const payload: Record<string, unknown> = {
+      items: data.items.map((item) => ({
+        product_id: item.product_id,
+        quantity: item.quantity,
+        price: item.price,
+      })),
+      payment_method: data.payment_method || 'cash',
+      cash_amount: data.cash_amount ?? null,
+      card_amount: data.card_amount ?? null,
+    };
+
+    // ── Картковий термінал: передаємо terminal_* поля (якщо є) ──
+    // (terminal_rrn, terminal_approval_code, terminal_invoice_number, ...)
+    const terminalFields = [
+      'terminal_rrn',
+      'terminal_approval_code',
+      'terminal_invoice_number',
+      'terminal_transaction_id',
+      'terminal_response_code',
+      'terminal_status',
+      'terminal_receipt',
+      'terminal_card_pan',
+      'terminal_payment_system',
+      'terminal_merchant',
+      'terminal_created_at',
+    ] as const;
+    for (const field of terminalFields) {
+      const value = (data as unknown as Record<string, unknown>)[field];
+      if (value !== undefined && value !== null) {
+        payload[field] = value;
+      }
+    }
+
     const response = await api.post<Parameters<typeof mapCreatedReceipt>[0]>(
       endpoint,
-      {
-        items: data.items.map((item) => ({
-          product_id: item.product_id,
-          quantity: item.quantity,
-          price: item.price,
-        })),
-        payment_method: data.payment_method || 'cash',
-        cash_amount: data.cash_amount ?? null,
-        card_amount: data.card_amount ?? null,
-      },
+      payload,
       V2,
     );
     return mapCreatedReceipt(response.data, data);

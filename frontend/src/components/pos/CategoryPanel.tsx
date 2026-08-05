@@ -133,7 +133,8 @@ export const CategoryPanel: React.FC<CategoryPanelProps> = ({ onProductSelect })
       setProductsLoading(true);
       try {
         const response = await productService.getProducts({
-          category_id: selectedCategoryId,
+          // '' (порожній рядок) не передаємо — інакше backend відповість 422
+          category_id: selectedCategoryId || undefined,
           size: 100,
         });
         setProducts(response.items);

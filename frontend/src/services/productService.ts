@@ -2,9 +2,28 @@ import api from './api';
 import { Product, ProductCreate, ProductUpdate, ProductImage, Barcode } from '@/types/product';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
+/**
+ * Фільтрує порожні значення ('' / null / undefined) з параметрів запиту.
+ * Запобігає відправці category_id='' — FastAPI валідує UUID-поля
+ * і відхиляє порожній рядок з помилкою 422 Unprocessable Entity.
+ * Якщо категорія НЕ вибрана — параметр просто не потрапляє у запит.
+ */
+function cleanParams(params?: SearchParams): Record<string, unknown> | undefined {
+  if (!params) return undefined;
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== '' && value !== null && value !== undefined) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
 export const productService = {
   async getProducts(params?: SearchParams): Promise<PaginatedResponse<Product>> {
-    const response = await api.get<PaginatedResponse<Product>>('/products', { params });
+    const response = await api.get<PaginatedResponse<Product>>('/products', {
+      params: cleanParams(params),
+    });
     return response.data;
   },
 
@@ -33,6 +52,8 @@ export const productService = {
   },
 
   async searchProducts(query: string): Promise<PaginatedResponse<Product>> {
+    // Порожній пошук не викликає 422 (guards у викликачах: query.length >= 2),
+    // тому логіку не змінюємо — щоб не зламати пошук
     const response = await api.get<PaginatedResponse<Product>>('/products', {
       params: { query },
     });
@@ -40,6 +61,10 @@ export const productService = {
   },
 
   async getProductsByCategory(categoryId: string): Promise<PaginatedResponse<Product>> {
+    // Якщо категорія не вибрана ('' / null / undefined) — не робимо запит взагалі
+    if (!categoryId) {
+      return { items: [], total: 0, page: 1, size: 100, pages: 0 };
+    }
     const response = await api.get<PaginatedResponse<Product>>('/products', {
       params: { category_id: categoryId, size: 100 },
     });

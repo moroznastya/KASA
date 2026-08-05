@@ -6,8 +6,11 @@
 //   - COM-ваги (serialport, CAS-подібний протокол): фоновий потік читає порт,
 //     парсить вагу (число з плаваючою крапкою) та надсилає подію
 //     "weight-updated".
-//   - WiFi/ethernet-термінали ПриватБанку (TCP): фоновий потік тримає
-//     з'єднання, при втраті — статус "error" + подія "device-status-changed".
+//   - WiFi/ethernet-термінали ПриватБанку (TCP): фоновий потік періодично
+//     (кожні 5с) перевіряє доступність коротким connect_timeout і надсилає
+//     подію "device-status-changed" лише при зміні статусу.
+//   - Карткові операції (Purchase/Refund/Withdrawal/Ping) — через клієнт
+//     протоколу ПриватБанк ECR (JSON), модуль pb_protocol.
 //
 // Конфіги пристроїв зберігаються у JSON-файлі:
 //   app_data_dir/devices.json  (формат: масив DeviceConfig)
@@ -19,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
-use std::io::Write;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +30,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+
+use super::pb_protocol;
 
 // ── Структури (контракт з фронтендом) ──────────────────────────────────────
 
@@ -341,6 +345,17 @@ fn spawn_terminal(
         // emit_status надсилаємо лише при зміні стану (патерн як у spawn_printer_monitor)
         let mut prev_key: Option<(String, Option<String>)> = None;
         while !stop.load(Ordering::Relaxed) {
+            // Якщо зараз виконується операція з терміналом (terminal_payment,
+            // terminal_refund тощо) — пропускаємо перевірку: термінал зайнятий,
+            // а конкуруюче з'єднання створювати не можна
+            let op_busy = TERMINAL_OP_LOCK
+                .get()
+                .map(|l| l.try_lock().is_err())
+                .unwrap_or(false);
+            if op_busy {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
             match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3)) {
                 Ok(_s) => {
                     // Примусове RST-закриття (SO_LINGER=0): термінал Newland N950
@@ -822,24 +837,15 @@ pub fn test_connection(device_type: String, config: serde_json::Value) -> Result
 }
 
 
-/// Результат передачі суми на термінал
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalPaymentResult {
-    pub terminal_name: String,
-    pub amount: f64,
-    pub sent: bool,
-}
-
-/// Передати суму оплати на підключений термінал ПриватБанку (TCP).
-/// Викликається з каси при виборі способу оплати «Картка».
-#[tauri::command]
-pub fn terminal_payment(app: AppHandle, amount: f64) -> Result<TerminalPaymentResult, String> {
-    let devices = load_devices(&app)?;
+/// Знайти підключений термінал та його адресу (IP:port) з конфігурації каси
+fn find_terminal(app: &AppHandle) -> Result<(String, String, u16), String> {
+    let devices = load_devices(app)?;
     let terminal = devices
         .iter()
         .find(|d| d.device_type == "terminal")
-        .ok_or_else(|| "Термінал не додано. Додайте термінал у Налаштуваннях → Підключені пристрої".to_string())?;
+        .ok_or_else(|| {
+            "Термінал не додано. Додайте термінал у Налаштуваннях → Підключені пристрої".to_string()
+        })?;
     let ip = terminal
         .config
         .get("ip")
@@ -850,49 +856,60 @@ pub fn terminal_payment(app: AppHandle, amount: f64) -> Result<TerminalPaymentRe
         .get("tcpPort")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| format!("Термінал «{}»: не вказано порт", terminal.name))? as u16;
-    let addr = format!("{ip}:{tcp_port}");
-    let socket_addr = addr
-        .parse()
-        .map_err(|e| format!("Термінал «{}»: некоректна адреса {addr}: {e}", terminal.name))?;
-    // Спроби підключення: до 3 (перша + 2 повторні) з паузою 1.5с між ними —
-    // Wi-Fi термінали з power-saving можуть «прокидатись» 5–15 секунд
-    let mut stream = None;
-    let mut last_err = String::new();
-    for attempt in 1..=3 {
-        match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10)) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(e) => {
-                last_err = format!("{e}");
-                if attempt < 3 {
-                    thread::sleep(Duration::from_millis(1500));
-                }
-            }
-        }
-    }
-    let mut stream = stream.ok_or_else(|| {
-        format!(
-            "Термінал «{}»: неможливо підключитись до {addr} після 3 спроб: {last_err}",
-            terminal.name
-        )
-    })?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| e.to_string())?;
-    let payload = serde_json::json!({
-        "action": "payment",
-        "amount": (amount * 100.0).round() / 100.0,
-        "currency": "UAH"
-    });
-    let msg = format!("{payload}\n");
-    stream
-        .write_all(msg.as_bytes())
-        .map_err(|e| format!("Термінал «{}»: помилка надсилання: {e}", terminal.name))?;
-    Ok(TerminalPaymentResult {
-        terminal_name: terminal.name.clone(),
-        amount,
-        sent: true,
-    })
+    Ok((terminal.name.clone(), ip.to_string(), tcp_port))
+}
+
+/// Серіалізація операцій з терміналом: термінал приймає 1 операцію за раз,
+/// несервісний запит під час операції → deviceBusy. Також цей lock бачать
+/// spawn_terminal (пропускає перевірку під час операції) та всі команди.
+static TERMINAL_OP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn terminal_op_guard() -> std::sync::MutexGuard<'static, ()> {
+    TERMINAL_OP_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Оплата карткою: передати суму на термінал ПриватБанку (метод Purchase).
+/// Викликається з каси при виборі способу оплати «Картка».
+#[tauri::command]
+pub fn terminal_payment(app: AppHandle, amount: f64) -> Result<pb_protocol::TerminalPaymentResult, String> {
+    let (name, ip, port) = find_terminal(&app)?;
+    // Монопольність: чекаємо завершення попередньої операції
+    let _guard = terminal_op_guard();
+    pb_protocol::purchase(&ip, port, &name, amount)
+}
+
+/// Повернення коштів на картку (метод Refund). rrn — RRN оригінальної
+/// транзакції, яку повертаємо.
+#[tauri::command]
+pub fn terminal_refund(
+    app: AppHandle,
+    amount: f64,
+    rrn: String,
+) -> Result<pb_protocol::TerminalPaymentResult, String> {
+    let (name, ip, port) = find_terminal(&app)?;
+    let _guard = terminal_op_guard();
+    pb_protocol::refund(&ip, port, &name, amount, &rrn)
+}
+
+/// Скасування транзакції в межах поточного пакета (метод Withdrawal).
+/// invoice_number — номер чека оригінальної транзакції.
+#[tauri::command]
+pub fn terminal_cancel(
+    app: AppHandle,
+    invoice_number: String,
+) -> Result<pb_protocol::TerminalPaymentResult, String> {
+    let (name, ip, port) = find_terminal(&app)?;
+    let _guard = terminal_op_guard();
+    pb_protocol::withdrawal(&ip, port, &name, &invoice_number)
+}
+
+/// Перевірка зв'язку з терміналом (хендшейк PingDevice + Identify).
+#[tauri::command]
+pub fn terminal_ping(app: AppHandle) -> Result<pb_protocol::TerminalPingResult, String> {
+    let (_, ip, port) = find_terminal(&app)?;
+    let _guard = terminal_op_guard();
+    pb_protocol::ping(&ip, port)
 }
