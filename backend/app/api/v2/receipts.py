@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ReceiptUseCases
+from app.application.use_cases.receipt_use_cases import ReceiptValidationError
 from app.application.use_cases.prro.prro_use_cases import PrroUseCases
 from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
 from .deps import get_prro_use_cases, get_receipt_use_cases, get_cache_service
@@ -51,6 +52,18 @@ class ReceiptResponse(BaseModel):
     fiscal_sent_at: datetime | None = None
     fiscal_error: str | None = None
     split_group_id: UUID | None = None
+    # ── Дані банківської транзакції карткового терміналу (ПриватБанк) ──
+    terminal_rrn: str | None = None
+    terminal_approval_code: str | None = None
+    terminal_invoice_number: str | None = None
+    terminal_transaction_id: str | None = None
+    terminal_response_code: str | None = None
+    terminal_status: str | None = None
+    terminal_receipt: str | None = None
+    terminal_card_pan: str | None = None
+    terminal_payment_system: str | None = None
+    terminal_merchant: str | None = None
+    terminal_created_at: datetime | None = None
     fiscal_check_url: str | None = Field(
         default=None,
         description="URL перевірки фіскального чеку (для QR-коду)",
@@ -74,6 +87,24 @@ class CreateReceiptRequest(BaseModel):
     card_amount: float | None = None
     customer_id: UUID | None = None
     notes: str = ""
+    # ── Дані банківської транзакції карткового терміналу (ПриватБанк) ──
+    terminal_rrn: str | None = Field(
+        default=None, max_length=32,
+        description="RRN транзакції терміналу (обов'язковий для повернення card/mixed)",
+    )
+    terminal_approval_code: str | None = Field(default=None, max_length=16)
+    terminal_invoice_number: str | None = Field(default=None, max_length=32)
+    terminal_transaction_id: str | None = Field(default=None, max_length=64)
+    terminal_response_code: str | None = Field(default=None, max_length=8)
+    terminal_status: str | None = Field(
+        default=None, max_length=16,
+        description='Статус транзакції (approved/declined/partial/cancelled)',
+    )
+    terminal_receipt: str | None = None
+    terminal_card_pan: str | None = Field(default=None, max_length=32)
+    terminal_payment_system: str | None = Field(default=None, max_length=16)
+    terminal_merchant: str | None = Field(default=None, max_length=32)
+    terminal_created_at: datetime | None = None
 
 
 class ReceiptListResponse(BaseModel):
@@ -402,11 +433,24 @@ async def create_sale_receipt(
             customer_id=data.customer_id,
             cashier_id=_uuid_or_none(request.scope.get("user_id")),
             notes=data.notes,
+            terminal_rrn=data.terminal_rrn,
+            terminal_approval_code=data.terminal_approval_code,
+            terminal_invoice_number=data.terminal_invoice_number,
+            terminal_transaction_id=data.terminal_transaction_id,
+            terminal_response_code=data.terminal_response_code,
+            terminal_status=data.terminal_status,
+            terminal_receipt=data.terminal_receipt,
+            terminal_card_pan=data.terminal_card_pan,
+            terminal_payment_system=data.terminal_payment_system,
+            terminal_merchant=data.terminal_merchant,
+            terminal_created_at=data.terminal_created_at,
         )
         result = await use_cases.create_sale_receipt(dto, background_tasks=background_tasks)
         await invalidate_receipt_cache(cache)
         await invalidate_product_cache(cache)
         return result
+    except ReceiptValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -445,11 +489,24 @@ async def create_return_receipt(
             customer_id=data.customer_id,
             cashier_id=_uuid_or_none(request.scope.get("user_id")),
             notes=data.notes,
+            terminal_rrn=data.terminal_rrn,
+            terminal_approval_code=data.terminal_approval_code,
+            terminal_invoice_number=data.terminal_invoice_number,
+            terminal_transaction_id=data.terminal_transaction_id,
+            terminal_response_code=data.terminal_response_code,
+            terminal_status=data.terminal_status,
+            terminal_receipt=data.terminal_receipt,
+            terminal_card_pan=data.terminal_card_pan,
+            terminal_payment_system=data.terminal_payment_system,
+            terminal_merchant=data.terminal_merchant,
+            terminal_created_at=data.terminal_created_at,
         )
         result = await use_cases.create_return_receipt(dto, background_tasks=background_tasks)
         await invalidate_receipt_cache(cache)
         await invalidate_product_cache(cache)
         return result
+    except ReceiptValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

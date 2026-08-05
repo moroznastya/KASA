@@ -94,6 +94,9 @@ def setup(session: AsyncSession, key_store):
         quantity: Decimal = Decimal("2"),
         original_status: str = "sent",   # статус оригінального чека
         with_original: bool = True,
+        payment_method: str = "cash",
+        cash_amount: Decimal | None = None,
+        card_amount: Decimal | None = None,
     ):
         await settings_repo.set(KEY_PRRO_FN, "4538765845")
         await settings_repo.set(KEY_PRRO_TN, "ПН 345612052809")
@@ -128,8 +131,10 @@ def setup(session: AsyncSession, key_store):
 
         receipt = Receipt(
             id=uuid4(), receipt_number="RET-001", cashier_id=cashier.id,
-            is_return=True, payment_method="cash",
+            is_return=True, payment_method=payment_method,
             total_amount=float(quantity * 100),
+            cash_amount=float(cash_amount) if cash_amount is not None else None,
+            card_amount=float(card_amount) if card_amount is not None else None,
             is_fiscal=True,
             original_receipt_id=original.id if original else None,
         )
@@ -230,3 +235,41 @@ class TestFiscalizeReturn:
 
         assert result.fiscal_status == "none"
         data["grpc"].send_chk.assert_not_awaited()
+
+    async def test_return_mixed_fiscalizes_two_payments(self, setup):
+        """Повернення mixed → два платежі: готівка (T=0) + картка (T=1)."""
+        data = await setup(
+            payment_method="mixed",
+            cash_amount=Decimal("100.00"),
+            card_amount=Decimal("100.00"),   # total = 2 × 100 = 200 грн
+        )
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+
+        items = await data["prro_repo"].list_by_receipt(data["receipt"].id)
+        xml_body = items[0].xml_body
+        # Готівка 100 грн (10000 коп) + картка 100 грн (10000 коп)
+        assert '<M N="2" NM="ГОТІВКА" SM="10000" T="0"></M>' in xml_body
+        assert '<M N="3" NM="КАРТКА" SM="10000" T="1"></M>' in xml_body
+        assert xml_body.count("<M ") == 2
+
+    async def test_return_card_single_payment(self, setup):
+        """Повернення card → один платіж КАРТКА (T=1) на всю суму."""
+        data = await setup(
+            payment_method="card",
+            card_amount=Decimal("200.00"),
+        )
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+
+        items = await data["prro_repo"].list_by_receipt(data["receipt"].id)
+        xml_body = items[0].xml_body
+        # Єдиний платіж → N="2" (після P з N="1")
+        assert '<M N="2" NM="КАРТКА" SM="20000" T="1"></M>' in xml_body
+        assert xml_body.count("<M ") == 1

@@ -33,6 +33,16 @@ from app.domain.events import ReceiptCreated, ReceiptRefunded
 logger = logging.getLogger(__name__)
 
 
+class ReceiptValidationError(ValueError):
+    """
+    Помилка валідації чеку, що має повертатися HTTP 422.
+
+    Використовується для відмов карткового терміналу та відсутності
+    обов'язкових даних терміналу (наприклад, RRN для повернення).
+    Роутер ловить це виключення окремо від ValueError (400).
+    """
+
+
 class ReceiptUseCases:
     """
     Use Cases для чеків продажу.
@@ -158,6 +168,11 @@ class ReceiptUseCases:
         # яку mapper (пряме створення через конструктор) не виконує
         self._validate_payment(receipt, dto)
 
+        # Валідація даних банківської транзакції терміналу (ПриватБанк):
+        # declined → 422; відсутній rrn продаж не блокує (термінал може
+        # не відповісти) — дані просто зберігаються.
+        self._validate_terminal(dto)
+
         # Здача для готівкових чеків: set_payment розраховує change_amount
         # (cash_amount - total, якщо більше) і зберігає у entity; далі
         # потрапляє у БД та у фіскальний XML як атрибут здачі <M>.
@@ -235,6 +250,11 @@ class ReceiptUseCases:
         receipt.cashier_id = dto.cashier_id
         if not receipt.number:
             receipt.number = f"RCPT-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:6].upper()}"
+
+        # Валідація повернення карткового чека: Refund на терміналі потребує
+        # RRN оригінальної транзакції → 422, якщо rrn не переданий.
+        # Для готівкових повернень terminal-дані не вимагаються.
+        self._validate_terminal(dto, require_rrn_for_return=True)
 
         async with self._uow:
             # Повертаємо товари на склад (збільшуємо залишки)
@@ -343,6 +363,49 @@ class ReceiptUseCases:
         if not is_debt and paid < total:
             raise ValueError(
                 f"Сума оплати ({paid}) менша за суму чеку ({total})"
+            )
+
+    @staticmethod
+    def _validate_terminal(
+        dto: ReceiptCreateDTO,
+        *,
+        require_rrn_for_return: bool = False,
+    ) -> None:
+        """
+        Валідує дані банківської транзакції карткового терміналу.
+
+        Правила:
+          - card/mixed: terminal_status == "declined" (відмова терміналу)
+            → ReceiptValidationError (HTTP 422), чек не створюється;
+          - card/mixed ПОВЕРНЕННЯ: terminal_rrn обов'язковий (Refund на
+            терміналі потребує RRN оригінальної транзакції) → 422;
+          - cash: terminal-дані не вимагаються і не блокують чек;
+          - card/mixed ПРОДАЖ без rrn: не блокуємо (термінал може не
+            відповісти) — дані просто зберігаються; response_code != "0000"
+            не блокує чек — це рішення фронтенду.
+
+        Args:
+            dto: DTO створення чеку.
+            require_rrn_for_return: чи вимагати terminal_rrn (для повернень).
+
+        Raises:
+            ReceiptValidationError: при відмові терміналу або відсутності
+                обов'язкового RRN для карткового повернення.
+        """
+        method = str(dto.payment_method or "").lower()
+        if method not in ("card", "mixed"):
+            return
+
+        status = (dto.terminal_status or "").strip().lower()
+        if status == "declined":
+            raise ReceiptValidationError(
+                "Оплата карткою не підтверджена терміналом"
+            )
+
+        if require_rrn_for_return and not (dto.terminal_rrn or "").strip():
+            raise ReceiptValidationError(
+                "Для повернення карткового чека необхідний "
+                "RRN оригінальної транзакції"
             )
 
     async def get_receipt(self, receipt_id: UUID) -> ReceiptDTO:

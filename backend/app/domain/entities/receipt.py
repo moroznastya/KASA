@@ -92,6 +92,29 @@ class Receipt:
     change_amount: Optional[Money] = None
     customer_id: Optional[UUID] = None
     notes: str = ""
+    # ── Дані банківської транзакції карткового терміналу (ПриватБанк) ────
+    terminal_rrn: Optional[str] = None
+    """RRN транзакції терміналу (унікальний номер транзакції банку)."""
+    terminal_approval_code: Optional[str] = None
+    """Код авторизації терміналу."""
+    terminal_invoice_number: Optional[str] = None
+    """Номер чека терміналу."""
+    terminal_transaction_id: Optional[str] = None
+    """Ідентифікатор транзакції в банку-емітенті (rrnExt / rid)."""
+    terminal_response_code: Optional[str] = None
+    """ResponseCode відповіді терміналу ("0000" — успіх тощо)."""
+    terminal_status: Optional[str] = None
+    """Статус транзакції (approved/declined/partial/cancelled)."""
+    terminal_receipt: Optional[str] = None
+    """Повний текст чека терміналу (для друку)."""
+    terminal_card_pan: Optional[str] = None
+    """Маскований номер картки (pan)."""
+    terminal_payment_system: Optional[str] = None
+    """Міжнародна платіжна система (VISA/MasterCard)."""
+    terminal_merchant: Optional[str] = None
+    """Номер мерчанта."""
+    terminal_created_at: Optional[datetime] = None
+    """Дата/час транзакції від терміналу."""
     # ── Фіскалізація ────────────────────────────────────────────────────────
     is_fiscal: bool = False
     """Чек є фіскальним (містить лише товари з фіскальних накладних)."""

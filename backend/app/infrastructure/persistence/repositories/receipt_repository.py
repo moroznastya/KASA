@@ -80,6 +80,18 @@ class SQLAlchemyReceiptRepository(IReceiptRepository):
             if hasattr(receipt.fiscal_status, "value")
             else OrmFiscalStatus(receipt.fiscal_status),
             split_group_id=receipt.split_group_id,
+            # ── Дані банківської транзакції терміналу (ПриватБанк) ──
+            terminal_rrn=getattr(receipt, "terminal_rrn", None),
+            terminal_approval_code=getattr(receipt, "terminal_approval_code", None),
+            terminal_invoice_number=getattr(receipt, "terminal_invoice_number", None),
+            terminal_transaction_id=getattr(receipt, "terminal_transaction_id", None),
+            terminal_response_code=getattr(receipt, "terminal_response_code", None),
+            terminal_status=getattr(receipt, "terminal_status", None),
+            terminal_receipt=getattr(receipt, "terminal_receipt", None),
+            terminal_card_pan=getattr(receipt, "terminal_card_pan", None),
+            terminal_payment_system=getattr(receipt, "terminal_payment_system", None),
+            terminal_merchant=getattr(receipt, "terminal_merchant", None),
+            terminal_created_at=getattr(receipt, "terminal_created_at", None),
         )
         orm.items = [
             ReceiptItem(

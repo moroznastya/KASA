@@ -100,6 +100,18 @@ class ReceiptMapper:
             fiscal_sent_at=getattr(entity, "fiscal_sent_at", None),
             fiscal_error=getattr(entity, "fiscal_error", None),
             split_group_id=getattr(entity, "split_group_id", None),
+            # ── Дані банківської транзакції терміналу (ПриватБанк) ──
+            terminal_rrn=getattr(entity, "terminal_rrn", None),
+            terminal_approval_code=getattr(entity, "terminal_approval_code", None),
+            terminal_invoice_number=getattr(entity, "terminal_invoice_number", None),
+            terminal_transaction_id=getattr(entity, "terminal_transaction_id", None),
+            terminal_response_code=getattr(entity, "terminal_response_code", None),
+            terminal_status=getattr(entity, "terminal_status", None),
+            terminal_receipt=getattr(entity, "terminal_receipt", None),
+            terminal_card_pan=getattr(entity, "terminal_card_pan", None),
+            terminal_payment_system=getattr(entity, "terminal_payment_system", None),
+            terminal_merchant=getattr(entity, "terminal_merchant", None),
+            terminal_created_at=getattr(entity, "terminal_created_at", None),
         )
 
     @staticmethod
@@ -161,6 +173,18 @@ class ReceiptMapper:
             is_fiscal=dto.is_fiscal,
             fiscal_status=FiscalStatus.PENDING if dto.is_fiscal else FiscalStatus.NONE,
             split_group_id=dto.split_group_id,
+            # ── Дані банківської транзакції терміналу (ПриватБанк) ──
+            terminal_rrn=dto.terminal_rrn,
+            terminal_approval_code=dto.terminal_approval_code,
+            terminal_invoice_number=dto.terminal_invoice_number,
+            terminal_transaction_id=dto.terminal_transaction_id,
+            terminal_response_code=dto.terminal_response_code,
+            terminal_status=dto.terminal_status,
+            terminal_receipt=dto.terminal_receipt,
+            terminal_card_pan=dto.terminal_card_pan,
+            terminal_payment_system=dto.terminal_payment_system,
+            terminal_merchant=dto.terminal_merchant,
+            terminal_created_at=dto.terminal_created_at,
         )
         for item_dto in dto.items:
             receipt.add_item(ReceiptItem(
