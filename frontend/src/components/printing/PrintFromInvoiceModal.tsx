@@ -63,6 +63,8 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
   const [barcodeType, setBarcodeType] = useState<'code128' | 'qr'>('code128');
   const [barcodeHeightMm, setBarcodeHeightMm] = useState(10);
   const [printerName, setPrinterName] = useState<string | undefined>(undefined);
+  // Режим друку етикеток: 'system' (CUPS, дефолт) | 'escpos' (ESC/POS растр)
+  const [labelPrintMode, setLabelPrintMode] = useState<'system' | 'escpos'>('system');
 
   const [previewData, setPreviewData] = useState<InvoicePrintResponse | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -77,12 +79,14 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
     return extractBodyWithStyles(previewData.html);
   }, [previewData]);
 
-  // ── Завантаження налаштувань принтера ─────────
+  // ── Завантаження налаштувань принтера та режиму етикеток ──
   useEffect(() => {
     if (!isOpen) return;
     const loadPrinter = async () => {
       const printer = await settingsService.getValue('printer_name');
       if (printer) setPrinterName(printer);
+      const mode = await settingsService.getValue('label_print_mode');
+      if (mode === 'system' || mode === 'escpos') setLabelPrintMode(mode);
     };
     loadPrinter();
   }, [isOpen]);
@@ -142,6 +146,8 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
         margin_mm: marginMm,
         barcode_type: barcodeType,
         barcode_height_mm: barcodeHeightMm,
+        // 'label': режим етикеток (system — повна ширина CUPS, escpos — 48мм термо)
+        print_mode: printType === 'label' ? labelPrintMode : 'system',
       };
       const result = await printService.renderInvoicePrintItems(invoiceId, data);
       setPreviewData(result);
@@ -151,7 +157,7 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
     } finally {
       setIsPreviewLoading(false);
     }
-  }, [templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId]);
+  }, [templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId, labelPrintMode]);
 
   // ── Отримати результат рендеру (прев'ю або новий) ──
   const getRenderResult = useCallback(async (): Promise<InvoicePrintResponse> => {
@@ -166,11 +172,13 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
       margin_mm: marginMm,
       barcode_type: barcodeType,
       barcode_height_mm: barcodeHeightMm,
+      // 'label': режим етикеток (system — повна ширина CUPS, escpos — 48мм термо)
+      print_mode: printType === 'label' ? labelPrintMode : 'system',
     };
     const result = await printService.renderInvoicePrintItems(invoiceId, data);
     setPreviewData(result);
     return result;
-  }, [previewData, templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId]);
+  }, [previewData, templateId, printType, onlyChanged, widthMm, heightMm, gapMm, marginMm, barcodeType, barcodeHeightMm, invoiceId, labelPrintMode]);
 
   // ── Читання копій та автовідрізання з system_settings ──
   const readPrintCopies = useCallback(async (): Promise<number | null> => {
@@ -217,23 +225,41 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
     win.print();
   }, []);
 
-  // ── Друк етикеток у Tauri (Print-as-Image) ────
-  // Термопринтер отримує ESC/POS растр через html2canvas → PNG → Rust
-  const printLabelViaTauri = useCallback(async (): Promise<void> => {
-    // Чекаємо, поки React оновить hidden div (dangerouslySetInnerHTML)
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        setTimeout(resolve, 150);
-      });
-    });
+  // ── Друк етикеток у Tauri ─────────────────────
+  // Режим 'escpos' → html2canvas → PNG → ESC/POS растр (Rust) — для термопринтерів.
+  // Режим 'system' (дефолт, якщо ключа немає) → нативний printHtml → системний
+  // діалог webkit2gtk → CUPS-драйвер (TSPL2) — для принтерів, що НЕ розуміють
+  // ESC/POS (напр. Xprinter XP-420B / LABEL-9X00).
+  const printLabelViaTauri = useCallback(async (html: string): Promise<void> => {
+    // Режим друку етикеток зі стану (завантажується при відкритті модалки
+    // разом із printer_name; дефолт — 'system')
+    const mode = labelPrintMode;
 
-    // Захоплюємо та друкуємо (з копіями/автовідрізанням з налаштувань)
-    const [copies, autoCut] = await Promise.all([readPrintCopies(), readAutoCut()]);
-    await captureAndPrintLabel(printerName || undefined, {
-      copies,
-      autoCut,
-    });
-  }, [readPrintCopies, readAutoCut, printerName, captureAndPrintLabel]);
+    if (mode === 'escpos') {
+      // Чекаємо, поки React оновить hidden div (dangerouslySetInnerHTML)
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          setTimeout(resolve, 150);
+        });
+      });
+
+      // Захоплюємо та друкуємо (з копіями/автовідрізанням з налаштувань)
+      const [copies, autoCut] = await Promise.all([readPrintCopies(), readAutoCut()]);
+      await captureAndPrintLabel(printerName || undefined, {
+        copies,
+        autoCut,
+      });
+      return;
+    }
+
+    // Системний друк (CUPS) — як для price_tag
+    const result = await printHtml(html, printerName || undefined);
+    if (result.success === false) {
+      toast.error(result.message);
+    } else {
+      toast.success('Відправлено на друк');
+    }
+  }, [readPrintCopies, readAutoCut, printerName, labelPrintMode, captureAndPrintLabel]);
 
   // ── Друк ──────────────────────────────────────
   const handlePrint = useCallback(async () => {
@@ -251,7 +277,7 @@ const PrintFromInvoiceModal: React.FC<PrintFromInvoiceModalProps> = ({
       // 2. Tauri + price_tag (A4 аркуш) → нативний printHtml (системний діалог webkit2gtk)
       // 3. Не Tauri → window.print()
       if (isTauri() && printType === 'label') {
-        await printLabelViaTauri();
+        await printLabelViaTauri(result.html);
       } else if (isTauri() && printType === 'price_tag') {
         // НАТИВНИЙ друк A4: системний діалог webkit2gtk (grid/SVG/page-break працюють)
         const printResult = await printHtml(result.html, printerName || undefined);

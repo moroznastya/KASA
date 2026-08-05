@@ -29,7 +29,11 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             value={value}
             onChange={onChange}
             placeholder={placeholder}
-            onWheel={(e) => (e.target as HTMLInputElement).blur()}
+            onWheel={
+              props.type === 'number'
+                ? (e) => (e.target as HTMLInputElement).blur()
+                : undefined
+            }
             aria-invalid={error ? true : undefined}
             aria-describedby={
               error ? (id ? `${id}-error` : undefined) : helperText ? (id ? `${id}-helper` : undefined) : undefined

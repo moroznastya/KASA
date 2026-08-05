@@ -10,8 +10,10 @@ import { useCategoryTree } from '@/hooks/useCategories';
 import { useSuppliers } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
+import { normalizeDecimalInput } from '@/utils/decimal';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
@@ -906,14 +908,14 @@ const InvoiceFormPage: React.FC = () => {
 
         {/* ─── Таблиця товарів ─────────────────────────────────────────── */}
         {cart.length > 0 && (
-          <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-hidden">
+          <div className="border border-gray-200 dark:border-slate-700 rounded-xl overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="bg-gray-50 dark:bg-slate-800/50">
                   <th className="table-header">Товар</th>
                   <th className="table-header w-24">Кількість</th>
                   <th className="table-header w-28">Собівартість (з ПДВ)</th>
-                  <th className="table-header w-28">Ціна продажу</th>
+                  <th className="table-header">Ціна продажу</th>
                   <th className="table-header w-28">Націнка</th>
                   <th className="table-header w-28">Сума собівартості</th>
                   <th className="table-header w-16"></th>
@@ -936,52 +938,51 @@ const InvoiceFormPage: React.FC = () => {
                       )}
                     </td>
                     <td className="table-cell">
-                      <input
-                        type="number"
-                        min="1"
+                      <DecimalInput
                         value={item.quantity}
-                        onChange={(e) =>
-                          updateQuantity(item.product_id, parseInt(e.target.value) || 1)
-                        }
+                        onCommit={(n) => updateQuantity(item.product_id, n)}
                         className="w-20 input-field text-center px-3 no-spinner"
                       />
                     </td>
                     <td className="table-cell">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                      <DecimalInput
                         value={item.cost_price}
-                        onChange={(e) =>
-                          updateCostPrice(item.product_id, parseFloat(e.target.value) || 0)
-                        }
+                        onCommit={(n) => updateCostPrice(item.product_id, n)}
                         className="w-24 input-field text-right px-3 no-spinner"
                         title="Собівартість = ціна з ПДВ з накладної"
                       />
                     </td>
                     <td className="table-cell">
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        value={item.price}
-                        onChange={(e) =>
-                          updatePrice(item.product_id, parseFloat(e.target.value) || 0)
-                        }
-                        className="w-24 input-field text-right px-3 no-spinner"
-                        title="Ціна продажу заокруглена до гривні"
-                      />
+                      <div className="flex items-center gap-1">
+                        <DecimalInput
+                          value={item.price}
+                          onCommit={(n) => updatePrice(item.product_id, n)}
+                          className="w-24 input-field text-right px-3 no-spinner"
+                          title="Ціна продажу заокруглена до гривні"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (item.cost_price > 0) {
+                              // Націнка 20% → ціна продажу = собівартість × 1.2
+                              updateMarkup(item.product_id, 20);
+                            } else {
+                              // Собівартості немає — просто +20% до поточної ціни
+                              updatePrice(item.product_id, roundPrice(item.price * 1.2));
+                            }
+                          }}
+                          title="Націнка +20% (ціна продажу = собівартість × 1.2)"
+                          className="shrink-0 px-1.5 py-1 text-[10px] font-semibold leading-none rounded-md border border-gray-300 dark:border-slate-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-600 hover:border-primary-400 hover:text-primary-700 dark:hover:text-primary-400 transition-colors"
+                        >
+                          +20%
+                        </button>
+                      </div>
                     </td>
                     <td className="table-cell">
                       <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0"
+                        <DecimalInput
                           value={item.markup_percent}
-                          onChange={(e) =>
-                            updateMarkup(item.product_id, parseFloat(e.target.value) || 0)
-                          }
+                          onCommit={(n) => updateMarkup(item.product_id, n)}
                           className="w-36 input-field text-right px-3 no-spinner"
                         />
                         <span className="text-sm text-gray-400">%</span>
@@ -1143,12 +1144,13 @@ const InvoiceFormPage: React.FC = () => {
                 <div>
                   <Input
                     label="Собівартість"
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     value={newProduct.cost_price}
                     onChange={(e) => {
-                      const cost = e.target.value;
+                      const raw = normalizeDecimalInput(e.target.value);
+                      if (raw === null) return;
+                      const cost = raw;
                       setNewProduct((p) => {
                         const markup = parseFloat(p.markup) || 0;
                         const costNum = parseFloat(cost) || 0;
@@ -1183,12 +1185,13 @@ const InvoiceFormPage: React.FC = () => {
                 {/* Націнка (%) */}
                 <Input
                   label="Націнка (%)"
-                  type="number"
-                  step="0.01"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   value={newProduct.markup}
                   onChange={(e) => {
-                    const mark = e.target.value;
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    const mark = raw;
                     setNewProduct((p) => {
                       const costPrice = parseFloat(p.cost_price) || 0;
                       const markNum = parseFloat(mark) || 0;
@@ -1202,12 +1205,13 @@ const InvoiceFormPage: React.FC = () => {
                 {/* Ціна продажу */}
                 <Input
                   label="Ціна продажу"
-                  type="number"
-                  step="1"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   value={newProduct.price}
                   onChange={(e) => {
-                    const price = e.target.value;
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    const price = raw;
                     setNewProduct((p) => {
                       const costPrice = parseFloat(p.cost_price) || 0;
                       const priceNum = parseFloat(price) || 0;
@@ -1229,17 +1233,25 @@ const InvoiceFormPage: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Input
                   label="Кількість"
-                  type="number"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   value={newProduct.stock}
-                  onChange={(e) => setNewProduct((p) => ({ ...p, stock: e.target.value }))}
+                  onChange={(e) => {
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    setNewProduct((p) => ({ ...p, stock: raw }));
+                  }}
                 />
                 <Input
                   label="Рекомендований залишок"
-                  type="number"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   value={newProduct.recommended_qty}
-                  onChange={(e) => setNewProduct((p) => ({ ...p, recommended_qty: e.target.value }))}
+                  onChange={(e) => {
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    setNewProduct((p) => ({ ...p, recommended_qty: raw }));
+                  }}
                   helperText="Мінімальний залишок для замовлення"
                 />
                 <Select

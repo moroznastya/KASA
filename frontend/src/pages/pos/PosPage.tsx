@@ -10,6 +10,8 @@ import { createReceiptWithOfflineFallback } from '@/services/tauri/offlineReceip
 import { isTauri, cacheProducts } from '@/hooks/useTauri';
 import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';
 import { useAuthStore } from '@/store/authStore';
+import { useDevicesStore } from '@/store/devicesStore';
+import { devicesApi, TerminalPaymentResult } from '@/services/tauri/devices';
 import type { Product } from '@/types/product';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -98,6 +100,9 @@ const PosPage: React.FC = () => {
   const [cashAmount, setCashAmount] = useState('');
   const [cardAmount, setCardAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  // Стан передачі суми на термінал (card / mixed)
+  const [terminalState, setTerminalState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [terminalError, setTerminalError] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Debtor state for payment
@@ -109,6 +114,15 @@ const PosPage: React.FC = () => {
   const [showDebtorDropdown, setShowDebtorDropdown] = useState(false);
   const debtorSearchRef = useRef<HTMLDivElement>(null);
   const debtorInputRef = useRef<HTMLInputElement>(null);
+  // Стабільний onClose для модалки «Оплата»: усі setState — стабільні,
+  // тому useCallback не перезапускає ефекти Modal на кожен рендер батька
+  // (напр. при введенні цифри в поле «Сума готівки»)
+  const handleClosePayment = useCallback(() => {
+    setShowPayment(false);
+    setShowDebtorField(false);
+    setSelectedDebtor(null);
+    setDebtorQuery('');
+  }, []);
   
   // Debtor modal for partial payment
   const [showDebtorModal, setShowDebtorModal] = useState(false);
@@ -168,6 +182,7 @@ const PosPage: React.FC = () => {
   const prroStatus = usePrroStore((s) => s.status);
   const loadPrroStatus = usePrroStore((s) => s.loadStatus);
   const prroFiscalizing = usePrroStore((s) => s.fiscalizing);
+  const { devices, statuses, loadDevices } = useDevicesStore();
 
   // Авто-оновлення статусу ПРРО (кожні 30 секунд)
   useEffect(() => {
@@ -175,6 +190,13 @@ const PosPage: React.FC = () => {
     const stopPolling = startPrroStatusPolling();
     return stopPolling;
   }, [loadPrroStatus]);
+
+  // Завантажуємо пристрої (термінал) при відкритті модалки оплати
+  useEffect(() => {
+    if (showPayment && isTauri() && devices.length === 0) {
+      loadDevices();
+    }
+  }, [showPayment, devices.length, loadDevices]);
 
   // Save cart to sessionStorage on change
   useEffect(() => {
@@ -1129,6 +1151,26 @@ const PosPage: React.FC = () => {
   };
   const isPartialPayment = showPayment && getPaidAmount() > 0 && getPaidAmount() < subtotal;
 
+  // ── Термінал: передача суми на картковий термінал (card / mixed) ──
+  const terminal = devices.find((d) => d.deviceType === 'terminal');
+  const terminalStatus = terminal ? statuses[terminal.id] : undefined;
+  const terminalAmount =
+    paymentMethod === 'mixed' ? parseFloat(cardAmount) || 0 : subtotal;
+
+  const handleTerminalPayment = async (amount: number) => {
+    if (!terminal || amount <= 0) return;
+    setTerminalState('sending');
+    setTerminalError('');
+    try {
+      await devicesApi.terminalPayment(amount);
+      setTerminalState('sent');
+    } catch (e) {
+      setTerminalState('error');
+      setTerminalError(String(e));
+      toast.error('Не вдалося передати суму на термінал');
+    }
+  };
+
   // Enter для кнопки "Сплатити" в модалці оплати
   const handlePaymentKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1719,12 +1761,7 @@ const PosPage: React.FC = () => {
       {/* Payment modal */}
       <Modal
         isOpen={showPayment}
-        onClose={() => {
-          setShowPayment(false);
-          setShowDebtorField(false);
-          setSelectedDebtor(null);
-          setDebtorQuery('');
-        }}
+        onClose={handleClosePayment}
         title="Оплата"
         size="4xl"
       >
@@ -1761,6 +1798,82 @@ const PosPage: React.FC = () => {
               ))}
             </div>
           </div>
+
+          {/* ── Термінал: передача суми (card / mixed) ── */}
+          {(paymentMethod === 'card' || paymentMethod === 'mixed') && (
+            <div className="rounded-xl border border-gray-200 dark:border-slate-600 p-4 bg-white dark:bg-slate-800">
+              {terminal ? (
+                <>
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Wifi className="w-4 h-4 text-primary-600 shrink-0" />
+                      <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                        {terminal.name}
+                      </span>
+                    </div>
+                    {terminalStatus?.status === 'connected' ? (
+                      <Badge variant="success">
+                        <Wifi className="w-3 h-3" />
+                        Підключений
+                      </Badge>
+                    ) : (
+                      <Badge variant="warning">
+                        <WifiOff className="w-3 h-3" />
+                        Не підключений
+                      </Badge>
+                    )}
+                  </div>
+
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                    Сума до передачі:{' '}
+                    <span className="font-semibold text-gray-900 dark:text-gray-100">
+                      {formatCurrency(terminalAmount)}
+                    </span>
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => handleTerminalPayment(terminalAmount)}
+                    disabled={terminalState === 'sending' || terminalAmount <= 0}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {terminalState === 'sending' ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Передача на термінал...
+                      </>
+                    ) : (
+                      <>
+                        <CreditCard className="w-4 h-4" />
+                        Передати суму на термінал
+                      </>
+                    )}
+                  </button>
+
+                  {terminalState === 'sent' && (
+                    <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 text-sm font-medium">
+                      <FileCheck2 className="w-4 h-4" />
+                      Сума {formatCurrency(terminalAmount)} передана на термінал
+                    </div>
+                  )}
+                  {terminalState === 'error' && terminalError && (
+                    <p className="mt-3 text-sm text-red-600 dark:text-red-400 line-clamp-2">
+                      {terminalError}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-700">
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                    Термінал не додано
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                    Додайте термінал у Налаштуваннях → Підключені пристрої, щоб оплата карткою передавалась на термінал.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {paymentMethod === 'cash' && (
             <>

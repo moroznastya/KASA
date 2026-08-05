@@ -88,16 +88,23 @@ export const Modal: React.FC<ModalProps> = ({
     [onClose]
   );
 
+  /**
+   * Ефект A: переміщення фокусу всередину + lock scroll + повернення фокусу тригеру.
+   * Залежність ТІЛЬКИ [isOpen].
+   *
+   * Фокус переміщуємо лише при відкритті модалки (isOpen), інакше при ререндері
+   * батька (напр. введення тексту) фокус перехоплюється з поля вводу на першу кнопку.
+   */
   useEffect(() => {
     if (!isOpen) return;
 
     // Запам'ятовуємо елемент, який відкрив модалку
     previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
 
-    document.addEventListener('keydown', handleKeyDown);
+    // Lock scroll сторінки під модалкою
     document.body.style.overflow = 'hidden';
 
-    // Переміщуємо фокус у модалку
+    // Переміщуємо фокус у модалку (перший focusable або сам діалог)
     const modal = modalRef.current;
     if (modal) {
       const firstFocusable = modal.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
@@ -109,11 +116,25 @@ export const Modal: React.FC<ModalProps> = ({
     }
 
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = 'unset';
       // Повертаємо фокус елементу-тригеру
       previouslyFocusedRef.current?.focus?.();
       previouslyFocusedRef.current = null;
+    };
+  }, [isOpen]);
+
+  /**
+   * Ефект B: listener keydown (Esc закриває модалку, Tab — focus trap).
+   * Залежність [isOpen, handleKeyDown].
+   * ТІЛЬКИ addEventListener/removeEventListener — ЖОДНОГО focus() тут,
+   * щоб при ререндері батька фокус не перехоплювався з поля вводу.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen, handleKeyDown]);
 

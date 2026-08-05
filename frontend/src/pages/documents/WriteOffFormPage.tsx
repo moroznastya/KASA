@@ -4,6 +4,7 @@ import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
+import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
@@ -14,6 +15,7 @@ interface CartItem {
   product_title: string;
   product_barcode: string | null;
   quantity: number;
+  cost_price: number;
   price: number;
 }
 
@@ -63,7 +65,8 @@ const WriteOffFormPage: React.FC = () => {
           product_title: product.title,
           product_barcode: product.barcode,
           quantity: 1,
-          price: 0,
+          cost_price: parseFloat(product.cost_price) || 0,
+          price: parseFloat(product.price) || 0,
         },
       ]);
     }
@@ -83,9 +86,28 @@ const WriteOffFormPage: React.FC = () => {
     }
   };
 
+  const updateCostPrice = (productId: string, costPrice: number) => {
+    setCart((prev) =>
+      prev.map((item) =>
+        item.product_id === productId ? { ...item, cost_price: costPrice } : item
+      )
+    );
+  };
+
+  const updatePrice = (productId: string, price: number) => {
+    setCart((prev) =>
+      prev.map((item) =>
+        item.product_id === productId ? { ...item, price } : item
+      )
+    );
+  };
+
   const removeFromCart = (productId: string) => {
     setCart((prev) => prev.filter((item) => item.product_id !== productId));
   };
+
+  const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
+  const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
   const handleSave = async (andConfirm: boolean = false) => {
     if (cart.length === 0) {
@@ -100,6 +122,8 @@ const WriteOffFormPage: React.FC = () => {
         items: cart.map(({ product_title, product_barcode, ...item }) => ({
           product_id: item.product_id,
           quantity: item.quantity,
+          cost_price: item.cost_price,
+          price: item.price,
         })),
       });
 
@@ -171,6 +195,10 @@ const WriteOffFormPage: React.FC = () => {
                 <tr className="bg-gray-50 dark:bg-slate-800/50">
                   <th className="table-header">Товар</th>
                   <th className="table-header">Кількість</th>
+                  <th className="table-header">Собівартість (з ПДВ)</th>
+                  <th className="table-header">Ціна продажу</th>
+                  <th className="table-header">Сума собівартості</th>
+                  <th className="table-header">Сума продажу</th>
                   <th className="table-header w-16"></th>
                 </tr>
               </thead>
@@ -183,15 +211,31 @@ const WriteOffFormPage: React.FC = () => {
                       </p>
                     </td>
                     <td className="table-cell">
-                      <input
-                        type="number"
-                        min="1"
+                      <DecimalInput
                         value={item.quantity}
-                        onChange={(e) =>
-                          updateQuantity(item.product_id, parseInt(e.target.value) || 1)
-                        }
+                        onCommit={(n) => updateQuantity(item.product_id, n)}
                         className="w-20 input-field text-center px-3"
                       />
+                    </td>
+                    <td className="table-cell">
+                      <DecimalInput
+                        value={item.cost_price}
+                        onCommit={(n) => updateCostPrice(item.product_id, n)}
+                        className="w-24 input-field text-right px-3"
+                      />
+                    </td>
+                    <td className="table-cell">
+                      <DecimalInput
+                        value={item.price}
+                        onCommit={(n) => updatePrice(item.product_id, n)}
+                        className="w-24 input-field text-right px-3"
+                      />
+                    </td>
+                    <td className="table-cell font-medium">
+                      {formatCurrency(item.quantity * item.cost_price)}
+                    </td>
+                    <td className="table-cell font-medium">
+                      {formatCurrency(item.quantity * item.price)}
                     </td>
                     <td className="table-cell">
                       <button
@@ -204,6 +248,24 @@ const WriteOffFormPage: React.FC = () => {
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr className="bg-gray-50 dark:bg-slate-800/50">
+                  <td colSpan={5} className="px-4 py-3 text-right text-gray-500 dark:text-gray-400 text-sm">
+                    Закупівельна сума:
+                  </td>
+                  <td colSpan={2} className="px-4 py-3 font-bold text-lg text-gray-900 dark:text-gray-100">
+                    {formatCurrency(totalCost)}
+                  </td>
+                </tr>
+                <tr className="bg-gray-100 dark:bg-slate-800 border-t border-gray-300 dark:border-slate-600">
+                  <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400 text-sm">
+                    Сума продажу:
+                  </td>
+                  <td colSpan={2} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
+                    {formatCurrency(totalAmount)}
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         )}

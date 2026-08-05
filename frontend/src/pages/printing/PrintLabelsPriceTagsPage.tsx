@@ -42,6 +42,7 @@ interface PrintSettings {
 const SETTINGS_KEYS = {
   printerName: 'printer_name',
   barcodeType: 'barcode_type',
+  labelPrintMode: 'label_print_mode',
 } as const;
 
 /** Повертає ключі системних налаштувань для типу друку */
@@ -73,6 +74,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   });
   const [barcodeType, setBarcodeType] = useState<BarcodeType>('code128');
   const [printerName, setPrinterName] = useState<string>('');
+  const [labelPrintMode, setLabelPrintMode] = useState<'system' | 'escpos'>('system');
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -105,6 +107,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
       const keysToLoad = [
         SETTINGS_KEYS.printerName,
         SETTINGS_KEYS.barcodeType,
+        SETTINGS_KEYS.labelPrintMode,
         keys.templateId,
         keys.widthMm,
         keys.heightMm,
@@ -126,6 +129,12 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
       const savedBarcodeType = map[SETTINGS_KEYS.barcodeType];
       if (savedBarcodeType === 'qr' || savedBarcodeType === 'code128') {
         setBarcodeType(savedBarcodeType);
+      }
+
+      // Режим друку етикеток — з перевіркою типу
+      const savedLabelMode = map[SETTINGS_KEYS.labelPrintMode];
+      if (savedLabelMode === 'system' || savedLabelMode === 'escpos') {
+        setLabelPrintMode(savedLabelMode);
       }
 
       // Оновлюємо розміри значеннями з БД; якщо ключа немає — залишаємо дефолт типу
@@ -243,6 +252,15 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
     [saveSetting],
   );
 
+  // ── Зміна режиму друку етикеток (system | escpos) ──
+  const handleLabelPrintModeChange = useCallback(
+    async (mode: 'system' | 'escpos') => {
+      setLabelPrintMode(mode);
+      await saveSetting(SETTINGS_KEYS.labelPrintMode, mode);
+    },
+    [saveSetting],
+  );
+
   // ── Операції з товарами ────────────────────────
   const handleAdd = useCallback((product: Product) => {
     setSelected((prev) => [
@@ -335,6 +353,8 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
           gap_mm: settings.gapMm,
           barcode_type: barcodeType,
           barcode_height_mm: 19,
+          // 'system' — повна ширина (CUPS/TSPL2), 'escpos' — 48мм (термо)
+          print_mode: labelPrintMode,
         });
         console.log('[PREVIEW] response |', {
           htmlLen: result.html?.length,
@@ -354,7 +374,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
     } finally {
       setIsPreviewLoading(false);
     }
-  }, [settings, selected, printType, label, barcodeType]);
+  }, [settings, selected, printType, label, barcodeType, labelPrintMode]);
 
   // ── Друк ────────────────────────────────────────
   const handlePrint = useCallback(async () => {
@@ -374,16 +394,27 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
           toast.success('Відправлено на друк');
         }
       } else if (isTauri() && printType === 'label') {
-        // html2canvas → ESC/POS растр (термо, flex-рендер; CSS зберігається через extractBodyWithStyles)
-        // Передаємо фізичні розміри етикетки (мм) — Rust масштабує PNG точно під них.
-        // itemsSelector='.label-item': кожна етикетка знімається ОКРЕМИМ знімком →
-        // розмір знімка = одна етикетка → Rust масштабує рівномірно (без сплющення по висоті)
-        await captureAndPrintLabel(printerName || undefined, {
-          widthMm: settings.widthMm,
-          heightMm: settings.heightMm,
-          itemsSelector: '.label-item',
-        });
-        toast.success('Відправлено на друк');
+        if (labelPrintMode === 'escpos') {
+          // ESC/POS растр: html2canvas → PNG → прямий запис у принтер (Rust).
+          // Передаємо фізичні розміри етикетки (мм) — Rust масштабує PNG точно під них.
+          // itemsSelector='.label-item': кожна етикетка знімається ОКРЕМИМ знімком →
+          // розмір знімка = одна етикетка → Rust масштабує рівномірно (без сплющення по висоті)
+          await captureAndPrintLabel(printerName || undefined, {
+            widthMm: settings.widthMm,
+            heightMm: settings.heightMm,
+            itemsSelector: '.label-item',
+          });
+          toast.success('Відправлено на друк');
+        } else {
+          // НАТИВНИЙ системний друк (CUPS-драйвер TSPL2) — як для price_tag:
+          // системний діалог webkit2gtk → CUPS → принтер розуміє формат.
+          const result = await printHtml(previewHtml, printerName || undefined);
+          if (result.success === false) {
+            toast.error(result.message);
+          } else {
+            toast.success('Відправлено на друк');
+          }
+        }
       } else {
         // Не Tauri → браузерний друк
         printViaBrowser(previewHtml);
@@ -393,7 +424,7 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
     } finally {
       setIsPrinting(false);
     }
-  }, [previewHtml, printType, printerName, captureAndPrintLabel]);
+  }, [previewHtml, printType, printerName, labelPrintMode, captureAndPrintLabel]);
 
   function printViaBrowser(html: string) {
     const printWindow = window.open('', '_blank');
@@ -524,6 +555,67 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
             <div className="mb-4">
               <PrinterSelector value={printerName} onChange={handlePrinterChange} />
             </div>
+
+            {/* ─── Режим друку етикеток (system | escpos) ─── */}
+            {printType === 'label' && (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                  Режим друку етикеток
+                </label>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleLabelPrintModeChange('system')}
+                    className={`
+                      w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors border text-left
+                      ${labelPrintMode === 'system'
+                        ? 'bg-primary-50 dark:bg-primary-900/20 border-primary-300 dark:border-primary-700 text-primary-700 dark:text-primary-400'
+                        : 'bg-gray-50 dark:bg-slate-700/50 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700'
+                      }
+                    `}
+                  >
+                    <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                      labelPrintMode === 'system'
+                        ? 'border-primary-600 bg-primary-600'
+                        : 'border-gray-400 dark:border-gray-500'
+                    }`}>
+                      {labelPrintMode === 'system' && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </span>
+                    <span className="text-left">
+                      <span className="font-medium">Системний (CUPS)</span>
+                      <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        Для будь-якого принтера (через драйвер)
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleLabelPrintModeChange('escpos')}
+                    className={`
+                      w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors border text-left
+                      ${labelPrintMode === 'escpos'
+                        ? 'bg-primary-50 dark:bg-primary-900/20 border-primary-300 dark:border-primary-700 text-primary-700 dark:text-primary-400'
+                        : 'bg-gray-50 dark:bg-slate-700/50 border-gray-200 dark:border-slate-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700'
+                      }
+                    `}
+                  >
+                    <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                      labelPrintMode === 'escpos'
+                        ? 'border-primary-600 bg-primary-600'
+                        : 'border-gray-400 dark:border-gray-500'
+                    }`}>
+                      {labelPrintMode === 'escpos' && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </span>
+                    <span className="text-left">
+                      <span className="font-medium">ESC/POS растр</span>
+                      <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        Для термопринтерів (прямий запис)
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ─── Вибір типу коду ───────────────── */}
             <div className="mb-4">

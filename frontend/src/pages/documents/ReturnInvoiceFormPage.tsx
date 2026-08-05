@@ -7,6 +7,7 @@ import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import { ReturnActionType } from '@/types/document';
@@ -626,53 +627,33 @@ const ReturnInvoiceFormPage: React.FC = () => {
                         )}
                       </td>
                       <td className="table-cell">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
+                        <DecimalInput
                           value={item.quantity}
-                          onChange={(e) =>
-                            updateQuantity(cart, setCart)(item.product_id, parseInt(e.target.value) || 1)
-                          }
+                          onCommit={(n) => updateQuantity(cart, setCart)(item.product_id, n)}
                           className="w-20 input-field text-center px-3 no-spinner"
                         />
                       </td>
                       <td className="table-cell">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
+                        <DecimalInput
                           value={item.cost_price}
-                          onChange={(e) =>
-                            updateCostPrice(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
-                          }
+                          onCommit={(n) => updateCostPrice(cart, setCart)(item.product_id, n)}
                           className="w-24 input-field text-right px-3 no-spinner"
                           title="Собівартість = ціна з ПДВ з накладної"
                         />
                       </td>
                       <td className="table-cell">
-                        <input
-                          type="number"
-                          step="1"
-                          min="0"
+                        <DecimalInput
                           value={item.price}
-                          onChange={(e) =>
-                            updatePrice(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
-                          }
+                          onCommit={(n) => updatePrice(cart, setCart)(item.product_id, n)}
                           className="w-24 input-field text-right px-3 no-spinner"
                           title="Ціна продажу заокруглена до гривні"
                         />
                       </td>
                       <td className="table-cell">
                         <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
+                          <DecimalInput
                             value={item.markup_percent}
-                            onChange={(e) =>
-                              updateMarkup(cart, setCart)(item.product_id, parseFloat(e.target.value) || 0)
-                            }
+                            onCommit={(n) => updateMarkup(cart, setCart)(item.product_id, n)}
                             className="w-20 input-field text-right px-3 no-spinner"
                           />
                           <span className="text-sm text-gray-400">%</span>
@@ -792,50 +773,31 @@ const ReturnInvoiceFormPage: React.FC = () => {
                           )}
                         </td>
                         <td className="table-cell">
-                          <input
-                            type="number"
-                            min="1"
+                          <DecimalInput
                             value={item.quantity}
-                            onChange={(e) =>
-                              updateQuantity(exchangeCart, setExchangeCart)(item.product_id, parseInt(e.target.value) || 1)
-                            }
+                            onCommit={(n) => updateQuantity(exchangeCart, setExchangeCart)(item.product_id, n)}
                             className="w-20 input-field text-center px-3 no-spinner"
                           />
                         </td>
                         <td className="table-cell">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
+                          <DecimalInput
                             value={item.cost_price}
-                            onChange={(e) =>
-                              updateCostPrice(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
-                            }
+                            onCommit={(n) => updateCostPrice(exchangeCart, setExchangeCart)(item.product_id, n)}
                             className="w-24 input-field text-right px-3 no-spinner"
                           />
                         </td>
                         <td className="table-cell">
-                          <input
-                            type="number"
-                            step="1"
-                            min="0"
+                          <DecimalInput
                             value={item.price}
-                            onChange={(e) =>
-                              updatePrice(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
-                            }
+                            onCommit={(n) => updatePrice(exchangeCart, setExchangeCart)(item.product_id, n)}
                             className="w-24 input-field text-right px-3 no-spinner"
                           />
                         </td>
                         <td className="table-cell">
                           <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              step="0.1"
-                              min="0"
+                            <DecimalInput
                               value={item.markup_percent}
-                              onChange={(e) =>
-                                updateMarkup(exchangeCart, setExchangeCart)(item.product_id, parseFloat(e.target.value) || 0)
-                              }
+                              onCommit={(n) => updateMarkup(exchangeCart, setExchangeCart)(item.product_id, n)}
                               className="w-20 input-field text-right px-3 no-spinner"
                             />
                             <span className="text-sm text-gray-400">%</span>

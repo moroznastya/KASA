@@ -6,6 +6,7 @@ import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
@@ -275,25 +276,16 @@ const PurchaseOrderFormPage: React.FC = () => {
                         </p>
                       </td>
                       <td className="table-cell">
-                        <input
-                          type="number"
-                          min="1"
+                        <DecimalInput
                           value={item.quantity}
-                          onChange={(e) =>
-                            updateQuantity(item.product_id, parseInt(e.target.value) || 1)
-                          }
+                          onCommit={(n) => updateQuantity(item.product_id, n)}
                           className="w-20 input-field text-center px-3"
                         />
                       </td>
                       <td className="table-cell">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
+                        <DecimalInput
                           value={item.price}
-                          onChange={(e) =>
-                            updatePrice(item.product_id, parseFloat(e.target.value) || 0)
-                          }
+                          onCommit={(n) => updatePrice(item.product_id, n)}
                           className="w-24 input-field text-right px-3"
                         />
                       </td>

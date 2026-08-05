@@ -5,6 +5,7 @@ import api from '@/services/api';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
+import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
@@ -402,15 +403,9 @@ const InventoryFormPage: React.FC = () => {
                       </td>
                       {/* Фактична кількість (редагується) */}
                       <td className="table-cell text-right">
-                        <input
-                          type="number"
-                          min="0"
-                          step={item.is_weight ? '0.001' : '1'}
+                        <DecimalInput
                           value={item.actual_quantity}
-                          onChange={(e) =>
-                            updateQuantity(item.product_id, parseFloat(e.target.value) || 0)
-                          }
-                          onFocus={(e) => e.target.select()}
+                          onCommit={(n) => updateQuantity(item.product_id, n)}
                           className="w-20 input-field text-center px-3 no-spinner"
                         />
                       </td>
@@ -584,16 +579,9 @@ const InventoryFormPage: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Фактична кількість *
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step={modalProduct?.is_weight ? '0.001' : '1'}
+                <DecimalInput
                   value={modalQuantity}
-                  onChange={(e) => {
-                    const qty = parseFloat(e.target.value) || 0;
-                    setModalQuantity(qty);
-                  }}
-                  onFocus={(e) => e.target.select()}
+                  onCommit={setModalQuantity}
                   className="input-field w-full text-center text-lg font-bold no-spinner"
                   autoFocus
                 />
@@ -604,13 +592,9 @@ const InventoryFormPage: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Собівартість (грн)
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
+                <DecimalInput
                   value={modalCostPrice}
-                  onChange={(e) => setModalCostPrice(parseFloat(e.target.value) || 0)}
-                  onFocus={(e) => e.target.select()}
+                  onCommit={setModalCostPrice}
                   className="input-field w-full no-spinner"
                 />
               </div>
@@ -620,13 +604,9 @@ const InventoryFormPage: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                   Ціна продажу (грн)
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
+                <DecimalInput
                   value={modalPrice}
-                  onChange={(e) => setModalPrice(parseFloat(e.target.value) || 0)}
-                  onFocus={(e) => e.target.select()}
+                  onCommit={setModalPrice}
                   className="input-field w-full no-spinner"
                 />
               </div>

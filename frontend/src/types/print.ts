@@ -98,6 +98,12 @@ export interface LabelRenderRequest {
   gap_mm: number;
   barcode_type?: BarcodeType;
   barcode_height_mm?: number;
+  /**
+   * Режим друку етикеток:
+   *   'system' — повна ширина (CUPS-драйвер, напр. Xprinter XP-420B / TSPL2)
+   *   'escpos' — обмежена 48мм (ESC/POS 58мм термо)
+   */
+  print_mode?: 'system' | 'escpos';
 }
 
 /** Відповідь рендеру етикеток */
@@ -132,6 +138,12 @@ export interface InvoicePrintRequest {
   margin_mm: number;
   barcode_type: 'code128' | 'qr';
   barcode_height_mm: number;
+  /**
+   * Режим друку етикеток:
+   *   'system' — повна ширина (CUPS-драйвер, напр. Xprinter XP-420B / TSPL2)
+   *   'escpos' — обмежена 48мм (ESC/POS 58мм термо)
+   */
+  print_mode?: 'system' | 'escpos';
 }
 
 /** Відповідь на запит друку з накладної */

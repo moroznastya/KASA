@@ -36,6 +36,7 @@ const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
 const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
 const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
 const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
+const DevicesPage = lazy(() => import('@/pages/settings/DevicesPage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
 
 const PageLoader: React.FC = () => (
@@ -257,6 +258,11 @@ const App: React.FC = () => {
             <Route path="settings/prro" element={
               <RoleRoute roles={['admin']}>
                 <PrroSettings />
+              </RoleRoute>
+            } />
+            <Route path="settings/devices" element={
+              <RoleRoute roles={['admin']}>
+                <DevicesPage />
               </RoleRoute>
             } />
             <Route path="prro" element={

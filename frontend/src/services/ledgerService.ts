@@ -151,7 +151,7 @@ export const ledgerService = {
         created_at?: string | null;
         supplier_id?: string | null;
       }>;
-    }>('/invoices/', {
+    }>('/invoices', {
       params: { supplier_id: supplierId, status: 'confirmed' },
       ...V2,
     });
