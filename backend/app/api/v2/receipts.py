@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.application.use_cases import ReceiptUseCases
 from app.application.use_cases.receipt_use_cases import ReceiptValidationError
@@ -105,6 +105,18 @@ class CreateReceiptRequest(BaseModel):
     terminal_payment_system: str | None = Field(default=None, max_length=16)
     terminal_merchant: str | None = Field(default=None, max_length=32)
     terminal_created_at: datetime | None = None
+
+    @field_validator("terminal_created_at")
+    @classmethod
+    def _normalize_terminal_created_at(cls, v: datetime | None) -> datetime | None:
+        """aware datetime (ISO з Z від date.toISOString()) → naive UTC.
+
+        ORM-колонка terminal_created_at — TIMESTAMP WITHOUT TIME ZONE,
+        asyncpg не приймає aware datetime → DBAPIError (500).
+        """
+        if isinstance(v, datetime) and v.tzinfo is not None:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        return v
 
 
 class ReceiptListResponse(BaseModel):

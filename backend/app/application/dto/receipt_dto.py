@@ -5,7 +5,7 @@ DTO для Receipt (Чек продажу).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
@@ -114,3 +114,17 @@ class ReceiptCreateDTO:
     """Запит явно створює фіскальний чек (за замовчуванням визначається автоматично)."""
     split_group_id: Optional[UUID] = None
     """ID пов'язаного чеку при розділенні фіскальних/нефіскальних позицій."""
+
+    def __post_init__(self) -> None:
+        """Нормалізує terminal_created_at: aware datetime → naive UTC.
+
+        Фронтенд шле дату/час терміналу через date.toISOString(), тобто
+        "2026-08-05T17:00:00.000Z" (ISO з Z). Pydantic-схема CreateReceiptRequest
+        парсить його як aware datetime, а ORM-колонка terminal_created_at —
+        DateTime (TIMESTAMP WITHOUT TIME ZONE). asyncpg не може вставити
+        aware datetime у naive колонку → DBAPIError (500).
+        Тому тут (і у схемі запиту) aware значення конвертується у naive UTC.
+        """
+        dt = self.terminal_created_at
+        if isinstance(dt, datetime) and dt.tzinfo is not None:
+            self.terminal_created_at = dt.astimezone(timezone.utc).replace(tzinfo=None)

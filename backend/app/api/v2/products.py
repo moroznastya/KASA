@@ -105,12 +105,29 @@ class BarcodeCreateRequest(BaseModel):
 
 # ─── Ендпоінти ───────────────────────────────────────────────────────────────
 
+def _uuid_or_none(value: str | None, field_name: str) -> UUID | None:
+    """Порожній рядок (фронтенд шле '' замість null) → None.
+
+    Валідний UUID → UUID. Невалідний рядок → HTTP 400 зі зрозумілим
+    повідомленням (замість 422 uuid_parsing).
+    """
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Поле {field_name}: очікується UUID, отримано: {value!r}",
+        )
+
+
 @router.get("", response_model=ProductListResponse)
 async def list_products(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     search: str | None = None,
-    category_id: UUID | None = None,
+    category_id: str | None = None,
     use_cases: ProductUseCases = Depends(get_product_use_cases),
     cache: ICacheService = Depends(get_cache_service),
 ):
@@ -135,7 +152,8 @@ async def list_products(
             "size": size,
         }
 
-    return await _fetch(page, size, search, category_id)
+    category_uuid = _uuid_or_none(category_id, "category_id")
+    return await _fetch(page, size, search, category_uuid)
 
 
 @router.get("/barcode/{barcode}", response_model=ProductResponse)

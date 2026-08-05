@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -296,3 +296,115 @@ class TestTerminalFieldsInUseCases:
         entity = receipt_repo.save.call_args.args[0]
         assert entity.terminal_rrn == "123456789012"
         assert entity.terminal_status == "approved"
+
+
+
+class TestTerminalCreatedAtNormalization:
+    """terminal_created_at: ISO з Z (aware) → naive UTC (без DBAPIError 500).
+
+    Фронтенд шле date.toISOString() → "2026-08-05T17:00:00.000Z" (aware).
+    ORM-колонка DateTime (TIMESTAMP WITHOUT TIME ZONE), asyncpg не приймає
+    aware datetime → раніше був 500 DBAPIError.
+    """
+
+    def test_create_request_iso_z_parses_naive(self):
+        """CreateReceiptRequest: '2026-08-05T17:00:00.000Z' → naive datetime."""
+        from app.api.v2.receipts import CreateReceiptRequest
+
+        req = CreateReceiptRequest(
+            items=[{"product_id": uuid4(), "quantity": 1, "price": 200}],
+            payment_method="card",
+            card_amount=200.0,
+            terminal_created_at="2026-08-05T17:00:00.000Z",
+        )
+        assert req.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert req.terminal_created_at.tzinfo is None
+
+    def test_create_request_offset_parses_naive_utc(self):
+        """CreateReceiptRequest: '+03:00' → конвертується у naive UTC."""
+        from app.api.v2.receipts import CreateReceiptRequest
+
+        req = CreateReceiptRequest(
+            items=[{"product_id": uuid4(), "quantity": 1, "price": 200}],
+            payment_method="card",
+            card_amount=200.0,
+            terminal_created_at="2026-08-05T20:00:00+03:00",
+        )
+        assert req.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert req.terminal_created_at.tzinfo is None
+
+    def test_create_request_none_ok(self):
+        """CreateReceiptRequest без terminal_created_at → None (cash-чек)."""
+        from app.api.v2.receipts import CreateReceiptRequest
+
+        req = CreateReceiptRequest(
+            items=[{"product_id": uuid4(), "quantity": 1, "price": 200}],
+            payment_method="cash",
+        )
+        assert req.terminal_created_at is None
+
+    def test_dto_post_init_converts_aware_to_naive(self):
+        """DTO з aware datetime (UTC) → naive UTC через __post_init__."""
+        aware = datetime(2026, 8, 5, 17, 0, 0, tzinfo=timezone.utc)
+        dto = _dto(cash_amount=Decimal("200"), terminal_created_at=aware)
+
+        assert dto.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert dto.terminal_created_at.tzinfo is None
+
+    def test_dto_post_init_converts_offset_to_naive_utc(self):
+        """DTO з aware datetime (+03:00) → naive UTC (17:00, не 20:00)."""
+        aware = datetime(2026, 8, 5, 20, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+        dto = _dto(cash_amount=Decimal("200"), terminal_created_at=aware)
+
+        assert dto.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert dto.terminal_created_at.tzinfo is None
+
+    def test_dto_post_init_keeps_naive(self):
+        """Naive datetime не змінюється."""
+        naive = datetime(2026, 8, 5, 17, 0, 0)
+        dto = _dto(cash_amount=Decimal("200"), terminal_created_at=naive)
+
+        assert dto.terminal_created_at == naive
+        assert dto.terminal_created_at.tzinfo is None
+
+    def test_dto_post_init_none_ok(self):
+        """terminal_created_at=None → залишається None."""
+        dto = _dto(cash_amount=Decimal("200"), include_terminal=False)
+
+        assert dto.terminal_created_at is None
+
+    async def test_sale_with_iso_z_saves_naive(self):
+        """create_sale_receipt з aware datetime → entity та ORM naive (201)."""
+        use_cases, receipt_repo = _build_use_cases()
+        dto = _dto(
+            payment_method="card",
+            card_amount=Decimal("200"),
+            terminal_created_at=datetime(
+                2026, 8, 5, 17, 0, 0, tzinfo=timezone.utc
+            ),
+        )
+
+        result = await use_cases.create_sale_receipt(dto)
+
+        assert result.id is not None
+        entity = receipt_repo.save.call_args.args[0]
+        assert entity.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert entity.terminal_created_at.tzinfo is None
+        persisted = SQLAlchemyReceiptRepository._to_orm(entity)
+        assert persisted.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
+        assert persisted.terminal_created_at.tzinfo is None
+
+    async def test_sale_with_none_terminal_created_at_ok(self):
+        """terminal_created_at=None → чек створюється, значення None."""
+        use_cases, receipt_repo = _build_use_cases()
+        dto = _dto(
+            payment_method="card",
+            card_amount=Decimal("200"),
+            terminal_created_at=None,
+        )
+
+        result = await use_cases.create_sale_receipt(dto)
+
+        assert result.id is not None
+        entity = receipt_repo.save.call_args.args[0]
+        assert entity.terminal_created_at is None

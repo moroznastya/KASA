@@ -77,13 +77,30 @@ router = APIRouter(
 )
 
 
+def _uuid_or_none(value: str | None, field_name: str) -> UUID | None:
+    """Порожній рядок (фронтенд шле '' замість null) → None.
+
+    Валідний UUID → UUID. Невалідний рядок → HTTP 400 зі зрозумілим
+    повідомленням (замість 422 uuid_parsing).
+    """
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Поле {field_name}: очікується UUID, отримано: {value!r}",
+        )
+
+
 @router.get("", response_model=ProductListResponse, deprecated=True)
 async def list_products(
     query: str = Query(None, description="Пошуковий запит"),
     search: str = Query(None, description="Аліас для query (сумісність)"),
     barcode: str = Query(None, description="Штрих-код"),
-    category_id: UUID = Query(None, description="ID категорії"),
-    supplier_id: UUID = Query(None, description="ID постачальника"),
+    category_id: str | None = Query(None, description="ID категорії"),
+    supplier_id: str | None = Query(None, description="ID постачальника"),
     min_price: float = Query(None, description="Мінімальна ціна"),
     max_price: float = Query(None, description="Максимальна ціна"),
     is_weight: bool = Query(None, description="Ваговий товар"),
@@ -102,11 +119,13 @@ async def list_products(
     """
     service = ProductService(session)
     effective_query = query or search
+    category_uuid = _uuid_or_none(category_id, "category_id")
+    supplier_uuid = _uuid_or_none(supplier_id, "supplier_id")
     params = ProductSearchParams(
         query=effective_query,
         barcode=barcode,
-        category_id=category_id,
-        supplier_id=supplier_id,
+        category_id=category_uuid,
+        supplier_id=supplier_uuid,
         min_price=min_price,
         max_price=max_price,
         is_weight=is_weight,
