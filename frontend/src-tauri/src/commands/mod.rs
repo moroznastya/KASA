@@ -2,6 +2,7 @@
 // Kasa POS — Tauri Команди
 // ─────────────────────────────────────────────────────────────────────────────
 
+pub mod devices;
 pub mod offline;
 pub mod print;
 pub mod system;

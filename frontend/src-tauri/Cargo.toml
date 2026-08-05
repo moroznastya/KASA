@@ -38,7 +38,14 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 dirs-next = "2"
+# ── POS-обладнання: COM-порти (ваги), TCP-термінали ───────────────────
+# serialport 4.x: на Linux default-features=false — БЕЗ libudev (його немає
+# в системі); перелік портів на Linux читається через sysfs (/sys/class/tty).
+serialport = { version = "4", default-features = false }
 image = "0.25"
 thiserror = "2"
 tempfile = "3"
 base64 = "0.22"
+# ── RST-закриття TCP-сокета (SO_LINGER=0): термінал Newland N950 ──
+# не відповідає на FIN → без RST сокети залишаються у FIN-WAIT-2 та накопичуються.
+libc = "0.2"

@@ -29,6 +29,7 @@ import {
   Rocket,
   RefreshCw,
   Download,
+  Plug,
 } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { getPrinters } from '@/services/tauri/print';
@@ -1128,6 +1129,19 @@ const SettingsPage: React.FC = () => {
             </button>
           );
         })}
+
+        {/* Окрема вкладка: Підключені пристрої (Tauri) */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={false}
+          onClick={() => navigate('/settings/devices')}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+            bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700"
+        >
+          <Plug className="w-4 h-4" />
+          Підключені пристрої
+        </button>
       </div>
 
       {/* Desktop-налаштування (Tauri): автозапуск + single-instance + оновлення */}

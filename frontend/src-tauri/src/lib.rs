@@ -182,6 +182,12 @@ pub fn run() {
                     }
                 })?;
 
+            // ── Підключені пристрої: автопідключення enabled-конфігів ─────
+            // Завантажує devices.json і для кожного пристрою з enabled=true
+            // запускає фонове підключення (ваги/термінали). Помилки не падають —
+            // логуються в stderr (eprintln!).
+            commands::devices::init_auto_connect(app.handle());
+
             Ok(())
         })
         // Реєстрація команд
@@ -216,6 +222,19 @@ pub fn run() {
             commands::system::get_system_status,
             commands::system::get_keyboard_layout,
             commands::system::send_notification,
+            // ── Команди підключених пристроїв (ваги, термінали) ─────────
+            commands::devices::get_available_ports,
+            commands::devices::get_devices,
+            commands::devices::save_device_config,
+            commands::devices::delete_device,
+            commands::devices::connect_device,
+            commands::devices::disconnect_device,
+            commands::devices::get_devices_status,
+            commands::devices::test_connection,
+            commands::devices::get_system_printers,
+            commands::devices::get_detected_devices,
+            commands::devices::get_scanners,
+            commands::devices::terminal_payment,
         ])
         .run(tauri::generate_context!())
         .expect("Помилка запуску Kasa POS");
