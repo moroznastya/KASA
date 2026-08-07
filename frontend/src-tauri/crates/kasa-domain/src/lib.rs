@@ -10,6 +10,7 @@
 //! [`write::WriteDirectories`], вхідні структури та розрахунок націнки.
 
 pub mod dto;
+pub mod pos;
 pub mod repos;
 pub mod write;
 
@@ -24,6 +25,16 @@ pub enum DomainError {
 pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
     ProductBriefDto, ProductDto, ProductImageDto, SupplierDto,
+};
+pub use pos::{
+    iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total, DocItemInput, MySessionsDto,
+    PosError, PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto,
+    ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput,
+    ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery,
+    ReceiptStatsDto, RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput,
+    TransferDto, TransferItemDto, TransferListDto, TransferUpdateInput, UserHoursSummaryDto,
+    UserSessionsDto, WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto,
+    WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
 pub use write::{

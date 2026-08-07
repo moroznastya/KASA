@@ -7,5 +7,6 @@
 
 pub mod services;
 
+pub use services::pos::PosServiceFacade;
 pub use services::readdirs::{ReadDirectoryService, ServiceError};
 pub use services::write::WriteService;
