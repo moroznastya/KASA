@@ -8,6 +8,9 @@
 
 pub mod commands;
 
+// ── Вбудований HTTP-фасад (axum) + Python sidecar (етап 0.2) ──────────────
+mod sidecar;
+
 // ── Імпорти ─────────────────────────────────────────────────────────────────
 
 use tauri::{
@@ -46,6 +49,16 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     } else {
         show_main_window(app);
     }
+}
+
+// ── Стан фасаду/сайдкара для graceful shutdown ──────────────────────────────
+
+/// Стан вбудованого axum-фасаду та Python sidecar (для shutdown-hook).
+struct FacadeState {
+    /// Таск axum-фасаду (abort при виході).
+    facade: tauri::async_runtime::JoinHandle<()>,
+    /// Python sidecar (SIGTERM → kill при виході).
+    sidecar: std::sync::Mutex<sidecar::PythonSidecar>,
 }
 
 // ── Точка входу ─────────────────────────────────────────────────────────────
@@ -185,6 +198,41 @@ pub fn run() {
             // логуються в stderr (eprintln!).
             kasa_infrastructure::devices::init_auto_connect(app.handle());
 
+            // ── Вбудований axum-фасад :8000 + Python sidecar :8001 ──────
+            // Unified Tauri (Strangler Fig): фасад біндиться на :8000 (той самий
+            // порт, що мав Python), Python переїжджає на :8001 як sidecar.
+            // run_facade спавнить tokio-таск у глобальному runtime
+            // (tauri::async_runtime = tokio runtime застосунку).
+            let facade_addr = kasa_api::DEFAULT_FACADE_ADDR.to_string();
+            let facade = tauri::async_runtime::spawn(async move {
+                if let Err(e) = kasa_api::serve(&facade_addr).await {
+                    eprintln!("[kasa-api] фасад завершився з помилкою: {e}");
+                }
+            });
+            let sidecar = sidecar::PythonSidecar::start();
+            app.manage(FacadeState {
+                facade,
+                sidecar: std::sync::Mutex::new(sidecar),
+            });
+
+            // ── SIGTERM → graceful shutdown ─────────────────────────────
+            // Дефолтний обробник SIGTERM вбиває процес без RunEvent::Exit,
+            // тому shutdown-hook (фасад → flush → sidecar) не виконується.
+            // Перехоплюємо SIGTERM і завершуємось через app.exit(0) —
+            // це гарантує виконання RunEvent::Exit і нашого hook.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigterm = signal(SignalKind::terminate())
+                        .expect("не вдалося зареєструвати SIGTERM-хендлер");
+                    sigterm.recv().await;
+                    eprintln!("[kasa-pos] SIGTERM отримано — graceful shutdown");
+                    handle.exit(0);
+                });
+            }
+
             Ok(())
         })
         // Реєстрація команд
@@ -236,6 +284,19 @@ pub fn run() {
             kasa_infrastructure::devices::terminal_cancel,
             kasa_infrastructure::devices::terminal_ping,
         ])
-        .run(tauri::generate_context!())
-        .expect("Помилка запуску Kasa POS");
+        .build(tauri::generate_context!())
+        .expect("Помилка запуску Kasa POS")
+        .run(|app_handle, event| {
+            // ── Shutdown-hook: зупинка фасаду → flush → kill sidecar ──
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<FacadeState>();
+                // 1) Зупинка axum-фасаду (звільняє :8000).
+                state.facade.abort();
+                // 2) Flush черг офлайн-синхронізації. На етапі 0 черг немає;
+                //    місце для sync-флашу на наступних етапах.
+                // 3) Graceful shutdown Python sidecar (SIGTERM → kill).
+                let mut sidecar = state.sidecar.lock().unwrap();
+                sidecar.shutdown();
+            }
+        });
 }

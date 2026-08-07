@@ -51,14 +51,17 @@ pub fn echo_payload(args: &serde_json::Value) -> serde_json::Value {
 pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
     let addr = addr.to_string();
     tokio::spawn(async move {
-        if let Err(e) = serve_facade(&addr).await {
+        if let Err(e) = serve(&addr).await {
             eprintln!("[kasa-api] фасад на {addr} завершився з помилкою: {e}");
         }
     })
 }
 
-/// Внутрішня async-реалізація фасаду (біндинг + serve).
-async fn serve_facade(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Async-реалізація фасаду (біндинг + serve).
+///
+/// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
+/// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
+pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()

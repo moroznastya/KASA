@@ -289,39 +289,36 @@ pub fn print_html(app: tauri::AppHandle, data: PrintHtmlData) -> Result<PrintRes
         .map_err(|e| format!("Не вдалося сформувати URL друку: {}", e))?;
 
     // ── 3. Створюємо WebviewWindow з HTML через кастомний протокол ───────
-    let window = tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::CustomProtocol(url),
-    )
-    .title("Kasa POS — Друк A4")
-    .inner_size(800.0, 600.0)
-    .center()
-    .decorations(false)
-    .resizable(false)
-    .skip_taskbar(true)
-    .visible(true)
-    .on_page_load(|webview, payload| {
-        use tauri::webview::PageLoadEvent;
-        if payload.event() == PageLoadEvent::Finished {
-            // Невелика затримка (200мс) — дочекатись остаточного layout
-            // (шрифти, зображення, CSS Grid).
-            //
-            // window.print() блокує JS-потік webkit, поки діалог друку
-            // відкритий, тому window.close() виконається одразу ПІСЛЯ
-            // завершення друку (або закриття діалогу користувачем).
-            let js =
+    let window =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::CustomProtocol(url))
+            .title("Kasa POS — Друк A4")
+            .inner_size(800.0, 600.0)
+            .center()
+            .decorations(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(true)
+            .on_page_load(|webview, payload| {
+                use tauri::webview::PageLoadEvent;
+                if payload.event() == PageLoadEvent::Finished {
+                    // Невелика затримка (200мс) — дочекатись остаточного layout
+                    // (шрифти, зображення, CSS Grid).
+                    //
+                    // window.print() блокує JS-потік webkit, поки діалог друку
+                    // відкритий, тому window.close() виконається одразу ПІСЛЯ
+                    // завершення друку (або закриття діалогу користувачем).
+                    let js =
                 "setTimeout(() => { try { window.print(); } finally { window.close(); } }, 200);";
-            if let Err(e) = webview.eval(js) {
-                eprintln!("[KASA] print_html: помилка eval window.print(): {}", e);
-            }
-        }
-    })
-    .build()
-    .map_err(|e| {
-        remove_print_html(&token);
-        format!("Не вдалося створити вікно друку: {}", e)
-    })?;
+                    if let Err(e) = webview.eval(js) {
+                        eprintln!("[KASA] print_html: помилка eval window.print(): {}", e);
+                    }
+                }
+            })
+            .build()
+            .map_err(|e| {
+                remove_print_html(&token);
+                format!("Не вдалося створити вікно друку: {}", e)
+            })?;
 
     // ── 4. Watchdog: гарантоване закриття вікна та очищення реєстру ──────
     // Якщо print-діалог не відкрився або JS window.close() не спрацював —
