@@ -3,7 +3,7 @@
 # =============================================================================
 # Використання:
 #   docker build -t kasa-backend .
-#   docker run -p 8000:8000 kasa-backend
+#   docker run -p 8001:8001 kasa-backend
 # =============================================================================
 #
 # 🔧 Оновлення 2026-08-01 (контейнеризація):
@@ -76,10 +76,10 @@ USER kasa
 
 # Health check (перевіряє /health ендпоінт FastAPI)
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
 
 # Відкриваємо порт
-EXPOSE 8000
+EXPOSE 8001
 
 # Запускаємо FastAPI через uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
