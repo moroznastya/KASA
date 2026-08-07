@@ -11,11 +11,13 @@
 
 use axum::{
     middleware,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 
-use crate::{auth, auth_routes, crud, debtors, ledger, pos, proxy, prro, readdirs, AppState};
+use crate::{
+    auth, auth_routes, crud, debtors, documents, ledger, pos, proxy, prro, readdirs, AppState,
+};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -246,6 +248,27 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/debtors/{debtor_id}/payments",
                 get(debtors::payments),
             );
+    }
+
+    // Rust-гілка документів (етап 8, група 2) — KASA_RUST_DOCUMENTS=1.
+    // Порядок: статичні сегменти (batch-confirm, export) ПЕРЕД {document_id} — як FastAPI.
+    if state.documents.is_some() {
+        router = router
+            .route(
+                "/api/v1/documents/batch-confirm",
+                post(documents::batch_confirm),
+            )
+            .route("/api/v1/documents/export", get(documents::export))
+            .route(
+                "/api/v1/documents/{document_id}/copy",
+                post(documents::copy),
+            )
+            .route(
+                "/api/v1/documents/{document_id}/print",
+                get(documents::print),
+            )
+            .route("/api/v1/documents/{document_id}", delete(documents::delete))
+            .route("/api/v1/documents", get(documents::list));
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).

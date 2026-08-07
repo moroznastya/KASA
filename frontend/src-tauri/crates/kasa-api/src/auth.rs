@@ -186,6 +186,11 @@ fn is_public_path(path: &str) -> bool {
     if path.starts_with("/uploads/") {
         return true;
     }
+    // Print документа відкривається в новій вкладці з ?token= (Python
+    // get_current_user_optional) — auth перевіряється в самому хендлері.
+    if path.starts_with("/api/v1/documents/") && path.ends_with("/print") {
+        return true;
+    }
     if path.contains("/print") {
         return true;
     }

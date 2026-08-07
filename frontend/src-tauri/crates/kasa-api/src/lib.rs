@@ -20,6 +20,7 @@ pub mod auth;
 pub mod auth_routes;
 pub mod crud;
 pub mod debtors;
+pub mod documents;
 pub mod ledger;
 pub mod pos;
 pub mod proxy;
@@ -30,7 +31,8 @@ pub mod router_v1;
 use std::sync::Arc;
 
 use kasa_domain::{
-    AuthService, DebtorService, LedgerService, PosService, ReadDirectories, WriteDirectories,
+    AuthService, DebtorService, DocumentsService, LedgerService, PosService, ReadDirectories,
+    WriteDirectories,
 };
 use sqlx::PgPool;
 
@@ -48,6 +50,9 @@ pub const RUST_AUTH_ENV: &str = "KASA_RUST_AUTH";
 
 /// Env-флаг Rust-гілки боржників (етап 8, група 1).
 pub const RUST_DEBTORS_ENV: &str = "KASA_RUST_DEBTORS";
+
+/// Env-флаг Rust-гілки документів (етап 8, група 2).
+pub const RUST_DOCUMENTS_ENV: &str = "KASA_RUST_DOCUMENTS";
 
 /// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
@@ -76,6 +81,10 @@ pub struct AppState {
     pub prro: Option<Arc<crate::prro::PrroFacade>>,
     /// Rust-репозиторій боржників (етап 8, група 1) — KASA_RUST_DEBTORS=1.
     pub debtors: Option<Arc<dyn DebtorService + Send + Sync>>,
+    /// Rust-репозиторій документів (етап 8, група 2) — KASA_RUST_DOCUMENTS=1.
+    pub documents: Option<Arc<dyn DocumentsService + Send + Sync>>,
+    /// Пул документів (require_admin документів незалежно від KASA_RUST_AUTH).
+    pub documents_pool: Option<PgPool>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -174,6 +183,33 @@ async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
     }
 }
 
+/// Ініціалізує Rust-гілку документів під KASA_RUST_DOCUMENTS=1.
+async fn init_documents() -> (
+    Option<Arc<dyn DocumentsService + Send + Sync>>,
+    Option<PgPool>,
+) {
+    if !env_flag(RUST_DOCUMENTS_ENV) {
+        return (None, None);
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_DOCUMENTS_ENV}=1 — Rust-гілка документів увімкнена (PostgreSQL)"
+            );
+            let svc: Arc<dyn DocumentsService + Send + Sync> = Arc::new(
+                kasa_infrastructure::repositories::documents::SqlxDocuments::new(pool.clone()),
+            );
+            (Some(svc), Some(pool))
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна ({e}); документи через проксі на Python :8001"
+            );
+            (None, None)
+        }
+    }
+}
+
 /// Ініціалізує Rust-гілку боржників під KASA_RUST_DEBTORS=1.
 async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
     if !env_flag(RUST_DEBTORS_ENV) {
@@ -250,6 +286,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
     let prro = init_prro().await;
     let debtors = init_debtors().await;
+    let (documents, documents_pool) = init_documents().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -263,6 +300,8 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         auth,
         prro,
         debtors,
+        documents,
+        documents_pool,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -41,6 +41,7 @@ use crate::{
 };
 
 /// Спеціалізована помилка з IntoResponse (деталі 1:1 Python).
+#[derive(Debug)]
 pub enum AuthRouteError {
     /// 401/403/404/409/400 — {"detail": "..."}
     Plain(AuthError),
@@ -120,7 +121,9 @@ fn sub_uuid(claims: &Claims) -> Result<Uuid, AuthRouteError> {
     })
 }
 
-fn auth_repo(state: &AppState) -> Result<Arc<dyn AuthService + Send + Sync>, AuthRouteError> {
+pub(crate) fn auth_repo(
+    state: &AppState,
+) -> Result<Arc<dyn AuthService + Send + Sync>, AuthRouteError> {
     state.auth.clone().ok_or_else(|| {
         AuthError::Forbidden("Rust-гілка auth вимкнена (KASA_RUST_AUTH=0)".to_string()).into()
     })

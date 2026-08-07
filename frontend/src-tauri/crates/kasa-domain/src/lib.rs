@@ -11,6 +11,7 @@
 
 pub mod auth;
 pub mod debtors;
+pub mod documents;
 pub mod dto;
 pub mod ledger;
 pub mod pos;
@@ -36,6 +37,10 @@ pub use auth::{
 pub use debtors::{
     DebtorCreateInput, DebtorDto, DebtorError, DebtorListDto, DebtorPayInput, DebtorPaymentDto,
     DebtorReceiptDto, DebtorReceiptItemDto, DebtorSearchQuery, DebtorService, DebtorUpdateInput,
+};
+pub use documents::{
+    BatchConfirmErrorDto, BatchConfirmInput, BatchConfirmResultDto, DocListDto, DocListQuery,
+    DocPrintDto, DocumentDto, DocumentsError, DocumentsService, ExportData, ExportQuery,
 };
 pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
