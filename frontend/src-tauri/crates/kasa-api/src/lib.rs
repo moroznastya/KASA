@@ -18,6 +18,7 @@
 
 pub mod auth;
 pub mod crud;
+pub mod ledger;
 pub mod pos;
 pub mod proxy;
 pub mod readdirs;
@@ -25,7 +26,7 @@ pub mod router_v1;
 
 use std::sync::Arc;
 
-use kasa_domain::{PosService, ReadDirectories, WriteDirectories};
+use kasa_domain::{LedgerService, PosService, ReadDirectories, WriteDirectories};
 use sqlx::PgPool;
 
 /// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
@@ -52,6 +53,8 @@ pub struct AppState {
     pub write_pool: Option<PgPool>,
     /// Rust-репозиторій POS (етап 3) — той самий пул.
     pub pos: Option<Arc<dyn PosService + Send + Sync>>,
+    /// Rust-репозиторій ledger (етап 4) — той самий пул.
+    pub ledger: Option<Arc<dyn LedgerService + Send + Sync>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -81,6 +84,7 @@ async fn init_readdirs() -> Option<(
     Arc<dyn ReadDirectories + Send + Sync>,
     Arc<dyn WriteDirectories + Send + Sync>,
     Arc<dyn PosService + Send + Sync>,
+    Arc<dyn LedgerService + Send + Sync>,
 )> {
     if !env_flag(RUST_READDIRS_ENV) {
         return None;
@@ -99,7 +103,10 @@ async fn init_readdirs() -> Option<(
             let pos = Arc::new(kasa_infrastructure::repositories::pos::SqlxPos::new(
                 pool.clone(),
             )) as Arc<dyn PosService + Send + Sync>;
-            Some((pool, read, write, pos))
+            let ledger = Arc::new(kasa_infrastructure::repositories::ledger::SqlxLedger::new(
+                pool.clone(),
+            )) as Arc<dyn LedgerService + Send + Sync>;
+            Some((pool, read, write, pos, ledger))
         }
         Err(e) => {
             eprintln!(
@@ -129,9 +136,11 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (readdirs, write, write_pool, pos) = match init_readdirs().await {
-        Some((pool, read, write, pos)) => (Some(read), Some(write), Some(pool), Some(pos)),
-        None => (None, None, None, None),
+    let (readdirs, write, write_pool, pos, ledger) = match init_readdirs().await {
+        Some((pool, read, write, pos, ledger)) => {
+            (Some(read), Some(write), Some(pool), Some(pos), Some(ledger))
+        }
+        None => (None, None, None, None, None),
     };
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
@@ -142,6 +151,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         write,
         write_pool,
         pos,
+        ledger,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 
-use crate::{auth, crud, pos, proxy, readdirs, AppState};
+use crate::{auth, crud, ledger, pos, proxy, readdirs, AppState};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -78,6 +78,26 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/inventory/{id}/confirm",
                 post(crud::confirm_inventory),
+            );
+    }
+
+    // Rust-гілка ledger (етап 4) — під тим самим feature-flag.
+    if state.ledger.is_some() {
+        // v1 (статичний /balance ПЕРЕД /{supplier_id} — як FastAPI).
+        router = router
+            .route(
+                "/api/v1/ledger/balance/{supplier_id}",
+                get(ledger::balance_v1),
+            )
+            .route("/api/v1/ledger/{supplier_id}", get(ledger::history_v1))
+            .route("/api/v1/ledger", post(ledger::create_entry_v1))
+            // v2 (entries/balances ПЕРЕД balance/{supplier_id}).
+            .route("/api/v2/ledger/entries", get(ledger::list_entries_v2))
+            .route("/api/v2/ledger/entries", post(ledger::create_entry_v2))
+            .route("/api/v2/ledger/balances", get(ledger::all_balances_v2))
+            .route(
+                "/api/v2/ledger/balance/{supplier_id}",
+                get(ledger::balance_v2),
             );
     }
 
