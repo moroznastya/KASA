@@ -44,6 +44,7 @@
 | 7.1 | ПРРО-фундамент: ADR-014 (крипто-стратегія FFI→IIT SDK EUSignCP через libloading, ДСТУ 4145; чистий Rust для RSA/ECDSA); crate kasa-prro (tonic+prost build.rs з prro.proto, TLS native roots+кастомний CA, дедлайни+ретраї 3×1s→2s); gRPC-клієнт ChkIncomeService (sendChkV2/ping/statusRro/infoRro/lastChk/delLastChk/delLastChkId/open_shift); XML СЗЗД 2.1.7 (C14N, MAC SHA-256→Base64, чек/Z/службові 108-112) — golden parity з Python; key_store JKS (власний парсер + JavaSoft XOR/SHA1-keystream) / PKCS#12 (openssl) / PEM; crypto::iit FFI (10 extern C-сигнатур) | Rust_Agent | a13fd35 | ✅ | E2E: TLS READY до cabinet.tax.gov.ua:9443, ping (0x7FFFFFFF, SERVICECHK) → status -1 ERROR_VEREFY, error_message ідентичний Python; golden XML 12/12 байт-ідентично (v1-v7 + MAC + message + canonical); JKS pb_3791505547: приватний ключ 802B PKCS#8 + OID ДСТУ 4145 + ланцюг 4 сертифікати, підписант serial=5E984D52... (1:1 Python); cargo test 33/33, clippy 0, fmt чистий |
 | 7.2 | XAdES/CAdES крипто-шар: crypto::xades (чистий Rust) — XAdES-BES enveloped (C14N 1.1 inclusive 1:1 libxml2, RSA PKCS#1 v1.5 детермінований, ECDSA P-256/P-384); crypto::iit FFI завершено — load_jks_key (EUGetJKSPrivateKeyFile→EUSaveCertificate×N→EUReadPrivateKeyBinary), CAdES-BES ContentInfo/signedData (EUSignDataInternal/EUVerifyDataInternal), get_signer_serial/name (X.509); фабрика signer_from_key_material (OID ДСТУ 4145 → IitSigner, RSA/EC → XadesSigner) | Rust_Agent | 03373be | ✅ | GOLDEN XAdES 5/5: Rust sign == Python signxml БАЙТ-В-БАЙТ (чек/Z/службові, digest+signature value збігаються); CAdES: Rust verify Python sig ✅, Python verify Rust sig ✅, структура ContentInfo OID 1.2.840.113549.1.7.2; get_serial_number 1:1 (RSA 7AED62...; ДСТУ 5E984D52...), get_signer_name 1:1 (Тестовий Підписант / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА); cargo test 43/43, clippy 0, fmt чистий |
 | 7.3 | Фінальний етап 7: offline_queue + shift/Z-звіт + інтеграція facade — kasa-prro::prro (PrroOfflineQueue 1:1 Python: add_document/get_pending(100)/count_pending/list_by_shift/mark_sent/mark_failed/is_expired 168 год/get_expired; PrroShiftUseCase open_shift T=108 SERVICECHK local_number=0 + close_shift ZREPORT + валідації SHIFT_ALREADY_OPEN/NO_OPEN_SHIFT; SyncOfflineQueueUseCase replay pending→sent/failed, expired блокується сервером ERROR_OFFLINE_168=-11; trait PrroRepository + InMemory (unit) + SqlxPrroRepository PostgreSQL (ensure_prro_schema, DDL 1:1 Alembic 578fd283a156); parse_receipt_xml_totals 1:1; facade kasa-api: KASA_RUST_PRRO=1|shadow, роути /api/v2/prro/fiscal/* (open/close/shifts/sync/queue/status), shadow — Rust готує чек і логує parity, Python виконує | Rust_Agent | 7f23102 | ✅ | cargo test 148/148 (workspace), clippy 0 (наш код), fmt чистий; sqlx-інтеграція 6/6 + facade 5/5 на живій PostgreSQL; unit: queue 8, shift 9, sync 8 (відкат: gRPC-помилка → pending/failed + error, нуль втрат фіскального стану); shadow-лог open_shift: dat_len/signed_len/DI |
+| 7.3.1 | SIGSEGV-фікс FFI EUSignCP (cades_iit стабільно падав після cargo clean + debug=line-tables-only) — КОРІНЬ: два баги euscp.so/cspb.so, НЕ наш UB: (1) EUReadPrivateKeyBinary використовує callee-saved %rbx без ініціалізації (очікує %rbx=0 від калера; Python-ctypes випадково лишає 0, C/Rust — адресу функції → `movl $0,(%rbx)` → запис у .text → SIGSEGV); (2) SDK читає %rcx від калера (Python/C: rcx=0 → rc=0; Rust: rcx=heap-ptr → rc=24 «невірний пароль»). gdb-докази: Python rbx=0/rcx=0 vs Rust rbx=адреса fn/rcx=heap; C-відтворювач із rbx=0+rcx=0 → rc=0. Фікс: C-обгортка ffi/euscp_wrappers.c (cc у build.rs) — rbx=0 + rcx=0 перед викликом, rbx зберігається в r11 (НЕ на стек — зсув rsp на 8 ламає movdqa у cspb.so). Одночасно виправлено хибну гіпотезу 7.2: буфери EUGetJKSPrivateKeyFile ТРЕБА free-шити (1:1 Python) — «dangling pointer від EUFreeMemory» був насправді rbx/rcx-багом; прибрано окремий Library::new у load_jks_key (1:1 Python: один CDLL) | Rust_Agent | (коміт SIGSEGV) | ✅ | cades_iit 5/5 прогонів (паралельно + threads=1), workspace 148/148, clippy 0 (наш код), fmt чистий; профілі Cargo.toml не змінені |
 | 3.1 | POS: чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable), робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | 72b4e21, fcaeffa, ba695ec, 6e97a5c, 9b0bf39, 435ea36 | ✅ | E2E POS 43/43: чеки (sale/return/список/деталі/статистика/пошук/returnable), робочі сесії, списання (авто-confirm), переміщення (draft→confirm/cancel), ПРРО X/Z; транзакційність: 400 у середині → чек не створено, stock не змінено; конкурентність 2 паралельні sale → stock 86.000, нуль втрат; cargo test 9/9, clippy/fmt чисті |
 | 2.1 | Write-порти CRUD+інвентаризації, SQL-репозиторії write, CRUD-роути під flag, E2E differential-скрипт | Rust_Agent | 319d849, c66450c, 04e6edb, adfa79a | ✅ | E2E 16/16: 201/200/204, 404, 409, 400, 422 ідентичні Python; конкурентність 2 паралельні confirm → stock 104.000; БД почищена від тестових даних |
 
@@ -239,3 +240,48 @@
    golden parity з Python, shadow-mode, відкат.
 2. QA_Agent: розширити differential-контур на auth/users/settings (e2e_auth_diff.sh).
 3. Git Admin Agent: PR за етапами 1–6 (накопичений зміст).
+
+## 7.3.1 Баг: SIGSEGV у cades_iit (FFI EUSignCP) — діагностика та фікс
+
+**Симптом:** після `cargo clean` + `[profile.dev] debug="line-tables-only"` тест
+`cades_iit` стабільно падає SIGSEGV (signal 11) — спершу на 2-му тесті, згодом
+і на 1-му. Повний debuginfo маскував проблему розкладкою malloc — це тригер,
+не причина. Профіль збірки змінювати заборонено.
+
+**Діагноз (gdb + мінімальний C-відтворювач):** корінь — ДВА баги в SDK
+`euscp.so`/`cspb.so` (ІІТ), які Python-ctypes випадково обходить:
+
+1. **`%rbx` без ініціалізації (euscp.so).** `EUReadPrivateKeyBinary` у пролозі
+   використовує callee-saved `%rbx` БЕЗ збереження/ініціалізації:
+   `mov 0x200266(%rip),%eax; test; je; ...; movl $0x0,(%rbx)`.
+   - Python (ctypes): на вході `%rbx == 0` (gdb-виміряно) → запис у NULL-подібну
+     ділянку → ок (rc=0).
+   - C/Rust: `%rbx == адреса функції` (dlsym-результат у callee-saved) →
+     `movl $0,(%rbx)` пише в .text → SIGSEGV.
+2. **`%rcx` від калера.** Той самий клас бага: SDK читає `%rcx` як додатковий
+   параметр. Python/C: `rcx=0` → rc=0. Rust: `rcx=heap-ptr` → rc=24
+   «невірний пароль» (навіть після фіксу №1).
+   Побічно: `%rcx != 0` заводить SDK у гілку cspb.so з `movdqa` на адресу
+   `rsp-0x38` (вирівнювання лише по 8) → #GP → SIGSEGV глибше в cspb.so.
+
+**Фікс (ffi/euscp_wrappers.c, C-обгортка через cc у build.rs):**
+перед викликом `EUReadPrivateKeyBinary` встановлює `%rbx=0` і `%rcx=0`,
+оригінальний `%rbx` зберігає у `%r11` (caller-saved) — НЕ на стек:
+`push %rbx` зсуває `%rsp` на 8 і ламає вирівнювання для movdqa у cspb.so.
+
+**Виправлені хибні гіпотези 7.2 (задокументовані в iit.rs як помилкові):**
+- «EUFreeMemory після EUGetJKSPrivateKeyFile → dangling pointer (rc=24)» —
+  ХИБНО. Python free-шить буфери getJKS (iit_sdk.py) і працює; rc=24 у 7.2
+  давав саме `%rcx`-баг. Тепер буфери free-шаться 1:1 Python.
+- «окремий Library::new для load_jks_key потрібен (self.lib дає rc=24)» —
+  ХИБНО. Прибрано: один дескриптор (self.lib) на весь SDK, як Python CDLL.
+
+**Докази стабільності:** cades_iit 5/5 прогонів (паралельно) + 3/3
+(`--test-threads=1`); `cargo test --workspace` 148/148; clippy 0 (наш код);
+fmt чистий. Профілі Cargo.toml НЕ змінені.
+
+**Висновок:** SDK EUSignCP має нестандартну ABI-угоду (читає callee-saved
+регістри калера) — це quirk бібліотеки, а не UB нашого коду. Обгортка
+відтворює Python-контекст (rbx=0, rcx=0) для зачепленої функції; sign/verify
+мають нормальний пролог (зберігають rbx) — обгортка їм не потрібна
+(перевірено дизасемблером).

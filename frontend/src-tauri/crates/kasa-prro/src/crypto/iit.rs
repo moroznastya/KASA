@@ -67,6 +67,17 @@ type FnEuVerifyDataInternal = unsafe extern "C" fn(
 type FnEuFreeMemory = unsafe extern "C" fn(*mut c_void);
 type FnEuGetErrorDesc = unsafe extern "C" fn(c_int) -> *const c_char;
 
+// C-обгортка EUReadPrivateKeyBinary з %rbx=0/%rcx=0 (SDK-баг,
+// див. ffi/euscp_wrappers.c). Перший аргумент — вказівник на функцію SDK.
+extern "C" {
+    fn eu_read_private_key_binary_rbx0(
+        fn_ptr: unsafe extern "C" fn(*const u8, i32, *const u8) -> i32,
+        key: *const u8,
+        key_len: i32,
+        password: *const u8,
+    ) -> i32;
+}
+
 #[allow(non_camel_case_types)]
 type c_char = i8;
 #[allow(non_camel_case_types)]
@@ -79,8 +90,6 @@ type c_void = core::ffi::c_void;
 /// Singleton-обгортка SDK (1:1 Python `IitSdk`): один екземпляр, Mutex на виклики.
 pub struct IitSdk {
     lib: Library,
-    /// Шлях до euscp.so — для робочих викликів (див. read_private_key_binary).
-    lib_path: PathBuf,
     /// Каталог SDK (поряд з euscp.so) — для osplm.ini (1:1 Python _VENDOR_SDK_DIR).
     sdk_dir: PathBuf,
     initialized: bool,
@@ -105,7 +114,6 @@ impl IitSdk {
             .unwrap_or_else(|| PathBuf::from("."));
         Ok(Self {
             lib,
-            lib_path: lib_path.to_path_buf(),
             sdk_dir,
             initialized: false,
             key_loaded: false,
@@ -286,13 +294,19 @@ impl IitSdk {
             }
         }
 
-        // УВАГА: НЕ звільняємо буфери SDK через EUFreeMemory.
-        // EUSignCP тримає ВНУТРІШНІ вказівники на key/certs після
-        // EUGetJKSPrivateKeyFile — EUFreeMemory реально звільняє пам'ять,
-        // і наступний EUReadPrivateKeyBinary отримує dangling pointer
-        // (rc=24 або SIGSEGV). Python-еталон викликає _free(), але той
-        // фактично no-op — тож Rust свідомо не free-шує: поведінка 1:1,
-        // пам'ять SDK живе до кінця процесу (одноразове завантаження ключа).
+        // ФІКС SIGSEGV/rc=24 (етап 7.3+): буфери SDK звільняємо ПІСЛЯ
+        // копіювання — 1:1 Python iit_sdk.py load_jks_key. Гіпотеза 7.2 про
+        // "dangling pointer від EUFreeMemory" була хибною (див. load_jks_key).
+        type FnFreeDirect = unsafe extern "C" fn(*mut c_void);
+        unsafe {
+            let free_fn: libloading::Symbol<FnFreeDirect> = self.lib.get(b"EUFreeMemory\0")?;
+            free_fn(key_ptr);
+            for i in 0..cert_cnt as usize {
+                free_fn(*certs_ptr.add(i));
+            }
+            free_fn(certs_ptr as *mut c_void);
+            free_fn(cert_lens_ptr as *mut c_void);
+        }
 
         Ok((key, certs))
     }
@@ -321,10 +335,19 @@ impl IitSdk {
     ) -> Result<(), IitSdkError> {
         let pw = cstr(password);
         // SAFETY: EUReadPrivateKeyBinary(const char*, int, const char*) — C ABI.
+        // ФІКС SIGSEGV (етап 7.3+): виклик через C-обгортку з %rbx=0 —
+        // euscp.so використовує callee-saved %rbx без ініціалізації
+        // (Python-ctypes лишає %rbx=0, C/Rust — ні → запис у .text).
+        // Див. ffi/euscp_wrappers.c.
         type FnReadDirect = unsafe extern "C" fn(*const u8, i32, *const u8) -> i32;
         let rc = unsafe {
             let f: libloading::Symbol<FnReadDirect> = self.lib.get(b"EUReadPrivateKeyBinary\0")?;
-            f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8)
+            eu_read_private_key_binary_rbx0(
+                *f,
+                key.as_ptr(),
+                key.len() as i32,
+                pw.as_ptr() as *const u8,
+            )
         };
         if rc != 0 {
             return Err(IitSdkError::KeyLoad(format!(
@@ -373,8 +396,14 @@ impl IitSdk {
                 let decoded = base64::engine::general_purpose::STANDARD
                     .decode(b64)
                     .map_err(|e| IitSdkError::Sign(format!("base64: {e}")))?;
-                // SAFETY: звільняємо пам'ять SDK.
-                unsafe { self.free(b64_out as *mut c_void) };
+                // УВАГА (фікс SIGSEGV): b64_out НЕ звільняється через
+                // EUFreeMemory — 1:1 Python-еталон (iit_sdk.py sign_data_internal:
+                // `return base64.b64decode(b64_out.value)` без _free(b64_out)).
+                // EUSignCP тримає ВНУТРІШНІЙ вказівник на цей буфер після
+                // EUSignDataInternal; EUFreeMemory звільняє реальну пам'ять →
+                // наступний FFI-виклик (EUVerifyDataInternal) отримує
+                // use-after-free → SIGSEGV. Повний debuginfo маскував це
+                // розкладкою malloc; line-tables-only оголив.
                 return Ok(decoded);
             }
         }
@@ -445,9 +474,6 @@ impl IitSdk {
     /// нього. `self.lib` використовується для EUInitialize (працює).
     pub fn load_jks_key(&mut self, jks_path: &Path, password: &str) -> Result<(), IitSdkError> {
         let path_str = jks_path.to_string_lossy().to_string();
-        // SAFETY: euscp.so — стабільний C ABI.
-        let lib = unsafe { Library::new(&self.lib_path) }
-            .map_err(|e| IitSdkError::Load(self.lib_path.display().to_string(), e.to_string()))?;
 
         type FnGetJks = unsafe extern "C" fn(
             *const u8,
@@ -469,7 +495,7 @@ impl IitSdk {
         let mut certs_ptr: *mut *mut c_void = std::ptr::null_mut();
         let mut cert_lens_ptr: *mut u64 = std::ptr::null_mut();
         let rc = unsafe {
-            let f: libloading::Symbol<FnGetJks> = lib.get(b"EUGetJKSPrivateKeyFile\0")?;
+            let f: libloading::Symbol<FnGetJks> = self.lib.get(b"EUGetJKSPrivateKeyFile\0")?;
             f(
                 path_c.as_ptr() as *const u8,
                 std::ptr::null(),
@@ -498,13 +524,27 @@ impl IitSdk {
                 certs.push(cert);
             }
         }
-        // Буфери SDK НЕ звільняємо (EUFreeMemory дає dangling pointer —
-        // див. коментар у get_jks_private_key_file).
+        // ФІКС SIGSEGV/rc=24 (етап 7.3+): буфери SDK звільняємо ПІСЛЯ
+        // копіювання — 1:1 Python iit_sdk.py load_jks_key (self._free(key_ptr),
+        // certs_ptr[i], certs_ptr, cert_lens_ptr). Гіпотеза 7.2 про "dangling
+        // pointer від EUFreeMemory" була хибною: rc=24 тоді давав rbx-баг
+        // SDK (див. ffi/euscp_wrappers.c), а не free. Без free SDK при
+        // EUReadPrivateKeyBinary плутається у власних буферах (rc=24).
+        type FnFreeDirect = unsafe extern "C" fn(*mut c_void);
+        unsafe {
+            let free_fn: libloading::Symbol<FnFreeDirect> = self.lib.get(b"EUFreeMemory\0")?;
+            free_fn(key_ptr);
+            for i in 0..cert_cnt as usize {
+                free_fn(*certs_ptr.add(i));
+            }
+            free_fn(certs_ptr as *mut c_void);
+            free_fn(cert_lens_ptr as *mut c_void);
+        }
 
         // 2) сертифікати у файлове сховище (помилка — лише warning, як Python)
         for cert in &certs {
             let rc = unsafe {
-                let f: libloading::Symbol<FnSave> = lib.get(b"EUSaveCertificate\0")?;
+                let f: libloading::Symbol<FnSave> = self.lib.get(b"EUSaveCertificate\0")?;
                 f(cert.as_ptr(), cert.len() as u64)
             };
             if rc != 0 {
@@ -512,11 +552,16 @@ impl IitSdk {
             }
         }
 
-        // 3) ключ у ядро
+        // 3) ключ у ядро — через C-обгортку з %rbx=0 (SIGSEGV-фікс, див. вище)
         let pw = cstr(password);
         let rc = unsafe {
-            let f: libloading::Symbol<FnRead> = lib.get(b"EUReadPrivateKeyBinary\0")?;
-            f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8)
+            let f: libloading::Symbol<FnRead> = self.lib.get(b"EUReadPrivateKeyBinary\0")?;
+            eu_read_private_key_binary_rbx0(
+                *f,
+                key.as_ptr(),
+                key.len() as i32,
+                pw.as_ptr() as *const u8,
+            )
         };
         if rc != 0 {
             return Err(IitSdkError::KeyLoad(format!(

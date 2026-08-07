@@ -41,3 +41,14 @@ kasa-api = { path = "crates/kasa-api" }
 # ── SIGTERM для graceful shutdown Python sidecar (Unix) ───────────────────
 libc = "0.2"
 tokio = { version = "1", features = ["rt", "signal"] }
+
+# ── Профілі збірки ────────────────────────────────────────────────────────
+# Повний debuginfo у debug-профілі роздуває бінарники до 300-400 МБ кожен
+# і накопичує 30+ ГБ у target/debug/deps. line-tables-only дає трасування
+# (backtraces з номерами рядків) без роздування. Strip у release прибирає
+# символи — менші бінарники для дистрибуції.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+strip = true
