@@ -10,6 +10,7 @@
 //! [`write::WriteDirectories`], вхідні структури та розрахунок націнки.
 
 pub mod dto;
+pub mod ledger;
 pub mod pos;
 pub mod repos;
 pub mod write;
@@ -25,6 +26,11 @@ pub enum DomainError {
 pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
     ProductBriefDto, ProductDto, ProductImageDto, SupplierDto,
+};
+pub use ledger::{
+    LedgerBalanceV1Dto, LedgerBalanceV2Dto, LedgerEntriesQuery, LedgerEntryInput, LedgerEntryV1Dto,
+    LedgerEntryV2Dto, LedgerError, LedgerHistoryV1Dto, LedgerListV2Dto, LedgerService,
+    SupplierBalanceV2Dto,
 };
 pub use pos::{
     iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total, DocItemInput, MySessionsDto,
