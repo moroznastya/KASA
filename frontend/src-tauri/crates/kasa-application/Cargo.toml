@@ -6,5 +6,6 @@ description = "Kasa POS — Application layer: use cases, порти, DTO. За�
 
 [dependencies]
 kasa-domain = { path = "../kasa-domain" }
+uuid = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

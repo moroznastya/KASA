@@ -7,12 +7,15 @@
 use kasa_domain::{
     CategoryDto, DirectoryError, Page, ProductDto, ProductFilters, ReadDirectories, SupplierDto,
 };
+use uuid::Uuid;
 
 /// Помилки application-шару (обгортка доменних).
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error(transparent)]
     Directory(#[from] DirectoryError),
+    #[error(transparent)]
+    Write(#[from] kasa_domain::WriteError),
 }
 
 /// Фасад читання довідників. Параметризується реалізацією [`ReadDirectories`].
@@ -49,5 +52,26 @@ impl<R: ReadDirectories> ReadDirectoryService<R> {
         size: i64,
     ) -> Result<Page<SupplierDto>, ServiceError> {
         Ok(self.repo.list_suppliers(page, size).await?)
+    }
+
+    // ─── Етап 2: читання за ID (CRUD) ──────────────────────────────────────
+    pub async fn get_product(&self, id: Uuid) -> Result<ProductDto, ServiceError> {
+        Ok(self.repo.get_product(id).await?)
+    }
+
+    pub async fn get_product_by_barcode(&self, barcode: &str) -> Result<ProductDto, ServiceError> {
+        Ok(self.repo.get_product_by_barcode(barcode).await?)
+    }
+
+    pub async fn get_category(&self, id: Uuid) -> Result<CategoryDto, ServiceError> {
+        Ok(self.repo.get_category(id).await?)
+    }
+
+    pub async fn get_supplier(&self, id: Uuid) -> Result<SupplierDto, ServiceError> {
+        Ok(self.repo.get_supplier(id).await?)
+    }
+
+    pub async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, ServiceError> {
+        Ok(self.repo.list_all_suppliers().await?)
     }
 }

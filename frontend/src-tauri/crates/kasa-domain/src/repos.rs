@@ -15,6 +15,9 @@ pub enum DirectoryError {
     /// Невалідний UUID у фільтрі (відтворює HTTP 400 Python-еталону).
     #[error("Поле {field}: очікується UUID, отримано: {value:?}")]
     InvalidUuid { field: &'static str, value: String },
+    /// Не знайдено за ID (відтворює HTTP 404 Python-еталону).
+    #[error("{0}")]
+    NotFound(String),
 }
 
 /// Контракт читання довідників (products, categories, suppliers).
@@ -44,6 +47,18 @@ pub trait ReadDirectories: Send + Sync {
         page: i64,
         size: i64,
     ) -> Result<Page<SupplierDto>, DirectoryError>;
+
+    // ─── Етап 2: читання за ID (CRUD-частина) ──────────────────────────────
+    /// Товар за ID зі зв'язками (404 з текстом Python-еталону).
+    async fn get_product(&self, id: Uuid) -> Result<ProductDto, DirectoryError>;
+    /// Товар за штрих-кодом (спочатку products.barcode, потім barcodes).
+    async fn get_product_by_barcode(&self, barcode: &str) -> Result<ProductDto, DirectoryError>;
+    /// Категорія за ID.
+    async fn get_category(&self, id: Uuid) -> Result<CategoryDto, DirectoryError>;
+    /// Постачальник за ID з балансом.
+    async fn get_supplier(&self, id: Uuid) -> Result<SupplierDto, DirectoryError>;
+    /// Всі постачальники без пагінації (для випадаючих списків).
+    async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, DirectoryError>;
 }
 
 /// Фільтри пошуку товарів — відповідають query-параметрам Python-еталону.
@@ -105,5 +120,25 @@ impl<T: ReadDirectories + ?Sized> ReadDirectories for std::sync::Arc<T> {
         size: i64,
     ) -> Result<Page<SupplierDto>, DirectoryError> {
         (**self).list_suppliers(page, size).await
+    }
+
+    async fn get_product(&self, id: Uuid) -> Result<ProductDto, DirectoryError> {
+        (**self).get_product(id).await
+    }
+
+    async fn get_product_by_barcode(&self, barcode: &str) -> Result<ProductDto, DirectoryError> {
+        (**self).get_product_by_barcode(barcode).await
+    }
+
+    async fn get_category(&self, id: Uuid) -> Result<CategoryDto, DirectoryError> {
+        (**self).get_category(id).await
+    }
+
+    async fn get_supplier(&self, id: Uuid) -> Result<SupplierDto, DirectoryError> {
+        (**self).get_supplier(id).await
+    }
+
+    async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, DirectoryError> {
+        (**self).list_all_suppliers().await
     }
 }

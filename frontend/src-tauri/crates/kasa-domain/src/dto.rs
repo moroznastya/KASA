@@ -100,3 +100,59 @@ pub struct Page<T> {
     pub page_size: i64,
     pub pages: i64,
 }
+
+// ─── Інвентаризація (етап 2) ───────────────────────────────────────────────
+
+/// Коротка інформація про товар у позиції інвентаризації (`ProductBrief`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProductBriefDto {
+    pub id: Uuid,
+    pub title: String,
+    pub barcode: Option<String>,
+}
+
+/// Позиція інвентаризації (`InventoryItemResponse`).
+///
+/// `total_cost` / `total_selling` — завжди число 0: Python-еталон не обчислює
+/// їх у відповіді (`InventoryItemResponse.model_validate` без атрибута →
+/// default 0, серіалізується як JSON-число).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InventoryItemDto {
+    pub id: Uuid,
+    pub inventory_id: Uuid,
+    pub product_id: Uuid,
+    pub product: Option<ProductBriefDto>,
+    pub actual_quantity: String,
+    pub accounting_quantity: String,
+    pub difference: String,
+    pub cost_price: String,
+    pub price: String,
+    pub total_cost: i64,
+    pub total_selling: i64,
+    pub created_at: NaiveDateTime,
+}
+
+/// Підсумки інвентаризації (`InventorySummary`): суми зі scale добутку
+/// (Python: Decimal-множення, scale = сума масштабів операндів).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InventorySummaryDto {
+    pub total_cost: String,
+    pub total_selling: String,
+    pub total_deviation: String,
+}
+
+/// Інвентаризація (`InventoryResponse`).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InventoryDto {
+    pub id: Uuid,
+    pub number: String,
+    pub location: String,
+    pub inventory_date: NaiveDateTime,
+    /// `draft` | `confirmed` | `cancelled` (значення enum `inventory_status`).
+    pub status: String,
+    pub notes: Option<String>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+    pub items: Vec<InventoryItemDto>,
+    pub summary: InventorySummaryDto,
+}
