@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 
-use crate::{auth, auth_routes, crud, ledger, pos, proxy, readdirs, AppState};
+use crate::{auth, auth_routes, crud, ledger, pos, proxy, prro, readdirs, AppState};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -160,10 +160,22 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/transfers/{id}/confirm",
                 post(pos::confirm_transfer),
             )
-            // Зміни ПРРО (X/Z)
+            // Зміни ПРРО (X/Z) — локальні (етап 3)
             .route("/api/v2/prro/shifts", get(pos::list_shifts))
             .route("/api/v2/prro/shift/open", post(pos::open_shift))
             .route("/api/v2/prro/shift/close", post(pos::close_shift));
+    }
+
+    // Rust-гілка ФІСКАЛЬНОГО ПРРО (етап 7.3) — KASA_RUST_PRRO=1|shadow.
+    // Окремий префікс /fiscal/* — не конфліктує з локальними X/Z (pos.rs).
+    if state.prro.is_some() {
+        router = router
+            .route("/api/v2/prro/fiscal/shift/open", post(prro::open_shift))
+            .route("/api/v2/prro/fiscal/shift/close", post(prro::close_shift))
+            .route("/api/v2/prro/fiscal/shifts", get(prro::list_shifts))
+            .route("/api/v2/prro/fiscal/sync", post(prro::sync_queue))
+            .route("/api/v2/prro/fiscal/queue", get(prro::queue))
+            .route("/api/v2/prro/fiscal/status", get(prro::status));
     }
 
     // Rust-гілка auth/users/settings/RBAC (етап 6) — під KASA_RUST_AUTH=1.

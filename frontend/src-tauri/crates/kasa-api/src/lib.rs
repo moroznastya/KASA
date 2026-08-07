@@ -22,6 +22,7 @@ pub mod crud;
 pub mod ledger;
 pub mod pos;
 pub mod proxy;
+pub mod prro;
 pub mod readdirs;
 pub mod router_v1;
 
@@ -42,6 +43,10 @@ pub const RUST_READDIRS_ENV: &str = "KASA_RUST_READDIRS";
 /// Env-флаг увімкнення Rust-гілки auth/users/settings/RBAC (етап 6).
 pub const RUST_AUTH_ENV: &str = "KASA_RUST_AUTH";
 
+/// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
+/// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
+pub const RUST_PRRO_ENV: &str = "KASA_RUST_PRRO";
+
 /// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
 pub struct AppState {
@@ -61,6 +66,8 @@ pub struct AppState {
     pub ledger: Option<Arc<dyn LedgerService + Send + Sync>>,
     /// Rust-репозиторій auth (етап 6) — Some лише коли KASA_RUST_AUTH=1.
     pub auth: Option<Arc<dyn AuthService + Send + Sync>>,
+    /// Rust-фасад фіскального ПРРО (етап 7.3) — KASA_RUST_PRRO=1|shadow.
+    pub prro: Option<Arc<crate::prro::PrroFacade>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -128,6 +135,37 @@ async fn init_readdirs() -> Option<(
     }
 }
 
+/// Ініціалізує Rust-гілку ПРРО під KASA_RUST_PRRO (1|shadow).
+async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
+    let mode = std::env::var(RUST_PRRO_ENV).unwrap_or_default();
+    if !matches!(mode.trim().to_lowercase().as_str(), "1" | "true" | "shadow") {
+        return None;
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(5).await {
+        Ok(pool) => match kasa_infrastructure::prro::SqlxPrroRepository::connect(pool).await {
+            Ok(repo) => {
+                let shadow = mode.trim().to_lowercase() == "shadow";
+                eprintln!(
+                        "[kasa-api] {RUST_PRRO_ENV}={mode} — Rust-гілка ПРРО увімкнена (shadow={shadow}, PostgreSQL)"
+                    );
+                Some(Arc::new(crate::prro::PrroFacade::new(repo, shadow)))
+            }
+            Err(e) => {
+                eprintln!(
+                        "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено ({e}); проксі на Python :8001"
+                    );
+                None
+            }
+        },
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але БД недоступна ({e}); проксі на Python :8001"
+            );
+            None
+        }
+    }
+}
+
 /// Запускає axum-фасад на вказаній адресі як окремий tokio-таск.
 ///
 /// Повертає `JoinHandle<()>` — через нього можна зупинити фасад (abort).
@@ -178,6 +216,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         auth
     };
+    let prro = init_prro().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -189,6 +228,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         pos,
         ledger,
         auth,
+        prro,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

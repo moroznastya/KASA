@@ -129,7 +129,10 @@ fn auth_repo(state: &AppState) -> Result<Arc<dyn AuthService + Send + Sync>, Aut
 /// require_admin (1:1 Python `Depends(AuthService.require_admin)`):
 /// get_current_user (401 "Користувача не знайдено" / 403 "Користувач деактивований")
 /// → role != admin → 403 "Доступ заборонено: потрібна роль адміністратора".
-async fn require_admin(state: &AppState, claims: &Claims) -> Result<Uuid, AuthRouteError> {
+pub(crate) async fn require_admin(
+    state: &AppState,
+    claims: &Claims,
+) -> Result<Uuid, AuthRouteError> {
     let repo = auth_repo(state)?;
     let user_id = sub_uuid(claims)?;
     let user = repo.get_user_by_id(user_id).await?;

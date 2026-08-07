@@ -17,6 +17,7 @@ pub mod grpc;
 pub mod jks;
 pub mod keystore;
 pub mod proto;
+pub mod prro;
 pub mod xml;
 
 pub use crypto::{PrroCryptoError, PrroSigner};

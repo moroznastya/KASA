@@ -122,7 +122,8 @@ fn cades_verify_python_golden_signature() {
     // дані всередині підпису відповідають очікуваним
     let xml = b"<DAT DI=\"1\" FN=\"4538765845\" TN=\"345612052809\" V=\"1\" ZN=\"AA57506761\"><C T=\"0\"><P C=\"120\" NM=\"Golden\" PRC=\"100\" Q=\"1\" SM=\"100\" TX=\"0\"/></C><TS>20260807112601</TS></DAT>";
     assert!(
-        sdk.verify_data_internal(&golden, Some(xml)).expect("verify data"),
+        sdk.verify_data_internal(&golden, Some(xml))
+            .expect("verify data"),
         "Rust verify Python CAdES golden + data"
     );
 }

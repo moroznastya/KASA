@@ -2,7 +2,7 @@
 
 > Джерело стратегії: `docs/RUST_MIGRATION_PLAN.md` (v1.0, затверджений)
 > Виконавчий контроль: NIKO (координація, моніторинг)
-> Створено: 2026-08-07 | Оновлено: 2026-08-07 (етап 7.2 завершено)
+> Створено: 2026-08-07 | Оновлено: 2026-08-07 (ЕТАП 7 ЗАВЕРШЕНО)
 
 ## 0. Статус етапів
 
@@ -16,7 +16,7 @@
 | 4 | Ledger (журнал взаєморозрахунків) v1+v2 | Rust_Agent | ✅ ЗАВЕРШЕНО | differential 10 100 записів 1:1; 101 сторінка GET 1:1; валідації 404/400/422/500 1:1; конкурентність/транзакційність |
 | 5 | Receipts + друк (open→pay→close, офлайн-черга) | Tauri_Agent + Rust_Agent | ✅ ЗАВЕРШЕНО | ESC/POS друк у мок-пристрій (19227 байт, ESC @ + GS v 0 + GS V); офлайн-черга SQLite на диск + персистентність + синхронізація; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E AUTH DIFF 59/59; JWT крос-валідний (Rust↔Python, той самий секрет); RBAC admin/cashier 1:1; feature-flag KASA_RUST_AUTH (відкат перевірено); валідації 401/400/403/404/409/422 1:1 |
-| 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ⏳ (7.1 ✅ 7.2 ✅) | **7.1 фундамент ✅**; **7.2 крипто ✅**: XAdES-BES чистого Rust golden 5/5 байт-ідентично signxml (RSA-SHA256, C14N11 inclusive); CAdES-BES ДСТУ 4145 через FFI EUSignCP — взаємна verify-сумісність Rust↔Python; 7.3: offline_queue+shift |: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
+| 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ✅ | **7.1 фундамент ✅**; **7.2 крипто ✅** (XAdES golden 5/5 байт-ідентично; CAdES ДСТУ 4145 FFI); **7.3 ✅** (offline_queue 1:1, shift open/close 1:1, sync replay, facade KASA_RUST_PRRO) |: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
 | 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ | єдиний бінарник; e2e зелений; updater |
 
 Паралельно з етапом 1: QA_Agent — тестовий контур (differential/golden/proptest).
@@ -25,7 +25,7 @@
 ## 1. Критичний шлях
 
 ```
-Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 (7.1 ✅ 7.2 ✅) → 8
+Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 ✅ → 8
 ```
 
 ## 2. Журнал делегувань (етап 0)
@@ -43,8 +43,52 @@
 | 6.1 | Auth/users/settings/RBAC: порти kasa-domain (AuthService, DTO, валідатор settings), SQL-репозиторій SqlxAuth (login/login-pin/refresh/logout, users CRUD, permissions, hourly-rate, settings), фасад kasa-application, роути kasa-api під KASA_RUST_AUTH, JWT create (HS256, той самий секрет), E2E differential | Rust_Agent | 000d238 | ✅ | E2E AUTH DIFF 59/59 зелений; JWT parity: токени Rust↔Python крос-валідні (verify/refresh обидва напрямки, claims 1:1: access {sub,role,permissions,type,iat,exp}, refresh без permissions); RBAC 401/403 1:1; валідації 401/400/403/404/409/422 1:1; feature-flag: KASA_RUST_AUTH=1 → Rust, =0 → проксі Python (перевірено); cargo test 69/69, clippy/fmt чисті; БД почищена |
 | 7.1 | ПРРО-фундамент: ADR-014 (крипто-стратегія FFI→IIT SDK EUSignCP через libloading, ДСТУ 4145; чистий Rust для RSA/ECDSA); crate kasa-prro (tonic+prost build.rs з prro.proto, TLS native roots+кастомний CA, дедлайни+ретраї 3×1s→2s); gRPC-клієнт ChkIncomeService (sendChkV2/ping/statusRro/infoRro/lastChk/delLastChk/delLastChkId/open_shift); XML СЗЗД 2.1.7 (C14N, MAC SHA-256→Base64, чек/Z/службові 108-112) — golden parity з Python; key_store JKS (власний парсер + JavaSoft XOR/SHA1-keystream) / PKCS#12 (openssl) / PEM; crypto::iit FFI (10 extern C-сигнатур) | Rust_Agent | a13fd35 | ✅ | E2E: TLS READY до cabinet.tax.gov.ua:9443, ping (0x7FFFFFFF, SERVICECHK) → status -1 ERROR_VEREFY, error_message ідентичний Python; golden XML 12/12 байт-ідентично (v1-v7 + MAC + message + canonical); JKS pb_3791505547: приватний ключ 802B PKCS#8 + OID ДСТУ 4145 + ланцюг 4 сертифікати, підписант serial=5E984D52... (1:1 Python); cargo test 33/33, clippy 0, fmt чистий |
 | 7.2 | XAdES/CAdES крипто-шар: crypto::xades (чистий Rust) — XAdES-BES enveloped (C14N 1.1 inclusive 1:1 libxml2, RSA PKCS#1 v1.5 детермінований, ECDSA P-256/P-384); crypto::iit FFI завершено — load_jks_key (EUGetJKSPrivateKeyFile→EUSaveCertificate×N→EUReadPrivateKeyBinary), CAdES-BES ContentInfo/signedData (EUSignDataInternal/EUVerifyDataInternal), get_signer_serial/name (X.509); фабрика signer_from_key_material (OID ДСТУ 4145 → IitSigner, RSA/EC → XadesSigner) | Rust_Agent | 03373be | ✅ | GOLDEN XAdES 5/5: Rust sign == Python signxml БАЙТ-В-БАЙТ (чек/Z/службові, digest+signature value збігаються); CAdES: Rust verify Python sig ✅, Python verify Rust sig ✅, структура ContentInfo OID 1.2.840.113549.1.7.2; get_serial_number 1:1 (RSA 7AED62...; ДСТУ 5E984D52...), get_signer_name 1:1 (Тестовий Підписант / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА); cargo test 43/43, clippy 0, fmt чистий |
+| 7.3 | Фінальний етап 7: offline_queue + shift/Z-звіт + інтеграція facade — kasa-prro::prro (PrroOfflineQueue 1:1 Python: add_document/get_pending(100)/count_pending/list_by_shift/mark_sent/mark_failed/is_expired 168 год/get_expired; PrroShiftUseCase open_shift T=108 SERVICECHK local_number=0 + close_shift ZREPORT + валідації SHIFT_ALREADY_OPEN/NO_OPEN_SHIFT; SyncOfflineQueueUseCase replay pending→sent/failed, expired блокується сервером ERROR_OFFLINE_168=-11; trait PrroRepository + InMemory (unit) + SqlxPrroRepository PostgreSQL (ensure_prro_schema, DDL 1:1 Alembic 578fd283a156); parse_receipt_xml_totals 1:1; facade kasa-api: KASA_RUST_PRRO=1|shadow, роути /api/v2/prro/fiscal/* (open/close/shifts/sync/queue/status), shadow — Rust готує чек і логує parity, Python виконує | Rust_Agent | (коміт 7.3) | ✅ | cargo test 148/148 (workspace), clippy 0 (наш код), fmt чистий; sqlx-інтеграція 6/6 + facade 5/5 на живій PostgreSQL; unit: queue 8, shift 9, sync 8 (відкат: gRPC-помилка → pending/failed + error, нуль втрат фіскального стану); shadow-лог open_shift: dat_len/signed_len/DI |
 | 3.1 | POS: чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable), робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | 72b4e21, fcaeffa, ba695ec, 6e97a5c, 9b0bf39, 435ea36 | ✅ | E2E POS 43/43: чеки (sale/return/список/деталі/статистика/пошук/returnable), робочі сесії, списання (авто-confirm), переміщення (draft→confirm/cancel), ПРРО X/Z; транзакційність: 400 у середині → чек не створено, stock не змінено; конкурентність 2 паралельні sale → stock 86.000, нуль втрат; cargo test 9/9, clippy/fmt чисті |
 | 2.1 | Write-порти CRUD+інвентаризації, SQL-репозиторії write, CRUD-роути під flag, E2E differential-скрипт | Rust_Agent | 319d849, c66450c, 04e6edb, adfa79a | ✅ | E2E 16/16: 201/200/204, 404, 409, 400, 422 ідентичні Python; конкурентність 2 паралельні confirm → stock 104.000; БД почищена від тестових даних |
+
+**DoD підетапу 7.3 (offline_queue + shift + sync + facade):**
+- [x] PrroOfflineQueue 1:1 Python `offline_queue.py`: add_document (валідації
+      local_number<0, xml_body порожній), get_pending(limit=100, pending→failed
+      порядок), count_pending (лише pending), list_by_shift (local_number asc),
+      mark_sent (sent_at=now, error=NULL), mark_failed (failed + error),
+      is_expired (>168 год, НЕ >= — 1:1 Python), get_expired (фільтр pending)
+- [x] PrroShiftUseCase 1:1 Python `shift_use_case.py`: open_shift (T=108,
+      SERVICECHK, local_number=0 → PrroShift open, last_local_number=0, запис у
+      чергу sent, last_shift_number+1, persist counters DI/NT);
+      close_shift (ZREPORT → closed, zreport_number=response.id, closed_by);
+      валідації SHIFT_ALREADY_OPEN (до gRPC!), NO_OPEN_SHIFT;
+      _build_zreport_data 1:1 (з фактично переданих чеків queue sent CHK:
+      sales/returns count, payments SMI/SMO, taxes TXI/TXO/SMI, fallback
+      receipt_count); auto_reminder_check (>24 год); list_shifts (пагінація)
+- [x] parse_receipt_xml_totals 1:1 Python (C T, M T/SM, P TX/SM, E SM/TX/TXPR/
+      TXSM + вкладені <TX>) — Rust-парсер тегів без зовнішнього XML-крейта
+- [x] SyncOfflineQueueUseCase 1:1 Python `sync_offline_queue_use_case.py`:
+      replay pending/failed по порядку → повторне RQ+MAC обгортання, підпис,
+      send_chk; status=1 → mark_sent; status≠1 (зокрема ERROR_OFFLINE_168=-11
+      для expired) → mark_failed з текстом; gRPC-виключення → mark_failed —
+      ВІДКАТ: документ не втрачається (failed + error у черзі)
+- [x] trait PrroRepository (ізольований від sqlx: PrroRepoError) + InMemory
+      (unit-тести без БД) + SqlxPrroRepository (PostgreSQL): create/get/get_open/
+      list_shifts/close_shift/increment_shift_counters + queue CRUD + settings
+      upsert; ensure_prro_schema — ідемпотентний DDL 1:1 Alembic 578fd283a156
+      (enum prro_shift_status/prro_queue_status, індекси, FK receipts/prro_shifts)
+- [x] Facade kasa-api: KASA_RUST_PRRO=1 (Rust виконує) | shadow (Rust готує
+      чек+підпис, логує parity: dat_len/signed_len/DI, Python виконує проксі);
+      роути /api/v2/prro/fiscal/{shift/open, shift/close, shifts, sync, queue,
+      status}; close_shift — require_admin; gRPC-клієнт PrroGrpcClient
+      переведено на &self (ChkSender trait, Send future для axum)
+- [x] PrroSigner: + Send + Sync bound (axum Handler вимагає Send future)
+- [x] Тести: unit queue 8, shift 9, sync 8 (kasa-prro); sqlx-інтеграція 6/6 +
+      facade 5/5 (kasa-infrastructure/kasa-api, жива PostgreSQL); workspace
+      148/148; clippy 0 (наш код), fmt чистий
+- [x] Відкат (критерій 5): gRPC недоступний/сервер відхилив → open_shift/close_
+      shift НЕ змінюють стан (зміна не створюється / лишається open), sync →
+      mark_failed + error; фіскальний стан зберігається, нуль втрат
+- [x] Обмеження 7.3: пароль КЕП для Rust-фасаду — env PRRO_KEY_FILE +
+      PRRO_KEY_PASSWORD (plaintext); Python key_store (Fernet + PRRO_MASTER_KEY)
+      не підтримується (TODO наступних етапів); real gRPC open_shift до
+      sandbox ДПС потребує налаштованого ключа/ФН (як Python)
 
 **DoD підетапу 7.2 (XAdES/CAdES крипто-шар):**
 - [x] crypto::xades (чистий Rust, ADR-014): XAdES-BES enveloped — C14N 1.1 inclusive

@@ -24,7 +24,8 @@ pub enum PrroCryptoError {
 }
 
 /// Контракт підписанта (7.2: реалізації — IitSigner, XadesSigner).
-pub trait PrroSigner {
+/// `Send + Sync` — потрібно для axum-хендлерів (future має бути Send).
+pub trait PrroSigner: Send + Sync {
     /// Підписує XML-документ СЗЗД. Для ДСТУ 4145 — CAdES-BES (ContentInfo),
     /// для RSA — XAdES-BES enveloped. 1:1 Python `PrroCryptoSigner.sign`.
     fn sign(&self, xml_bytes: &[u8]) -> Result<Vec<u8>, PrroCryptoError>;

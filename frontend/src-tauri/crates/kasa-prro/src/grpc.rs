@@ -119,7 +119,7 @@ impl PrroGrpcClient {
 
     /// RPC-виклик з gRPC-дедлайном і ретраями (1:1 Python `_call_with_retry`).
     async fn call_with_retry<F, Fut, T>(
-        &mut self,
+        &self,
         method_name: &str,
         mut f: F,
     ) -> Result<T, PrroGrpcError>
@@ -157,7 +157,7 @@ impl PrroGrpcClient {
 
     /// Передача чеку / Z-звіту (sendChkV2) — основний метод з 01.10.2021.
     pub async fn send_chk_v2(
-        &mut self,
+        &self,
         check: Check,
     ) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let timeout = self.timeout;
@@ -170,7 +170,7 @@ impl PrroGrpcClient {
 
     /// Перевірка зв'язку (ping; local_number=0x7FFFFFFF, check_type=SERVICECHK).
     pub async fn ping(
-        &mut self,
+        &self,
         check_sign: Vec<u8>,
     ) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let check = self.make_check(
@@ -190,7 +190,7 @@ impl PrroGrpcClient {
     }
 
     /// Статус ПРРО (statusRro).
-    pub async fn status(&mut self) -> Result<crate::proto::StatusResponse, PrroGrpcError> {
+    pub async fn status(&self) -> Result<crate::proto::StatusResponse, PrroGrpcError> {
         let timeout = self.timeout;
         self.call_with_retry("statusRro", move |mut stub| {
             let req = request_with_deadline(
@@ -205,7 +205,7 @@ impl PrroGrpcClient {
     }
 
     /// Детальна інформація про ПРРО (infoRro).
-    pub async fn info(&mut self) -> Result<crate::proto::RroInfoResponse, PrroGrpcError> {
+    pub async fn info(&self) -> Result<crate::proto::RroInfoResponse, PrroGrpcError> {
         let timeout = self.timeout;
         self.call_with_retry("infoRro", move |mut stub| {
             let req = request_with_deadline(
@@ -220,7 +220,7 @@ impl PrroGrpcClient {
     }
 
     /// Останній чек (lastChk).
-    pub async fn last_chk(&mut self) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
+    pub async fn last_chk(&self) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let timeout = self.timeout;
         self.call_with_retry("lastChk", move |mut stub| {
             let req = request_with_deadline(
@@ -235,7 +235,7 @@ impl PrroGrpcClient {
     }
 
     /// Вилучення останнього чеку (delLastChk).
-    pub async fn del_last_chk(&mut self) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
+    pub async fn del_last_chk(&self) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let timeout = self.timeout;
         self.call_with_retry("delLastChk", move |mut stub| {
             let req = request_with_deadline(
@@ -251,7 +251,7 @@ impl PrroGrpcClient {
 
     /// Вилучення чеку за ID (delLastChkId).
     pub async fn del_last_chk_id(
-        &mut self,
+        &self,
         check_id: String,
     ) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let timeout = self.timeout;
@@ -270,7 +270,7 @@ impl PrroGrpcClient {
 
     /// Відкриття зміни (службовий чек, local_number=0, check_type=CHK).
     pub async fn open_shift(
-        &mut self,
+        &self,
         check_sign: Vec<u8>,
     ) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
         let check = self.make_check(check_sign, 0, 1, None, String::new(), String::new());

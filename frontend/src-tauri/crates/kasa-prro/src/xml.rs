@@ -551,6 +551,10 @@ impl XmlBuilder {
         }
     }
 
+    pub fn rro_fn(&self) -> &str {
+        &self.rro_fn
+    }
+
     pub fn last_packet_id(&self) -> i64 {
         self.packet_id
     }
@@ -1003,4 +1007,260 @@ mod tests {
         let dat = r#"<DAT DI="42" FN="1"></DAT>"#;
         assert_eq!(extract_di(dat).as_deref(), Some("42"));
     }
+}
+
+// ─── Парсер підсумків чеку (для Z-звіту) ────────────────────────────────────
+// 1:1 Python `parse_receipt_xml_totals` (xml_builder.py).
+
+/// Податкова група чеку з `<E>`/`<TX>`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReceiptTax {
+    pub percent: rust_decimal::Decimal,
+    pub tax_total: rust_decimal::Decimal,
+    pub smi: rust_decimal::Decimal,
+}
+
+/// Підсумкові дані чеку — 1:1 dict Python `parse_receipt_xml_totals`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReceiptTotals {
+    /// T з `<C>`: "0" — продаж, "1" — повернення.
+    pub check_type: String,
+    /// Сума чеку, грн (SM з `<E>`).
+    pub total: rust_decimal::Decimal,
+    /// Оплати: (код T, сума грн).
+    pub payments: Vec<(String, rust_decimal::Decimal)>,
+    /// Податкові групи: (код TX, дані).
+    pub taxes: Vec<(String, ReceiptTax)>,
+}
+
+fn parse_attrs(tag_body: &str) -> Vec<(String, String)> {
+    let mut attrs = Vec::new();
+    let bytes = tag_body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // пропустити пробіли
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        // ім'я атрибута
+        let name_start = i;
+        while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let name = &tag_body[name_start..i];
+        // пропустити пробіли до '='
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            continue;
+        }
+        i += 1; // '='
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'"' {
+            continue;
+        }
+        i += 1; // відкриваюча лапка
+        let val_start = i;
+        while i < bytes.len() && bytes[i] != b'"' {
+            i += 1;
+        }
+        let value = &tag_body[val_start..i];
+        if i < bytes.len() {
+            i += 1; // закриваюча лапка
+        }
+        attrs.push((name.to_string(), value.to_string()));
+    }
+    attrs
+}
+
+/// Збирає тіла тегів `<tag ...>` (без вкладеності) у заданому фрагменті.
+fn collect_tag_bodies(xml: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag} ");
+    let mut result = Vec::new();
+    let mut search_from = 0;
+    while let Some(pos) = xml[search_from..].find(&open) {
+        let abs = search_from + pos;
+        let after_name = abs + open.len();
+        let end = xml[after_name..]
+            .find('>')
+            .map(|e| after_name + e)
+            .unwrap_or(xml.len());
+        result.push(xml[after_name..end].to_string());
+        search_from = end + 1;
+    }
+    result
+}
+
+/// Розбирає канонічний XML чеку `<DAT><C>…</C><TS>…</TS></DAT>` — 1:1
+/// Python `parse_receipt_xml_totals` (джерело — фактично відправлений XML).
+pub fn parse_receipt_xml_totals(dat_xml: &str) -> Result<ReceiptTotals, XmlBuilderError> {
+    if dat_xml.trim().is_empty() {
+        return Err(XmlBuilderError::InvalidDecimal("Порожній XML чеку".into()));
+    }
+    // <C ...>...</C> — прямий дочірній <DAT>; беремо перший.
+    let c_start = dat_xml.find("<C ").ok_or_else(|| {
+        XmlBuilderError::InvalidDecimal("У пакеті даних відсутній тег <C>".into())
+    })?;
+    let c_end = dat_xml[c_start..]
+        .find("</C>")
+        .map(|e| c_start + e)
+        .unwrap_or(dat_xml.len());
+    let c_body = &dat_xml[c_start..c_end];
+
+    let c_attrs = parse_attrs(&c_body[2..]);
+    let check_type = c_attrs
+        .iter()
+        .find(|(k, _)| k == "T")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "0".to_string());
+
+    let mut total = rust_decimal::Decimal::ZERO;
+    let mut payments: Vec<(String, rust_decimal::Decimal)> = Vec::new();
+    let mut turnover: Vec<(String, rust_decimal::Decimal)> = Vec::new();
+    let mut taxes: Vec<(String, ReceiptTax)> = Vec::new();
+
+    // Оплати (<M>) — у межах <C>
+    for m in collect_tag_bodies(c_body, "M") {
+        let attrs = parse_attrs(&m);
+        let code = attrs
+            .iter()
+            .find(|(k, _)| k == "T")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "0".into());
+        let sm = attrs
+            .iter()
+            .find(|(k, _)| k == "SM")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("0");
+        let amount = parse_cents(sm)?;
+        if let Some(e) = payments.iter_mut().find(|(k, _)| *k == code) {
+            e.1 += amount;
+        } else {
+            payments.push((code, amount));
+        }
+    }
+
+    // Позиції продажу/повернення (<P>) — обіг по податкових групах
+    for p in collect_tag_bodies(c_body, "P") {
+        let attrs = parse_attrs(&p);
+        let tx = attrs
+            .iter()
+            .find(|(k, _)| k == "TX")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "0".into());
+        let sm = attrs
+            .iter()
+            .find(|(k, _)| k == "SM")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("0");
+        let amount = parse_cents(sm)?;
+        if let Some(e) = turnover.iter_mut().find(|(k, _)| *k == tx) {
+            e.1 += amount;
+        } else {
+            turnover.push((tx, amount));
+        }
+    }
+
+    // Закриття чеку (<E>) та податкові групи (<TX>)
+    for e in collect_tag_bodies(c_body, "E") {
+        let e_attrs = parse_attrs(&e);
+        total += parse_cents(
+            e_attrs
+                .iter()
+                .find(|(k, _)| k == "SM")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("0"),
+        )?;
+
+        let tx_tags = collect_tag_bodies(&e, "TX");
+        if !tx_tags.is_empty() {
+            for tx in tx_tags {
+                let attrs = parse_attrs(&tx);
+                let code = attrs
+                    .iter()
+                    .find(|(k, _)| k == "TX")
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| "0".into());
+                let percent = attrs
+                    .iter()
+                    .find(|(k, _)| k == "TXPR")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("0");
+                let tax_total = parse_cents(
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == "TXSM")
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("0"),
+                )?;
+                taxes.push((
+                    code,
+                    ReceiptTax {
+                        percent: percent_dec(percent)?,
+                        tax_total,
+                        smi: rust_decimal::Decimal::ZERO,
+                    },
+                ));
+            }
+        } else {
+            let code = e_attrs
+                .iter()
+                .find(|(k, _)| k == "TX")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| "0".into());
+            let percent = e_attrs
+                .iter()
+                .find(|(k, _)| k == "TXPR")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("0");
+            let tax_total = parse_cents(
+                e_attrs
+                    .iter()
+                    .find(|(k, _)| k == "TXSM")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("0"),
+            )?;
+            taxes.push((
+                code,
+                ReceiptTax {
+                    percent: percent_dec(percent)?,
+                    tax_total,
+                    smi: rust_decimal::Decimal::ZERO,
+                },
+            ));
+        }
+    }
+
+    // Додаємо обіг по кожній податковій групі (SMI для Z-звіту) — 1:1 Python
+    for (code, tax) in taxes.iter_mut() {
+        if let Some((_, t)) = turnover.iter().find(|(k, _)| k == code) {
+            tax.smi = *t;
+        }
+    }
+
+    Ok(ReceiptTotals {
+        check_type,
+        total,
+        payments,
+        taxes,
+    })
+}
+
+/// Копійки ("10000") → гривні Decimal ("100.00") — 1:1 Python `/100`.
+fn parse_cents(value: &str) -> Result<rust_decimal::Decimal, XmlBuilderError> {
+    let cents = rust_decimal::Decimal::from_str(value)
+        .map_err(|e| XmlBuilderError::InvalidDecimal(format!("{value}: {e}")))?;
+    Ok(cents / rust_decimal::Decimal::from(100))
+}
+
+/// Відсоток ("20.00") → Decimal — 1:1 Python `Decimal(...)`.
+fn percent_dec(value: &str) -> Result<rust_decimal::Decimal, XmlBuilderError> {
+    rust_decimal::Decimal::from_str(value)
+        .map_err(|e| XmlBuilderError::InvalidDecimal(format!("{value}: {e}")))
 }

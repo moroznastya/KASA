@@ -17,5 +17,6 @@ pub mod db;
 pub mod devices;
 pub mod offline;
 pub mod print;
+pub mod prro;
 pub mod repositories;
 pub mod terminal;

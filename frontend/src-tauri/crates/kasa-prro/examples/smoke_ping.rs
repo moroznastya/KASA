@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. TLS-канал
     println!("1. Створення TLS-каналу (native roots)...");
-    let mut client = PrroGrpcClient::connect(&target, TlsConfig::default(), rro_fn).await?;
+    let client = PrroGrpcClient::connect(&target, TlsConfig::default(), rro_fn).await?;
     println!("   ✅ TLS-канал створено, з'єднання встановлено (Endpoint::connect)");
 
     // 2. ping
