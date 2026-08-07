@@ -294,6 +294,69 @@ confirm_invoice оновив ціни продуктів (нормальна р�
 
 ---
 
+## 2.1.3 Етап 8 — група 3/9: Інвойси (invoices v1+v2) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `9a89c71` — feat(rust): група 3/9 — інвойси (invoices v1+v2) 1:1 Python, KASA_RUST_INVOICES=1
+
+**Що зроблено:**
+- `kasa-domain::invoices` — DTO v1 (Decimal-рядки: supplier_name, product brief,
+  items з session-значеннями) + v2 (float: tax_rate=20, name=""), контракти
+  InvoicesV1Service/InvoicesV2Service, InvoicePrintRequest/Dto
+- `kasa-infrastructure::SqlxInvoices` — v1: list (supplier-фільтр тільки
+  CONFIRMED, pages=max(1,ceil)), get, create (автономер ПН-{UTC date}-{NNN},
+  total=sum(items.total), previous_price з product, cost_price=item or price,
+  markup or 0; відповідь = ЗНАЧЕННЯ СЕСІЇ без scale — 1:1 Python), update
+  (тільки draft; items замінюються; total=sum), delete, payment-info
+  (ledger PAYMENT+RETURN abs → quantize 0.01), confirm/cancel (document_service
+  1:1: stock±, fiscal_stock± max(0), cost_price>0 → cost/price + previous_price
+  зберегти, ledger INVOICE з payment label, CORRECTION при cancel),
+  price-changes (article: null у v1), print-items; v2: list (search number/
+  notes ilike, status/date фільтри, order created_at DESC), get/update/delete/
+  payment (float)/price-changes (article "")
+- `kasa-infrastructure::price_tag` — HTML-рендер PriceTagPrintService 1:1:
+  {{#if show_*}} блоки, заміна {{var}}/{{product.var}}, _extract_body (5
+  кроків), _calc_grid, _expand_products, _build_label_html, grid/sequential
+  повні HTML-документи; SVG Code128 (власний encoder, ті самі параметри
+  module_width=0.25) та QR-fallback — БАЙТИ SVG відрізняються від
+  python-barcode (різні генератори) — дозволено контрактом, differential
+  нормалізує SVG-блоки
+- `kasa-api::invoices` — 19 роутів (v1: list/get/create/update/delete/
+  payment/confirm/price/print; v2: list/get/create/confirm/update/delete/
+  payment/price/print/cancel); require_admin інвойсів через invoices_pool
+  (незалежно від KASA_RUST_AUTH); v1 list size>1000/page=0 → 422 Pydantic-стилю
+
+**ГЛОБАЛЬНИЙ ФІКС (важливо):** axum 0.7 вимагає ':param', не '{param}'.
+Усі параметризовані роути router_v1 {x} → :x (групи 1-2 підшляхи РАНІШЕ
+мовчки йшли в Python-проксі — differential проходив Python vs Python!).
+Після фіксу виправлено РЕАЛЬНІ Rust-дефекти documents (група 2):
+print_document формати 5 типів (date %d.%m.%Y, reason/action label-мапи,
+transfer price=0 int, write_off price=product.price, payment_method raw value,
+supplier_name null у copy), delete/print/copy document_type обов'язковий → 422,
+copy items cost_price=0.00/markup=0.0/previous_price=null (Python не копіює),
+numeric/uuid касти в усіх copy INSERT, p_price::text касти.
+**documents e2e тепер 42/42 на РЕАЛЬНОМУ Rust; debtors 100%.**
+
+**АНОМАЛІЯ PYTHON (зафіксовано):** v2 create/confirm/cancel_invoice → 500
+(UnmappedInstanceError/AttributeError — use case змішує domain entity і
+ORM-модель). Rust реалізує ЗАДУМАНУ семантику: create (201, supplier/
+number валідації, total=sum(qty*price)), confirm (stock+ + fiscal +
+price=item.price завжди + ledger INVOICE, confirmed), cancel (stock− +
+fiscal max(0), без supplier.balance — колонки немає в БД).
+
+**Differential `scripts/e2e_invoices_diff.sh`: 29/29 PASS**
+- v1: create/get/list(supplier+пагінація)/update(scalar+items)/payment/price
+  parity (нормалізовано); confirm parity + БД (stock=2.000, ledger INVOICE=1);
+  повторний confirm 400; print-items draft→400 parity, confirmed → структура +
+  HTML (SVG-норм.); delete confirmed→400/404; size>1000/page=0 → 422
+- v2: list(search/status/date)/get/update/payment/price parity; create 201 +
+  total=17.0; confirm 200 confirmed + stock; cancel 200 cancelled + stock
+  (Python 500 — Rust задумана семантика, окремі перевірки)
+
+**Верифікація:** cargo test --workspace 148/148, clippy 0, fmt чистий,
+Python :8001 недоторканий, тестові дані видалені (Diff/ТЕСТ повністю).
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
