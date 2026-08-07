@@ -231,6 +231,189 @@ impl ReadDirectories for SqlxDirectories {
             pages: total_pages(total, size),
         })
     }
+
+    // ─── Етап 2: читання за ID (CRUD) ──────────────────────────────────────
+    async fn get_product(&self, id: Uuid) -> Result<ProductDto, DirectoryError> {
+        let row = sqlx::query(
+            "SELECT DISTINCT p.id, p.barcode, p.sku, p.title, p.description,
+                    p.price::text, p.cost_price::text, p.markup::text, p.stock::text,
+                    p.recommended_qty::text, p.uktzed, p.scan_excise, p.tax_rate::text,
+                    p.tax_group, p.is_weight, p.unit, p.category_id, p.supplier_id,
+                    p.created_at, p.updated_at
+             FROM products p WHERE p.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(r) = row else {
+            return Err(DirectoryError::NotFound(format!(
+                "Товар з ID '{id}' не знайдено"
+            )));
+        };
+        let prod = ProductRow {
+            id: r.get("id"),
+            barcode: r.get("barcode"),
+            sku: r.get("sku"),
+            title: r.get("title"),
+            description: r.get("description"),
+            price: r.get("price"),
+            cost_price: r.get("cost_price"),
+            markup: r.get("markup"),
+            stock: r.get("stock"),
+            recommended_qty: r.get("recommended_qty"),
+            uktzed: r.get("uktzed"),
+            scan_excise: r.get("scan_excise"),
+            tax_rate: r.get("tax_rate"),
+            tax_group: r.get("tax_group"),
+            is_weight: r.get("is_weight"),
+            unit: r.get("unit"),
+            category_id: r.get("category_id"),
+            supplier_id: r.get("supplier_id"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        };
+        let ids = vec![prod.id];
+        let images = self.fetch_images(&ids).await?;
+        let barcodes = self.fetch_barcodes(&ids).await?;
+        Ok(ProductDto {
+            id: prod.id,
+            barcode: prod.barcode,
+            sku: prod.sku,
+            title: prod.title,
+            description: prod.description,
+            price: prod.price,
+            cost_price: prod.cost_price,
+            markup: prod.markup,
+            stock: prod.stock,
+            recommended_qty: prod.recommended_qty,
+            uktzed: prod.uktzed,
+            scan_excise: prod.scan_excise,
+            tax_rate: prod.tax_rate,
+            tax_group: prod.tax_group,
+            is_weight: prod.is_weight,
+            unit: prod.unit,
+            category_id: prod.category_id,
+            supplier_id: prod.supplier_id,
+            images: images.get(&id).cloned().unwrap_or_default(),
+            barcodes: barcodes.get(&id).cloned().unwrap_or_default(),
+            created_at: prod.created_at,
+            updated_at: prod.updated_at,
+        })
+    }
+
+    async fn get_product_by_barcode(&self, barcode: &str) -> Result<ProductDto, DirectoryError> {
+        // Спочатку основний штрих-код (products.barcode).
+        let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM products WHERE barcode = $1")
+            .bind(barcode)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .map(|r: (Uuid,)| r.0);
+        let product_id = match id {
+            Some(v) => v,
+            None => {
+                let pid: Option<Uuid> =
+                    sqlx::query_scalar("SELECT product_id FROM barcodes WHERE barcode = $1")
+                        .bind(barcode)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .map_err(db_err)?;
+                match pid {
+                    Some(v) => v,
+                    None => {
+                        return Err(DirectoryError::NotFound(format!(
+                            "Товар зі штрих-кодом '{barcode}' не знайдено"
+                        )));
+                    }
+                }
+            }
+        };
+        self.get_product(product_id).await
+    }
+
+    async fn get_category(&self, id: Uuid) -> Result<CategoryDto, DirectoryError> {
+        let row = sqlx::query(
+            "SELECT id, name, description, parent_id, created_at, updated_at
+             FROM categories WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(r) = row else {
+            return Err(DirectoryError::NotFound(format!(
+                "Категорію з ID '{id}' не знайдено"
+            )));
+        };
+        Ok(CategoryDto {
+            id: r.get("id"),
+            name: r.get("name"),
+            description: r.get("description"),
+            parent_id: r.get("parent_id"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+    }
+
+    async fn get_supplier(&self, id: Uuid) -> Result<SupplierDto, DirectoryError> {
+        let row = sqlx::query(
+            "SELECT s.id, s.name, s.edrpou, s.phone, s.email, s.address, s.notes,
+                    COALESCE((SELECT SUM(amount) FROM supplier_ledger sl
+                              WHERE sl.supplier_id = s.id), 0)::numeric(12,2)::text AS current_balance,
+                    s.created_at, s.updated_at
+             FROM suppliers s WHERE s.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(r) = row else {
+            return Err(DirectoryError::NotFound(format!(
+                "Постачальника з ID '{id}' не знайдено"
+            )));
+        };
+        Ok(SupplierDto {
+            id: r.get("id"),
+            name: r.get("name"),
+            edrpou: r.get("edrpou"),
+            phone: r.get("phone"),
+            email: r.get("email"),
+            address: r.get("address"),
+            notes: r.get("notes"),
+            current_balance: r.get("current_balance"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+    }
+
+    async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, DirectoryError> {
+        let rows = sqlx::query(
+            "SELECT s.id, s.name, s.edrpou, s.phone, s.email, s.address, s.notes,
+                    COALESCE((SELECT SUM(amount) FROM supplier_ledger sl
+                              WHERE sl.supplier_id = s.id), 0)::numeric(12,2)::text AS current_balance,
+                    s.created_at, s.updated_at
+             FROM suppliers s ORDER BY s.name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .iter()
+            .map(|r| SupplierDto {
+                id: r.get("id"),
+                name: r.get("name"),
+                edrpou: r.get("edrpou"),
+                phone: r.get("phone"),
+                email: r.get("email"),
+                address: r.get("address"),
+                notes: r.get("notes"),
+                current_balance: r.get("current_balance"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
 }
 
 // ─── Продукти: SQL + фільтри ───────────────────────────────────────────────
