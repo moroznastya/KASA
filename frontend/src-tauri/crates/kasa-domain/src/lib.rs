@@ -9,10 +9,12 @@
 //! Етап 2 — CRUD довідників + інвентаризація: write-порти
 //! [`write::WriteDirectories`], вхідні структури та розрахунок націнки.
 
+pub mod auth;
 pub mod dto;
 pub mod ledger;
 pub mod pos;
 pub mod repos;
+pub mod settings;
 pub mod write;
 
 /// Типізовані помилки доменного шару (thiserror).
@@ -23,6 +25,13 @@ pub enum DomainError {
     NotImplemented(&'static str),
 }
 
+pub use auth::{
+    default_permissions, generate_login_from_name, permission_label, AuthError, AuthService,
+    HourlyRateInput, LoginPinRequest, LoginRequest, LoginResult, PermissionsUpdateInput,
+    PublicUserDto, SettingDto, SettingUpdateInput, SettingsBatchInput, SettingsModulesDto,
+    UserCreateInput, UserDto, UserListDto, UserRole, UserUpdateInput, VerifyDto, ALL_PERMISSIONS,
+    CASHIER_PERMISSIONS, PERMISSION_GROUPS,
+};
 pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
     ProductBriefDto, ProductDto, ProductImageDto, SupplierDto,
@@ -43,6 +52,9 @@ pub use pos::{
     WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
+pub use settings::{
+    determine_module, determine_value_type, humanize_key, validate_and_normalize_setting_value,
+};
 pub use write::{
     calc_markup, CategoryCreateInput, CategoryUpdateInput, InventoryCountsDto,
     InventoryCreateInput, InventoryItemInput, InventoryUpdateInput, ProductCreateInput,

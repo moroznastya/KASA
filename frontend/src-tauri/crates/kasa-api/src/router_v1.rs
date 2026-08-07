@@ -11,11 +11,11 @@
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 
-use crate::{auth, crud, ledger, pos, proxy, readdirs, AppState};
+use crate::{auth, auth_routes, crud, ledger, pos, proxy, readdirs, AppState};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -164,6 +164,56 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v2/prro/shifts", get(pos::list_shifts))
             .route("/api/v2/prro/shift/open", post(pos::open_shift))
             .route("/api/v2/prro/shift/close", post(pos::close_shift));
+    }
+
+    // Rust-гілка auth/users/settings/RBAC (етап 6) — під KASA_RUST_AUTH=1.
+    // Порядок: статичні сегменти (users-list, users/me, permissions/list)
+    // ПЕРЕД {user_id} — як FastAPI.
+    if state.auth.is_some() {
+        router = router
+            // Auth (публічні + JWT).
+            .route("/api/v1/auth/login", post(auth_routes::login))
+            .route("/api/v1/auth/login-pin", post(auth_routes::login_pin))
+            .route("/api/v1/auth/refresh", post(auth_routes::refresh))
+            .route("/api/v1/auth/logout", post(auth_routes::logout))
+            .route("/api/v1/auth/verify", get(auth_routes::verify))
+            .route("/api/v1/auth/users-list", get(auth_routes::users_list))
+            // Users (всі require_admin).
+            .route(
+                "/api/v1/users/permissions/list",
+                get(auth_routes::permissions_list),
+            )
+            .route(
+                "/api/v1/users/{user_id}/permissions",
+                put(auth_routes::update_permissions),
+            )
+            .route(
+                "/api/v1/users/{user_id}/hourly-rate",
+                put(auth_routes::update_hourly_rate),
+            )
+            .route(
+                "/api/v1/users/{user_id}",
+                get(auth_routes::get_user)
+                    .put(auth_routes::update_user)
+                    .delete(auth_routes::delete_user),
+            )
+            .route(
+                "/api/v1/users",
+                get(auth_routes::list_users).post(auth_routes::create_user),
+            )
+            // Settings.
+            .route(
+                "/api/v1/settings",
+                get(auth_routes::settings_all).put(auth_routes::settings_batch_update),
+            )
+            .route(
+                "/api/v1/settings/{module}",
+                get(auth_routes::settings_by_module),
+            )
+            .route(
+                "/api/v1/settings/{key}",
+                put(auth_routes::settings_update_key),
+            );
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).

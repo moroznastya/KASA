@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod auth;
+pub mod auth_routes;
 pub mod crud;
 pub mod ledger;
 pub mod pos;
@@ -26,7 +27,7 @@ pub mod router_v1;
 
 use std::sync::Arc;
 
-use kasa_domain::{LedgerService, PosService, ReadDirectories, WriteDirectories};
+use kasa_domain::{AuthService, LedgerService, PosService, ReadDirectories, WriteDirectories};
 use sqlx::PgPool;
 
 /// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
@@ -37,6 +38,9 @@ pub const DEFAULT_FACADE_ADDR: &str = "127.0.0.1:8000";
 
 /// Env-флаг увімкнення Rust-гілки довідників (етап 1).
 pub const RUST_READDIRS_ENV: &str = "KASA_RUST_READDIRS";
+
+/// Env-флаг увімкнення Rust-гілки auth/users/settings/RBAC (етап 6).
+pub const RUST_AUTH_ENV: &str = "KASA_RUST_AUTH";
 
 /// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
@@ -55,6 +59,8 @@ pub struct AppState {
     pub pos: Option<Arc<dyn PosService + Send + Sync>>,
     /// Rust-репозиторій ledger (етап 4) — той самий пул.
     pub ledger: Option<Arc<dyn LedgerService + Send + Sync>>,
+    /// Rust-репозиторій auth (етап 6) — Some лише коли KASA_RUST_AUTH=1.
+    pub auth: Option<Arc<dyn AuthService + Send + Sync>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -85,6 +91,7 @@ async fn init_readdirs() -> Option<(
     Arc<dyn WriteDirectories + Send + Sync>,
     Arc<dyn PosService + Send + Sync>,
     Arc<dyn LedgerService + Send + Sync>,
+    Arc<dyn AuthService + Send + Sync>,
 )> {
     if !env_flag(RUST_READDIRS_ENV) {
         return None;
@@ -106,7 +113,10 @@ async fn init_readdirs() -> Option<(
             let ledger = Arc::new(kasa_infrastructure::repositories::ledger::SqlxLedger::new(
                 pool.clone(),
             )) as Arc<dyn LedgerService + Send + Sync>;
-            Some((pool, read, write, pos, ledger))
+            let auth = Arc::new(kasa_infrastructure::repositories::auth::SqlxAuth::new(
+                pool.clone(),
+            )) as Arc<dyn AuthService + Send + Sync>;
+            Some((pool, read, write, pos, ledger, auth))
         }
         Err(e) => {
             eprintln!(
@@ -136,11 +146,37 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (readdirs, write, write_pool, pos, ledger) = match init_readdirs().await {
-        Some((pool, read, write, pos, ledger)) => {
-            (Some(read), Some(write), Some(pool), Some(pos), Some(ledger))
+    let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
+        Some((pool, read, write, pos, ledger, auth)) => (
+            Some(read),
+            Some(write),
+            Some(pool),
+            Some(pos),
+            Some(ledger),
+            Some(auth),
+        ),
+        None => (None, None, None, None, None, None),
+    };
+    // Окремий флаг auth: KASA_RUST_AUTH=1 вмикає Rust-гілку auth навіть якщо
+    // readdirs вимкнено (проксі-режим для решти) — але пул створюється спільно.
+    let auth = if env_flag(RUST_AUTH_ENV) && auth.is_none() {
+        match kasa_infrastructure::db::connect_readonly_pool(10).await {
+            Ok(pool) => {
+                eprintln!("[kasa-api] {RUST_AUTH_ENV}=1 — Rust-гілка auth увімкнена (PostgreSQL)");
+                Some(
+                    Arc::new(kasa_infrastructure::repositories::auth::SqlxAuth::new(pool))
+                        as Arc<dyn AuthService + Send + Sync>,
+                )
+            }
+            Err(e) => {
+                eprintln!(
+                    "[kasa-api] попередження: {RUST_AUTH_ENV}=1, але БД недоступна ({e}); auth через проксі на Python :8001"
+                );
+                None
+            }
         }
-        None => (None, None, None, None, None),
+    } else {
+        auth
     };
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
@@ -152,6 +188,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         write_pool,
         pos,
         ledger,
+        auth,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
