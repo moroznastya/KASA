@@ -24,6 +24,7 @@ pub mod documents;
 pub mod invoices;
 pub mod ledger;
 pub mod pos;
+pub mod print_templates;
 pub mod proxy;
 pub mod prro;
 pub mod purchase_orders;
@@ -35,8 +36,8 @@ use std::sync::Arc;
 
 use kasa_domain::{
     AuthService, DebtorService, DocumentsService, InvoicesV1Service, InvoicesV2Service,
-    LedgerService, PosService, PurchaseOrdersService, ReadDirectories, ReturnInvoicesService,
-    WriteDirectories,
+    LedgerService, PosService, PrintTemplatesService, PurchaseOrdersService, ReadDirectories,
+    ReturnInvoicesService, WriteDirectories,
 };
 use sqlx::PgPool;
 
@@ -61,6 +62,9 @@ pub const RUST_INVOICES_ENV: &str = "KASA_RUST_INVOICES";
 /// Env-флаг Rust-гілки повернень (етап 8, група 4).
 pub const RUST_RETURN_INVOICES_ENV: &str = "KASA_RUST_RETURN_INVOICES";
 pub const RUST_PURCHASE_ORDERS_ENV: &str = "KASA_RUST_PURCHASE_ORDERS";
+
+/// Env-флаг Rust-гілки друку (етап 8, група 6).
+pub const RUST_PRINT_ENV: &str = "KASA_RUST_PRINT";
 
 /// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
@@ -107,6 +111,10 @@ pub struct AppState {
     pub purchase_orders: Option<Arc<dyn PurchaseOrdersService + Send + Sync>>,
     /// Пул замовлень (require_admin замовлень незалежно від KASA_RUST_AUTH).
     pub purchase_orders_pool: Option<PgPool>,
+    /// Rust-репозиторій друку (етап 8, група 6) — KASA_RUST_PRINT=1.
+    pub print_templates: Option<Arc<dyn PrintTemplatesService + Send + Sync>>,
+    /// Пул друку (require_admin друку незалежно від KASA_RUST_AUTH).
+    pub print_pool: Option<PgPool>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -226,6 +234,32 @@ async fn init_documents() -> (
         Err(e) => {
             eprintln!(
                 "[kasa-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна ({e}); документи через проксі на Python :8001"
+            );
+            (None, None)
+        }
+    }
+}
+
+/// Ініціалізує Rust-гілку друку під KASA_RUST_PRINT=1.
+async fn init_print_templates() -> (
+    Option<Arc<dyn PrintTemplatesService + Send + Sync>>,
+    Option<PgPool>,
+) {
+    if !env_flag(RUST_PRINT_ENV) {
+        return (None, None);
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
+        Ok(pool) => {
+            eprintln!("[kasa-api] {RUST_PRINT_ENV}=1 — Rust-гілка друку увімкнена (PostgreSQL)");
+            let repo = kasa_infrastructure::repositories::print_templates::SqlxPrintTemplates::new(
+                pool.clone(),
+            );
+            let svc: Arc<dyn PrintTemplatesService + Send + Sync> = Arc::new(repo);
+            (Some(svc), Some(pool))
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна ({e}); друк через проксі на Python :8001"
             );
             (None, None)
         }
@@ -398,6 +432,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (invoices_v1, invoices_v2, invoices_pool) = init_invoices().await;
     let (return_invoices, return_invoices_pool) = init_return_invoices().await;
     let (purchase_orders, purchase_orders_pool) = init_purchase_orders().await;
+    let (print_templates, print_pool) = init_print_templates().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -420,6 +455,8 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         return_invoices_pool,
         purchase_orders,
         purchase_orders_pool,
+        print_templates,
+        print_pool,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

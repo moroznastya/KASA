@@ -165,6 +165,7 @@ fn is_public_path(path: &str) -> bool {
         return true;
     }
     const PUBLIC: &[&str] = &[
+        "/api/v1/print/printers",
         "/api/v1/auth/login",
         "/api/v1/auth/login-pin",
         "/api/v1/auth/refresh",
@@ -193,10 +194,22 @@ fn is_public_path(path: &str) -> bool {
     }
     // /print-items інвойсів — вимагає JWT (Python get_current_user);
     // публічний тільки /documents/{id}/print (?token=).
-    if path.contains("/print") && !path.contains("/print-items") {
+    // Rust-гілка друку (етап 8, група 6): /print/* та /print-templates/*
+    // ВИМАГАЮТЬ auth (Python get_current_user/require_admin) — крім
+    // /print/printers (Python без Depends, уже в PUBLIC).
+    if path.contains("/print") && !path.contains("/print-items") && !is_rust_print_route(path) {
         return true;
     }
     false
+}
+
+/// Шляхи Rust-гілки друку (етап 8, група 6) — auth обов'язковий.
+fn is_rust_print_route(path: &str) -> bool {
+    path == "/api/v1/print/price-tags/render"
+        || path == "/api/v1/print/labels/render"
+        || path == "/api/v1/print/test"
+        || path == "/api/v1/print-templates"
+        || path.starts_with("/api/v1/print-templates/")
 }
 
 /// JSON 401-відповідь (тіло 1:1 Python middleware).

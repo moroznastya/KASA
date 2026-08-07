@@ -16,8 +16,8 @@ use axum::{
 };
 
 use crate::{
-    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, proxy, prro,
-    purchase_orders, readdirs, return_invoices, AppState,
+    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, print_templates, proxy,
+    prro, purchase_orders, readdirs, return_invoices, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -346,6 +346,46 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/purchase-orders/:order_id/confirm",
                 post(purchase_orders::confirm),
+            );
+    }
+
+    if state.print_templates.is_some() {
+        router = router
+            .route(
+                "/api/v1/print/price-tags/render",
+                post(print_templates::price_tags_render),
+            )
+            .route(
+                "/api/v1/print/labels/render",
+                post(print_templates::labels_render),
+            )
+            .route("/api/v1/print/printers", get(print_templates::printers))
+            .route("/api/v1/print/test", post(print_templates::test_print))
+            .route(
+                "/api/v1/print-templates",
+                get(print_templates::list_templates).post(print_templates::create_template),
+            )
+            .route(
+                "/api/v1/print-templates/all",
+                get(print_templates::list_all),
+            )
+            .route(
+                "/api/v1/print-templates/default",
+                get(print_templates::get_default),
+            )
+            .route(
+                "/api/v1/print-templates/:template_id",
+                get(print_templates::get_template)
+                    .put(print_templates::update_template)
+                    .delete(print_templates::delete_template),
+            )
+            .route(
+                "/api/v1/print-templates/:template_id/set-default",
+                post(print_templates::set_default),
+            )
+            .route(
+                "/api/v1/print-templates/:template_id/render",
+                post(print_templates::render_template),
             );
     }
 

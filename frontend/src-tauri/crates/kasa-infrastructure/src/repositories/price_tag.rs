@@ -245,7 +245,7 @@ pub async fn print_invoice_items(
 }
 
 /// Python _get_fields_from_settings.
-async fn fields_from_settings(
+pub(crate) async fn fields_from_settings(
     pool: &PgPool,
     key: &str,
     default_fields: &[&str],
@@ -485,7 +485,7 @@ fn expand_products(products: &[Value]) -> Vec<Value> {
 }
 
 /// Python _calc_grid.
-fn calc_grid(
+pub(crate) fn calc_grid(
     width_mm: f64,
     height_mm: f64,
     gap_mm: f64,
@@ -505,7 +505,11 @@ fn calc_grid(
 
 // ─── Grid (A4) ──────────────────────────────────────────────────────────────
 
-fn render_price_tags_grid(template: &str, products: &[Value], settings: &Value) -> String {
+pub(crate) fn render_price_tags_grid(
+    template: &str,
+    products: &[Value],
+    settings: &Value,
+) -> String {
     if products.is_empty() || template.is_empty() {
         return empty_html("A4");
     }
@@ -609,12 +613,10 @@ fn render_price_tags_grid(template: &str, products: &[Value], settings: &Value) 
          <style>\n@page {{ size: A4; margin: {margin}mm; }}\n\
          * {{ margin: 0; padding: 0; box-sizing: border-box; }}\n\
          body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 1.2; }}\n\
+         /* .page використовує КОРИСНУ висоту сторінки (page_height − 2×margin):\n   @page margin (10мм) забирає по 10мм зверху/знизу → 297 − 20 = 277мм.\n   Якщо лишити 297мм, контент виходить за друковану область 277мм →\n   порожня друга сторінка або обрізання при друку A4. */\n\
          .page {{ width: 100%; min-height: {ph}mm; }}\n\
          .grid-container {{ display: grid; }}\n\
-         .tag-cell {{\n    width: {w}mm; height: {h}mm; overflow: hidden;\n\
-         border: none; padding: 0;\n\
-         display: flex; flex-direction: column; justify-content: stretch;\n\
-         align-items: stretch; text-align: center;\n}}\n\
+         .tag-cell {{\n    width: {w}mm; height: {h}mm; overflow: hidden;\n    border: none; padding: 0;\n    display: flex; flex-direction: column; justify-content: stretch;\n    align-items: stretch; text-align: center;\n}}\n\
          @media print {{ .page {{ page-break-after: always; }} }}\n\
          </style>\n</head>\n<body>\n{pages}\n</body>\n</html>",
         margin = pf(margin_mm),
@@ -627,7 +629,11 @@ fn render_price_tags_grid(template: &str, products: &[Value], settings: &Value) 
 
 // ─── Sequential (термопринтер) ──────────────────────────────────────────────
 
-fn render_labels_sequential(template: &str, products: &[Value], settings: &Value) -> String {
+pub(crate) fn render_labels_sequential(
+    template: &str,
+    products: &[Value],
+    settings: &Value,
+) -> String {
     if products.is_empty() || template.is_empty() {
         return empty_html("label");
     }
@@ -681,11 +687,11 @@ fn render_labels_sequential(template: &str, products: &[Value], settings: &Value
     }
     format!(
         "<!DOCTYPE html>\n<html lang=\"uk\">\n<head>\n<meta charset=\"UTF-8\">\n<title>Етикетки термопринтер</title>\n\
-         <style>\n@page {{ size: {ew}mm {h}mm; margin: 0mm; }}\n\
+         <style>\n/* @page = ефективний розмір етикетки:\n   - 'system' (CUPS): повна ширина width_mm × height_mm (напр. 104×40мм\n     для Xprinter XP-420B) — контент заповнює всю етикетку.\n   - 'escpos' (58мм термо): 48×40мм — html2canvas знімає СТОРІНКУ\n     цілком, тому і сторінка, і .label-item мають бути 48×40мм — інакше\n     Rust масштабує canvas 58×40 (1.45) у 384×320 (1.2) нерівномірно\n     → спотворення. */\n\
+         @page {{ size: {ew}mm {h}mm; margin: 0mm; }}\n\
          * {{ margin: 0; padding: 0; box-sizing: border-box; }}\n\
          body {{ font-family: Arial, Helvetica, sans-serif; font-size: 7pt; line-height: 1.15; }}\n\
-         .label-item {{\n    display: flex; flex-direction: column; justify-content: center;\n\
-         align-items: center; text-align: center;\n}}\n\
+         .label-item {{\n    display: flex; flex-direction: column; justify-content: center;\n    align-items: center; text-align: center;\n}}\n\
          @media print {{ .label-item {{ page-break-after: always; }} }}\n\
          </style>\n</head>\n<body>\n{labels}\n</body>\n</html>",
         ew = pf(effective_width),
@@ -900,12 +906,12 @@ fn code128_bytes(text: &str) -> Vec<u8> {
         sum += code * (i + 1);
     }
     codes.push(sum % 103);
-    codes.push(106); // Stop
+    // Stop (106) НЕ додається в codes: PATTERNS має 106 елементів (0..105),
+    // stop pattern обробляється окремо нижче (7 модулів з додатковою смугою).
     let mut out: Vec<u8> = Vec::new();
     for c in &codes {
         out.extend_from_slice(&PATTERNS[*c]);
     }
-    // Stop pattern має 7 елементів (додаткова смуга).
     out.extend_from_slice(&[2, 3, 3, 1, 1, 1, 2]);
     out
 }

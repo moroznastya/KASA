@@ -150,7 +150,7 @@ impl SqlxInvoices {
             status: r.get("status"),
             created_at: r.get("created_at"),
             confirmed_at: None,
-            notes: r.get("notes"),
+            notes: r.get::<Option<String>, _>("notes").unwrap_or_default(),
         }))
     }
 
@@ -896,7 +896,7 @@ impl InvoicesV2Service for SqlxInvoices {
                 status: r.get("status"),
                 created_at: r.get("created_at"),
                 confirmed_at: None,
-                notes: r.get("notes"),
+                notes: r.get::<Option<String>, _>("notes").unwrap_or_default(),
             });
         }
         Ok(InvoiceV2ListDto {
