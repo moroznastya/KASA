@@ -92,7 +92,11 @@
 1. **PR не відкрито**: `gh` CLI не автентифікований на цій машині. Гілка
    `feat/rust-migration` запушена в origin (moroznastya/KASA, 6 комітів).
    → Потрібен ручний PR через GitHub web UI або `gh auth login`.
-2. Тестові процеси (facade :8000, Python :8001) були зупинені після верифікації.
+3. **Python-баг v2 POST /ledger/entries → 500 UnmappedInstanceError** (етап 4):
+   Rust v2 POST створює запис (201), Python падає з 500. Rust==Python на GET-стороні
+   (101 сторінка 1:1); аномалія зафіксована скриптом e2e_ledger_diff.sh як «аномалія Python».
+   → Виправити у Python-бекенді або задокументувати як відомий баг при дезактивації (етап 8).
+4. Тестові процеси (facade :8000, Python :8001) зупиняються після верифікації.
    Наступний запуск: `cargo run -p kasa-api --bin facade` + Python sidecar
    (Tauri сам підніме sidecar при старті).
 
