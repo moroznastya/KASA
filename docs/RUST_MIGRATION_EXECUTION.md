@@ -357,6 +357,78 @@ Python :8001 недоторканий, тестові дані видалені 
 
 ---
 
+## 2.1.4 Етап 8 — група 4/9: Повернення (return_invoices v1) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `b780e6f` — feat(rust): група 4/9 — повернення (return_invoices) 1:1 Python, KASA_RUST_RETURN_INVOICES=1
+
+**Що зроблено:**
+- `kasa-domain::return_invoices` — DTO v1 (Pydantic v2: Decimal-рядки, datetime
+  без Z, supplier_name/exchange_invoice brief), контракт ReturnInvoicesService,
+  вхідні DTO з десеріалізацією чисел АБО рядків (Python Decimal приймає обидва)
+  та Pydantic-дефолтами (is_fiscal=False, return_action=deduct_from_debt, items=[])
+- `kasa-infrastructure::SqlxReturnInvoices` — 7 роутів 1:1: list (пагінація
+  pages=max(1,ceil), ORDER created_at DESC), get, create (автономер
+  ПВ-{YYYYMMDD}-{NNN} за max-номером дня, total=sum(items.total), cost_price з
+  продукту якщо None, markup=calc_markup_percent round 2, exchange-валідація),
+  update (тільки draft; items замінюються; SESSION-значення у відповіді —
+  вхідні Decimal без scale колонки, як Python), delete (тільки draft),
+  confirm (deduct_from_debt → ledger 'return' -amount; add_to_cash → ledger
+  0.00 + notes; exchange → прибуткова накладна + stock + зв'язок +
+  ledger 0.00; source_invoice_id → doc_id=накладна + notes прив'язка),
+  cancel через confirm{status:cancelled} (відкат stock + fiscal_stock,
+  exchange-накладна → cancelled; ledger НЕ видаляється — 1:1 Python)
+- `kasa-api::return_invoices` — 6 роутів (list/get/create/update/delete/confirm;
+  /cancel ВИДАЛЕНО — Python не має, тепер fallback → Python 404), require_admin
+  через return_invoices_pool (незалежно від KASA_RUST_AUTH), enum-валідація
+  status → 422 Pydantic-стилю
+
+**ФІКСИ 1:1 (виявлені differential-ом):**
+1. **update_stock перевірка достатності** — Python product_service.update_stock
+   кидає 400 'Недостатньо товару...' при від'ємній зміні з stock < qty; Rust
+   раніше йшов у мінус без перевірки. Тепер 1:1 (тільки в return_invoices;
+   документи/інвойси — відома межа, їх e2e не покриває від'ємні зміни при
+   недостатньому stock)
+2. **SESSION-семантика create/update** — Python повертає вхідні Decimal
+   (quantity '3.0' для float 3.0), Rust повертав scale колонки ('3.000');
+   тепер items перезаписуються вхідними значеннями (як invoices create_v1)
+3. **Pydantic-дефолти** — is_fiscal/return_action/items без default у Rust
+   давали 422; Python має дефолти (False/deduct_from_debt/[])
+4. **enum-валідація confirm status** — 'shipped' → Python 422 (Pydantic enum),
+   Rust давав 400; тепер 422 з тим самим detail
+5. **/cancel роут відсутній у Python** — Rust додав зайвий; видалено,
+   тепер /cancel → fallback проксі → 404 (1:1); cancel через
+   confirm{status:cancelled}
+6. **Десеріалізація чисел** — quantity: 1 (int) → '1' (Python Decimal(1))
+
+**АНОМАЛІЯ PYTHON (зафіксовано):** confirm з return_action=exchange → 500
+(Invoice створюється без created_by_id при NOT NULL колонці — doc_service
+не отримує current_user). Rust реалізує ЗАДУМАНУ семантику: exchange-
+накладна з created_by_id = адмін, stock+, exchange_invoice_id, cancel →
+накладна cancelled + stock відкат.
+
+**СУПУТНІЙ ФІКС (група 2):** documents list не віддавав deviation_total
+для inventory (Python віддає) — виявлено регресійним прогоном після групи 4.
+Додано поле (skip_serializing_if None). Снапшот suppliers_default.json
+оновлено від поточного Python (жива БД: баланс 'Білий магазин' змінився —
+снапшот це заморожений Python-еталон).
+
+**Differential `scripts/e2e_return_invoices_diff.sh`: 32/32 PASS**
+- create parity (session-значення, cost+markup з продукту) + автономер
+  формат ПВ-YYYYMMDD-NNN + total=sum; get/404; list parity + пагінація;
+  update scalar + items (заміна); 422 size>1000/page=0; exchange без
+  items → 400; confirm deduct parity + БД (stock, ledger -700.00);
+  повторний confirm 400; confirm 404; невірний статус 422; cancel parity +
+  БД (stock відкат, ledger залишається 1:1); cancel draft 400; update/
+  delete confirmed 400; delete draft 204/404; add_to_cash (ledger 0.00);
+  source_invoice_id (doc_id=накладна); exchange Python 500 vs Rust
+  задумана семантика + cancel exchange
+
+**Верифікація:** documents 42/42, invoices 29/29, debtors PASS (регресія
+зелена), cargo test --workspace 148/148, clippy 0 (наш код), fmt чистий,
+тестові дані видалені (Diff/ПН-2026080/ПВ-2026080 повністю).
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
