@@ -2,7 +2,7 @@
 
 > Джерело стратегії: `docs/RUST_MIGRATION_PLAN.md` (v1.0, затверджений)
 > Виконавчий контроль: NIKO (координація, моніторинг)
-> Створено: 2026-08-07 | Оновлено: 2026-08-07 (етап 3 завершено)
+> Створено: 2026-08-07 | Оновлено: 2026-08-07 (етап 4 завершено)
 
 ## 0. Статус етапів
 
@@ -13,7 +13,7 @@
 | 2 | Довідники CRUD + inventory | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E 16/16; конкурентність 2 confirm → stock 104.000; валідація 1:1 |
 | 3 | POS: чеки v2, робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E POS 43/43; конкурентність 2 sale → stock 86.000; транзакційність (помилка → rollback); X/Z без ПРРО 1:1 |
 | 3b | Документи (invoices, purchase_orders, return_invoices) | Python_Backend_Agent + Rust_Agent | ⏳ | статуси 1:1; ledger ідентичний; офлайн-синхронізація |
-| 4 | Ledger (бухгалтерія, звіти) | Rust_Agent | ⏳ | differential 10k операцій, 0 розбіжностей |
+| 4 | Ledger (журнал взаєморозрахунків) v1+v2 | Rust_Agent | ✅ ЗАВЕРШЕНО | differential 10 100 записів 1:1; 101 сторінка GET 1:1; валідації 404/400/422/500 1:1; конкурентність/транзакційність |
 | 5 | Receipts + друк (open→pay→close, офлайн-черга) | Rust_Agent | ⏳ | proptest ≥100k, 0 розбіжностей; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ⏳ | JWT parity тим самим секретом |
 | 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ⏳ | sandbox-сертифікація; golden parity; shadow-mode; відкат |
@@ -40,6 +40,19 @@
 | 1.1 | Репозиторії read довідників + роути GET + snapshot-тести | Rust_Agent | c71f97c, f0d6db8, 21d9467 | ✅ | Rust==Python 20/20, 50/50, 50/50; flag KASA_RUST_READDIRS=1; без флага проксі ідентичний; cargo test/clippy/fmt чисті |
 | 3.1 | POS: чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable), робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | 72b4e21, fcaeffa, ba695ec, 6e97a5c, 9b0bf39, 435ea36 | ✅ | E2E POS 43/43: чеки (sale/return/список/деталі/статистика/пошук/returnable), робочі сесії, списання (авто-confirm), переміщення (draft→confirm/cancel), ПРРО X/Z; транзакційність: 400 у середині → чек не створено, stock не змінено; конкурентність 2 паралельні sale → stock 86.000, нуль втрат; cargo test 9/9, clippy/fmt чисті |
 | 2.1 | Write-порти CRUD+інвентаризації, SQL-репозиторії write, CRUD-роути під flag, E2E differential-скрипт | Rust_Agent | 319d849, c66450c, 04e6edb, adfa79a | ✅ | E2E 16/16: 201/200/204, 404, 409, 400, 422 ідентичні Python; конкурентність 2 паралельні confirm → stock 104.000; БД почищена від тестових даних |
+
+**DoD етапу 4 (Ledger):**
+- [x] ledger v1+v2 (7 ендпойнтів): POST /ledger, GET /{supplier_id}, GET /balance/{id} (v1);
+      GET/POST /entries, GET /balance/{id}, GET /balances (v2) — 1:1 Python
+- [x] differential 10 100 записів (10 000 через Rust v2 POST + 100 через Python v1 POST):
+      GET v2 entries 101 сторінка × 100 — Rust==Python 1:1; v1 history, v1/v2 balance, v2 balances
+- [x] валідації 1:1: 404 (v1×3, v2 balance), 400 (тип/supplier), 422 (decimal_max_places
+      з ctx, missing з input=body, enum з ctx.expected), 500 ValueError (v2 entries)
+- [x] конкурентність: 2 паралельні POST → 201/201, записів 2 (жоден не втрачено)
+- [x] транзакційність: 400 (невалідний тип) не створює запис (count до/після рівні)
+- [x] E2E differential-скрипт scripts/e2e_ledger_diff.sh — повністю зелений (25/25)
+- [x] cargo test --workspace зелений (63 passed, 0 failed), clippy 0, fmt чистий
+- [x] БД почищена: тестові E4-/LEDGER- дані count=0; реальні дані не чіпались
 
 **DoD етапу 3 (POS):**
 - [x] чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable) — 1:1 Python
@@ -81,9 +94,8 @@
    Наступний запуск: `cargo run -p kasa-api --bin facade` + Python sidecar
    (Tauri сам підніме sidecar при старті).
 
-## 4. Наступні кроки (етап 4 — ledger/звіти, етап 5 — друк/офлайн-черга)
+## 4. Наступні кроки (етап 5 — Receipts + друк, офлайн-черга)
 
-1. Rust_Agent: ledger (бухгалтерія, звіти) — differential 10k операцій.
-2. Rust_Agent + Tauri_Agent: друк чеків (open→pay→close), офлайн-черга.
-3. QA_Agent: differential/golden-контур для POS + ledger.
-4. Git Admin Agent: PR за етапами 1+2+3 (накопичений зміст).
+1. Rust_Agent: друк чеків (open→pay→close), офлайн-черга — proptest ≥100k.
+2. QA_Agent: differential/golden-контур для POS + ledger.
+3. Git Admin Agent: PR за етапами 1+2+3+4 (накопичений зміст).
