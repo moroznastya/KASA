@@ -27,13 +27,14 @@ pub mod pos;
 pub mod proxy;
 pub mod prro;
 pub mod readdirs;
+pub mod return_invoices;
 pub mod router_v1;
 
 use std::sync::Arc;
 
 use kasa_domain::{
     AuthService, DebtorService, DocumentsService, InvoicesV1Service, InvoicesV2Service,
-    LedgerService, PosService, ReadDirectories, WriteDirectories,
+    LedgerService, PosService, ReadDirectories, ReturnInvoicesService, WriteDirectories,
 };
 use sqlx::PgPool;
 
@@ -55,6 +56,8 @@ pub const RUST_DEBTORS_ENV: &str = "KASA_RUST_DEBTORS";
 /// Env-флаг Rust-гілки документів (етап 8, група 2).
 pub const RUST_DOCUMENTS_ENV: &str = "KASA_RUST_DOCUMENTS";
 pub const RUST_INVOICES_ENV: &str = "KASA_RUST_INVOICES";
+/// Env-флаг Rust-гілки повернень (етап 8, група 4).
+pub const RUST_RETURN_INVOICES_ENV: &str = "KASA_RUST_RETURN_INVOICES";
 
 /// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
@@ -93,6 +96,10 @@ pub struct AppState {
     pub invoices_v2: Option<Arc<dyn InvoicesV2Service + Send + Sync>>,
     /// Пул інвойсів (require_admin інвойсів незалежно від KASA_RUST_AUTH).
     pub invoices_pool: Option<PgPool>,
+    /// Rust-репозиторій повернень (етап 8, група 4) — KASA_RUST_RETURN_INVOICES=1.
+    pub return_invoices: Option<Arc<dyn ReturnInvoicesService + Send + Sync>>,
+    /// Пул повернень (require_admin повернень незалежно від KASA_RUST_AUTH).
+    pub return_invoices_pool: Option<PgPool>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -219,6 +226,34 @@ async fn init_documents() -> (
 }
 
 /// Ініціалізує Rust-гілку інвойсів під KASA_RUST_INVOICES=1.
+/// Ініціалізує Rust-гілку повернень під KASA_RUST_RETURN_INVOICES=1.
+async fn init_return_invoices() -> (
+    Option<Arc<dyn ReturnInvoicesService + Send + Sync>>,
+    Option<PgPool>,
+) {
+    if !env_flag(RUST_RETURN_INVOICES_ENV) {
+        return (None, None);
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_RETURN_INVOICES_ENV}=1 — Rust-гілка повернень увімкнена (PostgreSQL)"
+            );
+            let repo = kasa_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
+                pool.clone(),
+            );
+            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
+            (Some(svc), Some(pool))
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_RETURN_INVOICES_ENV}=1, але БД недоступна ({e}); повернення через проксі на Python :8001"
+            );
+            (None, None)
+        }
+    }
+}
+
 async fn init_invoices() -> (
     Option<Arc<dyn InvoicesV1Service + Send + Sync>>,
     Option<Arc<dyn InvoicesV2Service + Send + Sync>>,
@@ -326,6 +361,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let debtors = init_debtors().await;
     let (documents, documents_pool) = init_documents().await;
     let (invoices_v1, invoices_v2, invoices_pool) = init_invoices().await;
+    let (return_invoices, return_invoices_pool) = init_return_invoices().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -344,6 +380,8 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         invoices_v1,
         invoices_v2,
         invoices_pool,
+        return_invoices,
+        return_invoices_pool,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -17,6 +17,7 @@ pub mod invoices;
 pub mod ledger;
 pub mod pos;
 pub mod repos;
+pub mod return_invoices;
 pub mod settings;
 pub mod write;
 
@@ -64,6 +65,7 @@ pub use pos::{
     WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
+pub use return_invoices::{ReturnInvoicesError, ReturnInvoicesService};
 pub use settings::{
     determine_module, determine_value_type, humanize_key, validate_and_normalize_setting_value,
 };

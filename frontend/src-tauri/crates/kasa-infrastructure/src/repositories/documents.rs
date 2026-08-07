@@ -583,6 +583,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: None,
                     },
                 ));
             }
@@ -641,6 +642,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: None,
                     },
                 ));
             }
@@ -715,6 +717,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: None,
                     },
                 ));
             }
@@ -791,6 +794,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: None,
                     },
                 ));
             }
@@ -867,6 +871,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: None,
                     },
                 ));
             }
@@ -909,7 +914,7 @@ impl DocumentsService for SqlxDocuments {
                 }
                 let inv_id: Uuid = r.get("id");
                 // Підсумки: total_cost, total_selling, deviation_total
-                let (tc, ts, _td) = self.inventory_sums(inv_id).await?;
+                let (tc, ts, td) = self.inventory_sums(inv_id).await?;
                 let created: NaiveDateTime = r.get("created_at");
                 all.push((
                     created,
@@ -928,6 +933,7 @@ impl DocumentsService for SqlxDocuments {
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                         created_by_name: r.get::<Option<String>, _>("creator").unwrap_or_default(),
+                        deviation_total: Some(td),
                     },
                 ));
             }

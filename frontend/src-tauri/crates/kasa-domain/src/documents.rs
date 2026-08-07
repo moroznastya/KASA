@@ -47,6 +47,9 @@ pub struct DocumentDto {
     pub created_at: Option<String>,
     pub created_by: String,
     pub created_by_name: String,
+    /// Python inventory: deviation_total (тільки для document_type=inventory).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deviation_total: Option<f64>,
 }
 
 /// Параметри списку документів.

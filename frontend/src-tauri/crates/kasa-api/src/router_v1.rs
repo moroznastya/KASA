@@ -17,7 +17,7 @@ use axum::{
 
 use crate::{
     auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, proxy, prro, readdirs,
-    AppState,
+    return_invoices, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -323,6 +323,11 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v2/invoices/:invoice_id/cancel",
                 post(invoices::v2_cancel),
             );
+    }
+
+    // Повернення постачальнику (етап 8, група 4) — KASA_RUST_RETURN_INVOICES=1.
+    if state.return_invoices.is_some() {
+        router = router.merge(return_invoices::router());
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).
