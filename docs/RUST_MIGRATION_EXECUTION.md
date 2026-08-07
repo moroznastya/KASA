@@ -429,6 +429,69 @@ Python :8001 недоторканий, тестові дані видалені 
 
 ---
 
+## 2.1.5 Етап 8 — група 5/9: Замовлення постачальнику (purchase_orders) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `db7b69f` — feat(rust): група 5/9 — замовлення постачальнику (purchase_orders) 1:1 Python, KASA_RUST_PURCHASE_ORDERS=1
+
+**Що зроблено:**
+- `kasa-domain::purchase_orders` — DTO v1 (Decimal-рядки, ProductBrief
+  id/title/barcode, InvoiceBrief id/number/total_amount), контракт
+  PurchaseOrdersService (list/get/create/update/delete/confirm), вхідні DTO
+  з десеріалізацією чисел АБО рядків (Python Decimal)
+- `kasa-infrastructure::SqlxPurchaseOrders` — 6 роутів 1:1: list (пагінація
+  pages=max(1,ceil), ORDER created_at DESC, supplier_name), get (404),
+  create (автономер ЗАМ-{YYYYMMDD}-{NNN} за max-номером дня, total_amount=
+  sum(items.total) якщо None, status=draft, created_by_id=адмін), update
+  (тільки draft; exclude_unset-поля окремими UPDATE; items замінюються
+  DELETE+INSERT), delete (тільки draft), confirm (confirmed → Invoice DRAFT:
+  payment_method=credit, notes 'Автоматично створено із замовлення №...',
+  invoice_date=order_date, is_fiscal копіюється, total_amount копіюється,
+  позиції копіюються, invoice_id зв'язується; cancelled → статус)
+- `kasa-api::purchase_orders` — 6 роутів (list/get/create/update/delete/
+  confirm), require_admin через purchase_orders_pool (незалежно від
+  KASA_RUST_AUTH), enum-валідація status → 422 Pydantic-стилю
+
+**АНОМАЛІЯ PYTHON (1:1 відтворено):** confirm віддає `invoice: null` навіть
+коли invoice_id заповнений — SQLAlchemy post_update + identity map не
+перезавантажує relationship invoice у тій самій сесії. get/list (нова
+сесія) віддають invoice brief. Rust: confirm → invoice null, get/list →
+brief (перевірено differential-ом).
+
+**SESSION-семантика (як групи 3-4):** create/update відповідь = вхідні
+Decimal без scale колонки ('3.0'), get/list/confirm — scale колонки
+('3.000'); total_amount в update — вхідне значення (Python identity map).
+
+**ФІКСИ 1:1 (виявлені differential-ом):**
+1. confirm 'shipped' → 422 Pydantic enum (невідомі значення), 'draft' →
+   400 'Невірний статус. Використовуйте confirmed або cancelled'
+2. list size/page → 422 Pydantic (ge=1, le=1000)
+
+**Супутнє:** fmt-перестановка імпорту в return_invoices.rs (прибирання
+unused ReturnInvoicesService — дрібне з групи 4).
+
+**Differential `scripts/e2e_purchase_orders_diff.sh`: 42/42 PASS**
+- create parity (автономер, total=sum 700, supplier_name, session-значення)
+  + формат ЗАМ-YYYYMMDD-NNN + total 700.0 + status draft
+- get parity (БД scale 3.000/200.00) + 404 + detail
+- update scalar parity + БД total_amount=777.50
+- update items parity (заміна на 1 позицію, session 5.0/60.00/300.00) +
+  БД позицій=1 + total не чіпається
+- confirm parity + status confirmed + invoice=null (аномалія) + invoice
+  №ПН-YYYYMMDD-NNN з БД + БД (draft/credit/777.50/notes 'Автоматично
+  створено із замовлення №...'/invoice_date=order_date/items скопійовані)
+- повторний confirm 400 + detail; confirm 404; 'shipped' 422; 'draft' 400
+- confirm cancelled parity + status cancelled + не створює накладну
+- update/delete confirmed 400; delete draft 204; delete повторно 404
+- list parity + пагінація page=2&size=1 + мета; 422 page=0/size=0/size=1001
+- create без items/total (total_amount=null); явний number+total 999.99
+  (не sum)
+
+**Верифікація:** documents 42/42, invoices 29/29, return_invoices 32/32,
+debtors PASS (регресія зелена), cargo test --workspace 148/148, clippy 0
+(наш код), fmt чистий, тестові дані видалені (ЗАМ/ПН/Po-Sup/Po-Prod).
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
@@ -436,7 +499,7 @@ Python :8001 недоторканий, тестові дані видалені 
 | ~~2. documents~~ ✅ `fefa07c` | v1/documents.py | 1793 | реалізовано незалежно (confirm-логіка invoice/return/order у складі групи) | 42/42 differential PASS |
 | 3. invoices | v1(748)+v2(362) | 1110 | stock/ledger сервіси (Rust має) | 4-6 год; confirm→stock+SupplierLedger, payment-info, print-items |
 | 4. return_invoices | v1/return_invoices.py | 428 | stock/ledger | 2-3 год |
-| 5. purchase_orders | v1/purchase_orders.py | 416 | invoice (confirm→створює invoice) | 2-3 год |
+| ~~5. purchase_orders~~ ✅ `db7b69f` | v1/purchase_orders.py | 416 | реалізовано (confirm→Invoice DRAFT 1:1; аномалія: confirm віддає invoice:null) | 42/42 differential PASS |
 | 6. print+print_templates | v1/print.py(719)+print_templates.py(315) | 1034 | minijinja рендер, ESC/POS, цінники/етикетки | 4-6 год; Jinja2→minijinja сумісність |
 | 7. products v2 | v2/products.py | 360 | multipart upload, static serve, barcode-генерація | 2-3 год |
 | 8. prro v2 | v2/prro.py | 229 | kasa-prro (gRPC+крипто готові в 7.3) | 2-4 год; test-connection, fiscalize |
