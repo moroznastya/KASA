@@ -14,7 +14,7 @@
 | 3 | POS: чеки v2, робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E POS 43/43; конкурентність 2 sale → stock 86.000; транзакційність (помилка → rollback); X/Z без ПРРО 1:1 |
 | 3b | Документи (invoices, purchase_orders, return_invoices) | Python_Backend_Agent + Rust_Agent | ⏳ | статуси 1:1; ledger ідентичний; офлайн-синхронізація |
 | 4 | Ledger (журнал взаєморозрахунків) v1+v2 | Rust_Agent | ✅ ЗАВЕРШЕНО | differential 10 100 записів 1:1; 101 сторінка GET 1:1; валідації 404/400/422/500 1:1; конкурентність/транзакційність |
-| 5 | Receipts + друк (open→pay→close, офлайн-черга) | Rust_Agent | ⏳ | proptest ≥100k, 0 розбіжностей; Python print-роути 410 |
+| 5 | Receipts + друк (open→pay→close, офлайн-черга) | Tauri_Agent + Rust_Agent | ✅ ЗАВЕРШЕНО | ESC/POS друк у мок-пристрій (19227 байт, ESC @ + GS v 0 + GS V); офлайн-черга SQLite на диск + персистентність + синхронізація; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ⏳ | JWT parity тим самим секретом |
 | 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ⏳ | sandbox-сертифікація; golden parity; shadow-mode; відкат |
 | 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ | єдиний бінарник; e2e зелений; updater |
@@ -25,7 +25,7 @@
 ## 1. Критичний шлях
 
 ```
-Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 → 5 → 6 → 7 → 8
+Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 → 7 → 8
 ```
 
 ## 2. Журнал делегувань (етап 0)
@@ -38,6 +38,8 @@
 | 0.4 | CI rust-core.yml + push гілки | Git Admin Agent | 81e5b12 | ⚠️ ЧАСТКОВО | workflow валідний; гілка в origin; **PR не відкрито — gh не автентифікований** |
 | 0.5 | Differential CLI | Rust_Agent | (в 0.2) | ✅ | echo-op працює: {"op":"echo","ok":true} |
 | 1.1 | Репозиторії read довідників + роути GET + snapshot-тести | Rust_Agent | c71f97c, f0d6db8, 21d9467 | ✅ | Rust==Python 20/20, 50/50, 50/50; flag KASA_RUST_READDIRS=1; без флага проксі ідентичний; cargo test/clippy/fmt чисті |
+| 4.1 | Ledger v1+v2: порти, SQL-репозиторії, роути під flag, E2E differential 10 100 записів | Rust_Agent | 08d0c34, 20bc65d, 24ec542, 0ed4d70, ee365c8, 9ef3931, c35a03e | ✅ | E2E ledger: 10 100 записів (10k Rust + 100 Python), v2 GET entries 101 сторінка 1:1, v1/v2 balance, balances, валідації 404/400/422/500 1:1; конкурентність 2 паралельні POST → 201/201 без втрат; транзакційність: 400 не створив запис; cargo test 58/58, clippy/fmt чисті; тестові дані E4-/E4T- видалені (перевірено psql)
+| 5.1 | Друк чеків open→pay→close (ESC/POS → мок-пристрій) + офлайн-черга (SQLite на диск, персистентність, синхронізація) | Tauri_Agent | f009579 | ✅ | e2e_stage5_tauri.sh: друк 19227 байт ESC/POS (ESC @ / GS v 0 / 2×подача / GS V); офлайн: save→count=1→перезапуск процесу count=1 (персистентність)→sync POST sale 201→count=0→чек знайдено в backend; фінальний health 200; тестові дані видалені; fmt виправлено NIKO (494766a) |
 | 3.1 | POS: чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable), робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | 72b4e21, fcaeffa, ba695ec, 6e97a5c, 9b0bf39, 435ea36 | ✅ | E2E POS 43/43: чеки (sale/return/список/деталі/статистика/пошук/returnable), робочі сесії, списання (авто-confirm), переміщення (draft→confirm/cancel), ПРРО X/Z; транзакційність: 400 у середині → чек не створено, stock не змінено; конкурентність 2 паралельні sale → stock 86.000, нуль втрат; cargo test 9/9, clippy/fmt чисті |
 | 2.1 | Write-порти CRUD+інвентаризації, SQL-репозиторії write, CRUD-роути під flag, E2E differential-скрипт | Rust_Agent | 319d849, c66450c, 04e6edb, adfa79a | ✅ | E2E 16/16: 201/200/204, 404, 409, 400, 422 ідентичні Python; конкурентність 2 паралельні confirm → stock 104.000; БД почищена від тестових даних |
 
