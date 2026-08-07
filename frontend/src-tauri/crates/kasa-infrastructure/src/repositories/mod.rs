@@ -6,5 +6,6 @@ pub mod invoices;
 pub mod ledger;
 pub mod pos;
 pub mod price_tag;
+pub mod purchase_orders;
 pub mod return_invoices;
 pub mod write;

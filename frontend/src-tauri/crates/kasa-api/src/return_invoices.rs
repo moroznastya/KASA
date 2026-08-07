@@ -17,8 +17,8 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use kasa_domain::return_invoices::{
-    ReturnInvoiceConfirmInput, ReturnInvoiceCreateInput, ReturnInvoicesError,
-    ReturnInvoiceUpdateInput,
+    ReturnInvoiceConfirmInput, ReturnInvoiceCreateInput, ReturnInvoiceUpdateInput,
+    ReturnInvoicesError,
 };
 
 use crate::{auth::Claims, auth_routes::AuthRouteError, AppState};

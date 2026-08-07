@@ -16,8 +16,8 @@ use axum::{
 };
 
 use crate::{
-    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, proxy, prro, readdirs,
-    return_invoices, AppState,
+    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, proxy, prro,
+    purchase_orders, readdirs, return_invoices, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -328,6 +328,25 @@ pub fn build_router(state: AppState) -> Router {
     // Повернення постачальнику (етап 8, група 4) — KASA_RUST_RETURN_INVOICES=1.
     if state.return_invoices.is_some() {
         router = router.merge(return_invoices::router());
+    }
+
+    // Замовлення постачальнику (етап 8, група 5) — KASA_RUST_PURCHASE_ORDERS=1.
+    if state.purchase_orders.is_some() {
+        router = router
+            .route(
+                "/api/v1/purchase-orders",
+                get(purchase_orders::list).post(purchase_orders::create),
+            )
+            .route(
+                "/api/v1/purchase-orders/:order_id",
+                get(purchase_orders::get)
+                    .put(purchase_orders::update)
+                    .delete(purchase_orders::delete),
+            )
+            .route(
+                "/api/v1/purchase-orders/:order_id/confirm",
+                post(purchase_orders::confirm),
+            );
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).

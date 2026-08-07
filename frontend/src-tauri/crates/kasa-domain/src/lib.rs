@@ -16,6 +16,7 @@ pub mod dto;
 pub mod invoices;
 pub mod ledger;
 pub mod pos;
+pub mod purchase_orders;
 pub mod repos;
 pub mod return_invoices;
 pub mod settings;
@@ -64,6 +65,7 @@ pub use pos::{
     UserSessionsDto, WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto,
     WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
+pub use purchase_orders::*;
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
 pub use return_invoices::{ReturnInvoicesError, ReturnInvoicesService};
 pub use settings::{
