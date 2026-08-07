@@ -17,7 +17,7 @@
 | 5 | Receipts + друк (open→pay→close, офлайн-черга) | Tauri_Agent + Rust_Agent | ✅ ЗАВЕРШЕНО | ESC/POS друк у мок-пристрій (19227 байт, ESC @ + GS v 0 + GS V); офлайн-черга SQLite на диск + персистентність + синхронізація; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E AUTH DIFF 59/59; JWT крос-валідний (Rust↔Python, той самий секрет); RBAC admin/cashier 1:1; feature-flag KASA_RUST_AUTH (відкат перевірено); валідації 401/400/403/404/409/422 1:1 |
 | 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ✅ | **7.1 фундамент ✅**; **7.2 крипто ✅** (XAdES golden 5/5 байт-ідентично; CAdES ДСТУ 4145 FFI); **7.3 ✅** (offline_queue 1:1, shift open/close 1:1, sync replay, facade KASA_RUST_PRRO) |: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
-| 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ | єдиний бінарник; e2e зелений; updater |
+| 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ **БЛОКОВАНО** (залежність: план-етап 3 «Документи» = журнал 3b ⏳ не мігрований) | Rust НЕ покриває 6 груп роутів, які активно використовує фронтенд: documents/invoices/return-invoices/purchase-orders, debtors, print (цінники/етикетки), print-templates, products images/barcodes, prro v2 (test-connection/fiscalize). Повна дезактивація = втрата функціоналу. Див. Аномалія 5 |
 
 Паралельно з етапом 1: QA_Agent — тестовий контур (differential/golden/proptest).
 Паралельно з етапом 5: ПРРО-дослідження (JKS→PKCS12/PEM, FFI vs gRPC).
@@ -230,6 +230,32 @@
    → порушення NOT NULL. Юзер без сесій видаляється (204). Rust `SqlxAuth::delete_user`
    робить правильно (204, CASCADE) — це відхилення від Python у КРАЩИЙ бік, зафіксовано.
    → Виправити у Python-бекенді при дезактивації (етап 8): додати cascade у relationship.
+5. **БЛОКУВАННЯ ЕТАПУ 8 — Python sidecar НЕ можна дезактивувати без втрати функціоналу** (2026-08-07, Rust_Agent):
+   Rust НЕ покриває 6 груп роутів, які фронтенд активно використовує (сторінки
+   documents/*, debtors/, printing/*, settings/PrintTemplatesPage; сервіси
+   documentService, debtorService, printService, printTemplateService,
+   productService images/barcodes, prroService):
+   - **Документи** (план-етап 3, журнал 3b ⏳): /documents (list/get/create/delete/batch-confirm),
+     /invoices (CRUD+confirm+payment-info+print-items+price-changes),
+     /return-invoices, /purchase-orders — Python v1/invoices.py, v1/documents.py.
+   - **Боржники**: /debtors (CRUD+search+pay+receipts+payments) — v1/debtors.py.
+   - **Друк цінників/етикеток**: /print/price-tags/render, /print/labels/render,
+     /print/printers, /print/test — v1/print.py (друк ЧЕКІВ — Rust, етап 5 ✅;
+     цінники/етикетки — Python).
+   - **Шаблони друку**: /print-templates (CRUD+render+set-default+default) — v1/print_templates.py.
+   - **Продукти**: /products/{id}/images, /products/{id}/barcodes — v2/products.py
+     (Rust crud НЕ має).
+   - **ПРРО v2 залишки**: /prro/test-connection, /prro/receipts/{id}/fiscalize —
+     v2/prro.py (Rust має лише /fiscal/*).
+   Додатково: sqlx-міграцій НЕМАЄ (frontend/src-tauri/migrations/ порожня;
+   у БД alembic_version — схема належить Alembic). tauri-updater: конфіг на місці
+   (pubkey+endpoint), але endpoint https://github.com/kasa-pos/kasa-pos/.../latest.json
+   → 404 (релізу ще немає) — не блокер, стане валідним при першому релізі.
+   → ПРОПОЗИЦІЯ (етапність): 8a — sqlx-міграції з поточної схеми + 410 для
+   покритих Rust-роутів при вимкненому флазі + умовний spawn sidecar;
+   8b — міграція 6 груп у Rust (≈5-10 днів, починаючи з документів — план-етап 3);
+   8c — повне видалення Python. Рішення потрібне від PM_Agent/NIKO.
+
 4. Тестові процеси (facade :8000, Python :8001) зупиняються після верифікації.
    Наступний запуск: `cargo run -p kasa-api --bin facade` + Python sidecar
    (Tauri сам підніме sidecar при старті).
