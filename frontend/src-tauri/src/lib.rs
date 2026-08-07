@@ -7,9 +7,6 @@
 // ── Підмодулі ───────────────────────────────────────────────────────────────
 
 pub mod commands;
-pub mod db;
-pub mod print;
-pub mod utils;
 
 // ── Імпорти ─────────────────────────────────────────────────────────────────
 
@@ -105,7 +102,7 @@ pub fn run() {
                 .unwrap_or_default()
                 .to_string();
 
-            let html = crate::commands::print::take_print_html(&token);
+            let html = kasa_infrastructure::print::commands::take_print_html(&token);
 
             tauri::http::Response::builder()
                 .header("Content-Type", "text/html; charset=utf-8")
@@ -186,33 +183,33 @@ pub fn run() {
             // Завантажує devices.json і для кожного пристрою з enabled=true
             // запускає фонове підключення (ваги/термінали). Помилки не падають —
             // логуються в stderr (eprintln!).
-            commands::devices::init_auto_connect(app.handle());
+            kasa_infrastructure::devices::init_auto_connect(app.handle());
 
             Ok(())
         })
         // Реєстрація команд
         .invoke_handler(tauri::generate_handler![
             // ── Команди друку ──────────────────────────────────────────
-            commands::print::print_image,
-            commands::print::print_raster_image,
-            commands::print::print_html,
-            commands::print::get_printers,
-            commands::print::open_cash_drawer,
-            commands::print::get_system_info,
-            commands::print::save_receipt_image,
+            kasa_infrastructure::print::commands::print_image,
+            kasa_infrastructure::print::commands::print_raster_image,
+            kasa_infrastructure::print::commands::print_html,
+            kasa_infrastructure::print::commands::get_printers,
+            kasa_infrastructure::print::commands::open_cash_drawer,
+            kasa_infrastructure::print::commands::get_system_info,
+            kasa_infrastructure::print::commands::save_receipt_image,
             // ── Команди офлайн-режиму ─────────────────────────────────
-            commands::offline::is_offline_available,
-            commands::offline::get_unsynced_count,
-            commands::offline::cache_products,
-            commands::offline::log_frontend_error,
-            commands::offline::get_cached_products,
-            commands::offline::save_receipt_offline,
-            commands::offline::get_unsynced_receipts,
-            commands::offline::mark_receipt_synced,
-            commands::offline::get_setting,
-            commands::offline::set_setting,
-            commands::offline::clear_product_cache,
-            commands::offline::get_offline_stats,
+            kasa_infrastructure::offline::commands::is_offline_available,
+            kasa_infrastructure::offline::commands::get_unsynced_count,
+            kasa_infrastructure::offline::commands::cache_products,
+            kasa_infrastructure::offline::commands::log_frontend_error,
+            kasa_infrastructure::offline::commands::get_cached_products,
+            kasa_infrastructure::offline::commands::save_receipt_offline,
+            kasa_infrastructure::offline::commands::get_unsynced_receipts,
+            kasa_infrastructure::offline::commands::mark_receipt_synced,
+            kasa_infrastructure::offline::commands::get_setting,
+            kasa_infrastructure::offline::commands::set_setting,
+            kasa_infrastructure::offline::commands::clear_product_cache,
+            kasa_infrastructure::offline::commands::get_offline_stats,
             // ── Команди системної інтеграції ──────────────────────────
             commands::system::get_app_version,
             commands::system::get_platform,
@@ -223,21 +220,21 @@ pub fn run() {
             commands::system::get_keyboard_layout,
             commands::system::send_notification,
             // ── Команди підключених пристроїв (ваги, термінали) ─────────
-            commands::devices::get_available_ports,
-            commands::devices::get_devices,
-            commands::devices::save_device_config,
-            commands::devices::delete_device,
-            commands::devices::connect_device,
-            commands::devices::disconnect_device,
-            commands::devices::get_devices_status,
-            commands::devices::test_connection,
-            commands::devices::get_system_printers,
-            commands::devices::get_detected_devices,
-            commands::devices::get_scanners,
-            commands::devices::terminal_payment,
-            commands::devices::terminal_refund,
-            commands::devices::terminal_cancel,
-            commands::devices::terminal_ping,
+            kasa_infrastructure::devices::get_available_ports,
+            kasa_infrastructure::devices::get_devices,
+            kasa_infrastructure::devices::save_device_config,
+            kasa_infrastructure::devices::delete_device,
+            kasa_infrastructure::devices::connect_device,
+            kasa_infrastructure::devices::disconnect_device,
+            kasa_infrastructure::devices::get_devices_status,
+            kasa_infrastructure::devices::test_connection,
+            kasa_infrastructure::devices::get_system_printers,
+            kasa_infrastructure::devices::get_detected_devices,
+            kasa_infrastructure::devices::get_scanners,
+            kasa_infrastructure::devices::terminal_payment,
+            kasa_infrastructure::devices::terminal_refund,
+            kasa_infrastructure::devices::terminal_cancel,
+            kasa_infrastructure::devices::terminal_ping,
         ])
         .run(tauri::generate_context!())
         .expect("Помилка запуску Kasa POS");

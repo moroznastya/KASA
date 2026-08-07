@@ -1,0 +1,22 @@
+[package]
+name = "kasa-infrastructure"
+version = "0.1.0"
+edition = "2021"
+description = "Kasa POS — Infrastructure layer: реалізації портів (devices, print, terminal, cash_drawer, offline). Перенесено з монолітного Tauri-пакета (етап 0, Strangler Fig)."
+
+[dependencies]
+# ⚠️ Тимчасово: команди з #[tauri::command] перенесені разом із логікою.
+# Розщеплення (тонкі команди в shell, чиста логіка тут) — наступні етапи.
+tauri = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+dirs-next = "2"
+serialport = { version = "4", default-features = false }
+image = "0.25"
+thiserror = "2"
+tempfile = "3"
+base64 = "0.22"
+libc = "0.2"

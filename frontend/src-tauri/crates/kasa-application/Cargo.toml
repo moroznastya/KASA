@@ -1,0 +1,10 @@
+[package]
+name = "kasa-application"
+version = "0.1.0"
+edition = "2021"
+description = "Kasa POS — Application layer: use cases, порти, DTO. Залежить тільки від kasa-domain."
+
+[dependencies]
+kasa-domain = { path = "../kasa-domain" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

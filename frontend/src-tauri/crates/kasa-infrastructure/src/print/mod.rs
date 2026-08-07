@@ -1,3 +1,5 @@
+pub mod commands;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Kasa POS — Модуль апаратного друку (ESC/POS через порт/CUPS)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,7 +33,9 @@ use image::Luma;
 
 #[derive(Error, Debug)]
 pub enum PrintError {
-    #[error("Порт принтера не знайдено або відмовлено в доступі. Перевірте права (група dialout/lp).")]
+    #[error(
+        "Порт принтера не знайдено або відмовлено в доступі. Перевірте права (група dialout/lp)."
+    )]
     PortNotFound,
 
     #[error("Помилка вводу/виводу: {0}")]
@@ -81,14 +85,16 @@ fn find_printer_port(custom_path: Option<&str>) -> Option<String> {
 pub fn write_to_printer_port(data: &[u8], device_path: Option<&str>) -> Result<(), PrintError> {
     let port = find_printer_port(device_path).ok_or(PrintError::PortNotFound)?;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&port)?;
+    let mut file = std::fs::OpenOptions::new().write(true).open(&port)?;
 
     file.write_all(data)?;
     file.flush()?;
 
-    eprintln!("[RUST] ✓ Надіслано {} байтів безпосередньо на {}", data.len(), port);
+    eprintln!(
+        "[RUST] ✓ Надіслано {} байтів безпосередньо на {}",
+        data.len(),
+        port
+    );
     Ok(())
 }
 
@@ -124,7 +130,11 @@ pub fn print_raw_via_lp(data: &[u8], printer_name: Option<&str>) -> Result<(), P
 ///
 /// Спершу пробує прямий запис на порт принтера.
 /// Якщо не вдалося — падає на lp -o raw.
-pub fn print_escpos(data: &[u8], printer_name: Option<&str>, device_path: Option<&str>) -> Result<(), PrintError> {
+pub fn print_escpos(
+    data: &[u8],
+    printer_name: Option<&str>,
+    device_path: Option<&str>,
+) -> Result<(), PrintError> {
     match write_to_printer_port(data, device_path) {
         Ok(_) => Ok(()),
         Err(e) => {
@@ -166,7 +176,7 @@ pub fn print_escpos(data: &[u8], printer_name: Option<&str>, device_path: Option
 fn image_to_escpos_raster_block(img: &image::ImageBuffer<Luma<u8>, Vec<u8>>) -> Vec<u8> {
     let w = img.width();
     let h = img.height();
-    let bpl = ((w + 7) / 8) as u32;  // bytes per line
+    let bpl = w.div_ceil(8); // bytes per line
 
     let mut data = Vec::new();
 
@@ -207,7 +217,7 @@ fn image_to_escpos_raster(img: &image::ImageBuffer<Luma<u8>, Vec<u8>>) -> Vec<u8
     data.extend_from_slice(&image_to_escpos_raster_block(img));
     // Подача паперу на 8 рядків перед обрізкою
     data.extend_from_slice(&[0x1B, 0x64, 0x08]); // ESC d 8
-    // Обрізка паперу (GS V m)
+                                                 // Обрізка паперу (GS V m)
     data.extend_from_slice(&[0x1D, 0x56, 0x00]); // GS V 0 — повна обрізка
 
     data
@@ -266,9 +276,7 @@ const PRINTER_MAX_WIDTH_DOTS: u32 = 384;
 /// (ширина 48мм — фізичне обмеження 58мм принтера, висота ТОЧНО 40мм).
 fn compute_label_target_size(width_mm: f64, height_mm: f64, dpi: u32) -> (u32, u32) {
     let dpi = dpi.max(1) as f64;
-    let target_w = ((width_mm * dpi / 25.4).round() as u32)
-        .min(PRINTER_MAX_WIDTH_DOTS)
-        .max(1);
+    let target_w = ((width_mm * dpi / 25.4).round() as u32).clamp(1, PRINTER_MAX_WIDTH_DOTS);
     let target_h = ((height_mm * dpi / 25.4).round() as u32).max(1);
     (target_w, target_h)
 }
@@ -299,6 +307,7 @@ fn compute_label_target_size(width_mm: f64, height_mm: f64, dpi: u32) -> (u32, u
 /// # Зворотна сумісність
 /// Виклики без `copies`/`auto_cut` працюють як раніше (copies=1, auto_cut=true) —
 /// командний шар підставляє дефолти через `Option::unwrap_or`.
+#[allow(clippy::too_many_arguments)] // API стабільне на етапі 0; рефакторинг у struct — наступні етапи
 pub fn print_raster_image(
     image_data: Vec<u8>,
     printer_name: Option<&str>,
@@ -406,7 +415,7 @@ pub fn print_raster_image(
         "[RUST] raster block: {} bytes ({} lines, bpl={})",
         raster_block.len(),
         img.height(),
-        (img.width() + 7) / 8
+        img.width().div_ceil(8)
     );
 
     let escpos_data = build_multi_copy_escpos(&raster_block, copies, auto_cut);
@@ -423,16 +432,13 @@ pub fn print_raster_image(
     print_escpos(&escpos_data, printer_name, device_path)
 }
 
-
 // ═════════════════════════════════════════════════════════════════════════
 // 5. ДОПОМІЖНІ ФУНКЦІЇ
 // ═════════════════════════════════════════════════════════════════════════
 
 /// Отримати список доступних принтерів
 pub fn get_printers() -> Result<Vec<String>, PrintError> {
-    let out = Command::new("lpstat")
-        .arg("-e")
-        .output()?;
+    let out = Command::new("lpstat").arg("-e").output()?;
 
     if !out.status.success() {
         return Err(PrintError::General("lpstat не знайдено".to_string()));
@@ -464,7 +470,10 @@ mod tests {
         let err = PrintError::PortNotFound;
         assert!(err.to_string().contains("Порт принтера не знайдено"));
 
-        let err = PrintError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "файл не знайдено"));
+        let err = PrintError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "файл не знайдено",
+        ));
         assert!(err.to_string().contains("файл не знайдено"));
 
         let err = PrintError::LpFailed("lp: printer not found".to_string());
@@ -481,8 +490,11 @@ mod tests {
 
         // Рівно 1 заголовок GS v 0
         let gs_v0_count = data.windows(3).filter(|w| w == &[0x1D, 0x76, 0x30]).count();
-        assert_eq!(gs_v0_count, 1,
-            "Має бути РІВНО ОДИН заголовок GS v 0, знайдено {}", gs_v0_count);
+        assert_eq!(
+            gs_v0_count, 1,
+            "Має бути РІВНО ОДИН заголовок GS v 0, знайдено {}",
+            gs_v0_count
+        );
 
         let header_len: usize = 10;
         let footer_len: usize = 6;
@@ -573,10 +585,10 @@ mod tests {
         assert_eq!(
             data,
             vec![
-                0x1B, 0x40,                 // ESC @ — один раз на початку
+                0x1B, 0x40, // ESC @ — один раз на початку
                 0xAA, 0xBB, 0x1B, 0x64, 0x08, // копія 1 + подача
                 0xAA, 0xBB, 0x1B, 0x64, 0x08, // копія 2 + подача
-                0x1D, 0x56, 0x00,           // GS V 0 — обрізка після останньої
+                0x1D, 0x56, 0x00, // GS V 0 — обрізка після останньої
             ],
             "2 копії + обрізка: ESC@ + (block+feed)*2 + cut"
         );
@@ -591,10 +603,11 @@ mod tests {
         assert_eq!(
             data,
             vec![
-                0x1B, 0x40,                 // ESC @ — один раз на початку
+                0x1B, 0x40, // ESC @ — один раз на початку
                 0xAA, 0xBB, 0x1B, 0x64, 0x08, // копія 1 + подача
-                0xAA, 0xBB, 0x1B, 0x64, 0x08, // копія 2 + подача
-                // НЕМАЄ GS V 0 — обрізка вимкнена
+                0xAA, 0xBB, 0x1B, 0x64,
+                0x08, // копія 2 + подача
+                      // НЕМАЄ GS V 0 — обрізка вимкнена
             ],
             "2 копії без обрізки: ESC@ + (block+feed)*2, без cut"
         );
@@ -622,9 +635,9 @@ mod tests {
         let block = vec![0xAA];
 
         let cases = [
-            (0u32, 1usize),     // менше мінімуму → кламп до 1
-            (1u32, 1usize),     // норма
-            (50u32, 50usize),   // норма в межах ліміту
+            (0u32, 1usize),      // менше мінімуму → кламп до 1
+            (1u32, 1usize),      // норма
+            (50u32, 50usize),    // норма в межах ліміту
             (1000u32, 100usize), // більше максимуму → кламп до 100 (захист від OOM)
         ];
 
@@ -757,7 +770,10 @@ mod tests {
         // PNG 100x20, 2 копії, без обрізки — ланцюг має відпрацювати
         let png_bytes = create_test_png(100, 20, 0);
         let result = print_raster_image(png_bytes, None, None, 2, false, None, None, None);
-        eprintln!("print_raster_image(100x20, copies=2, auto_cut=false) = {:?}", result);
+        eprintln!(
+            "print_raster_image(100x20, copies=2, auto_cut=false) = {:?}",
+            result
+        );
     }
 
     #[test]

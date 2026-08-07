@@ -31,7 +31,9 @@ impl std::fmt::Display for CashDrawerError {
         match self {
             CashDrawerError::Io(e) => write!(f, "Помилка введення/виведення: {}", e),
             CashDrawerError::PortNotFound => write!(f, "Порт для грошової скриньки не знайдено"),
-            CashDrawerError::UnsupportedMethod => write!(f, "Непідтримуваний метод відкриття скриньки"),
+            CashDrawerError::UnsupportedMethod => {
+                write!(f, "Непідтримуваний метод відкриття скриньки")
+            }
             CashDrawerError::General(msg) => write!(f, "Помилка скриньки: {}", msg),
         }
     }
@@ -70,9 +72,7 @@ pub fn open_via_printer(device_path: &str) -> Result<(), CashDrawerError> {
     let command = escpos_open_command(0, 0x32); // drawer 1, 50ms
 
     // Пробуємо відкрити як файл (Linux: /dev/usb/lp*, /dev/ttyUSB*)
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)?;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
 
     file.write_all(&command)?;
     file.flush()?;
