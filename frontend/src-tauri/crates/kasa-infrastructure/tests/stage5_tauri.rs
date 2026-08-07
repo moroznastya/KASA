@@ -51,13 +51,13 @@ fn print_receipt_to_mock_device() {
     // ── 3. Реальний конвеєр друку (2 копії, з обрізкою).
     kasa_infrastructure::print::print_raster_image(
         png,
-        None,                          // printer_name: без CUPS (мок-пристрій)
+        None,                             // printer_name: без CUPS (мок-пристрій)
         Some(mock_dev.to_str().unwrap()), // device_path → мок-файл
-        2,                             // copies
-        true,                          // auto_cut
-        None,                          // width_mm (чек, не етикетка)
-        None,                          // height_mm
-        None,                          // dpi (дефолт 203)
+        2,                                // copies
+        true,                             // auto_cut
+        None,                             // width_mm (чек, не етикетка)
+        None,                             // height_mm
+        None,                             // dpi (дефолт 203)
     )
     .expect("друк у мок-пристрій не впав");
 
@@ -75,10 +75,7 @@ fn print_receipt_to_mock_device() {
     );
 
     // ESC d 8 — подача паперу ПІСЛЯ КОЖНОЇ копії (copies=2 → 2 рази).
-    let feeds = data
-        .windows(3)
-        .filter(|w| *w == [0x1B, 0x64, 0x08])
-        .count();
+    let feeds = data.windows(3).filter(|w| *w == [0x1B, 0x64, 0x08]).count();
     assert_eq!(feeds, 2, "2 копії → 2 подачі паперу, знайдено {feeds}");
 
     // GS V 0 — обрізка паперу в кінці (auto_cut=true).
@@ -149,8 +146,8 @@ fn offline_queue_roundtrip_on_disk() {
 
     // ── Персистентність: «перезапуск» — новий екземпляр, той самий файл ──
     drop(db);
-    let db2 = kasa_infrastructure::offline::db::OfflineDatabase::new()
-        .expect("БД відкрита повторно");
+    let db2 =
+        kasa_infrastructure::offline::db::OfflineDatabase::new().expect("БД відкрита повторно");
     assert_eq!(
         db2.count_unsynced_receipts().expect("count"),
         1,
@@ -165,7 +162,11 @@ fn offline_queue_roundtrip_on_disk() {
             .expect("JSON валідний");
     assert_eq!(saved["payment_method"], "cash", "payment_method збережено");
     assert_eq!(saved["total_amount"], "200.00", "total_amount збережено");
-    assert_eq!(unsynced[0]["id"].as_i64(), Some(id), "id у списку збігається");
+    assert_eq!(
+        unsynced[0]["id"].as_i64(),
+        Some(id),
+        "id у списку збігається"
+    );
 
     // ── mark: синхронізовано → черга порожня ─────────────────────────
     db2.mark_receipt_synced(id).expect("mark_receipt_synced");
@@ -175,9 +176,7 @@ fn offline_queue_roundtrip_on_disk() {
         "черга порожня після синхронізації"
     );
 
-    eprintln!(
-        "[stage5] ✅ офлайн-черга: save id={id} → count=1 → on-disk → get → mark → count=0"
-    );
+    eprintln!("[stage5] ✅ офлайн-черга: save id={id} → count=1 → on-disk → get → mark → count=0");
 
     // ── Прибирання ────────────────────────────────────────────────────
     drop(db2);
