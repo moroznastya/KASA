@@ -20,3 +20,10 @@ thiserror = "2"
 tempfile = "3"
 base64 = "0.22"
 libc = "0.2"
+# ── Read-довідники (етап 1): sqlx-пул PostgreSQL, тільки читання ──────
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
+kasa-domain = { path = "../kasa-domain" }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
