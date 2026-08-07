@@ -1,0 +1,18 @@
+[package]
+name = "kasa-api"
+version = "0.1.0"
+edition = "2021"
+description = "Kasa POS — вбудований axum-фасад: HTTP gateway, reverse proxy → Python sidecar, JWT-валідація"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
