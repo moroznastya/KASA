@@ -92,6 +92,13 @@ impl IntoResponse for ReaddirsError {
             )
                 .into_response(),
             ReaddirsError::Service(kasa_application::ServiceError::Directory(
+                DirectoryError::NotFound(msg),
+            )) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            ReaddirsError::Service(kasa_application::ServiceError::Directory(
                 DirectoryError::Infrastructure(msg),
             )) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -101,6 +108,42 @@ impl IntoResponse for ReaddirsError {
             ReaddirsError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            // Етап 2: write-помилки можуть прийти через спільний ServiceError.
+            ReaddirsError::Service(kasa_application::ServiceError::Write(
+                kasa_domain::WriteError::NotFound(msg),
+            )) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            ReaddirsError::Service(kasa_application::ServiceError::Write(
+                kasa_domain::WriteError::Conflict(msg),
+            )) => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            ReaddirsError::Service(kasa_application::ServiceError::Write(
+                kasa_domain::WriteError::BadRequest(msg),
+            )) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            ReaddirsError::Service(kasa_application::ServiceError::Write(
+                kasa_domain::WriteError::Forbidden(msg),
+            )) => (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            ReaddirsError::Service(kasa_application::ServiceError::Write(
+                kasa_domain::WriteError::Infrastructure(msg),
+            )) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
             )
                 .into_response(),
         }

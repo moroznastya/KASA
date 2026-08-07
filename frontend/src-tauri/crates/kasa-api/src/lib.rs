@@ -17,13 +17,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod auth;
+pub mod crud;
 pub mod proxy;
 pub mod readdirs;
 pub mod router_v1;
 
 use std::sync::Arc;
 
-use kasa_domain::ReadDirectories;
+use kasa_domain::{ReadDirectories, WriteDirectories};
+use sqlx::PgPool;
 
 /// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
 pub const PYTHON_SIDECAR_PORT: u16 = 8001;
@@ -43,6 +45,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Rust-репозиторій довідників (Some лише коли KASA_RUST_READDIRS=1).
     pub readdirs: Option<Arc<dyn ReadDirectories + Send + Sync>>,
+    /// Rust-репозиторій запису (CRUD, етап 2) — той самий пул.
+    pub write: Option<Arc<dyn WriteDirectories + Send + Sync>>,
+    /// Пул PostgreSQL (для require_admin) — Some лише з флагом.
+    pub write_pool: Option<PgPool>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -62,23 +68,31 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Ініціалізує Rust-гілку довідників під feature-flag.
+/// Ініціалізує Rust-гілку довідників під feature-flag (етапи 1–2).
 ///
-/// Якщо `KASA_RUST_READDIRS=1` і БД доступна — повертає репозиторій.
-/// Якщо флаг вимкнено або БД недоступна — `None` (фасад лишається проксі,
-/// режим відкату на Python :8001 зберігається).
-async fn init_readdirs() -> Option<Arc<dyn ReadDirectories + Send + Sync>> {
+/// Якщо `KASA_RUST_READDIRS=1` і БД доступна — повертає (пул, read-репо,
+/// write-репо). Інакше `None` (фасад лишається проксі, режим відкату на
+/// Python :8001 зберігається).
+async fn init_readdirs() -> Option<(
+    PgPool,
+    Arc<dyn ReadDirectories + Send + Sync>,
+    Arc<dyn WriteDirectories + Send + Sync>,
+)> {
     if !env_flag(RUST_READDIRS_ENV) {
         return None;
     }
-    match kasa_infrastructure::db::connect_readonly_pool(5).await {
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
         Ok(pool) => {
             eprintln!(
-                "[kasa-api] {RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-only)"
+                "[kasa-api] {RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
             );
-            Some(Arc::new(
-                kasa_infrastructure::repositories::directories::SqlxDirectories::new(pool),
-            ) as Arc<dyn ReadDirectories + Send + Sync>)
+            let read = Arc::new(
+                kasa_infrastructure::repositories::directories::SqlxDirectories::new(pool.clone()),
+            ) as Arc<dyn ReadDirectories + Send + Sync>;
+            let write = Arc::new(
+                kasa_infrastructure::repositories::write::SqlxWriteDirectories::new(pool.clone()),
+            ) as Arc<dyn WriteDirectories + Send + Sync>;
+            Some((pool, read, write))
         }
         Err(e) => {
             eprintln!(
@@ -108,12 +122,18 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (readdirs, write, write_pool) = match init_readdirs().await {
+        Some((pool, read, write)) => (Some(read), Some(write), Some(pool)),
+        None => (None, None, None),
+    };
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
             .timeout(proxy::PROXY_TIMEOUT)
             .build()?,
-        readdirs: init_readdirs().await,
+        readdirs,
+        write,
+        write_pool,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

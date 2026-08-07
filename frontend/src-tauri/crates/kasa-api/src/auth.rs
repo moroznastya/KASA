@@ -27,7 +27,7 @@ pub enum AuthError {
 }
 
 /// Claims JWT-токена (мінімальний набір: sub + exp).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     /// Ідентифікатор суб'єкта (наприклад, user id).
     pub sub: String,
@@ -89,7 +89,7 @@ pub fn validate_jwt(token: &str, secret: &str) -> Result<Claims, AuthError> {
 /// Middleware JWT-валідації. /api/v1/health пропускається без токена.
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     if req.uri().path() == "/api/v1/health" {
@@ -101,10 +101,13 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    validate_jwt(token, &state.jwt_secret).map_err(|e| {
+    let claims = validate_jwt(token, &state.jwt_secret).map_err(|e| {
         eprintln!("[kasa-api] JWT відхилено: {e}");
         StatusCode::UNAUTHORIZED
     })?;
+    // Зберігаємо claims у extensions — CRUD-хендлери (етап 2) дістають sub
+    // через `Extension<Claims>` для перевірки ролі (require_admin).
+    req.extensions_mut().insert(claims);
     Ok(next.run(req).await)
 }
 
