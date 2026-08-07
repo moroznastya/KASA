@@ -85,8 +85,8 @@ impl PbSession {
 
     /// Надіслати JSON-повідомлення з NULL-термінатором (0x00)
     fn write(&mut self, payload: &serde_json::Value) -> Result<(), String> {
-        let mut data = serde_json::to_vec(payload)
-            .map_err(|e| format!("серіалізація JSON: {e}"))?;
+        let mut data =
+            serde_json::to_vec(payload).map_err(|e| format!("серіалізація JSON: {e}"))?;
         data.push(0x00);
         self.stream
             .set_write_timeout(Some(Duration::from_secs(5)))
@@ -112,9 +112,8 @@ impl PbSession {
                 if json_str.trim().is_empty() {
                     continue; // порожня дейтаграма (напр., початковий 0x00) — пропускаємо
                 }
-                return serde_json::from_str(&json_str).map_err(|e| {
-                    format!("некоректний JSON від термінала: {e}: {json_str}")
-                });
+                return serde_json::from_str(&json_str)
+                    .map_err(|e| format!("некоректний JSON від термінала: {e}: {json_str}"));
             }
             if Instant::now() >= deadline {
                 return Err("таймаут очікування відповіді термінала".to_string());
@@ -123,9 +122,7 @@ impl PbSession {
             match self.stream.read(&mut chunk) {
                 Ok(0) => return Err("термінал закрив з'єднання".to_string()),
                 Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
-                Err(e)
-                    if e.kind() == ErrorKind::TimedOut
-                        || e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == ErrorKind::TimedOut || e.kind() == ErrorKind::WouldBlock => {}
                 Err(e) => return Err(format!("помилка читання від термінала: {e}")),
             }
             if self.buf.len() > 256 * 1024 {
@@ -292,9 +289,7 @@ fn run_financial(
                 match msg_type {
                     "deviceBusy" => {
                         rst_close(&session.stream);
-                        return Err(
-                            "Термінал зайнятий іншою операцією (deviceBusy)".to_string()
-                        );
+                        return Err("Термінал зайнятий іншою операцією (deviceBusy)".to_string());
                     }
                     "methodNotImplemented" => {
                         rst_close(&session.stream);
@@ -505,7 +500,9 @@ mod tests {
 
     /// Міні-емулятор термінала ПриватБанку: приймає з'єднання, відповідає на
     /// хендшейк (PingDevice), читає один метод і відповідає terminal_response.
-    fn run_fake_terminal(terminal_response: serde_json::Value) -> (SocketAddr, thread::JoinHandle<()>) {
+    fn run_fake_terminal(
+        terminal_response: serde_json::Value,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -616,7 +613,8 @@ mod tests {
             "errorDescription": ""
         });
         let (addr, handle) = run_fake_terminal(resp);
-        let result = purchase(&addr.ip().to_string(), addr.port(), "Тест-термінал", 2000.0).unwrap();
+        let result =
+            purchase(&addr.ip().to_string(), addr.port(), "Тест-термінал", 2000.0).unwrap();
         handle.join().unwrap();
 
         assert!(result.success, "часткове схвалення — успішна операція");
@@ -661,7 +659,10 @@ mod tests {
         let (addr, handle) = run_fake_terminal(resp);
         let err = purchase(&addr.ip().to_string(), addr.port(), "Тест-термінал", 10.0).unwrap_err();
         handle.join().unwrap();
-        assert!(err.contains("deviceBusy"), "очікуємо помилку deviceBusy, отримали: {err}");
+        assert!(
+            err.contains("deviceBusy"),
+            "очікуємо помилку deviceBusy, отримали: {err}"
+        );
     }
 
     #[test]
@@ -681,7 +682,13 @@ mod tests {
             "errorDescription": ""
         });
         let (addr, handle) = run_fake_terminal(resp);
-        let result = withdrawal(&addr.ip().to_string(), addr.port(), "Тест-термінал", "131220").unwrap();
+        let result = withdrawal(
+            &addr.ip().to_string(),
+            addr.port(),
+            "Тест-термінал",
+            "131220",
+        )
+        .unwrap();
         handle.join().unwrap();
         assert!(result.success);
         assert_eq!(result.response_code.as_deref(), Some("0000"));

@@ -8,7 +8,7 @@
 //   - Синхронізації при поновленні з'єднання
 // ─────────────────────────────────────────────────────────────────────────────
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::PathBuf;
 
 /// Офлайн-база даних
@@ -27,8 +27,8 @@ impl OfflineDatabase {
                 .map_err(|e| format!("Не вдалося створити директорію БД: {}", e))?;
         }
 
-        let conn = Connection::open(&db_path)
-            .map_err(|e| format!("Не вдалося відкрити БД: {}", e))?;
+        let conn =
+            Connection::open(&db_path).map_err(|e| format!("Не вдалося відкрити БД: {}", e))?;
 
         let db = OfflineDatabase { conn };
         db.initialize_tables()?;
@@ -54,7 +54,9 @@ impl OfflineDatabase {
 
     /// Ініціалізація таблиць
     fn initialize_tables(&self) -> Result<(), String> {
-        self.conn.execute_batch("
+        self.conn
+            .execute_batch(
+                "
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
 
@@ -83,8 +85,9 @@ impl OfflineDatabase {
             -- Індекси
             CREATE INDEX IF NOT EXISTS idx_receipts_synced ON receipts(synced);
             CREATE INDEX IF NOT EXISTS idx_products_name ON products(id);
-        ")
-        .map_err(|e| format!("Помилка ініціалізації таблиць: {}", e))?;
+        ",
+            )
+            .map_err(|e| format!("Помилка ініціалізації таблиць: {}", e))?;
 
         Ok(())
     }
@@ -103,13 +106,15 @@ impl OfflineDatabase {
             .map_err(|e| format!("Помилка парсингу JSON: {}", e))?;
 
         // Починаємо транзакцію (ручний BEGIN, бо Connection::transaction вимагає &mut)
-        self.conn.execute("BEGIN", params![])
+        self.conn
+            .execute("BEGIN", params![])
             .map_err(|e| format!("Помилка початку транзакції: {}", e))?;
 
         let mut count = 0;
         let result = (|| {
             for product in &products {
-                let id = product["id"].as_str()
+                let id = product["id"]
+                    .as_str()
                     .or_else(|| product["barcode"].as_str())
                     .unwrap_or("unknown");
 
@@ -130,7 +135,8 @@ impl OfflineDatabase {
         match result {
             Ok(c) => {
                 // Фіксуємо транзакцію — всі вставки однією операцією
-                self.conn.execute("COMMIT", params![])
+                self.conn
+                    .execute("COMMIT", params![])
                     .map_err(|e| format!("Помилка COMMIT: {}", e))?;
                 Ok(c)
             }
@@ -150,58 +156,67 @@ impl OfflineDatabase {
                 "SELECT data FROM products WHERE data LIKE ?1 ORDER BY updated_at DESC LIMIT ?2"
             ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-            let rows = stmt.query_map(params![pattern, limit as i64], |row| {
-                let data: String = row.get(0)?;
-                Ok(data)
-            }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+            let rows = stmt
+                .query_map(params![pattern, limit as i64], |row| {
+                    let data: String = row.get(0)?;
+                    Ok(data)
+                })
+                .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
             let mut result = Vec::new();
             for row in rows {
-                if let Ok(data) = row {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
-                        result.push(val);
-                    }
-                }
+                let Ok(data) = row else { continue };
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) else {
+                    continue;
+                };
+                result.push(val);
             }
             result
         } else {
-            let mut stmt = self.conn.prepare(
-                "SELECT data FROM products ORDER BY updated_at DESC LIMIT ?1"
-            ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT data FROM products ORDER BY updated_at DESC LIMIT ?1")
+                .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-            let rows = stmt.query_map(params![limit as i64], |row| {
-                let data: String = row.get(0)?;
-                Ok(data)
-            }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| {
+                    let data: String = row.get(0)?;
+                    Ok(data)
+                })
+                .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
             let mut result = Vec::new();
             for row in rows {
-                if let Ok(data) = row {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
-                        result.push(val);
-                    }
-                }
+                let Ok(data) = row else { continue };
+                let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) else {
+                    continue;
+                };
+                result.push(val);
             }
             result
         };
 
-        serde_json::to_string(&products)
-            .map_err(|e| format!("Помилка серіалізації: {}", e))
+        serde_json::to_string(&products).map_err(|e| format!("Помилка серіалізації: {}", e))
     }
 
     /// Очистити кеш товарів
     pub fn clear_product_cache(&self) -> Result<usize, String> {
-        let count = self.conn.execute("DELETE FROM products", [])
+        let count = self
+            .conn
+            .execute("DELETE FROM products", [])
             .map_err(|e| format!("Помилка очищення кешу товарів: {}", e))?;
         Ok(count)
     }
 
     /// Отримати кількість кешованих товарів
     pub fn get_product_count(&self) -> Result<usize, String> {
-        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM products")
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM products")
             .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-        let count: i64 = stmt.query_row([], |row| row.get(0))
+        let count: i64 = stmt
+            .query_row([], |row| row.get(0))
             .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
         Ok(count as usize)
@@ -213,10 +228,12 @@ impl OfflineDatabase {
 
     /// Зберегти чек локально
     pub fn save_receipt(&self, receipt_json: &str) -> Result<i64, String> {
-        self.conn.execute(
-            "INSERT INTO receipts (data, synced) VALUES (?1, 0)",
-            params![receipt_json],
-        ).map_err(|e| format!("Помилка збереження чека: {}", e))?;
+        self.conn
+            .execute(
+                "INSERT INTO receipts (data, synced) VALUES (?1, 0)",
+                params![receipt_json],
+            )
+            .map_err(|e| format!("Помилка збереження чека: {}", e))?;
 
         Ok(self.conn.last_insert_rowid())
     }
@@ -228,44 +245,47 @@ impl OfflineDatabase {
 
     /// Отримати несинхронізовані чеки (JSON рядок)
     pub fn get_unsynced_receipts_json(&self) -> Result<String, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC"
-        ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC")
+            .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-        let rows = stmt.query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let data: String = row.get(1)?;
-            Ok(serde_json::json!({"id": id, "data": data}))
-        }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let data: String = row.get(1)?;
+                Ok(serde_json::json!({"id": id, "data": data}))
+            })
+            .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
         let mut receipts = Vec::new();
         for row in rows {
-            if let Ok(receipt) = row {
-                receipts.push(receipt);
-            }
+            let Ok(receipt) = row else { continue };
+            receipts.push(receipt);
         }
 
-        serde_json::to_string(&receipts)
-            .map_err(|e| format!("Помилка серіалізації: {}", e))
+        serde_json::to_string(&receipts).map_err(|e| format!("Помилка серіалізації: {}", e))
     }
 
     /// Отримати несинхронізовані чеки (Vec<Value>)
     pub fn get_unsynced_receipts(&self) -> Result<Vec<serde_json::Value>, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC"
-        ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, data FROM receipts WHERE synced = 0 ORDER BY created_at ASC")
+            .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-        let rows = stmt.query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let data: String = row.get(1)?;
-            Ok(serde_json::json!({"id": id, "data": data}))
-        }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let data: String = row.get(1)?;
+                Ok(serde_json::json!({"id": id, "data": data}))
+            })
+            .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
         let mut receipts = Vec::new();
         for row in rows {
-            if let Ok(receipt) = row {
-                receipts.push(receipt);
-            }
+            let Ok(receipt) = row else { continue };
+            receipts.push(receipt);
         }
 
         Ok(receipts)
@@ -273,10 +293,12 @@ impl OfflineDatabase {
 
     /// Позначити чек як синхронізований
     pub fn mark_synced(&self, receipt_id: i64) -> Result<(), String> {
-        self.conn.execute(
-            "UPDATE receipts SET synced = 1 WHERE id = ?1",
-            params![receipt_id],
-        ).map_err(|e| format!("Помилка оновлення: {}", e))?;
+        self.conn
+            .execute(
+                "UPDATE receipts SET synced = 1 WHERE id = ?1",
+                params![receipt_id],
+            )
+            .map_err(|e| format!("Помилка оновлення: {}", e))?;
 
         Ok(())
     }
@@ -288,10 +310,13 @@ impl OfflineDatabase {
 
     /// Кількість несинхронізованих чеків
     pub fn count_unsynced_receipts(&self) -> Result<usize, String> {
-        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM receipts WHERE synced = 0")
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM receipts WHERE synced = 0")
             .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-        let count: i64 = stmt.query_row([], |row| row.get(0))
+        let count: i64 = stmt
+            .query_row([], |row| row.get(0))
             .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
         Ok(count as usize)
@@ -303,11 +328,13 @@ impl OfflineDatabase {
 
     /// Зберегти налаштування
     pub fn save_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        self.conn.execute(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')",
-            params![key, value],
-        ).map_err(|e| format!("Помилка збереження налаштування: {}", e))?;
+                params![key, value],
+            )
+            .map_err(|e| format!("Помилка збереження налаштування: {}", e))?;
 
         Ok(())
     }
@@ -319,14 +346,17 @@ impl OfflineDatabase {
 
     /// Отримати налаштування
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value FROM settings WHERE key = ?1"
-        ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
-        let mut rows = stmt.query_map(params![key], |row| {
-            let value: String = row.get(0)?;
-            Ok(value)
-        }).map_err(|e| format!("Помилка виконання запиту: {}", e))?;
+        let mut rows = stmt
+            .query_map(params![key], |row| {
+                let value: String = row.get(0)?;
+                Ok(value)
+            })
+            .map_err(|e| format!("Помилка виконання запиту: {}", e))?;
 
         match rows.next() {
             Some(Ok(value)) => Ok(Some(value)),
@@ -337,8 +367,8 @@ impl OfflineDatabase {
     /// Отримати розмір файлу БД
     pub fn get_db_size(&self) -> Result<u64, String> {
         let path = Self::get_db_path_inner()?;
-        let metadata = std::fs::metadata(&path)
-            .map_err(|e| format!("Помилка отримання розміру БД: {}", e))?;
+        let metadata =
+            std::fs::metadata(&path).map_err(|e| format!("Помилка отримання розміру БД: {}", e))?;
         Ok(metadata.len())
     }
 }

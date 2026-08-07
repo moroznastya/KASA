@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # CORS
     # ──────────────────────────────────────────────
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,tauri://localhost,http://tauri.localhost"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000,tauri://localhost,http://tauri.localhost"
 
     @property
     def CORS_ORIGINS_LIST(self) -> list[str]:

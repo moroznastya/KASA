@@ -31,7 +31,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-use super::pb_protocol;
+use crate::terminal;
 
 // ── Структури (контракт з фронтендом) ──────────────────────────────────────
 
@@ -152,8 +152,7 @@ fn load_devices(app: &AppHandle) -> Result<Vec<DeviceConfig>, String> {
 
 fn save_devices(app: &AppHandle, devices: &[DeviceConfig]) -> Result<(), String> {
     let path = devices_path(app)?;
-    let raw =
-        serde_json::to_string_pretty(devices).map_err(|e| format!("серіалізація: {e}"))?;
+    let raw = serde_json::to_string_pretty(devices).map_err(|e| format!("серіалізація: {e}"))?;
     std::fs::write(&path, raw).map_err(|e| format!("запис devices.json: {e}"))
 }
 
@@ -175,12 +174,15 @@ fn set_status(
 }
 
 fn emit_status(app: &AppHandle, id: &str, status: &Arc<Mutex<DeviceStatus>>) {
-    let payload = status.lock().map(|s| s.clone()).unwrap_or_else(|_| DeviceStatus {
-        id: id.to_string(),
-        status: "error".to_string(),
-        error: Some("статус недоступний".to_string()),
-        last_weight: None,
-    });
+    let payload = status
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| DeviceStatus {
+            id: id.to_string(),
+            status: "error".to_string(),
+            error: Some("статус недоступний".to_string()),
+            last_weight: None,
+        });
     let _ = app.emit("device-status-changed", payload);
 }
 
@@ -262,7 +264,14 @@ fn spawn_scale(
                     acc.push_str(&String::from_utf8_lossy(&buf[..n]));
                     // обмежуємо буфер, щоб не розрісся
                     if acc.len() > 1024 {
-                        acc = acc.chars().rev().take(512).collect::<String>().chars().rev().collect();
+                        acc = acc
+                            .chars()
+                            .rev()
+                            .take(512)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect();
                     }
                     if let Some(weight) = parse_weight(&acc) {
                         acc.clear();
@@ -336,7 +345,12 @@ fn spawn_terminal(
         let socket_addr: std::net::SocketAddr = match addr.parse() {
             Ok(a) => a,
             Err(e) => {
-                set_status(&status, "error", Some(format!("некоректна адреса {addr}: {e}")), None);
+                set_status(
+                    &status,
+                    "error",
+                    Some(format!("некоректна адреса {addr}: {e}")),
+                    None,
+                );
                 emit_status(&app, &id, &status);
                 return;
             }
@@ -411,7 +425,12 @@ fn spawn_printer_monitor(
                     set_status(&status, "connected", None, None);
                 }
                 Some(p) if p.status == "disabled" => {
-                    set_status(&status, "error", Some("Принтер вимкнено в CUPS".to_string()), None);
+                    set_status(
+                        &status,
+                        "error",
+                        Some("Принтер вимкнено в CUPS".to_string()),
+                        None,
+                    );
                 }
                 Some(p) => {
                     set_status(
@@ -497,7 +516,14 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
                 .get("baudRate")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(9600) as u32;
-            spawn_scale(app.clone(), cfg.id.clone(), port, baud_rate, status.clone(), stop.clone())
+            spawn_scale(
+                app.clone(),
+                cfg.id.clone(),
+                port,
+                baud_rate,
+                status.clone(),
+                stop.clone(),
+            )
         }
         "terminal" => {
             let ip = cfg
@@ -511,7 +537,14 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
                 .get("tcpPort")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(2024) as u16;
-            spawn_terminal(app.clone(), cfg.id.clone(), ip, tcp_port, status.clone(), stop.clone())
+            spawn_terminal(
+                app.clone(),
+                cfg.id.clone(),
+                ip,
+                tcp_port,
+                status.clone(),
+                stop.clone(),
+            )
         }
         "printer" => {
             let printer_name = cfg
@@ -600,7 +633,10 @@ pub fn get_devices(app: AppHandle) -> Result<Vec<DeviceConfig>, String> {
 /// Зберегти конфіг пристрою. Якщо id порожній — генерує uuid v4.
 /// Якщо enabled — автоматично підключає у фоновому потоці.
 #[tauri::command]
-pub fn save_device_config(app: AppHandle, mut config: DeviceConfig) -> Result<DeviceConfig, String> {
+pub fn save_device_config(
+    app: AppHandle,
+    mut config: DeviceConfig,
+) -> Result<DeviceConfig, String> {
     if config.id.trim().is_empty() {
         config.id = Uuid::new_v4().to_string();
     }
@@ -685,7 +721,10 @@ pub fn get_devices_status(app: AppHandle) -> Result<Vec<DeviceStatus>, String> {
 /// Якщо lpstat відсутній або помилка — порожній список (Linux без CUPS не падає).
 #[tauri::command]
 pub fn get_system_printers() -> Result<Vec<PrinterInfo>, String> {
-    let output = match std::process::Command::new("lpstat").args(["-p", "-d"]).output() {
+    let output = match std::process::Command::new("lpstat")
+        .args(["-p", "-d"])
+        .output()
+    {
         Ok(o) => o,
         Err(_) => return Ok(Vec::new()),
     };
@@ -754,13 +793,17 @@ pub fn get_scanners() -> Result<Vec<ScannerInfo>, String> {
         // Формат SANE:  device `DEVICE_ID' is a DESCRIPTION
         // відкриваюча лапка — зворотній апостроф `, закриваюча — звичайний '
         let Some(open) = line.find('`') else { continue };
-        let Some(close_rel) = line[open + 1..].find('\'') else { continue };
+        let Some(close_rel) = line[open + 1..].find('\'') else {
+            continue;
+        };
         let close = open + 1 + close_rel;
         let device = line[open + 1..close].trim().to_string();
 
         // після закриваючої лапки йде " is a DESCRIPTION"
         let rest = &line[close..];
-        let Some(is_a) = rest.find(" is a ") else { continue };
+        let Some(is_a) = rest.find(" is a ") else {
+            continue;
+        };
         let name = rest[is_a + " is a ".len()..].trim().to_string();
 
         if !device.is_empty() && !name.is_empty() {
@@ -768,6 +811,49 @@ pub fn get_scanners() -> Result<Vec<ScannerInfo>, String> {
         }
     }
     Ok(scanners)
+}
+
+/// Перелік USB-пристроїв (для налагодження та автовиявлення).
+/// Перенесено з commands/system.rs::get_usb_devices (етап 0, без зміни поведінки).
+pub fn list_usb_devices() -> Vec<serde_json::Value> {
+    let mut devices = Vec::new();
+
+    #[cfg(unix)]
+    {
+        // Читаємо /sys/bus/usb/devices/
+        if let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices/") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Пропускаємо інтерфейси (usb1, usb2, ...)
+                if name.starts_with("usb") || !name.contains('-') || name == "devices" {
+                    continue;
+                }
+
+                let uevent_path = entry.path().join("uevent");
+                if let Ok(content) = std::fs::read_to_string(&uevent_path) {
+                    let mut product = String::new();
+                    let mut vendor = String::new();
+
+                    for line in content.lines() {
+                        if let Some(val) = line.strip_prefix("PRODUCT=") {
+                            product = val.to_string();
+                        }
+                        if let Some(val) = line.strip_prefix("DEVICE=") {
+                            vendor = val.to_string();
+                        }
+                    }
+
+                    devices.push(serde_json::json!({
+                        "name": name,
+                        "product": product,
+                        "device": vendor,
+                    }));
+                }
+            }
+        }
+    }
+
+    devices
 }
 
 /// Автовиявлення всіх підключених пристроїв:
@@ -778,7 +864,7 @@ pub fn get_detected_devices() -> Result<DetectedDevices, String> {
     let serial_ports = serialport::available_ports()
         .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
         .unwrap_or_default();
-    let usb_raw = crate::commands::system::get_usb_devices().unwrap_or_default();
+    let usb_raw = list_usb_devices();
     let usb_devices = usb_raw
         .into_iter()
         .filter_map(|v| serde_json::from_value::<UsbDevice>(v).ok())
@@ -809,8 +895,8 @@ pub fn test_connection(device_type: String, config: serde_json::Value) -> Result
             let addr = format!("{ip}:{tcp_port}")
                 .parse::<std::net::SocketAddr>()
                 .map_err(|e| format!("некоректна адреса {ip}:{tcp_port}: {e}"))?;
-            let stream =
-                TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| e.to_string())?;
+            let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+                .map_err(|e| e.to_string())?;
             drop(stream);
             Ok(true)
         }
@@ -836,7 +922,6 @@ pub fn test_connection(device_type: String, config: serde_json::Value) -> Result
     }
 }
 
-
 /// Знайти підключений термінал та його адресу (IP:port) з конфігурації каси
 fn find_terminal(app: &AppHandle) -> Result<(String, String, u16), String> {
     let devices = load_devices(app)?;
@@ -855,7 +940,8 @@ fn find_terminal(app: &AppHandle) -> Result<(String, String, u16), String> {
         .config
         .get("tcpPort")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| format!("Термінал «{}»: не вказано порт", terminal.name))? as u16;
+        .ok_or_else(|| format!("Термінал «{}»: не вказано порт", terminal.name))?
+        as u16;
     Ok((terminal.name.clone(), ip.to_string(), tcp_port))
 }
 
@@ -874,11 +960,14 @@ fn terminal_op_guard() -> std::sync::MutexGuard<'static, ()> {
 /// Оплата карткою: передати суму на термінал ПриватБанку (метод Purchase).
 /// Викликається з каси при виборі способу оплати «Картка».
 #[tauri::command]
-pub fn terminal_payment(app: AppHandle, amount: f64) -> Result<pb_protocol::TerminalPaymentResult, String> {
+pub fn terminal_payment(
+    app: AppHandle,
+    amount: f64,
+) -> Result<terminal::TerminalPaymentResult, String> {
     let (name, ip, port) = find_terminal(&app)?;
     // Монопольність: чекаємо завершення попередньої операції
     let _guard = terminal_op_guard();
-    pb_protocol::purchase(&ip, port, &name, amount)
+    terminal::purchase(&ip, port, &name, amount)
 }
 
 /// Повернення коштів на картку (метод Refund). rrn — RRN оригінальної
@@ -888,10 +977,10 @@ pub fn terminal_refund(
     app: AppHandle,
     amount: f64,
     rrn: String,
-) -> Result<pb_protocol::TerminalPaymentResult, String> {
+) -> Result<terminal::TerminalPaymentResult, String> {
     let (name, ip, port) = find_terminal(&app)?;
     let _guard = terminal_op_guard();
-    pb_protocol::refund(&ip, port, &name, amount, &rrn)
+    terminal::refund(&ip, port, &name, amount, &rrn)
 }
 
 /// Скасування транзакції в межах поточного пакета (метод Withdrawal).
@@ -900,16 +989,16 @@ pub fn terminal_refund(
 pub fn terminal_cancel(
     app: AppHandle,
     invoice_number: String,
-) -> Result<pb_protocol::TerminalPaymentResult, String> {
+) -> Result<terminal::TerminalPaymentResult, String> {
     let (name, ip, port) = find_terminal(&app)?;
     let _guard = terminal_op_guard();
-    pb_protocol::withdrawal(&ip, port, &name, &invoice_number)
+    terminal::withdrawal(&ip, port, &name, &invoice_number)
 }
 
 /// Перевірка зв'язку з терміналом (хендшейк PingDevice + Identify).
 #[tauri::command]
-pub fn terminal_ping(app: AppHandle) -> Result<pb_protocol::TerminalPingResult, String> {
+pub fn terminal_ping(app: AppHandle) -> Result<terminal::TerminalPingResult, String> {
     let (_, ip, port) = find_terminal(&app)?;
     let _guard = terminal_op_guard();
-    pb_protocol::ping(&ip, port)
+    terminal::ping(&ip, port)
 }

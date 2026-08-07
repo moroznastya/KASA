@@ -57,11 +57,11 @@ alembic upgrade head
 python seed.py
 
 # Запустіть сервер
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
-Backend буде доступний за адресою: **http://localhost:8000**
-Swagger документація: **http://localhost:8000/docs**
+Backend буде доступний за адресою: **http://127.0.0.1:8001**
+Swagger документація: **http://127.0.0.1:8001/docs**
 
 ### 4. Запуск Frontend
 

@@ -12,8 +12,8 @@
 //   Старі виклики frontend без цих параметрів працюють як раніше.
 // ─────────────────────────────────────────────────────────────────────────────
 
+use crate::cash_drawer;
 use crate::print;
-use crate::utils::cash_drawer;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Структури даних
@@ -181,7 +181,6 @@ pub fn print_raster_image(
     Ok(ok_result("OK".to_string(), None))
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 🖨️ ДРУК HTML (A4) — НАТИВНИЙ ДРУК ЧЕРЕЗ СИСТЕМНИЙ ДІАЛОГ (webkit2gtk)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +225,7 @@ pub(crate) fn store_print_html(token: &str, html: String) {
 }
 
 /// Отримати HTML з реєстру за токеном (для протокол-хендлера)
-pub(crate) fn take_print_html(token: &str) -> String {
+pub fn take_print_html(token: &str) -> String {
     PRINT_HTML_REGISTRY
         .lock()
         .map(|map| map.get(token).cloned().unwrap_or_default())
@@ -268,10 +267,7 @@ pub struct PrintHtmlData {
 /// використовується як підказка/лог. Silent-друк на конкретний принтер БЕЗ
 /// діалогу — майбутнє розширення через GtkPrintOperation (FFI, webkit2gtk-sys).
 #[tauri::command]
-pub fn print_html(
-    app: tauri::AppHandle,
-    data: PrintHtmlData,
-) -> Result<PrintResult, String> {
+pub fn print_html(app: tauri::AppHandle, data: PrintHtmlData) -> Result<PrintResult, String> {
     // Унікальний токен — дозволяє друкувати кілька документів поспіль
     let token = uuid::Uuid::new_v4().to_string();
     let label = format!("print-html-{}", token);
@@ -293,38 +289,36 @@ pub fn print_html(
         .map_err(|e| format!("Не вдалося сформувати URL друку: {}", e))?;
 
     // ── 3. Створюємо WebviewWindow з HTML через кастомний протокол ───────
-    let window = tauri::WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::CustomProtocol(url),
-    )
-    .title("Kasa POS — Друк A4")
-    .inner_size(800.0, 600.0)
-    .center()
-    .decorations(false)
-    .resizable(false)
-    .skip_taskbar(true)
-    .visible(true)
-    .on_page_load(|webview, payload| {
-        use tauri::webview::PageLoadEvent;
-        if payload.event() == PageLoadEvent::Finished {
-            // Невелика затримка (200мс) — дочекатись остаточного layout
-            // (шрифти, зображення, CSS Grid).
-            //
-            // window.print() блокує JS-потік webkit, поки діалог друку
-            // відкритий, тому window.close() виконається одразу ПІСЛЯ
-            // завершення друку (або закриття діалогу користувачем).
-            let js = "setTimeout(() => { try { window.print(); } finally { window.close(); } }, 200);";
-            if let Err(e) = webview.eval(js) {
-                eprintln!("[KASA] print_html: помилка eval window.print(): {}", e);
-            }
-        }
-    })
-    .build()
-    .map_err(|e| {
-        remove_print_html(&token);
-        format!("Не вдалося створити вікно друку: {}", e)
-    })?;
+    let window =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::CustomProtocol(url))
+            .title("Kasa POS — Друк A4")
+            .inner_size(800.0, 600.0)
+            .center()
+            .decorations(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(true)
+            .on_page_load(|webview, payload| {
+                use tauri::webview::PageLoadEvent;
+                if payload.event() == PageLoadEvent::Finished {
+                    // Невелика затримка (200мс) — дочекатись остаточного layout
+                    // (шрифти, зображення, CSS Grid).
+                    //
+                    // window.print() блокує JS-потік webkit, поки діалог друку
+                    // відкритий, тому window.close() виконається одразу ПІСЛЯ
+                    // завершення друку (або закриття діалогу користувачем).
+                    let js =
+                "setTimeout(() => { try { window.print(); } finally { window.close(); } }, 200);";
+                    if let Err(e) = webview.eval(js) {
+                        eprintln!("[KASA] print_html: помилка eval window.print(): {}", e);
+                    }
+                }
+            })
+            .build()
+            .map_err(|e| {
+                remove_print_html(&token);
+                format!("Не вдалося створити вікно друку: {}", e)
+            })?;
 
     // ── 4. Watchdog: гарантоване закриття вікна та очищення реєстру ──────
     // Якщо print-діалог не відкрився або JS window.close() не спрацював —
@@ -405,8 +399,7 @@ pub fn save_receipt_image(image_base64: String) -> Result<String, String> {
     let filepath = downloads_dir.join(&filename);
 
     // Зберігаємо файл
-    std::fs::write(&filepath, &image_bytes)
-        .map_err(|e| format!("Помилка запису файлу: {}", e))?;
+    std::fs::write(&filepath, &image_bytes).map_err(|e| format!("Помилка запису файлу: {}", e))?;
 
     eprintln!("[KASA] ✅ Збережено чек: {:?}", filepath);
 

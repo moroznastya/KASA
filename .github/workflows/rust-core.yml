@@ -1,0 +1,53 @@
+# ============================================================================
+# Kasa POS — Rust Core CI (етап 0.4 міграції Kasa → Rust)
+# ============================================================================
+# Стратегія: docs/RUST_MIGRATION_PLAN.md §6 (CI)
+#   rust-core: cargo fmt --check → cargo clippy -D warnings → cargo test
+# Запускається при push/PR у main та feat/rust-migration.
+# Робоча директорія: frontend/src-tauri (workspace: crates/kasa-domain,
+# kasa-application, kasa-infrastructure, kasa-api + Tauri shell).
+# sqlx: НЕ використовується на етапі 0 — крок sqlx prepare не потрібен.
+# ============================================================================
+
+name: 🦀 Rust Core — workspace
+
+on:
+  push:
+    branches: [main, feat/rust-migration]
+  pull_request:
+    branches: [main, feat/rust-migration]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: frontend/src-tauri
+
+jobs:
+  rust-core:
+    name: fmt → clippy → test
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 💾 Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - name: ✨ cargo fmt --check
+        run: cargo fmt --check
+
+      - name: 🧹 cargo clippy (warnings = errors)
+        run: cargo clippy -- -D warnings
+
+      - name: 🧪 cargo test
+        run: cargo test

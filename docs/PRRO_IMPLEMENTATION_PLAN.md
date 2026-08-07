@@ -424,7 +424,7 @@ backend/app/
 ### Стан запуску сервісів (2026-08-01, вечір)
 
 **Сервери запущено (правильні проєкти!):**
-- Backend: `http://localhost:8000` (uvicorn, backend/venv, з ПРРО API) — лог `/tmp/kasa_backend.log`
+- Backend: `http://127.0.0.1:8001` (uvicorn, backend/venv, з ПРРО API) — лог `/tmp/kasa_backend.log`
 - Frontend: `http://localhost:5173` (vite dev, frontend/) — меню «ПРРО» доступне
 
 **Виправлені критичні баги (коміт `23035f9`):**
