@@ -13,6 +13,7 @@ pub mod auth;
 pub mod debtors;
 pub mod documents;
 pub mod dto;
+pub mod invoices;
 pub mod ledger;
 pub mod pos;
 pub mod repos;
@@ -46,6 +47,7 @@ pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
     ProductBriefDto, ProductDto, ProductImageDto, SupplierDto,
 };
+pub use invoices::{InvoicesError, InvoicesV1Service, InvoicesV2Service};
 pub use ledger::{
     LedgerBalanceV1Dto, LedgerBalanceV2Dto, LedgerEntriesQuery, LedgerEntryInput, LedgerEntryV1Dto,
     LedgerEntryV2Dto, LedgerError, LedgerHistoryV1Dto, LedgerListV2Dto, LedgerService,

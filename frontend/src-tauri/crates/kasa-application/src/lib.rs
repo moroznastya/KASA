@@ -9,6 +9,7 @@ pub mod services;
 
 pub use services::debtors::DebtorServiceFacade;
 pub use services::documents::DocumentsServiceFacade;
+pub use services::invoices::{InvoicesV1Facade, InvoicesV2Facade};
 pub use services::pos::PosServiceFacade;
 pub use services::readdirs::{ReadDirectoryService, ServiceError};
 pub use services::write::WriteService;

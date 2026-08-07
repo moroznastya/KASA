@@ -2,6 +2,8 @@ pub mod auth;
 pub mod debtors;
 pub mod directories;
 pub mod documents;
+pub mod invoices;
 pub mod ledger;
 pub mod pos;
+pub mod price_tag;
 pub mod write;

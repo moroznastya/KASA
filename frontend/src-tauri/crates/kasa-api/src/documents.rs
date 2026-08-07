@@ -192,7 +192,7 @@ pub struct ListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TypeQuery {
-    pub document_type: String,
+    pub document_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,10 +388,19 @@ pub async fn delete(
     Query(tq): Query<TypeQuery>,
 ) -> Result<StatusCode, DocErr> {
     require_admin_docs(&state, &claims).await?;
+    let Some(dt) = tq.document_type else {
+        // Python: document_type: str = Query(...) — обов'язковий → 422.
+        return Err(DocErr::Validation(json!({"detail": [{
+            "type": "missing",
+            "loc": ["query", "document_type"],
+            "msg": "Field required",
+            "input": null,
+        }]})));
+    };
     let id = path_uuid(id, "document_id")?;
     let repo = doc_repo(&state)?;
     let svc = DocumentsServiceFacade::new(repo);
-    svc.delete(id, &tq.document_type).await?;
+    svc.delete(id, &dt).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -406,7 +415,15 @@ pub async fn copy(
     let id = path_uuid(id, "document_id")?;
     let repo = doc_repo(&state)?;
     let svc = DocumentsServiceFacade::new(repo);
-    Ok(Json(svc.copy(id, &tq.document_type, user_id).await?))
+    let Some(dt) = tq.document_type else {
+        return Err(DocErr::Validation(json!({"detail": [{
+            "type": "missing",
+            "loc": ["query", "document_type"],
+            "msg": "Field required",
+            "input": null,
+        }]})));
+    };
+    Ok(Json(svc.copy(id, &dt, user_id).await?))
 }
 
 /// GET /api/v1/documents/export — Excel/CSV (Python export_documents).
@@ -534,10 +551,19 @@ pub async fn print(
             kasa_domain::AuthError::Forbidden("Користувач деактивований".to_string()),
         )));
     }
+    let Some(dt) = tq.document_type else {
+        // Python: document_type: str = Query(...) — обов'язковий → 422.
+        return Err(DocErr::Validation(json!({"detail": [{
+            "type": "missing",
+            "loc": ["query", "document_type"],
+            "msg": "Field required",
+            "input": null,
+        }]})));
+    };
     let id = path_uuid(id, "document_id")?;
     let doc_repo = doc_repo(&state)?;
     let svc = DocumentsServiceFacade::new(doc_repo);
-    Ok(Json(svc.print(id, &tq.document_type).await?))
+    Ok(Json(svc.print(id, &dt).await?))
 }
 
 #[derive(Debug, Deserialize)]

@@ -27,6 +27,7 @@ kasa-domain = { path = "../kasa-domain" }
 kasa-prro = { path = "../kasa-prro" }
 async-trait = "0.1"
 bcrypt = "0.19.3"
+regex = "1.13.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }

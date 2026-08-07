@@ -119,7 +119,7 @@ impl SqlxDocuments {
             r#"SELECT ii.id, ii.invoice_id, ii.product_id, ii.quantity::text, ii.price::text,
                       ii.total::text, ii.cost_price::text, ii.markup_percent::text,
                       ii.previous_price::text, ii.created_at,
-                      p.title, p.barcode, p.price AS p_price, p.markup, p.cost_price AS p_cost
+                      p.title, p.barcode, p.price::text AS p_price, p.markup::text AS p_markup, p.cost_price::text AS p_cost
                FROM invoice_items ii
                LEFT JOIN products p ON p.id = ii.product_id
                WHERE ii.invoice_id = $1"#,
@@ -136,7 +136,7 @@ impl SqlxDocuments {
                     "title": r.get::<Option<String>, _>("title"),
                     "barcode": r.get::<Option<String>, _>("barcode"),
                     "price": r.get::<Option<String>, _>("p_price"),
-                    "markup": r.get::<Option<String>, _>("markup"),
+                    "markup": r.get::<Option<String>, _>("p_markup"),
                     "cost_price": r.get::<Option<String>, _>("p_cost"),
                 })
             });
@@ -200,7 +200,7 @@ impl SqlxDocuments {
             r#"SELECT ri.id, ri.return_invoice_id, ri.product_id, ri.quantity::text,
                       ri.price::text, ri.total::text, ri.cost_price::text,
                       ri.markup_percent::text, ri.created_at,
-                      p.title, p.barcode, p.price AS p_price, p.markup, p.cost_price AS p_cost
+                      p.title, p.barcode, p.price::text AS p_price, p.markup::text AS p_markup, p.cost_price::text AS p_cost
                FROM return_invoice_items ri
                LEFT JOIN products p ON p.id = ri.product_id
                WHERE ri.return_invoice_id = $1"#,
@@ -217,7 +217,7 @@ impl SqlxDocuments {
                     "title": r.get::<Option<String>, _>("title"),
                     "barcode": r.get::<Option<String>, _>("barcode"),
                     "price": r.get::<Option<String>, _>("p_price"),
-                    "markup": r.get::<Option<String>, _>("markup"),
+                    "markup": r.get::<Option<String>, _>("p_markup"),
                     "cost_price": r.get::<Option<String>, _>("p_cost"),
                 })
             });
@@ -277,7 +277,7 @@ impl SqlxDocuments {
         let rows = sqlx::query(
             r#"SELECT po.id, po.purchase_order_id, po.product_id, po.quantity::text,
                       po.price::text, po.total::text, po.created_at,
-                      p.title, p.barcode, p.price AS p_price, p.markup, p.cost_price AS p_cost
+                      p.title, p.barcode, p.price::text AS p_price, p.markup::text AS p_markup, p.cost_price::text AS p_cost
                FROM purchase_order_items po
                LEFT JOIN products p ON p.id = po.product_id
                WHERE po.purchase_order_id = $1"#,
@@ -294,7 +294,7 @@ impl SqlxDocuments {
                     "title": r.get::<Option<String>, _>("title"),
                     "barcode": r.get::<Option<String>, _>("barcode"),
                     "price": r.get::<Option<String>, _>("p_price"),
-                    "markup": r.get::<Option<String>, _>("markup"),
+                    "markup": r.get::<Option<String>, _>("p_markup"),
                     "cost_price": r.get::<Option<String>, _>("p_cost"),
                 })
             });
@@ -411,6 +411,29 @@ impl SqlxDocuments {
             "updated_at": iso(row.get::<NaiveDateTime, _>("updated_at")),
             "items": items,
         }))
+    }
+
+    /// (title, barcode) товару для друку (Python select(Product); barcode None→null).
+    async fn product_brief(&self, pid: Uuid) -> Result<(String, Option<String>), DocumentsError> {
+        let row = sqlx::query("SELECT title, barcode AS b FROM products WHERE id = $1")
+            .bind(pid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+        match row {
+            Some(r) => Ok((r.get("title"), r.get::<Option<String>, _>("b"))),
+            None => Ok(("Невідомий товар".to_string(), None)),
+        }
+    }
+
+    /// Поточна роздрібна ціна товару (Python product.price).
+    async fn product_price(&self, pid: Uuid) -> Result<f64, DocumentsError> {
+        let row = sqlx::query("SELECT price::text AS p FROM products WHERE id = $1")
+            .bind(pid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+        Ok(row.map(|r| f64n(&r.get::<String, _>("p"))).unwrap_or(0.0))
     }
 
     /// Генерація номера документа (Python generate_*_number).
@@ -1057,7 +1080,7 @@ impl DocumentsService for SqlxDocuments {
                 sqlx::query(
                     r#"INSERT INTO invoices (id, number, supplier_id, invoice_date, status,
                        payment_method, is_fiscal, notes, total_amount, created_by_id, created_at, updated_at)
-                       VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$10)"#,
+                       VALUES ($1,$2,$3::uuid,$4,'draft',$5::payment_method,$6,$7,$8::numeric,$9,$10,$10)"#,
                 )
                 .bind(new_id)
                 .bind(&new_number)
@@ -1079,7 +1102,7 @@ impl DocumentsService for SqlxDocuments {
                     sqlx::query(
                         r#"INSERT INTO invoice_items (id, invoice_id, product_id, quantity, price, total,
                            cost_price, markup_percent, previous_price, created_at)
-                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
+                           VALUES ($1,$2,$3::uuid,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8::numeric,$9::numeric,$10)"#,
                     )
                     .bind(Uuid::new_v4())
                     .bind(new_id)
@@ -1087,16 +1110,19 @@ impl DocumentsService for SqlxDocuments {
                     .bind(it["quantity"].as_str().unwrap_or("0"))
                     .bind(it["price"].as_str().unwrap_or("0"))
                     .bind(it["total"].as_str().unwrap_or("0"))
-                    .bind(it["cost_price"].as_str())
-                    .bind(it["markup_percent"].as_str())
-                    .bind(it["previous_price"].as_str())
+                    .bind(Some("0.00"))
+                    .bind(Some("0.0"))
+                    .bind(None::<&str>)
                     .bind(now)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| de(e.to_string()))?;
                 }
                 tx.commit().await.map_err(|e| de(e.to_string()))?;
-                self.read_invoice_json(new_id).await
+                let mut out = self.read_invoice_json(new_id).await?;
+                // Python copy НЕ присвоює supplier_name (default None).
+                out["supplier_name"] = Value::Null;
+                Ok(out)
             }
             "transfer" => {
                 let src = self.read_transfer_json(id).await?;
@@ -1126,7 +1152,7 @@ impl DocumentsService for SqlxDocuments {
                 for it in src["items"].as_array().unwrap_or(&vec![]).iter() {
                     sqlx::query(
                         r#"INSERT INTO transfer_items (id, transfer_id, product_id, quantity, created_at)
-                           VALUES ($1,$2,$3,$4,$5)"#,
+                           VALUES ($1,$2,$3::uuid,$4::numeric,$5)"#,
                     )
                     .bind(Uuid::new_v4())
                     .bind(new_id)
@@ -1149,7 +1175,7 @@ impl DocumentsService for SqlxDocuments {
                 sqlx::query(
                     r#"INSERT INTO write_offs (id, number, reason, write_off_date, status,
                        notes, total_amount, created_by_id, created_at, updated_at)
-                       VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$8)"#,
+                       VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8::numeric,$8)"#,
                 )
                 .bind(new_id)
                 .bind(&new_number)
@@ -1168,7 +1194,7 @@ impl DocumentsService for SqlxDocuments {
                 for it in src["items"].as_array().unwrap_or(&vec![]).iter() {
                     sqlx::query(
                         r#"INSERT INTO write_off_items (id, write_off_id, product_id, quantity,
-                           cost_price, price, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)"#,
+                           cost_price, price, created_at) VALUES ($1,$2,$3::uuid,$4::numeric,$5::numeric,$6::numeric,$7)"#,
                     )
                     .bind(Uuid::new_v4())
                     .bind(new_id)
@@ -1194,7 +1220,7 @@ impl DocumentsService for SqlxDocuments {
                     r#"INSERT INTO return_invoices (id, number, supplier_id, return_date, status,
                        return_action, is_fiscal, notes, total_amount, source_invoice_id, created_by_id,
                        created_at, updated_at)
-                       VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$11)"#,
+                       VALUES ($1,$2,$3::uuid,$4,'draft',$5,$6,$7,$8,$9,$10::numeric,$11,$11)"#,
                 )
                 .bind(new_id)
                 .bind(&new_number)
@@ -1217,7 +1243,7 @@ impl DocumentsService for SqlxDocuments {
                     sqlx::query(
                         r#"INSERT INTO return_invoice_items (id, return_invoice_id, product_id,
                            quantity, price, total, cost_price, markup_percent, created_at)
-                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"#,
+                           VALUES ($1,$2,$3::uuid,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8::numeric,$9)"#,
                     )
                     .bind(Uuid::new_v4())
                     .bind(new_id)
@@ -1265,7 +1291,7 @@ impl DocumentsService for SqlxDocuments {
                 for it in src["items"].as_array().unwrap_or(&vec![]).iter() {
                     sqlx::query(
                         r#"INSERT INTO purchase_order_items (id, purchase_order_id, product_id,
-                           quantity, price, total, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)"#,
+                           quantity, price, total, created_at) VALUES ($1,$2,$3::uuid,$4::numeric,$5::numeric,$6::numeric,$7)"#,
                     )
                     .bind(Uuid::new_v4())
                     .bind(new_id)
@@ -1302,6 +1328,14 @@ impl DocumentsService for SqlxDocuments {
         id: Uuid,
         document_type: &str,
     ) -> Result<DocPrintDto, DocumentsError> {
+        // 1:1 Python v1/documents.py print_document (формати header/items/footer).
+        let fmt_dmy = |v: &str| -> String {
+            if v.len() >= 10 {
+                format!("{}.{}.{}", &v[8..10], &v[5..7], &v[0..4])
+            } else {
+                v.to_string()
+            }
+        };
         match document_type {
             "invoice" => {
                 let doc = self.read_invoice_json(id).await?;
@@ -1312,30 +1346,28 @@ impl DocumentsService for SqlxDocuments {
                     total_quantity += qty;
                     items.push(json!({
                         "product_name": it["product"]["title"].as_str().unwrap_or("Невідомий товар"),
-                        "barcode": it["product"]["barcode"].as_str().unwrap_or(""),
+                        "barcode": it["product"]["barcode"].as_str().map(|s| s.to_string()),
                         "quantity": qty,
                         "price": f64n(it["price"].as_str().unwrap_or("0")),
                         "total": f64n(it["total"].as_str().unwrap_or("0")),
                     }));
                 }
-                let payment = doc["payment_method"].as_str().unwrap_or("").to_string();
-                let payment_label = match payment.as_str() {
-                    "credit" => "в борг",
-                    "bank_transfer" => "по перерахунку",
-                    "cash" => "готівкою з каси",
-                    "other" => "інший спосіб",
-                    _ => "",
+                // Python: payment_method.value (raw) або "не вказано".
+                let payment = doc["payment_method"].as_str().unwrap_or("");
+                let payment_label = if payment.is_empty() {
+                    "не вказано".to_string()
+                } else {
+                    payment.to_string()
                 };
-                let status = doc["status"].as_str().unwrap_or("");
                 let total_items = items.len();
                 Ok(DocPrintDto {
                     header: json!({
                         "document_type": "Прибуткова накладна",
                         "document_number": doc["number"].as_str().unwrap_or(""),
-                        "date": doc["invoice_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_default(),
+                        "date": fmt_dmy(doc["invoice_date"].as_str().unwrap_or("")),
                         "supplier": doc["supplier_name"].as_str().unwrap_or("—"),
                         "payment_method": payment_label,
-                        "status": status,
+                        "status": doc["status"].as_str().unwrap_or(""),
                     }),
                     items,
                     footer: json!({
@@ -1350,22 +1382,27 @@ impl DocumentsService for SqlxDocuments {
                 let mut items = Vec::new();
                 let mut total_quantity = 0.0f64;
                 for it in doc["items"].as_array().unwrap_or(&vec![]).iter() {
+                    let pid: Uuid = it["product_id"].as_str().unwrap_or("").parse().unwrap_or_default();
+                    let (title, barcode) = self
+                        .product_brief(pid)
+                        .await
+                        .unwrap_or(("Невідомий товар".into(), None));
                     let qty = f64n(it["quantity"].as_str().unwrap_or("0"));
                     total_quantity += qty;
                     items.push(json!({
-                        "product_name": it["product_name"].as_str().unwrap_or("Невідомий товар"),
-                        "barcode": it["barcode"].as_str().unwrap_or(""),
+                        "product_name": title,
+                        "barcode": barcode,
                         "quantity": qty,
-                        "price": f64n(it["price"].as_str().unwrap_or("0")),
-                        "total": f64n(it["total"].as_str().unwrap_or("0")),
+                        "price": 0,
+                        "total": 0,
                     }));
                 }
                 let total_items = items.len();
                 Ok(DocPrintDto {
                     header: json!({
-                        "document_type": "Переміщення",
+                        "document_type": "Переміщення товару",
                         "document_number": doc["number"].as_str().unwrap_or(""),
-                        "date": doc["transfer_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_default(),
+                        "date": fmt_dmy(doc["transfer_date"].as_str().unwrap_or("")),
                         "from_location": doc["from_location"].as_str().unwrap_or(""),
                         "to_location": doc["to_location"].as_str().unwrap_or(""),
                         "status": doc["status"].as_str().unwrap_or(""),
@@ -1380,31 +1417,55 @@ impl DocumentsService for SqlxDocuments {
             }
             "write_off" => {
                 let doc = self.read_write_off_json(id).await?;
+                let reason_names = [
+                    ("expired", "Закінчився термін придатності"),
+                    ("damaged", "Пошкодження / бій"),
+                    ("defect", "Брак / дефект"),
+                    ("theft", "Крадіжка"),
+                    ("inventory", "Інвентаризація (нестача)"),
+                    ("other", "Інше"),
+                ];
+                let reason_raw = doc["reason"].as_str().unwrap_or("");
+                let reason = reason_names
+                    .iter()
+                    .find(|(k, _)| *k == reason_raw)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(reason_raw)
+                    .to_string();
                 let mut items = Vec::new();
                 let mut total_quantity = 0.0f64;
+                let mut total_amount = 0.0f64;
                 for it in doc["items"].as_array().unwrap_or(&vec![]).iter() {
+                    let pid: Uuid = it["product_id"].as_str().unwrap_or("").parse().unwrap_or_default();
+                    let (title, barcode) = self
+                        .product_brief(pid)
+                        .await
+                        .unwrap_or(("Невідомий товар".into(), None));
+                    let price = self.product_price(pid).await.unwrap_or(0.0);
                     let qty = f64n(it["quantity"].as_str().unwrap_or("0"));
+                    let total = price * qty;
                     total_quantity += qty;
+                    total_amount += total;
                     items.push(json!({
-                        "product_name": it["product_name"].as_str().unwrap_or("Невідомий товар"),
-                        "barcode": it["barcode"].as_str().unwrap_or(""),
+                        "product_name": title,
+                        "barcode": barcode,
                         "quantity": qty,
-                        "price": f64n(it["price"].as_str().unwrap_or("0")),
-                        "total": f64n(it["total"].as_str().unwrap_or("0")),
+                        "price": price,
+                        "total": total,
                     }));
                 }
                 let total_items = items.len();
                 Ok(DocPrintDto {
                     header: json!({
-                        "document_type": "Списання",
+                        "document_type": "Списання товару",
                         "document_number": doc["number"].as_str().unwrap_or(""),
-                        "date": doc["write_off_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_default(),
-                        "reason": doc["reason"].as_str().unwrap_or(""),
-                        "status": "confirmed",
+                        "date": fmt_dmy(doc["write_off_date"].as_str().unwrap_or("")),
+                        "reason": reason,
+                        "notes": doc["notes"].as_str().unwrap_or(""),
                     }),
                     items,
                     footer: json!({
-                        "total_amount": f64n(doc["total_amount"].as_str().unwrap_or("0")),
+                        "total_amount": total_amount,
                         "total_quantity": total_quantity,
                         "total_items": total_items,
                     }),
@@ -1412,13 +1473,18 @@ impl DocumentsService for SqlxDocuments {
             }
             "return_invoice" => {
                 let doc = self.read_return_invoice_json(id).await?;
-                let action = doc["return_action"].as_str().unwrap_or("").to_string();
-                let action_label = match action.as_str() {
-                    "deduct_from_debt" => "Списання з боргу постачальника",
-                    "add_to_cash" => "Зачислення в касу",
-                    "exchange" => "Обмін на інший товар",
-                    other => other,
-                };
+                let action_names = [
+                    ("deduct_from_debt", "Списання з боргу постачальника"),
+                    ("add_to_cash", "Зачислення в касу"),
+                    ("exchange", "Обмін на інший товар"),
+                ];
+                let action_raw = doc["return_action"].as_str().unwrap_or("");
+                let action = action_names
+                    .iter()
+                    .find(|(k, _)| *k == action_raw)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(action_raw)
+                    .to_string();
                 let mut items = Vec::new();
                 let mut total_quantity = 0.0f64;
                 for it in doc["items"].as_array().unwrap_or(&vec![]).iter() {
@@ -1426,7 +1492,7 @@ impl DocumentsService for SqlxDocuments {
                     total_quantity += qty;
                     items.push(json!({
                         "product_name": it["product"]["title"].as_str().unwrap_or("Невідомий товар"),
-                        "barcode": it["product"]["barcode"].as_str().unwrap_or(""),
+                        "barcode": it["product"]["barcode"].as_str().map(|s| s.to_string()),
                         "quantity": qty,
                         "price": f64n(it["price"].as_str().unwrap_or("0")),
                         "total": f64n(it["total"].as_str().unwrap_or("0")),
@@ -1437,9 +1503,9 @@ impl DocumentsService for SqlxDocuments {
                     header: json!({
                         "document_type": "Повернення постачальнику",
                         "document_number": doc["number"].as_str().unwrap_or(""),
-                        "date": doc["return_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_default(),
+                        "date": fmt_dmy(doc["return_date"].as_str().unwrap_or("")),
                         "supplier": doc["supplier_name"].as_str().unwrap_or("—"),
-                        "action": action_label,
+                        "action": action,
                         "status": doc["status"].as_str().unwrap_or(""),
                     }),
                     items,
@@ -1459,20 +1525,25 @@ impl DocumentsService for SqlxDocuments {
                     total_quantity += qty;
                     items.push(json!({
                         "product_name": it["product"]["title"].as_str().unwrap_or("Невідомий товар"),
-                        "barcode": it["product"]["barcode"].as_str().unwrap_or(""),
+                        "barcode": it["product"]["barcode"].as_str().map(|s| s.to_string()),
                         "quantity": qty,
                         "price": f64n(it["price"].as_str().unwrap_or("0")),
                         "total": f64n(it["total"].as_str().unwrap_or("0")),
                     }));
                 }
+                let expected = if doc["expected_date"].as_str().unwrap_or("").is_empty() {
+                    "не вказано".to_string()
+                } else {
+                    fmt_dmy(doc["expected_date"].as_str().unwrap_or(""))
+                };
                 let total_items = items.len();
                 Ok(DocPrintDto {
                     header: json!({
                         "document_type": "Замовлення постачальнику",
                         "document_number": doc["number"].as_str().unwrap_or(""),
-                        "date": doc["order_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_default(),
+                        "date": fmt_dmy(doc["order_date"].as_str().unwrap_or("")),
                         "supplier": doc["supplier_name"].as_str().unwrap_or("—"),
-                        "expected_date": doc["expected_date"].as_str().map(|d| d[..10].to_string()).unwrap_or_else(|| "не вказано".to_string()),
+                        "expected_date": expected,
                         "status": doc["status"].as_str().unwrap_or(""),
                     }),
                     items,

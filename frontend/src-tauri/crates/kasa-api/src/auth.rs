@@ -191,7 +191,9 @@ fn is_public_path(path: &str) -> bool {
     if path.starts_with("/api/v1/documents/") && path.ends_with("/print") {
         return true;
     }
-    if path.contains("/print") {
+    // /print-items інвойсів — вимагає JWT (Python get_current_user);
+    // публічний тільки /documents/{id}/print (?token=).
+    if path.contains("/print") && !path.contains("/print-items") {
         return true;
     }
     false
