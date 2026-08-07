@@ -138,5 +138,10 @@ async fn empty_query_returns_nothing_weird() {
     filters.size = 10;
 
     let page = repo.list_products(&filters).await.expect("list_products");
-    assert_eq!(page.total, 4002, "порожній query не має фільтрувати");
+    // Реальний count у БД (спільна БД з активною копією — не хардкодимо).
+    let db_total: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
+        .fetch_one(&db::connect_readonly_pool(5).await.expect("pool"))
+        .await
+        .expect("count");
+    assert_eq!(page.total, db_total, "порожній query не має фільтрувати");
 }
