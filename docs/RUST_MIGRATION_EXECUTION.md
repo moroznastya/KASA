@@ -492,6 +492,72 @@ debtors PASS (регресія зелена), cargo test --workspace 148/148, cl
 
 ---
 
+## 2.1.6 Етап 8 — група 6/9: Друк (print + print_templates) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `a5ff784` — feat(rust): група 6/9 — друк (print + print_templates) 1:1 Python, KASA_RUST_PRINT=1
+
+**Що зроблено:**
+- `kasa-domain::print` — DTO (PrintTemplateDto з datetime UTC %.6f+Z, list
+  пагінація, create/update, PriceTag/Label/TestPrint), контракт
+  PrintTemplatesService (13 методів)
+- `kasa-infrastructure::SqlxPrintTemplates` — 13 роутів 1:1: CRUD шаблонів
+  (list active пагінація, all admin, default is_default→перший активний,
+  get, create 201, update exclude_unset, delete soft 204, set-default,
+  render replace {{var}} + font), рендери price-tags/labels (перевикористання
+  price_tag.rs), test (receipt/price_tag/label), printers (lpstat -e CUPS)
+- `kasa-api::print_templates` — 13 роутів під KASA_RUST_PRINT=1; auth:
+  list/get/default/render — get_current_user, all/create/update/delete/
+  set-default — require_admin, printers — публічний; Pydantic 422 1:1
+
+**РІШЕННЯ Jinja2:** у БД усі 9 шаблонів (receipt_58mm/80mm,
+return_receipt_58mm, price_tag, label, custom) використовують ТІЛЬКИ
+`{{variable}}`-плейсхолдери. Python PrintTemplateService.render_template =
+простий str.replace у порядку dict — ЖОДНИХ Jinja2-фіч (цикли/макроси/
+filters відсутні). Тому minijinja НЕ потрібен: рендер 1:1 replace.
+**ESC/POS:** у групі 6 Python НЕ генерує ESC/POS-байти — усе HTML.
+print_mode=escpos лише обмежує ширину етикетки (48мм) у
+render_labels_sequential (вже мігровано в price_tag.rs, група 3).
+
+**ФІКСИ (виявлені differential-ом):**
+1. **code128_bytes (баг групи 3):** stop-код 106 додавався в PATTERNS-цикл
+   → PATTERNS[106] поза межами → panic на БУДЬ-ЯКОМУ штрих-коді (раніше
+   не проявлявся — тести без barcode). Stop обробляється окремо.
+2. **price_tag.rs HTML exact:** додано Python-коментарі у <style> (grid
+   «.page КОРИСНА висота…», labels «@page system/escpos…») + CSS-відступи
+   (4 пробіли) — HTML тепер байт-в-байт (SVG normalized).
+3. **invoices v2 list notes NULL (баг групи 3):** UnexpectedNullError на
+   старих накладних — notes: Option → unwrap_or_default (Python віддає '').
+4. **auth middleware:** /print/* та /print-templates/* були ПУБЛІЧНИМИ
+   (існуюче правило `path.contains("/print")` для documents print) →
+   Extension<Claims> відсутній → 500. is_rust_print_route() виключає роути
+   групи 6; /print/printers залишається публічним (Python без Depends).
+5. **create:** id/created_at/updated_at/is_active — Python ORM defaults
+   (uuid4, now, true) — Rust вставляє явно.
+
+**Differential `scripts/e2e_print_diff.sh`: 37/37 PASS**
+- printers parity (lpstat -e, публічний)
+- фіксований SQL-шаблон → get exact parity (datetime %.6f+Z 1:1)
+- list active + all (admin) + default + 404 detail
+- create 201 + parity (id/дати нормалізовані) + get exact (спільна БД)
+- update exclude_unset + is_default знімає з інших (БД=1) + get exact
+- set-default parity + is_default=true (get)
+- render parity (exact, font apply)
+- delete 204 + get 200 is_active=false (soft delete, parity)
+- price-tags HTML parity (SVG normalized) + meta pages/labels
+- labels HTML parity (escpos 48мм) + total
+- test receipt EXACT (message+html); price_tag/label (SVG normalized)
+- 404: неактивний шаблон, неіснуючий, test unknown template_type
+- 422: page=0, size=0, barcode_type=foo, width_mm=5, products empty,
+  print_type=bad, name empty (detail 1:1)
+- products без barcode → '' (1:1); test з template_id+розмірами
+
+**Верифікація:** documents PASS, invoices 29/29, return_invoices 32/32,
+debtors PASS, purchase_orders 42/42 (регресія зелена), cargo test
+--workspace 152/152, clippy 0 (наш код), fmt чистий, тестові дані видалені
+(Diff PT 0). Python :8001 недоторканий, фасад зупинено.
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
