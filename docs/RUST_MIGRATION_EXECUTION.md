@@ -238,11 +238,67 @@
 
 ---
 
+## 2.1.2 Етап 8 — група 2/9: Документи (documents) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `fefa07c` — feat(rust): група 2/9 — документи (documents) 1:1 Python, KASA_RUST_DOCUMENTS=1
+
+**Що зроблено** (Python v1/documents.py, 1793 рядки → Rust):
+- `kasa-domain::documents` — DocumentsService trait, DTO (DocumentDto з int-0/float
+  семантикою Python, BatchConfirmResultDto, ExportData, DocPrintDto), DocumentsError
+- `kasa-infrastructure::SqlxDocuments` — list (6 типів: invoices, transfers,
+  write_offs, return_invoices, purchase_orders, inventories; фільтри date/amount/
+  supplier/type/status/search; сортування created_at DESC; пагінація),
+  batch-confirm (invoice: stock+ + fiscal + cost/price + ledger INVOICE;
+  transfer/write_off — confirm-логіка етапу 3; return_invoice: stock− + ledger
+  return; purchase_order → створення прибуткової накладної),
+  delete (тільки draft), copy (5 типів, новий номер, draft), export (flat +
+  detailed 5 типів БЕЗ document_type фільтра — 1:1 Python), print (JSON)
+- `kasa-application::DocumentsServiceFacade`
+- `kasa-api::documents` — 6 роутів /api/v1/documents* під KASA_RUST_DOCUMENTS=1;
+  require_admin документів НЕЗАЛЕЖНИЙ від KASA_RUST_AUTH (documents_pool в AppState);
+  print — optional auth (Bearer або ?token=, шлях у is_public_path)
+- `kasa-api::export` — CSV байт-ідентично Python (BOM, `;`, QUOTE_MINIMAL, `\r\n`,
+  `str(float)='600.0'`); Excel через rust_xlsxwriter (вміст/структура еквівалентні
+  openpyxl: заголовки, стилі, автоширина; байти можуть відрізнятись — дозволено
+  контрактом міграції)
+
+**Differential `scripts/e2e_documents_diff.sh`: 42/42 PASS**
+- list: total/items parity (нормалізований JSON), присутність тестових документів
+  6 типів, filter invoice, search (URL-encoded), supplier filter, pagination
+- валідації: size>100 → 422, page=0 → 422, supplier_id не-UUID → 422
+- export CSV: flat/detailed/by-ids — **md5 байт-ідентично** Python
+- export Excel: content-type + zip-структура + вміст комірок
+- print: write_off та invoice — JSON parity
+- batch-confirm: write_off/transfer/invoice(+ledger INVOICE)/purchase_order(→invoice)/
+  return_invoice — confirmed_count=1; повторний confirm transfer → error; невалідний
+  UUID → error
+- delete: draft → 204, confirmed → 400, незнайдений → 404, без type → 422
+- copy: parity (номер/дати/нові ID нормалізовані), статус draft, 404, unknown → 400
+
+**Ключові 1:1-нюанси, відтворені в Rust:**
+1. float-артефакти Python: `sum(float(cp)*float(qty))` дає 436.15000000000003 —
+   Rust рахує float-суми в Python-порядку (не SQL numeric)
+2. `float(x) if x else 0` → int 0 для нуля; write_off total_amount — завжди float
+   0.0 (total); purchase_total — завжди float
+3. CSV `str(float)`: "600.0" для цілих, "0" для int-нуля
+4. detailed export ігнорує document_type (Python _get_documents_detailed)
+5. items порядок: Python selectinload без ORDER BY (фізичний) — Rust без ORDER BY;
+   detailed — ORDER BY документ DESC + items ASC (стабільний)
+6. Python confirm_write_off НЕ перевіряє статус і НЕ змінює його (тільки stock−)
+7. write_off `if wo.total_amount` (Decimal 0 → falsy) → розрахована сума по items
+
+**Верифікація:** cargo test --workspace 148/148, clippy 0 (наш код), fmt чистий,
+фасад :8002 (KASA_RUST_DOCUMENTS=1) — Python :8001 недоторканий.
+Снапшоти readdirs (products_default/suppliers_default) перезняті з Python :8001 —
+confirm_invoice оновив ціни продуктів (нормальна робота документообігу).
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
 |---|---|---|---|---|
-| 2. documents | v1/documents.py | 1793 | **залежить від invoices/return_invoices/purchase_orders** (copy→Response-схеми, batch-confirm→confirm-логіка) | 5-8 год; Excel export (openpyxl→rust_xlsxwriter), print (HTML), copy |
+| ~~2. documents~~ ✅ `fefa07c` | v1/documents.py | 1793 | реалізовано незалежно (confirm-логіка invoice/return/order у складі групи) | 42/42 differential PASS |
 | 3. invoices | v1(748)+v2(362) | 1110 | stock/ledger сервіси (Rust має) | 4-6 год; confirm→stock+SupplierLedger, payment-info, print-items |
 | 4. return_invoices | v1/return_invoices.py | 428 | stock/ledger | 2-3 год |
 | 5. purchase_orders | v1/purchase_orders.py | 416 | invoice (confirm→створює invoice) | 2-3 год |
