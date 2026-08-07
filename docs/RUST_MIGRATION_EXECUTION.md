@@ -2,7 +2,7 @@
 
 > Джерело стратегії: `docs/RUST_MIGRATION_PLAN.md` (v1.0, затверджений)
 > Виконавчий контроль: NIKO (координація, моніторинг)
-> Створено: 2026-08-07 | Оновлено: 2026-08-07 (етап 7.1 завершено)
+> Створено: 2026-08-07 | Оновлено: 2026-08-07 (етап 7.2 завершено)
 
 ## 0. Статус етапів
 
@@ -16,7 +16,7 @@
 | 4 | Ledger (журнал взаєморозрахунків) v1+v2 | Rust_Agent | ✅ ЗАВЕРШЕНО | differential 10 100 записів 1:1; 101 сторінка GET 1:1; валідації 404/400/422/500 1:1; конкурентність/транзакційність |
 | 5 | Receipts + друк (open→pay→close, офлайн-черга) | Tauri_Agent + Rust_Agent | ✅ ЗАВЕРШЕНО | ESC/POS друк у мок-пристрій (19227 байт, ESC @ + GS v 0 + GS V); офлайн-черга SQLite на диск + персистентність + синхронізація; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E AUTH DIFF 59/59; JWT крос-валідний (Rust↔Python, той самий секрет); RBAC admin/cashier 1:1; feature-flag KASA_RUST_AUTH (відкат перевірено); валідації 401/400/403/404/409/422 1:1 |
-| 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ⏳ (7.1 ✅) | **7.1 фундамент ✅**: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
+| 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ⏳ (7.1 ✅ 7.2 ✅) | **7.1 фундамент ✅**; **7.2 крипто ✅**: XAdES-BES чистого Rust golden 5/5 байт-ідентично signxml (RSA-SHA256, C14N11 inclusive); CAdES-BES ДСТУ 4145 через FFI EUSignCP — взаємна verify-сумісність Rust↔Python; 7.3: offline_queue+shift |: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
 | 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ | єдиний бінарник; e2e зелений; updater |
 
 Паралельно з етапом 1: QA_Agent — тестовий контур (differential/golden/proptest).
@@ -25,7 +25,7 @@
 ## 1. Критичний шлях
 
 ```
-Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 (7.1 ✅) → 8
+Етап 0 ✅ → 1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ✅ → 6 ✅ → 7 (7.1 ✅ 7.2 ✅) → 8
 ```
 
 ## 2. Журнал делегувань (етап 0)
@@ -42,8 +42,36 @@
 | 5.1 | Друк чеків open→pay→close (ESC/POS → мок-пристрій) + офлайн-черга (SQLite на диск, персистентність, синхронізація) | Tauri_Agent | f009579 | ✅ | e2e_stage5_tauri.sh: друк 19227 байт ESC/POS (ESC @ / GS v 0 / 2×подача / GS V); офлайн: save→count=1→перезапуск процесу count=1 (персистентність)→sync POST sale 201→count=0→чек знайдено в backend; фінальний health 200; тестові дані видалені; fmt виправлено NIKO (494766a) |
 | 6.1 | Auth/users/settings/RBAC: порти kasa-domain (AuthService, DTO, валідатор settings), SQL-репозиторій SqlxAuth (login/login-pin/refresh/logout, users CRUD, permissions, hourly-rate, settings), фасад kasa-application, роути kasa-api під KASA_RUST_AUTH, JWT create (HS256, той самий секрет), E2E differential | Rust_Agent | 000d238 | ✅ | E2E AUTH DIFF 59/59 зелений; JWT parity: токени Rust↔Python крос-валідні (verify/refresh обидва напрямки, claims 1:1: access {sub,role,permissions,type,iat,exp}, refresh без permissions); RBAC 401/403 1:1; валідації 401/400/403/404/409/422 1:1; feature-flag: KASA_RUST_AUTH=1 → Rust, =0 → проксі Python (перевірено); cargo test 69/69, clippy/fmt чисті; БД почищена |
 | 7.1 | ПРРО-фундамент: ADR-014 (крипто-стратегія FFI→IIT SDK EUSignCP через libloading, ДСТУ 4145; чистий Rust для RSA/ECDSA); crate kasa-prro (tonic+prost build.rs з prro.proto, TLS native roots+кастомний CA, дедлайни+ретраї 3×1s→2s); gRPC-клієнт ChkIncomeService (sendChkV2/ping/statusRro/infoRro/lastChk/delLastChk/delLastChkId/open_shift); XML СЗЗД 2.1.7 (C14N, MAC SHA-256→Base64, чек/Z/службові 108-112) — golden parity з Python; key_store JKS (власний парсер + JavaSoft XOR/SHA1-keystream) / PKCS#12 (openssl) / PEM; crypto::iit FFI (10 extern C-сигнатур) | Rust_Agent | a13fd35 | ✅ | E2E: TLS READY до cabinet.tax.gov.ua:9443, ping (0x7FFFFFFF, SERVICECHK) → status -1 ERROR_VEREFY, error_message ідентичний Python; golden XML 12/12 байт-ідентично (v1-v7 + MAC + message + canonical); JKS pb_3791505547: приватний ключ 802B PKCS#8 + OID ДСТУ 4145 + ланцюг 4 сертифікати, підписант serial=5E984D52... (1:1 Python); cargo test 33/33, clippy 0, fmt чистий |
+| 7.2 | XAdES/CAdES крипто-шар: crypto::xades (чистий Rust) — XAdES-BES enveloped (C14N 1.1 inclusive 1:1 libxml2, RSA PKCS#1 v1.5 детермінований, ECDSA P-256/P-384); crypto::iit FFI завершено — load_jks_key (EUGetJKSPrivateKeyFile→EUSaveCertificate×N→EUReadPrivateKeyBinary), CAdES-BES ContentInfo/signedData (EUSignDataInternal/EUVerifyDataInternal), get_signer_serial/name (X.509); фабрика signer_from_key_material (OID ДСТУ 4145 → IitSigner, RSA/EC → XadesSigner) | Rust_Agent | (коміт 7.2) | ✅ | GOLDEN XAdES 5/5: Rust sign == Python signxml БАЙТ-В-БАЙТ (чек/Z/службові, digest+signature value збігаються); CAdES: Rust verify Python sig ✅, Python verify Rust sig ✅, структура ContentInfo OID 1.2.840.113549.1.7.2; get_serial_number 1:1 (RSA 7AED62...; ДСТУ 5E984D52...), get_signer_name 1:1 (Тестовий Підписант / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА); cargo test 43/43, clippy 0, fmt чистий |
 | 3.1 | POS: чеки v2 (sale/return/list/detail/items/stats/search/by-product/returnable), робочі сесії, списання, переміщення, зміни ПРРО (X/Z) | Rust_Agent | 72b4e21, fcaeffa, ba695ec, 6e97a5c, 9b0bf39, 435ea36 | ✅ | E2E POS 43/43: чеки (sale/return/список/деталі/статистика/пошук/returnable), робочі сесії, списання (авто-confirm), переміщення (draft→confirm/cancel), ПРРО X/Z; транзакційність: 400 у середині → чек не створено, stock не змінено; конкурентність 2 паралельні sale → stock 86.000, нуль втрат; cargo test 9/9, clippy/fmt чисті |
 | 2.1 | Write-порти CRUD+інвентаризації, SQL-репозиторії write, CRUD-роути під flag, E2E differential-скрипт | Rust_Agent | 319d849, c66450c, 04e6edb, adfa79a | ✅ | E2E 16/16: 201/200/204, 404, 409, 400, 422 ідентичні Python; конкурентність 2 паралельні confirm → stock 104.000; БД почищена від тестових даних |
+
+**DoD підетапу 7.2 (XAdES/CAdES крипто-шар):**
+- [x] crypto::xades (чистий Rust, ADR-014): XAdES-BES enveloped — C14N 1.1 inclusive
+      1:1 libxml2/lxml (namespace nodes тільки не виведені на предку, §2.3; порожні
+      елементи — пари тегів); RSA PKCS#1 v1.5 (rsa crate) детермінований; ECDSA
+      P-256/P-384 (p256/p384 crates); вставка ds:Signature останнім елементом;
+      verify (digest + signature + публічний ключ з KeyInfo/X509Certificate)
+- [x] GOLDEN XAdES 5/5: Rust sign == Python signxml БАЙТ-В-БАЙТ (чек sale/return,
+      Z-звіт, службові 108/111) з ключем certs/prro-test/test-rsa.pem; digest +
+      signature value зафіксовані у tests/fixtures/xades_golden.json
+- [x] crypto::iit FFI завершено: load_jks_key (EUGetJKSPrivateKeyFile →
+      EUSaveCertificate×N → EUReadPrivateKeyBinary) з одним локальним Library
+      (quirk EUSignCP: виклики через self.lib дають rc=24, через свіжий
+      Library::new — rc=0; задокументовано в коді); CAdES-BES sign/verify
+      (EUSignDataInternal/EUVerifyDataInternal); get_signer_serial/get_signer_name
+      (X.509 parse, 1:1 Python)
+- [x] CAdES golden: ДСТУ 4145 недетермінований (випадковий k) → golden = взаємна
+      verify-сумісність: Rust verify Python-підпису ✅, Python verify Rust ✅
+      (cross-check виконано); Python sig зафіксовано у fixtures/cades_python_sig.bin,
+      Rust verify його — тест
+- [x] Структура CAdES: ContentInfo/signedData (OID 1.2.840.113549.1.7.2) — як
+      Java ee.SignInternal(true, data) офіційного семпла programika/prro_sample
+- [x] get_serial_number/get_signer_name 1:1 Python: RSA 7AED6274... / Тестовий
+      Підписант Kasa; ДСТУ 5E984D52... / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА
+- [x] Фабрика signer_from_key_material: OID ДСТУ 4145 → IitSigner (CAdES),
+      RSA/ECDSA → XadesSigner (XAdES) — шлях XML → підпис → gRPC sendChkV2 готовий
+- [x] cargo test 43/43 (kasa-prro), clippy 0, fmt чистий; workspace 112 passed
 
 **DoD підетапу 7.1 (ПРРО-фундамент):**
 - [x] ADR-014 прийнято: крипто-стратегія (a) FFI до IIT SDK EUSignCP (euscp.so) через

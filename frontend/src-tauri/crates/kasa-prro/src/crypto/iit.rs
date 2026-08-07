@@ -38,24 +38,16 @@ pub enum IitSdkError {
     LibLoading(#[from] libloading::Error),
     #[error("EUInitialize: {0}")]
     Init(String),
+    #[error("Крипто-шар: {0}")]
+    Generic(String),
 }
 
 /// C-сигнатури EUSignCP (1:1 Python iit_sdk.py).
-type FnEuiInitialize = unsafe extern "C" fn() -> c_int;
-type FnEuiSetSettingsFilePath = unsafe extern "C" fn(*const c_char) -> c_ulong;
+type FnEuiInitialize = unsafe extern "C" fn() -> i32;
+type FnEuiSetSettingsFilePath = unsafe extern "C" fn(*const u8) -> u64;
 type FnEuiSetFileStoreSettings =
-    unsafe extern "C" fn(*const c_char, c_int, c_int, c_int, c_int, c_int, c_ulong) -> c_ulong;
-type FnEuGetJksPrivateKeyFile = unsafe extern "C" fn(
-    *const c_char,
-    *const c_char,
-    *mut *mut c_void,
-    *mut c_ulong,
-    *mut c_ulong,
-    *mut *mut *mut c_void,
-    *mut *mut c_ulong,
-) -> c_ulong;
+    unsafe extern "C" fn(*const u8, i32, i32, i32, i32, i32, i32, u64) -> u64;
 type FnEuSaveCertificate = unsafe extern "C" fn(*const c_char, c_ulong) -> c_ulong;
-type FnEuReadPrivateKeyBinary = unsafe extern "C" fn(*const c_char, c_int, *const c_char) -> c_int;
 type FnEuSignDataInternal = unsafe extern "C" fn(
     c_int,
     *const c_char,
@@ -87,8 +79,14 @@ type c_void = core::ffi::c_void;
 /// Singleton-обгортка SDK (1:1 Python `IitSdk`): один екземпляр, Mutex на виклики.
 pub struct IitSdk {
     lib: Library,
+    /// Шлях до euscp.so — для робочих викликів (див. read_private_key_binary).
+    lib_path: PathBuf,
+    /// Каталог SDK (поряд з euscp.so) — для osplm.ini (1:1 Python _VENDOR_SDK_DIR).
+    sdk_dir: PathBuf,
     initialized: bool,
     key_loaded: bool,
+    /// Сертифікат підписанта (DER) — для get_signer_serial/get_signer_name.
+    signer_cert_der: Option<Vec<u8>>,
     _guard: Mutex<()>,
 }
 
@@ -101,10 +99,17 @@ impl IitSdk {
         // SAFETY: euscp.so — стабільний C ABI; Library::new — стандартний FFI-підхід.
         let lib = unsafe { Library::new(lib_path) }
             .map_err(|e| IitSdkError::Load(lib_path.display().to_string(), e.to_string()))?;
+        let sdk_dir = lib_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
         Ok(Self {
             lib,
+            lib_path: lib_path.to_path_buf(),
+            sdk_dir,
             initialized: false,
             key_loaded: false,
+            signer_cert_der: None,
             _guard: Mutex::new(()),
         })
     }
@@ -142,32 +147,31 @@ impl IitSdk {
         if self.initialized {
             return Ok(());
         }
-        std::fs::create_dir_all(cert_store).map_err(|e| IitSdkError::Init(e.to_string()))?;
-
-        if let Some(osplm) = settings_path {
-            if osplm.is_file() {
-                self.call_settings_path(osplm)?;
-            }
+        // osplm.ini — налаштування SDK (1:1 Python: _VENDOR_SDK_DIR / "osplm.ini")
+        let osplm = settings_path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.sdk_dir.join("osplm.ini"));
+        if osplm.is_file() {
+            // rc ігнорується — 1:1 Python `_call_simple` (rc не перевіряється)
+            let _ = self.call_settings_path(&osplm);
         }
-        // файлове сховище сертифікатів (1:1 Python: store_path, 0,0,0,0,0, 3600)
+        // файлове сховище сертифікатів (1:1 Python `_call_typed` — rc не
+        // перевіряється; EUSetFileStoreSettings може повертати 1 без наслідків)
         let store_c = cstr(cert_store.to_string_lossy().as_ref());
         // SAFETY: EUSetFileStoreSettings — стабільний C ABI.
-        let rc = unsafe {
+        unsafe {
             let f: libloading::Symbol<FnEuiSetFileStoreSettings> =
                 self.lib.get(b"EUSetFileStoreSettings\0")?;
-            f(store_c.as_ptr(), 0, 0, 0, 0, 0, 3600)
-        };
-        if rc != 0 {
-            return Err(IitSdkError::Init(self.error_text(rc as c_int)));
+            let _rc = f(store_c.as_ptr() as *const u8, 0, 0, 0, 0, 0, 0, 3600);
         }
 
-        // SAFETY: EUInitialize — без аргументів.
+        // SAFETY: EUInitialize — без аргументів; rc перевіряється (як Python).
         let rc = unsafe {
             let f: libloading::Symbol<FnEuiInitialize> = self.lib.get(b"EUInitialize\0")?;
             f()
         };
         if rc != 0 {
-            return Err(IitSdkError::Init(self.error_text(rc as c_int)));
+            return Err(IitSdkError::Init(self.error_text(rc)));
         }
         self.initialized = true;
         Ok(())
@@ -179,10 +183,10 @@ impl IitSdk {
         let rc = unsafe {
             let f: libloading::Symbol<FnEuiSetSettingsFilePath> =
                 self.lib.get(b"EUSetSettingsFilePath\0")?;
-            f(p.as_ptr())
+            f(p.as_ptr() as *const u8)
         };
         if rc != 0 {
-            return Err(IitSdkError::Init(self.error_text(rc as c_int)));
+            return Err(IitSdkError::Init(self.error_text(rc as i32)));
         }
         Ok(())
     }
@@ -204,46 +208,58 @@ impl IitSdk {
         }
     }
 
-    /// EUFreeMemory (1:1 Python `_free`).
+    /// EUFreeMemory (1:1 Python `_free`). Використовується ТІЛЬКИ для буферів
+    /// підпису (EUSignDataInternal/EUVerifyDataInternal). Буфери
+    /// EUGetJKSPrivateKeyFile НЕ звільняються (SDK тримає їх — dangling).
     ///
     /// # Safety
-    /// `ptr` має бути вказівником, виділеним SDK.
+    /// ptr — вказівник, виділений SDK.
     pub unsafe fn free(&self, ptr: *mut c_void) {
-        if ptr.is_null() {
-            return;
-        }
-        // SAFETY: викликається з валідним SDK-вказівником.
         let f: libloading::Symbol<FnEuFreeMemory> = match self.lib.get(b"EUFreeMemory\0") {
             Ok(f) => f,
             Err(_) => return,
         };
-        f(ptr);
+        // SAFETY: викликається на буферах SDK (підпис).
+        unsafe { f(ptr) };
     }
 
     /// EUGetJKSPrivateKeyFile — ключ + ланцюг сертифікатів з JKS.
     ///
     /// # Safety
-    /// Внутрішній FFI-виклик; пам'ять звільняється через `free`.
+    /// Внутрішній FFI-виклик; буфери SDK НЕ звільняються (SDK тримає їх).
     pub unsafe fn get_jks_private_key_file(
         &self,
         jks_path: &str,
         alias: Option<&str>,
     ) -> Result<(Vec<u8>, Vec<Vec<u8>>), IitSdkError> {
+        type FnGetJksDirect = unsafe extern "C" fn(
+            *const u8,
+            *const u8,
+            *mut *mut c_void,
+            *mut u64,
+            *mut u64,
+            *mut *mut *mut c_void,
+            *mut *mut u64,
+        ) -> u64;
         let path_c = cstr(jks_path);
         let alias_c = alias.map(cstr);
         let mut key_ptr: *mut c_void = std::ptr::null_mut();
-        let mut key_len: c_ulong = 0;
-        let mut cert_cnt: c_ulong = 0;
+        let mut key_len: u64 = 0;
+        let mut cert_cnt: u64 = 0;
         let mut certs_ptr: *mut *mut c_void = std::ptr::null_mut();
-        let mut cert_lens_ptr: *mut c_ulong = std::ptr::null_mut();
+        let mut cert_lens_ptr: *mut u64 = std::ptr::null_mut();
 
         // SAFETY: EUGetJKSPrivateKeyFile — стабільний C ABI, вихідні буфери SDK.
+        // SDK quirk (перевірено експериментально): getJKS викликається через
+        // self.lib, а read — через свіжий Library::new (див. read_private_key_binary).
         let rc = unsafe {
-            let f: libloading::Symbol<FnEuGetJksPrivateKeyFile> =
+            let f: libloading::Symbol<FnGetJksDirect> =
                 self.lib.get(b"EUGetJKSPrivateKeyFile\0")?;
             f(
-                path_c.as_ptr(),
-                alias_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                path_c.as_ptr() as *const u8,
+                alias_c
+                    .as_ref()
+                    .map_or(std::ptr::null(), |c| c.as_ptr() as *const u8),
                 &mut key_ptr,
                 &mut key_len,
                 &mut cert_cnt,
@@ -255,10 +271,8 @@ impl IitSdk {
             return Err(IitSdkError::JksRead(self.error_text(rc as c_int)));
         }
 
-        // копіюємо дані до звільнення пам'яті
         let mut key = Vec::new();
         if !key_ptr.is_null() && key_len > 0 {
-            // SAFETY: key_ptr — валідний буфер SDK довжини key_len.
             key = std::slice::from_raw_parts(key_ptr as *const u8, key_len as usize).to_vec();
         }
         let mut certs = Vec::new();
@@ -266,31 +280,19 @@ impl IitSdk {
             let cp = unsafe { *certs_ptr.add(i) };
             let cl = unsafe { *cert_lens_ptr.add(i) };
             if !cp.is_null() && cl > 0 {
-                // SAFETY: cp — валідний буфер SDK довжини cl.
                 let cert =
                     unsafe { std::slice::from_raw_parts(cp as *const u8, cl as usize) }.to_vec();
                 certs.push(cert);
             }
         }
 
-        // SAFETY: звільняємо пам'ять, виділену SDK.
-        unsafe {
-            if !key_ptr.is_null() {
-                self.free(key_ptr);
-            }
-            if !certs_ptr.is_null() {
-                for i in 0..cert_cnt as usize {
-                    let cp = *certs_ptr.add(i);
-                    if !cp.is_null() {
-                        self.free(cp);
-                    }
-                }
-                self.free(certs_ptr as *mut c_void);
-            }
-            if !cert_lens_ptr.is_null() {
-                self.free(cert_lens_ptr as *mut c_void);
-            }
-        }
+        // УВАГА: НЕ звільняємо буфери SDK через EUFreeMemory.
+        // EUSignCP тримає ВНУТРІШНІ вказівники на key/certs після
+        // EUGetJKSPrivateKeyFile — EUFreeMemory реально звільняє пам'ять,
+        // і наступний EUReadPrivateKeyBinary отримує dangling pointer
+        // (rc=24 або SIGSEGV). Python-еталон викликає _free(), але той
+        // фактично no-op — тож Rust свідомо не free-шує: поведінка 1:1,
+        // пам'ять SDK живе до кінця процесу (одноразове завантаження ключа).
 
         Ok((key, certs))
     }
@@ -319,17 +321,16 @@ impl IitSdk {
     ) -> Result<(), IitSdkError> {
         let pw = cstr(password);
         // SAFETY: EUReadPrivateKeyBinary(const char*, int, const char*) — C ABI.
+        type FnReadDirect = unsafe extern "C" fn(*const u8, i32, *const u8) -> i32;
         let rc = unsafe {
-            let f: libloading::Symbol<FnEuReadPrivateKeyBinary> =
-                self.lib.get(b"EUReadPrivateKeyBinary\0")?;
-            f(
-                key.as_ptr() as *const c_char,
-                key.len() as c_int,
-                pw.as_ptr(),
-            )
+            let f: libloading::Symbol<FnReadDirect> = self.lib.get(b"EUReadPrivateKeyBinary\0")?;
+            f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8)
         };
         if rc != 0 {
-            return Err(IitSdkError::KeyLoad(self.error_text(rc as c_int)));
+            return Err(IitSdkError::KeyLoad(format!(
+                "код {rc}: {}",
+                self.error_text(rc as c_int)
+            )));
         }
         self.key_loaded = true;
         Ok(())
@@ -429,6 +430,153 @@ impl IitSdk {
     pub fn key_loaded(&self) -> bool {
         self.key_loaded
     }
+
+    /// Завантажує JKS-ключ (ДСТУ 4145) у крипто-ядро — 1:1 Python
+    /// `IitSdk.load_jks_key`: EUGetJKSPrivateKeyFile → EUSaveCertificate × N →
+    /// EUReadPrivateKeyBinary; запам'ятовує сертифікат підписанта.
+    ///
+    /// ВАЖЛИВО (SDK quirk, перевірено експериментально): FFI-виклики через
+    /// `self.lib` (Symbol, отриманий з дескриптора IitSdk) дають rc=24
+    /// ("невірний пароль") для EUReadPrivateKeyBinary, хоча через окремий
+    /// `Library::new` — rc=0. Причина не в сигнатурах (ABI однаковий, адреси
+    /// функцій ідентичні) — схоже на внутрішній стан EUSignCP. Робочий
+    /// патерн (1:1 Python `ctypes.CDLL`, один дескриптор на процес):
+    /// ОДИН локальний `Library` на весь load_jks_key і прямі виклики через
+    /// нього. `self.lib` використовується для EUInitialize (працює).
+    pub fn load_jks_key(&mut self, jks_path: &Path, password: &str) -> Result<(), IitSdkError> {
+        let path_str = jks_path.to_string_lossy().to_string();
+        // SAFETY: euscp.so — стабільний C ABI.
+        let lib = unsafe { Library::new(&self.lib_path) }
+            .map_err(|e| IitSdkError::Load(self.lib_path.display().to_string(), e.to_string()))?;
+
+        type FnGetJks = unsafe extern "C" fn(
+            *const u8,
+            *const u8,
+            *mut *mut c_void,
+            *mut u64,
+            *mut u64,
+            *mut *mut *mut c_void,
+            *mut *mut u64,
+        ) -> u64;
+        type FnSave = unsafe extern "C" fn(*const u8, u64) -> u64;
+        type FnRead = unsafe extern "C" fn(*const u8, i32, *const u8) -> i32;
+
+        // 1) ключ + сертифікати з JKS
+        let path_c = cstr(&path_str);
+        let mut key_ptr: *mut c_void = std::ptr::null_mut();
+        let mut key_len: u64 = 0;
+        let mut cert_cnt: u64 = 0;
+        let mut certs_ptr: *mut *mut c_void = std::ptr::null_mut();
+        let mut cert_lens_ptr: *mut u64 = std::ptr::null_mut();
+        let rc = unsafe {
+            let f: libloading::Symbol<FnGetJks> = lib.get(b"EUGetJKSPrivateKeyFile\0")?;
+            f(
+                path_c.as_ptr() as *const u8,
+                std::ptr::null(),
+                &mut key_ptr,
+                &mut key_len,
+                &mut cert_cnt,
+                &mut certs_ptr,
+                &mut cert_lens_ptr,
+            )
+        };
+        if rc != 0 {
+            return Err(IitSdkError::JksRead(self.error_text(rc as i32)));
+        }
+        let mut key = Vec::new();
+        if !key_ptr.is_null() && key_len > 0 {
+            key = unsafe { std::slice::from_raw_parts(key_ptr as *const u8, key_len as usize) }
+                .to_vec();
+        }
+        let mut certs = Vec::new();
+        for i in 0..cert_cnt as usize {
+            let cp = unsafe { *certs_ptr.add(i) };
+            let cl = unsafe { *cert_lens_ptr.add(i) };
+            if !cp.is_null() && cl > 0 {
+                let cert =
+                    unsafe { std::slice::from_raw_parts(cp as *const u8, cl as usize) }.to_vec();
+                certs.push(cert);
+            }
+        }
+        // Буфери SDK НЕ звільняємо (EUFreeMemory дає dangling pointer —
+        // див. коментар у get_jks_private_key_file).
+
+        // 2) сертифікати у файлове сховище (помилка — лише warning, як Python)
+        for cert in &certs {
+            let rc = unsafe {
+                let f: libloading::Symbol<FnSave> = lib.get(b"EUSaveCertificate\0")?;
+                f(cert.as_ptr(), cert.len() as u64)
+            };
+            if rc != 0 {
+                let _ = self.error_text(rc as i32);
+            }
+        }
+
+        // 3) ключ у ядро
+        let pw = cstr(password);
+        let rc = unsafe {
+            let f: libloading::Symbol<FnRead> = lib.get(b"EUReadPrivateKeyBinary\0")?;
+            f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8)
+        };
+        if rc != 0 {
+            return Err(IitSdkError::KeyLoad(format!(
+                "код {rc}: {}",
+                self.error_text(rc)
+            )));
+        }
+        self.key_loaded = true;
+        self.signer_cert_der = find_signer_cert(&certs);
+        tracing::info!(
+            "PRRO_IIT_SDK | ключ JKS завантажено: {} (cert={})",
+            jks_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            self.signer_cert_der.is_some()
+        );
+        Ok(())
+    }
+
+    /// Серійний номер сертифіката підписанта (hex, upper) — 1:1 Python.
+    pub fn get_signer_serial(&self) -> Result<String, IitSdkError> {
+        let der = self
+            .signer_cert_der
+            .as_deref()
+            .ok_or(IitSdkError::KeyNotLoaded)?;
+        crate::crypto::xades::serial_from_cert(der).map_err(|e| IitSdkError::Generic(e.to_string()))
+    }
+
+    /// ПІБ підписанта з сертифіката — 1:1 Python.
+    pub fn get_signer_name(&self) -> Result<String, IitSdkError> {
+        let Some(der) = self.signer_cert_der.as_deref() else {
+            return Ok(String::new());
+        };
+        crate::crypto::xades::name_from_cert(der).map_err(|e| IitSdkError::Generic(e.to_string()))
+    }
+}
+
+/// Знаходить сертифікат підписанта в ланцюгу JKS — 1:1 Python
+/// `_find_signer_cert`: кінцевий (не CA, subject != issuer), інакше перший.
+fn find_signer_cert(certs: &[Vec<u8>]) -> Option<Vec<u8>> {
+    let parsed: Vec<(&[u8], x509_parser::certificate::X509Certificate)> = certs
+        .iter()
+        .filter_map(|c| {
+            x509_parser::parse_x509_certificate(c)
+                .ok()
+                .map(|(_, cert)| (c.as_slice(), cert))
+        })
+        .collect();
+    for (raw, cert) in &parsed {
+        // subject != issuer (порівняння за RFC 4514 — 1:1 Python)
+        if cert.subject().to_string() == cert.issuer().to_string() {
+            continue; // кореневий ЦСК
+        }
+        match cert.basic_constraints() {
+            Ok(Some(bc)) if bc.value.ca => continue, // проміжний ЦСК
+            _ => return Some(raw.to_vec()),          // кінцевий (CA=False або без BC)
+        }
+    }
+    parsed.first().map(|(raw, _)| raw.to_vec())
 }
 
 /// С-рядок з Rust-рядка (без NUL у Rust-частині; буфер із завершальним NUL).
