@@ -6,6 +6,10 @@ description = "Kasa POS — вбудований axum-фасад: HTTP gateway, 
 
 [dependencies]
 axum = "0.7"
+kasa-domain = { path = "../kasa-domain" }
+kasa-application = { path = "../kasa-application" }
+kasa-infrastructure = { path = "../kasa-infrastructure" }
+uuid = { version = "1", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 jsonwebtoken = "9"

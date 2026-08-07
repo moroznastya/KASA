@@ -1,23 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// kasa-api — вбудований axum-фасад Kasa POS (Strangler Fig, етап 0)
+// kasa-api — вбудований axum-фасад Kasa POS (Strangler Fig, етап 1)
 // ─────────────────────────────────────────────────────────────────────────────
 // Вбудований HTTP-шлюз на 127.0.0.1:8000 (той самий порт, що мав Python).
 // Фронтенд (axios → http://localhost:8000/api/v1) не змінюється взагалі:
 //   - /api/v1/health → нативний Rust-хендлер
+//   - довідники (products, categories, suppliers) → Rust-гілка ПІД
+//     feature-flag KASA_RUST_READDIRS=1, інакше → reverse proxy на :8001
 //   - решта /api/v1/*  → reverse proxy на Python sidecar :8001 (reqwest)
 //   - JWT-валідація (HS256) на всі роути, крім /health.
 //
 // Схема:
 //   frontend (axios) ──► kasa-api :8000 ──► Python sidecar :8001 (FastAPI)
 //                              │
+//                              ├──► Rust readdirs (БД PostgreSQL, read-only)
 //                              └──► (майбутнє) нативні Rust-хендлери
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod auth;
 pub mod proxy;
+pub mod readdirs;
 pub mod router_v1;
 
 use std::sync::Arc;
+
+use kasa_domain::ReadDirectories;
 
 /// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
 pub const PYTHON_SIDECAR_PORT: u16 = 8001;
@@ -25,13 +31,18 @@ pub const PYTHON_SIDECAR_PORT: u16 = 8001;
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
 pub const DEFAULT_FACADE_ADDR: &str = "127.0.0.1:8000";
 
-/// Спільний стан фасаду: JWT-секрет + HTTP-клієнт для проксі.
+/// Env-флаг увімкнення Rust-гілки довідників (етап 1).
+pub const RUST_READDIRS_ENV: &str = "KASA_RUST_READDIRS";
+
+/// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
 pub struct AppState {
     /// Секрет підпису/перевірки JWT (HS256), спільний із Python-бекендом.
     pub jwt_secret: Arc<String>,
     /// HTTP-клієнт для reverse proxy на Python sidecar.
     pub http_client: reqwest::Client,
+    /// Rust-репозиторій довідників (Some лише коли KASA_RUST_READDIRS=1).
+    pub readdirs: Option<Arc<dyn ReadDirectories + Send + Sync>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -42,6 +53,41 @@ pub fn health_payload() -> serde_json::Value {
 /// Чиста функція echo для differential CLI (повертає args без змін).
 pub fn echo_payload(args: &serde_json::Value) -> serde_json::Value {
     args.clone()
+}
+
+/// Читання bool-флага з env (1/true/yes → true).
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+/// Ініціалізує Rust-гілку довідників під feature-flag.
+///
+/// Якщо `KASA_RUST_READDIRS=1` і БД доступна — повертає репозиторій.
+/// Якщо флаг вимкнено або БД недоступна — `None` (фасад лишається проксі,
+/// режим відкату на Python :8001 зберігається).
+async fn init_readdirs() -> Option<Arc<dyn ReadDirectories + Send + Sync>> {
+    if !env_flag(RUST_READDIRS_ENV) {
+        return None;
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(5).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-only)"
+            );
+            Some(Arc::new(
+                kasa_infrastructure::repositories::directories::SqlxDirectories::new(pool),
+            ) as Arc<dyn ReadDirectories + Send + Sync>)
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_READDIRS_ENV}=1, але БД недоступна ({e}); \
+                 довідники працюють через проксі на Python :8001 (режим відкату)"
+            );
+            None
+        }
+    }
 }
 
 /// Запускає axum-фасад на вказаній адресі як окремий tokio-таск.
@@ -67,6 +113,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         http_client: reqwest::Client::builder()
             .timeout(proxy::PROXY_TIMEOUT)
             .build()?,
+        readdirs: init_readdirs().await,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
