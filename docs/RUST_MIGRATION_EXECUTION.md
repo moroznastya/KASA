@@ -214,6 +214,51 @@
 - [x] фронтенд працює БЕЗ змін (axios → :8000, тепер це Rust-фасад)
 - [x] `cargo test` зелений; differential-міст (Rust CLI) зібраний
 
+## 2.1 Етап 8 — група 1/9: Боржники (debtors) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `992f0f2` — feat(rust): група 1/9 — боржники (debtors) 1:1 Python, KASA_RUST_DEBTORS=1
+
+**Що зроблено:**
+- `kasa-domain::debtors` — DebtorService trait, DTO (DebtorDto, DebtorPaymentDto,
+  DebtorReceiptDto v1, DebtorListDto), DebtorError, blanket impl Arc
+- `kasa-infrastructure::repositories::debtors::SqlxDebtors` — search (ilike),
+  list (пагінація, sort total_debt DESC), CRUD, pay (транзакція FOR UPDATE:
+  400/404/422 1:1, повне погашення → DELETE з каскадом payment — як SQLAlchemy
+  cascade), receipts (v1 JOIN items+products), payments
+- `kasa-application::DebtorServiceFacade`
+- `kasa-api::debtors` — 8 роутів /api/v1/debtors* під `KASA_RUST_DEBTORS=1`,
+  Pydantic Decimal-валідація (decimal_parsing/decimal_max_places/greater_than)
+- `scripts/e2e_debtors_diff.sh` — differential Rust==Python: **29 перевірок PASS**
+  (create 201/parity, search, list total+items, get, update, pay часткове 70.00,
+  pay повне 0.00+видалення, receipts реального боржника, payments,
+  валідації 404/400/422), тестові дані видаляються
+
+**Верифікація:** cargo test 148/148, clippy 0 (наш код), fmt чистий,
+фасад :8002 (KASA_RUST_DEBTORS=1) — Python :8001 вимкнено для групи.
+
+---
+
+## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
+
+| Група | Файли Python | Обсяг | Залежності | Оцінка |
+|---|---|---|---|---|
+| 2. documents | v1/documents.py | 1793 | **залежить від invoices/return_invoices/purchase_orders** (copy→Response-схеми, batch-confirm→confirm-логіка) | 5-8 год; Excel export (openpyxl→rust_xlsxwriter), print (HTML), copy |
+| 3. invoices | v1(748)+v2(362) | 1110 | stock/ledger сервіси (Rust має) | 4-6 год; confirm→stock+SupplierLedger, payment-info, print-items |
+| 4. return_invoices | v1/return_invoices.py | 428 | stock/ledger | 2-3 год |
+| 5. purchase_orders | v1/purchase_orders.py | 416 | invoice (confirm→створює invoice) | 2-3 год |
+| 6. print+print_templates | v1/print.py(719)+print_templates.py(315) | 1034 | minijinja рендер, ESC/POS, цінники/етикетки | 4-6 год; Jinja2→minijinja сумісність |
+| 7. products v2 | v2/products.py | 360 | multipart upload, static serve, barcode-генерація | 2-3 год |
+| 8. prro v2 | v2/prro.py | 229 | kasa-prro (gRPC+крипто готові в 7.3) | 2-4 год; test-connection, fiscalize |
+| 9. ocr | ocr.py(108)+invoice_ocr.py(125)+services(690) | 923 | **зовнішній Gemini API** (genai SDK) | 3-5 год; клієнт REST Gemini + зіставлення з БД, мок-тест |
+
+**⚠️ Технічне виправлення порядку ТЗ:** documents (група 2) глибоко залежить від
+invoices/return_invoices/purchase_orders (copy повертає їхні Response-схеми;
+batch-confirm викликає confirm_invoice/confirm_return_invoice). Тому фактичний
+порядок міграції: **debtors(✅) → invoices → return_invoices → purchase_orders →
+documents → print/print_templates → products v2 → prro v2 → ocr**.
+
+**Рекомендація:** наступна сесія — invoices (найбільша залежність documents).
+
 ## 3. Аномалії та відкриті питання
 
 1. **PR не відкрито**: `gh` CLI не автентифікований на цій машині. Гілка
