@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 
-use crate::{auth, crud, proxy, readdirs, AppState};
+use crate::{auth, crud, pos, proxy, readdirs, AppState};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -79,6 +79,71 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/inventory/{id}/confirm",
                 post(crud::confirm_inventory),
             );
+    }
+
+    // Rust-гілка POS (етап 3) — під тим самим feature-flag.
+    if state.pos.is_some() {
+        // Чеки v2 (статичні сегменти ПЕРЕД {id}).
+        router = router
+            .route("/api/v2/receipts/stats/today", get(pos::today_stats))
+            .route("/api/v2/receipts/search", get(pos::search_receipts))
+            .route(
+                "/api/v2/receipts/by-product/{query}/recent-sales",
+                get(pos::recent_sales),
+            )
+            .route(
+                "/api/v2/receipts/products/{product_id}/returnable-quantity",
+                get(pos::returnable_quantity),
+            )
+            .route("/api/v2/receipts", get(pos::list_receipts))
+            .route("/api/v2/receipts/sale", post(pos::create_sale))
+            .route("/api/v2/receipts/return", post(pos::create_return))
+            .route(
+                "/api/v2/receipts/{receipt_id}/items",
+                get(pos::receipt_items),
+            )
+            .route("/api/v2/receipts/{receipt_id}", get(pos::get_receipt))
+            // Робочі сесії
+            .route("/api/v1/work-sessions/my", get(pos::my_sessions))
+            .route("/api/v1/work-sessions/report", get(pos::work_report))
+            .route(
+                "/api/v1/work-sessions/user/{user_id}",
+                get(pos::user_sessions),
+            )
+            // Списання
+            .route(
+                "/api/v1/write-offs",
+                get(pos::list_write_offs).post(pos::create_write_off),
+            )
+            .route(
+                "/api/v1/write-offs/{id}",
+                get(pos::get_write_off)
+                    .put(pos::update_write_off)
+                    .delete(pos::delete_write_off),
+            )
+            .route(
+                "/api/v1/write-offs/{id}/confirm",
+                post(pos::confirm_write_off),
+            )
+            // Переміщення
+            .route(
+                "/api/v1/transfers",
+                get(pos::list_transfers).post(pos::create_transfer),
+            )
+            .route(
+                "/api/v1/transfers/{id}",
+                get(pos::get_transfer)
+                    .put(pos::update_transfer)
+                    .delete(pos::delete_transfer),
+            )
+            .route(
+                "/api/v1/transfers/{id}/confirm",
+                post(pos::confirm_transfer),
+            )
+            // Зміни ПРРО (X/Z)
+            .route("/api/v2/prro/shifts", get(pos::list_shifts))
+            .route("/api/v2/prro/shift/open", post(pos::open_shift))
+            .route("/api/v2/prro/shift/close", post(pos::close_shift));
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).
