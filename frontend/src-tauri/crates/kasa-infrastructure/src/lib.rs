@@ -13,7 +13,9 @@
 //! Наступні етапи: винести команди в kasa-tauri-shell, тут лишити чисту логіку.
 
 pub mod cash_drawer;
+pub mod db;
 pub mod devices;
 pub mod offline;
 pub mod print;
+pub mod repositories;
 pub mod terminal;
