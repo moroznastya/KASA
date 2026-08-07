@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod debtors;
 pub mod directories;
 pub mod ledger;
 pub mod pos;

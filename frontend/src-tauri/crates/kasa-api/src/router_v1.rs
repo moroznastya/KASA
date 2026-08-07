@@ -15,7 +15,7 @@ use axum::{
     Router,
 };
 
-use crate::{auth, auth_routes, crud, ledger, pos, proxy, prro, readdirs, AppState};
+use crate::{auth, auth_routes, crud, debtors, ledger, pos, proxy, prro, readdirs, AppState};
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
@@ -225,6 +225,26 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/settings/{key}",
                 put(auth_routes::settings_update_key),
+            );
+    }
+
+    // Rust-гілка боржників (етап 8, група 1) — KASA_RUST_DEBTORS=1.
+    // Порядок: статичні сегменти (search) ПЕРЕД {debtor_id} — як FastAPI.
+    if state.debtors.is_some() {
+        router = router
+            .route("/api/v1/debtors/search", get(debtors::search))
+            .route(
+                "/api/v1/debtors/{debtor_id}",
+                get(debtors::get).put(debtors::update).post(debtors::pay),
+            )
+            .route("/api/v1/debtors", get(debtors::list).post(debtors::create))
+            .route(
+                "/api/v1/debtors/{debtor_id}/receipts",
+                get(debtors::receipts),
+            )
+            .route(
+                "/api/v1/debtors/{debtor_id}/payments",
+                get(debtors::payments),
             );
     }
 

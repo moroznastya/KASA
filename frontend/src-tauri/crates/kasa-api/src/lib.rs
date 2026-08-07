@@ -19,6 +19,7 @@
 pub mod auth;
 pub mod auth_routes;
 pub mod crud;
+pub mod debtors;
 pub mod ledger;
 pub mod pos;
 pub mod proxy;
@@ -28,7 +29,9 @@ pub mod router_v1;
 
 use std::sync::Arc;
 
-use kasa_domain::{AuthService, LedgerService, PosService, ReadDirectories, WriteDirectories};
+use kasa_domain::{
+    AuthService, DebtorService, LedgerService, PosService, ReadDirectories, WriteDirectories,
+};
 use sqlx::PgPool;
 
 /// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
@@ -42,6 +45,9 @@ pub const RUST_READDIRS_ENV: &str = "KASA_RUST_READDIRS";
 
 /// Env-флаг увімкнення Rust-гілки auth/users/settings/RBAC (етап 6).
 pub const RUST_AUTH_ENV: &str = "KASA_RUST_AUTH";
+
+/// Env-флаг Rust-гілки боржників (етап 8, група 1).
+pub const RUST_DEBTORS_ENV: &str = "KASA_RUST_DEBTORS";
 
 /// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
@@ -68,6 +74,8 @@ pub struct AppState {
     pub auth: Option<Arc<dyn AuthService + Send + Sync>>,
     /// Rust-фасад фіскального ПРРО (етап 7.3) — KASA_RUST_PRRO=1|shadow.
     pub prro: Option<Arc<crate::prro::PrroFacade>>,
+    /// Rust-репозиторій боржників (етап 8, група 1) — KASA_RUST_DEBTORS=1.
+    pub debtors: Option<Arc<dyn DebtorService + Send + Sync>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -166,6 +174,30 @@ async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
     }
 }
 
+/// Ініціалізує Rust-гілку боржників під KASA_RUST_DEBTORS=1.
+async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
+    if !env_flag(RUST_DEBTORS_ENV) {
+        return None;
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_DEBTORS_ENV}=1 — Rust-гілка боржників увімкнена (PostgreSQL)"
+            );
+            Some(
+                Arc::new(kasa_infrastructure::repositories::debtors::SqlxDebtors::new(pool))
+                    as Arc<dyn DebtorService + Send + Sync>,
+            )
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_DEBTORS_ENV}=1, але БД недоступна ({e}); боржники через проксі на Python :8001"
+            );
+            None
+        }
+    }
+}
+
 /// Запускає axum-фасад на вказаній адресі як окремий tokio-таск.
 ///
 /// Повертає `JoinHandle<()>` — через нього можна зупинити фасад (abort).
@@ -217,6 +249,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         auth
     };
     let prro = init_prro().await;
+    let debtors = init_debtors().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -229,6 +262,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         ledger,
         auth,
         prro,
+        debtors,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

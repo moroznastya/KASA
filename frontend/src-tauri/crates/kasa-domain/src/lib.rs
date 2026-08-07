@@ -10,6 +10,7 @@
 //! [`write::WriteDirectories`], вхідні структури та розрахунок націнки.
 
 pub mod auth;
+pub mod debtors;
 pub mod dto;
 pub mod ledger;
 pub mod pos;
@@ -31,6 +32,10 @@ pub use auth::{
     PublicUserDto, SettingDto, SettingUpdateInput, SettingsBatchInput, SettingsModulesDto,
     UserCreateInput, UserDto, UserListDto, UserRole, UserUpdateInput, VerifyDto, ALL_PERMISSIONS,
     CASHIER_PERMISSIONS, PERMISSION_GROUPS,
+};
+pub use debtors::{
+    DebtorCreateInput, DebtorDto, DebtorError, DebtorListDto, DebtorPayInput, DebtorPaymentDto,
+    DebtorReceiptDto, DebtorReceiptItemDto, DebtorSearchQuery, DebtorService, DebtorUpdateInput,
 };
 pub use dto::{
     BarcodeDto, CategoryDto, InventoryDto, InventoryItemDto, InventorySummaryDto, Page,
