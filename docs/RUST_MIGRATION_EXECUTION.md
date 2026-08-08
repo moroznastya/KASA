@@ -622,6 +622,64 @@ test --workspace 155/155 (+3 юніт: py_float_str/to_f64), clippy 0, fmt
 
 ---
 
+## 2.1.8 Етап 8 — група 8/9: ПРРО v2 (settings + test-connection + fiscalize) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `3e12c19` — feat(rust): група 8/9 — ПРРО v2 (settings + test-connection + fiscalize) 1:1 Python, KASA_RUST_PRRO_V2=1
+
+**Що зроблено (v2/prro.py, 10 роутів; shift/sync/queue/status вже в 7.3 fiscal/*):**
+- `kasa-prro::prro::settings` — PrroSettingsUseCase (get/save_settings,
+  test_connection) + PrroKeyStore (шлях/формат/пароль КЕП, Fernet);
+  статус-мапи ping (1..-16) 1:1 Python; build_fiscal_check_url (QR, SHA-1 fallback)
+- `kasa-prro::prro::fiscalize` — FiscalizeReceiptUseCase (~950 рядків Python):
+  stub mode, auto-фіскалізація, is_return+original, validate, split (NF-дублікат),
+  XML T=0/1 + payments (cash/card/mixed) + tax_groups, ДСТУ-підпис, sendChkV2,
+  on_success (queue sent, лічильники, QR), on_error (failed + dedup lastChk -3/-12)
+- `PrroRepository` розширено 8 методами фіскалізації (Sqlx + InMemory)
+- kasa-api роути під KASA_RUST_PRRO_V2=1 (ОРИГІНАЛЬНІ URL Python):
+  GET/PUT /settings, POST /test-connection, POST /receipts/{id}/fiscalize
+
+**Ключові рішення (аномалії → виправлення):**
+1. **PrroKeyStore шлях = `backend/app/infrastructure/.prro_keystore.json`** —
+   Python `key_store.py: parents[2]` = app/infrastructure (коментар «backend/»
+   у Python ПОМИЛКОВИЙ). Differential спільного keystore PY↔RS підтвердив.
+2. **Fernet (crate fernet 0.2.2)** — розшифровує Python cryptography.fernet
+   токени (AES-128-CBC + HMAC-SHA256). Golden-тест з реальним PY-токеном.
+   БАГ: спершу `
+` замінювався пробілом замість trim — Fernet::new Err.
+3. **require_admin → роль з JWT (claims.role), не з БД** — 1:1 Python
+   require_admin_role (scope['user_role'] з токена); БД-варіант давав 403
+   для токенів, створених до зміни ролі в БД.
+4. **PRRO_GRPC_INSECURE=1** — plaintext канал для мок-сервера
+   (Python-аналог PRRO_USE_SSL=false).
+5. **get_settings.online** — окремий gRPC statusRro (timeout 5, best-effort),
+   не блокує відповідь при відсутності ключа.
+6. **pkill pattern у скрипті** — «app.main:app --host 127.0.0.1 --port 8003»
+   (повний cmdline), інакше старий PY :8003 лишався зі старим master-key
+   у пам'яті → новий токен не розшифровувався Rust.
+
+**Differential `scripts/e2e_prro_v2_diff.sh`: 8/8 PASS**
+(мок gRPC ChkIncomeService :50051 — sendChkV2/ping/statusRro/lastChk,
+PY :8003 PRRO_USE_SSL=false vs RS :8002, спільна БД):
+- GET /settings parity (порожні) — exact
+- PUT /settings (multipart key_file jks+test2003+реквізити) → GET parity —
+  keystore СПІЛЬНИЙ (Fernet-сумісність PY↔RS підтверджена)
+- POST /test-connection — EXACT parity: status=1, ok=true, error exact
+  («Зв'язок із фіскальним сервером встановлено (OK).»)
+- POST /receipts/{id}/fiscalize — real ДСТУ-підпис (IIT SDK FFI) + sendChkV2
+  на мок → both sent, serial mock-sign-12345, QR url (fiscal_check_url),
+  normalized parity; БД: receipts sent (fisc-2/fisc-3), prro_queue sent,
+  fiscal_stock 100→96
+- GET /settings після fiscalize — parity (shift_open=true, online=true)
+
+**Верифікація:** cargo test --workspace 164/164 (+2 fernet golden-тести,
++7 fiscalize юніт-тестів: stub/auto-off/full-succ/split/return/error/dedup),
+clippy 0 (додатково вичищено накопичені warnings груп 1-7 у
+kasa-infrastructure/kasa-domain/kasa-api), fmt чистий. Тестові дані видалені
+(БД 0: чеки/товар/зміни/черга/налаштування; keystore/certs прибрані),
+PY :8001 недоторканий, усі процеси зупинені.
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
