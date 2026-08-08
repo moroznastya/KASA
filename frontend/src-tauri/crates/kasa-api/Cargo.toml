@@ -10,6 +10,7 @@ kasa-domain = { path = "../kasa-domain" }
 kasa-application = { path = "../kasa-application" }
 kasa-infrastructure = { path = "../kasa-infrastructure" }
 kasa-prro = { path = "../kasa-prro" }
+kasa-ocr = { path = "../kasa-ocr" }
 uuid = { version = "1", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

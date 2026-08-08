@@ -1,0 +1,17 @@
+[package]
+name = "kasa-ocr"
+version = "0.1.0"
+edition = "2021"
+description = "Kasa POS — OCR (розпізнавання накладних через Gemini API): HTTP-клієнт models.generateContent (reqwest), retry/ротація ключів 1:1 Python, парсинг JSON, зіставлення товарів з БД (barcode/name). Етап 9 міграції."
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+regex = "1"
+thiserror = "2"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"

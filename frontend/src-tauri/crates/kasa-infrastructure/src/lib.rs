@@ -15,6 +15,7 @@
 pub mod cash_drawer;
 pub mod db;
 pub mod devices;
+pub mod ocr;
 pub mod offline;
 pub mod print;
 pub mod prro;

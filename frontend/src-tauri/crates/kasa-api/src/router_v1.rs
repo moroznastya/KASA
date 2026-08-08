@@ -16,7 +16,7 @@ use axum::{
 };
 
 use crate::{
-    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, print_templates,
+    auth, auth_routes, crud, debtors, documents, invoices, ledger, ocr, pos, print_templates,
     products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, AppState,
 };
 
@@ -199,6 +199,17 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v2/prro/receipts/:receipt_id/fiscalize",
                 post(prro::fiscalize_receipt),
+            );
+    }
+
+    // Rust-гілка OCR (група 9/9) — KASA_RUST_OCR=1: /api/v1/ocr/invoice +
+    // /api/v1/invoice-ocr/analyze під ОРИГІНАЛЬНИМИ URL Python (1:1 parity).
+    if state.ocr.is_some() {
+        router = router
+            .route("/api/v1/ocr/invoice", post(ocr::analyze_invoice))
+            .route(
+                "/api/v1/invoice-ocr/analyze",
+                post(ocr::analyze_with_matching),
             );
     }
 

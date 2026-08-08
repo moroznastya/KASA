@@ -23,6 +23,7 @@ pub mod debtors;
 pub mod documents;
 pub mod invoices;
 pub mod ledger;
+pub mod ocr;
 pub mod pos;
 pub mod print_templates;
 pub mod products_v2;
@@ -77,6 +78,7 @@ pub const RUST_PRRO_ENV: &str = "KASA_RUST_PRRO";
 /// Env-флаг Rust-гілки ПРРО v2 (група 8/9): settings + test-connection +
 /// fiscalize під ОРИГІНАЛЬНИМИ URL Python — "1" — Rust виконує.
 pub const RUST_PRRO_V2_ENV: &str = "KASA_RUST_PRRO_V2";
+pub const RUST_OCR_ENV: &str = "KASA_RUST_OCR";
 
 /// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
@@ -127,6 +129,10 @@ pub struct AppState {
     pub products_v2: Option<Arc<dyn ProductsV2Service + Send + Sync>>,
     /// Пул товарів v2 (require_admin товарів незалежно від KASA_RUST_AUTH).
     pub products_v2_pool: Option<PgPool>,
+    /// Rust-сервіс OCR (етап 8, група 9) — KASA_RUST_OCR=1.
+    pub ocr: Option<std::sync::Arc<kasa_ocr::OcrService>>,
+    /// Пул OCR (invoice-ocr зіставлення з БД незалежно від інших флагів).
+    pub ocr_pool: Option<PgPool>,
     /// Директорія завантажених файлів (uploads/) — serve та збереження.
     /// Env KASA_UPLOADS_DIR (абсолютний або відносний шлях), default "uploads".
     pub uploads_dir: std::path::PathBuf,
@@ -193,6 +199,32 @@ async fn init_readdirs() -> Option<(
                  довідники працюють через проксі на Python :8001 (режим відкату)"
             );
             None
+        }
+    }
+}
+
+/// Ініціалізує Rust-гілку OCR під KASA_RUST_OCR=1.
+/// Повертає (OcrService, пул БД для invoice-ocr зіставлення).
+async fn init_ocr() -> (Option<std::sync::Arc<kasa_ocr::OcrService>>, Option<PgPool>) {
+    if !env_flag(RUST_OCR_ENV) {
+        return (None, None);
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(5).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_OCR_ENV}=1 — Rust-гілка OCR увімкнена (PostgreSQL; Gemini keys: {:?})",
+                kasa_ocr::OcrService::new().client().keys_file_hint()
+            );
+            (
+                Some(std::sync::Arc::new(kasa_ocr::OcrService::new())),
+                Some(pool),
+            )
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_OCR_ENV}=1, але БД недоступна ({e}); OCR через проксі на Python :8001"
+            );
+            (None, None)
         }
     }
 }
@@ -479,6 +511,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let uploads_dir = std::env::var("KASA_UPLOADS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("uploads"));
+    let (ocr, ocr_pool) = init_ocr().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -505,6 +538,8 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         print_pool,
         products_v2,
         products_v2_pool,
+        ocr,
+        ocr_pool,
         uploads_dir,
     };
     let app = router_v1::build_router(state);
