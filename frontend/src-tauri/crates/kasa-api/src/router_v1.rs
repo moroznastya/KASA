@@ -178,6 +178,30 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v2/prro/fiscal/status", get(prro::status));
     }
 
+    // Rust-гілка ПРРО v2 (група 8/9) — KASA_RUST_PRRO_V2=1: settings +
+    // test-connection + fiscalize під ОРИГІНАЛЬНИМИ URL Python (1:1 parity).
+    if state.prro.is_some()
+        && matches!(
+            std::env::var(crate::RUST_PRRO_V2_ENV)
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase()
+                .as_str(),
+            "1" | "true"
+        )
+    {
+        router = router
+            .route(
+                "/api/v2/prro/settings",
+                get(prro::settings_get).put(prro::settings_put),
+            )
+            .route("/api/v2/prro/test-connection", post(prro::test_connection))
+            .route(
+                "/api/v2/prro/receipts/:receipt_id/fiscalize",
+                post(prro::fiscalize_receipt),
+            );
+    }
+
     // Rust-гілка auth/users/settings/RBAC (етап 6) — під KASA_RUST_AUTH=1.
     // Порядок: статичні сегменти (users-list, users/me, permissions/list)
     // ПЕРЕД :user_id — як FastAPI.

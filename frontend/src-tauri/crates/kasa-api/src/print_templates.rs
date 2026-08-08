@@ -372,7 +372,7 @@ pub async fn list_templates(
             "ctx": {"ge": 1},
         }]})));
     }
-    if size < 1 || size > 1000 {
+    if !(1..=1000).contains(&size) {
         return Err(PrintErr::Validation(json!({"detail": [{
             "type": if size < 1 { "greater_than_equal" } else { "less_than_equal" },
             "loc": ["query", "size"],

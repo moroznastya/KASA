@@ -8,7 +8,10 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
-use super::models::{PrroQueueItem, PrroSetting, PrroShift};
+use super::models::{
+    ProductFiscalRow, PrroQueueItem, PrroSetting, PrroShift, ReceiptFiscalRow,
+    ReceiptItemFiscalRow, SplitItemInput,
+};
 
 /// Помилка репозиторію ПРРО (ізольована від sqlx — kasa-prro не залежить від БД).
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +26,7 @@ pub enum PrroRepoError {
 
 /// Контракт репозиторію ПРРО — 1:1 Python `PrroRepository` + settings.
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait PrroRepository: Send + Sync {
     // ── PrroShift ────────────────────────────────────────────────────────
     async fn create_shift(&self, shift: PrroShift) -> Result<PrroShift, PrroRepoError>;
@@ -79,6 +83,59 @@ pub trait PrroRepository: Send + Sync {
     // ── PrroSetting ──────────────────────────────────────────────────────
     async fn get_setting(&self, key: &str) -> Result<Option<String>, PrroRepoError>;
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), PrroRepoError>;
+
+    // ── Фіскалізація (група 8/9) — 1:1 Python FiscalizeReceiptUseCase ────
+    /// Чек з позиціями (1:1 Python `_load_receipt` + selectinload(items)).
+    async fn load_receipt_with_items(
+        &self,
+        receipt_id: Uuid,
+    ) -> Result<Option<ReceiptFiscalRow>, PrroRepoError>;
+    /// Товар за ID (1:1 Python `_load_product`).
+    async fn load_product(
+        &self,
+        product_id: Uuid,
+    ) -> Result<Option<ProductFiscalRow>, PrroRepoError>;
+    /// Оновлює фіскальний стан чеку (1:1 Python: receipt.fiscal_status=...).
+    async fn update_receipt_fiscal_state(
+        &self,
+        receipt_id: Uuid,
+        fiscal_status: &str,
+        fiscal_number: Option<&str>,
+        fiscal_serial: Option<&str>,
+        fiscal_sent_at: Option<DateTime<Utc>>,
+        fiscal_error: Option<&str>,
+        is_fiscal: Option<bool>,
+    ) -> Result<(), PrroRepoError>;
+    /// Перераховує total_amount чеку (split: сума фіскальних позицій).
+    async fn update_receipt_total(
+        &self,
+        receipt_id: Uuid,
+        total_amount: Decimal,
+    ) -> Result<(), PrroRepoError>;
+    /// Видаляє позиції з fiscal_quantity <= 0 (split: cascade delete).
+    async fn delete_non_fiscal_items(&self, receipt_id: Uuid) -> Result<u64, PrroRepoError>;
+    /// Оновлює quantity/total/fiscal_quantity позиції (split: ефективна кількість).
+    async fn update_item_fiscal(
+        &self,
+        item_id: Uuid,
+        quantity: Decimal,
+        total: Decimal,
+        fiscal_quantity: Decimal,
+    ) -> Result<(), PrroRepoError>;
+    /// Створює нефіскальний дублікат чеку + позиції (split, 1:1 Python).
+    async fn create_receipt_duplicate(
+        &self,
+        source: &ReceiptFiscalRow,
+        items: &[SplitItemInput],
+        is_return: bool,
+        split_group_id: Uuid,
+    ) -> Result<Uuid, PrroRepoError>;
+    /// Оновлює fiscal_stock товару (1:1 Python product.fiscal_stock).
+    async fn update_product_fiscal_stock(
+        &self,
+        product_id: Uuid,
+        new_stock: Decimal,
+    ) -> Result<(), PrroRepoError>;
 }
 
 /// In-memory реалізація (тести, еталони) — детермінована, без БД.
@@ -87,6 +144,8 @@ pub struct InMemoryPrroRepository {
     shifts: std::sync::Mutex<Vec<PrroShift>>,
     queue: std::sync::Mutex<Vec<PrroQueueItem>>,
     settings: std::sync::Mutex<Vec<PrroSetting>>,
+    receipts: std::sync::Mutex<Vec<ReceiptFiscalRow>>,
+    products: std::sync::Mutex<Vec<ProductFiscalRow>>,
 }
 
 impl InMemoryPrroRepository {
@@ -118,6 +177,14 @@ impl InMemoryPrroRepository {
             key_name: key.to_string(),
             value: Some(value.to_string()),
         });
+    }
+
+    pub fn seed_receipt(&self, receipt: ReceiptFiscalRow) {
+        self.receipts.lock().unwrap().push(receipt);
+    }
+
+    pub fn seed_product(&self, product: ProductFiscalRow) {
+        self.products.lock().unwrap().push(product);
     }
 }
 
@@ -356,6 +423,167 @@ impl PrroRepository for InMemoryPrroRepository {
                 value: Some(value.to_string()),
             });
         }
+        Ok(())
+    }
+
+    async fn load_receipt_with_items(
+        &self,
+        receipt_id: Uuid,
+    ) -> Result<Option<ReceiptFiscalRow>, PrroRepoError> {
+        Ok(self
+            .receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == receipt_id)
+            .cloned())
+    }
+
+    async fn load_product(
+        &self,
+        product_id: Uuid,
+    ) -> Result<Option<ProductFiscalRow>, PrroRepoError> {
+        Ok(self
+            .products
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == product_id)
+            .cloned())
+    }
+
+    async fn update_receipt_fiscal_state(
+        &self,
+        receipt_id: Uuid,
+        fiscal_status: &str,
+        fiscal_number: Option<&str>,
+        fiscal_serial: Option<&str>,
+        fiscal_sent_at: Option<DateTime<Utc>>,
+        fiscal_error: Option<&str>,
+        is_fiscal: Option<bool>,
+    ) -> Result<(), PrroRepoError> {
+        let mut receipts = self.receipts.lock().unwrap();
+        let r = receipts
+            .iter_mut()
+            .find(|r| r.id == receipt_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        r.fiscal_status = fiscal_status.to_string();
+        r.fiscal_number = fiscal_number.map(str::to_string);
+        r.fiscal_serial = fiscal_serial.map(str::to_string);
+        r.fiscal_sent_at = fiscal_sent_at;
+        r.fiscal_error = fiscal_error.map(str::to_string);
+        if let Some(v) = is_fiscal {
+            r.is_fiscal = v;
+        }
+        Ok(())
+    }
+
+    async fn update_receipt_total(
+        &self,
+        receipt_id: Uuid,
+        total_amount: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        let mut receipts = self.receipts.lock().unwrap();
+        let r = receipts
+            .iter_mut()
+            .find(|r| r.id == receipt_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        r.total_amount = total_amount;
+        Ok(())
+    }
+
+    async fn delete_non_fiscal_items(&self, receipt_id: Uuid) -> Result<u64, PrroRepoError> {
+        let mut receipts = self.receipts.lock().unwrap();
+        let r = receipts
+            .iter_mut()
+            .find(|r| r.id == receipt_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        let before = r.items.len();
+        r.items.retain(|i| i.fiscal_quantity > Decimal::ZERO);
+        Ok((before - r.items.len()) as u64)
+    }
+
+    async fn update_item_fiscal(
+        &self,
+        item_id: Uuid,
+        quantity: Decimal,
+        total: Decimal,
+        fiscal_quantity: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        let mut receipts = self.receipts.lock().unwrap();
+        for r in receipts.iter_mut() {
+            if let Some(item) = r.items.iter_mut().find(|i| i.id == item_id) {
+                item.quantity = quantity;
+                item.total = total;
+                item.fiscal_quantity = fiscal_quantity;
+                return Ok(());
+            }
+        }
+        Err(PrroRepoError::NotFound)
+    }
+
+    async fn create_receipt_duplicate(
+        &self,
+        source: &ReceiptFiscalRow,
+        items: &[SplitItemInput],
+        is_return: bool,
+        split_group_id: Uuid,
+    ) -> Result<Uuid, PrroRepoError> {
+        let id = Uuid::new_v4();
+        let dup = ReceiptFiscalRow {
+            id,
+            receipt_number: format!(
+                "NF-{}-{}",
+                source.receipt_number.chars().take(20).collect::<String>(),
+                &uuid::Uuid::new_v4().simple().to_string()[..6]
+            ),
+            cashier_id: source.cashier_id,
+            total_amount: items.iter().map(|i| i.total).sum(),
+            paid_amount: source.paid_amount,
+            change_amount: source.change_amount,
+            debtor_id: source.debtor_id,
+            is_return,
+            notes: source.notes.clone(),
+            payment_method: source.payment_method.clone(),
+            cash_amount: source.cash_amount,
+            card_amount: source.card_amount,
+            original_receipt_id: source.original_receipt_id,
+            return_reason: source.return_reason.clone(),
+            split_group_id: Some(split_group_id),
+            fiscal_status: "none".to_string(),
+            fiscal_number: None,
+            fiscal_serial: None,
+            fiscal_sent_at: None,
+            fiscal_error: None,
+            is_fiscal: false,
+            items: items
+                .iter()
+                .map(|i| ReceiptItemFiscalRow {
+                    id: Uuid::new_v4(),
+                    product_id: i.product_id,
+                    quantity: i.quantity,
+                    price: i.price,
+                    total: i.total,
+                    purchase_price: i.purchase_price,
+                    fiscal_quantity: Decimal::ZERO,
+                })
+                .collect(),
+        };
+        self.receipts.lock().unwrap().push(dup);
+        Ok(id)
+    }
+
+    async fn update_product_fiscal_stock(
+        &self,
+        product_id: Uuid,
+        new_stock: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        let mut products = self.products.lock().unwrap();
+        let p = products
+            .iter_mut()
+            .find(|p| p.id == product_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        p.fiscal_stock = new_stock;
         Ok(())
     }
 }

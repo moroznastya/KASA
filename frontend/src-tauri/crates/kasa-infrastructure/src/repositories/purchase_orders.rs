@@ -93,14 +93,13 @@ impl SqlxPurchaseOrders {
         };
         let order_id: Uuid = r.get("id");
         let items = self.fetch_items(order_id).await?;
-        let invoice = match r.get::<Option<String>, _>("inv_number") {
-            Some(num) => Some(InvoiceBriefDto {
+        let invoice = r
+            .get::<Option<String>, _>("inv_number")
+            .map(|num| InvoiceBriefDto {
                 id: r.get("invoice_id"),
                 number: num,
                 total_amount: r.get("inv_total"),
-            }),
-            None => None,
-        };
+            });
         Ok(Some(PurchaseOrderDto {
             id: order_id,
             number: r.get("number"),
@@ -211,14 +210,13 @@ impl kasa_domain::purchase_orders::PurchaseOrdersService for SqlxPurchaseOrders 
         for r in &rows {
             let order_id: Uuid = r.get("id");
             let order_items = self.fetch_items(order_id).await?;
-            let invoice = match r.get::<Option<String>, _>("inv_number") {
-                Some(num) => Some(InvoiceBriefDto {
+            let invoice = r
+                .get::<Option<String>, _>("inv_number")
+                .map(|num| InvoiceBriefDto {
                     id: r.get("invoice_id"),
                     number: num,
                     total_amount: r.get("inv_total"),
-                }),
-                None => None,
-            };
+                });
             items.push(PurchaseOrderDto {
                 id: order_id,
                 number: r.get("number"),

@@ -22,9 +22,10 @@ use kasa_prro::crypto::{signer_from_key_material, PrroSigner};
 use kasa_prro::grpc::{PrroGrpcClient, TlsConfig};
 use kasa_prro::keystore;
 use kasa_prro::prro::{
-    PrroOfflineQueue, PrroRepoError, PrroRepository, PrroShiftDto, PrroShiftError,
-    PrroShiftUseCase, SyncOfflineQueueUseCase, KEY_LAST_MAC_NUMBER, KEY_LAST_PACKET_ID,
-    KEY_PRRO_FN, KEY_PRRO_TN, KEY_PRRO_URL, KEY_PRRO_ZN,
+    FiscalizeReceiptUseCase, PrroFiscalizeError, PrroKeyStore, PrroOfflineQueue, PrroRepoError,
+    PrroRepository, PrroSettingsDto, PrroSettingsError, PrroSettingsUseCase, PrroShiftDto,
+    PrroShiftError, PrroShiftUseCase, SyncOfflineQueueUseCase, KEY_LAST_MAC_NUMBER,
+    KEY_LAST_PACKET_ID, KEY_PRRO_FN, KEY_PRRO_MODE, KEY_PRRO_TN, KEY_PRRO_URL, KEY_PRRO_ZN,
 };
 use kasa_prro::xml::XmlBuilder;
 use serde::Deserialize;
@@ -55,6 +56,10 @@ pub enum PrroApiError {
     Xml(#[from] kasa_prro::xml::XmlBuilderError),
     #[error("черга: {0}")]
     Queue(#[from] kasa_prro::prro::QueueError),
+    #[error("{0}")]
+    Settings(#[from] PrroSettingsError),
+    #[error("{0}")]
+    Fiscalize(#[from] PrroFiscalizeError),
 }
 
 impl From<PrroShiftError> for PrroApiError {
@@ -78,11 +83,17 @@ pub struct PrroFacade {
     repo: SqlxPrroRepository,
     /// shadow-режим: готуємо чек, але НЕ надсилаємо (Python виконує).
     shadow: bool,
+    /// Сховище ключа КЕП (шлях/пароль) — 1:1 Python PrroKeyStore.
+    key_store: PrroKeyStore,
 }
 
 impl PrroFacade {
     pub fn new(repo: SqlxPrroRepository, shadow: bool) -> Self {
-        Self { repo, shadow }
+        Self {
+            repo,
+            shadow,
+            key_store: PrroKeyStore::default(),
+        }
     }
 
     pub fn repo(&self) -> &SqlxPrroRepository {
@@ -110,11 +121,30 @@ impl PrroFacade {
             .get_setting(KEY_PRRO_ZN)
             .await?
             .unwrap_or_default();
-        let url = self
+        // URL: config env (PRRO_TEST_URL/PRRO_PROD_URL за mode) → БД → default.
+        let mode = self
             .repo
-            .get_setting(KEY_PRRO_URL)
+            .get_setting(KEY_PRRO_MODE)
             .await?
-            .unwrap_or_default();
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(kasa_prro::prro::config_mode);
+        let url = if let Ok(u) = std::env::var(if mode == "prod" {
+            "PRRO_PROD_URL"
+        } else {
+            "PRRO_TEST_URL"
+        }) {
+            if !u.is_empty() {
+                u
+            } else {
+                kasa_prro::prro::config_url(&mode)
+            }
+        } else {
+            self.repo
+                .get_setting(KEY_PRRO_URL)
+                .await?
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| kasa_prro::prro::config_url(&mode))
+        };
         let packet_id: i64 = self
             .repo
             .get_setting(KEY_LAST_PACKET_ID)
@@ -134,12 +164,23 @@ impl PrroFacade {
             ));
         }
 
-        let key_file = std::env::var("PRRO_KEY_FILE").ok();
-        let key_password = std::env::var("PRRO_KEY_PASSWORD").ok();
-        let (Some(key_file), Some(key_password)) = (key_file, key_password) else {
-            return Err(PrroApiError::Config(
-                "задайте PRRO_KEY_FILE та PRRO_KEY_PASSWORD (env) для Rust-гілки ПРРО".into(),
-            ));
+        // Ключ КЕП: keystore (1:1 Python PrroKeyStore) → env PRRO_KEY_* fallback.
+        let (key_file, key_password) = match (
+            self.key_store.get_key_path(),
+            self.key_store.decrypt_password(),
+        ) {
+            (Ok(kp), Ok(pw)) => (kp, pw),
+            _ => {
+                let kf = std::env::var("PRRO_KEY_FILE").ok();
+                let kp = std::env::var("PRRO_KEY_PASSWORD").ok();
+                let (Some(kf), Some(kp)) = (kf, kp) else {
+                    return Err(PrroApiError::Config(
+                        "налаштуйте ключ КЕП: завантажте його через PUT /api/v2/prro/settings                          (або задайте PRRO_KEY_FILE/PRRO_KEY_PASSWORD env для 7.3-сумісності)"
+                            .into(),
+                    ));
+                };
+                (kf, kp)
+            }
         };
 
         let material =
@@ -284,6 +325,151 @@ impl PrroFacade {
             "last_shift_number": last_shift,
             "rust_gate": true,
         }))
+    }
+
+    // ─── Група 8/9: settings + test-connection + fiscalize ─────────────────
+
+    /// GET /api/v2/prro/settings — 1:1 Python get_settings.
+    pub async fn get_settings(&self) -> Result<PrroSettingsDto, PrroApiError> {
+        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        // _check_online: окремий gRPC-клієнт (без ключа — лише statusRro,
+        // 1:1 Python _check_online через context.grpc_client()).
+        let grpc = self.grpc_only().await.ok();
+        Ok(uc.get_settings(&self.repo, grpc.as_ref()).await?)
+    }
+
+    /// PUT /api/v2/prro/settings — 1:1 Python save_settings (multipart form).
+    #[allow(clippy::too_many_arguments)]
+    /// gRPC-клієнт лише з налаштувань (без ключа) — для _check_online.
+    async fn grpc_only(&self) -> Result<PrroGrpcClient, PrroApiError> {
+        let mode = self
+            .repo
+            .get_setting(KEY_PRRO_MODE)
+            .await?
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(kasa_prro::prro::config_mode);
+        let url = if let Ok(u) = std::env::var(if mode == "prod" {
+            "PRRO_PROD_URL"
+        } else {
+            "PRRO_TEST_URL"
+        }) {
+            if !u.is_empty() {
+                u
+            } else {
+                kasa_prro::prro::config_url(&mode)
+            }
+        } else {
+            self.repo
+                .get_setting(KEY_PRRO_URL)
+                .await?
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| kasa_prro::prro::config_url(&mode))
+        };
+        let rro_fn = self
+            .repo
+            .get_setting(KEY_PRRO_FN)
+            .await?
+            .unwrap_or_default();
+        PrroGrpcClient::connect(&url, kasa_prro::grpc::TlsConfig::default(), &rro_fn)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_settings(
+        &self,
+        key_file_content: Option<Vec<u8>>,
+        key_file_name: Option<String>,
+        key_file_path: Option<String>,
+        key_password: Option<String>,
+        prro_fn: Option<String>,
+        prro_tn: Option<String>,
+        prro_zn: Option<String>,
+        mode: Option<String>,
+        auto_fiscalize: Option<bool>,
+    ) -> Result<PrroSettingsDto, PrroApiError> {
+        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let grpc = self.grpc_only().await.ok();
+        Ok(uc
+            .save_settings(
+                &self.repo,
+                grpc.as_ref(),
+                key_file_content.as_deref(),
+                key_file_name.as_deref(),
+                key_file_path.as_deref(),
+                key_password.as_deref(),
+                prro_fn.as_deref(),
+                prro_tn.as_deref(),
+                prro_zn.as_deref(),
+                mode.as_deref(),
+                auto_fiscalize,
+            )
+            .await?)
+    }
+
+    /// POST /api/v2/prro/test-connection — 1:1 Python test_connection (ping).
+    pub async fn test_connection(&self) -> Result<serde_json::Value, PrroApiError> {
+        let mut ctx = self.context().await?;
+        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        Ok(uc
+            .test_connection(&ctx.grpc, &mut ctx.builder, Some(ctx.signer.as_ref()))
+            .await)
+    }
+
+    /// POST /api/v2/prro/receipts/{id}/fiscalize — 1:1 Python fiscalize_receipt.
+    pub async fn fiscalize(
+        &self,
+        receipt_id: uuid::Uuid,
+        manual: bool,
+    ) -> Result<PrroFiscalizeDtoOut, PrroApiError> {
+        let mut ctx = self.context().await?;
+        let dto = FiscalizeReceiptUseCase::fiscalize_receipt(
+            &self.repo,
+            &self.key_store,
+            &ctx.grpc,
+            &mut ctx.builder,
+            ctx.signer.as_ref(),
+            receipt_id,
+            manual,
+        )
+        .await?;
+        Ok(PrroFiscalizeDtoOut::from(dto))
+    }
+}
+
+/// HTTP-відповідь фіскалізації (Serialize) — 1:1 FiscalizeResponseDTO.
+#[derive(serde::Serialize)]
+pub struct PrroFiscalizeDtoOut {
+    pub receipt_id: uuid::Uuid,
+    pub fiscal_status: String,
+    pub status: String,
+    pub fiscal_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub message: Option<String>,
+    pub fiscal_number: Option<String>,
+    pub fiscal_serial: Option<String>,
+    pub fiscal_sent_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub error: Option<String>,
+    pub split_receipt_id: Option<uuid::Uuid>,
+    pub fiscal_check_url: Option<String>,
+    pub warning: Option<String>,
+}
+
+impl From<kasa_prro::prro::FiscalizeResponseDto> for PrroFiscalizeDtoOut {
+    fn from(d: kasa_prro::prro::FiscalizeResponseDto) -> Self {
+        Self {
+            receipt_id: d.receipt_id,
+            fiscal_status: d.fiscal_status,
+            status: d.status,
+            fiscal_date: d.fiscal_date,
+            message: d.message,
+            fiscal_number: d.fiscal_number,
+            fiscal_serial: d.fiscal_serial,
+            fiscal_sent_at: d.fiscal_sent_at,
+            error: d.error,
+            split_receipt_id: d.split_receipt_id,
+            fiscal_check_url: d.fiscal_check_url,
+            warning: d.warning,
+        }
     }
 }
 
@@ -431,4 +617,137 @@ pub async fn status(
         .await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+}
+
+// ─── Група 8/9: settings + test-connection + fiscalize (KASA_RUST_PRRO_V2) ──
+
+/// GET /api/v2/prro/settings
+pub async fn settings_get(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let f = facade(&state)?;
+    match f.get_settings().await {
+        Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+/// PUT /api/v2/prro/settings (multipart: key_file + form-поля, require_admin)
+pub async fn settings_put(
+    State(state): State<AppState>,
+    axum::Extension(claims): axum::Extension<crate::auth::Claims>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let f = facade(&state)?;
+    if crate::auth_routes::require_admin(&state, &claims)
+        .await
+        .is_err()
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "потрібні права адміністратора".to_string(),
+        ));
+    }
+    let mut key_file_content: Option<Vec<u8>> = None;
+    let mut key_file_name: Option<String> = None;
+    let mut key_file_path: Option<String> = None;
+    let mut key_password: Option<String> = None;
+    let mut prro_fn: Option<String> = None;
+    let mut prro_tn: Option<String> = None;
+    let mut prro_zn: Option<String> = None;
+    let mut mode: Option<String> = None;
+    let mut auto_fiscalize: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if field.file_name().is_some() {
+            // файл ключа
+            key_file_name = field.file_name().map(str::to_string);
+            key_file_content = field.bytes().await.ok().map(|b| b.to_vec());
+        } else {
+            let text = field.text().await.unwrap_or_default();
+            match name.as_str() {
+                "key_password" => key_password = Some(text),
+                "prro_fn" => prro_fn = Some(text),
+                "prro_tn" => prro_tn = Some(text),
+                "prro_zn" => prro_zn = Some(text),
+                "mode" => mode = Some(text),
+                "key_file_path" => key_file_path = Some(text),
+                "auto_fiscalize" => auto_fiscalize = Some(text),
+                _ => {}
+            }
+        }
+    }
+
+    let auto_bool = match auto_fiscalize.as_deref() {
+        None => None,
+        Some(v) => {
+            let v = v.trim().to_lowercase();
+            Some(matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        }
+    };
+
+    match f
+        .save_settings(
+            key_file_content,
+            key_file_name,
+            key_file_path,
+            key_password,
+            prro_fn,
+            prro_tn,
+            prro_zn,
+            mode,
+            auto_bool,
+        )
+        .await
+    {
+        Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+/// POST /api/v2/prro/test-connection (require_admin)
+pub async fn test_connection(
+    State(state): State<AppState>,
+    axum::Extension(claims): axum::Extension<crate::auth::Claims>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let f = facade(&state)?;
+    if crate::auth_routes::require_admin(&state, &claims)
+        .await
+        .is_err()
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "потрібні права адміністратора".to_string(),
+        ));
+    }
+    match f.test_connection().await {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+/// POST /api/v2/prro/receipts/{receipt_id}/fiscalize
+pub async fn fiscalize_receipt(
+    State(state): State<AppState>,
+    axum::extract::Path(receipt_id): axum::extract::Path<uuid::Uuid>,
+    req: Request,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let f = facade(&state)?;
+    // Опційне тіло: {"manual": bool} (1:1 Python FiscalizeRequestDTO; відсутнє
+    // тіло → manual=true — юзер натиснув кнопку).
+    let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let manual = if body.is_empty() {
+        true
+    } else {
+        serde_json::from_slice::<kasa_prro::prro::FiscalizeRequestDto>(&body)
+            .map(|d| d.manual)
+            .unwrap_or(true)
+    };
+    match f.fiscalize(receipt_id, manual).await {
+        Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
 }

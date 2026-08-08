@@ -11,6 +11,15 @@ use crate::proto::{Check, CheckResponse};
 pub trait ChkSender: Send + Sync {
     /// Передає чек на фіскальний сервер. 1:1 Python `grpc_client.send_chk`.
     async fn send_chk(&self, check: Check) -> Result<CheckResponse, PrroGrpcError>;
+
+    /// Останній збережений чек (lastChk) — для дедуплікації при ERROR_SAVE/-12.
+    /// 1:1 Python `grpc_client.last_chk`. Дефолт: не підтримується.
+    async fn last_chk(&self) -> Result<CheckResponse, PrroGrpcError> {
+        Err(PrroGrpcError::Rpc {
+            status: tonic::Status::unimplemented("lastChk не підтримується цим надсилачем"),
+            max_retries: 0,
+        })
+    }
 }
 
 #[async_trait]
@@ -74,5 +83,51 @@ impl ChkSender for MockChkSender {
             });
         }
         responses.remove(0)
+    }
+}
+
+/// Мок lastChk: керована відповідь для тестів дедуплікації.
+#[derive(Debug, Default)]
+pub struct MockLastChk {
+    /// Відповідь lastChk (None → помилка "не підтримується").
+    pub response: std::sync::Mutex<Option<Result<CheckResponse, PrroGrpcError>>>,
+}
+
+impl MockLastChk {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_ok(&self, id: impl Into<String>) {
+        *self.response.lock().unwrap() = Some(Ok(CheckResponse {
+            id: id.into(),
+            status: 1,
+            id_sign: vec![],
+            data_sign: vec![],
+            error_message: String::new(),
+        }));
+    }
+}
+
+#[async_trait]
+impl ChkSender for MockLastChk {
+    async fn send_chk(&self, check: Check) -> Result<CheckResponse, PrroGrpcError> {
+        Ok(CheckResponse {
+            id: check.id_offline,
+            status: 1,
+            id_sign: vec![],
+            data_sign: vec![],
+            error_message: String::new(),
+        })
+    }
+
+    async fn last_chk(&self) -> Result<CheckResponse, PrroGrpcError> {
+        match self.response.lock().unwrap().as_ref() {
+            Some(r) => (*r).clone(),
+            None => Err(PrroGrpcError::Rpc {
+                status: tonic::Status::unimplemented("lastChk не підтримується"),
+                max_retries: 0,
+            }),
+        }
     }
 }

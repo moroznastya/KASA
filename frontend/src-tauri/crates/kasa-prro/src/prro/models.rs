@@ -128,15 +128,76 @@ pub struct PrroSetting {
     pub value: Option<String>,
 }
 
+/// Чек з позиціями для фіскалізації — 1:1 Python `Receipt` + `ReceiptItem`
+/// (вибірка полів, потрібних FiscalizeReceiptUseCase).
+#[derive(Debug, Clone)]
+pub struct ReceiptFiscalRow {
+    pub id: Uuid,
+    pub receipt_number: String,
+    pub cashier_id: Uuid,
+    pub total_amount: Decimal,
+    pub paid_amount: Option<Decimal>,
+    pub change_amount: Option<Decimal>,
+    pub debtor_id: Option<Uuid>,
+    pub is_return: bool,
+    pub notes: Option<String>,
+    pub payment_method: Option<String>,
+    pub cash_amount: Option<Decimal>,
+    pub card_amount: Option<Decimal>,
+    pub original_receipt_id: Option<Uuid>,
+    pub return_reason: Option<String>,
+    pub split_group_id: Option<Uuid>,
+    pub fiscal_status: String,
+    pub fiscal_number: Option<String>,
+    pub fiscal_serial: Option<String>,
+    pub fiscal_sent_at: Option<DateTime<Utc>>,
+    pub fiscal_error: Option<String>,
+    pub is_fiscal: bool,
+    pub items: Vec<ReceiptItemFiscalRow>,
+}
+
+/// Позиція чеку — 1:1 Python `ReceiptItem` (фіскальні поля).
+#[derive(Debug, Clone)]
+pub struct ReceiptItemFiscalRow {
+    pub id: Uuid,
+    pub product_id: Uuid,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub total: Decimal,
+    pub purchase_price: Option<Decimal>,
+    pub fiscal_quantity: Decimal,
+}
+
+/// Товар для фіскалізації — 1:1 Python `Product` (fiscal_stock, tax_rate).
+#[derive(Debug, Clone)]
+pub struct ProductFiscalRow {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub fiscal_stock: Decimal,
+    pub tax_rate: Option<Decimal>,
+}
+
+/// Позиція нефіскального дубліката при split — 1:1 Python `ReceiptItem(...)`.
+#[derive(Debug, Clone)]
+pub struct SplitItemInput {
+    pub product_id: Uuid,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub total: Decimal,
+    pub purchase_price: Option<Decimal>,
+}
+
 // Ключі налаштувань — 1:1 Python `context.py`.
 pub const KEY_PRRO_FN: &str = "prro_fn";
 pub const KEY_PRRO_TN: &str = "prro_tn";
 pub const KEY_PRRO_ZN: &str = "prro_zn";
-pub const KEY_PRRO_MODE: &str = "prro_mode";
-pub const KEY_PRRO_URL: &str = "prro_url";
+pub const KEY_PRRO_MODE: &str = "mode"; // 1:1 Python context.py KEY_PRRO_MODE = "mode"
+pub const KEY_PRRO_URL: &str = "url"; // 1:1 Python context.py KEY_PRRO_URL = "url"
 pub const KEY_LAST_SHIFT_NUMBER: &str = "last_shift_number";
 pub const KEY_LAST_PACKET_ID: &str = "last_packet_id";
 pub const KEY_LAST_MAC_NUMBER: &str = "last_mac_number";
+pub const KEY_AUTO_FISCALIZE: &str = "auto_fiscalize";
+pub const KEY_PRRO_STUB_MODE: &str = "prro_stub_mode";
 
 // Типи фіскальних документів — 1:1 Python `offline_queue.py`.
 pub const CHECK_TYPE_CHK: &str = "CHK";

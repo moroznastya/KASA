@@ -19,10 +19,6 @@ fn de(s: String) -> InvoicesError {
     InvoicesError::Infrastructure(s)
 }
 
-fn f64n(s: &str) -> f64 {
-    s.trim().parse::<f64>().unwrap_or(0.0)
-}
-
 /// f64 у стилі Python repr: 10.0 → "10.0", 10.25 → "10.25".
 fn pf(v: f64) -> String {
     if v.fract() == 0.0 {
@@ -49,7 +45,7 @@ fn esc(v: &str) -> String {
 }
 
 fn esc_any(v: &Value) -> String {
-    esc(&v.as_str().unwrap_or("").to_string())
+    esc(v.as_str().unwrap_or(""))
 }
 
 /// Python Decimal(str(x)).quantize(0.01) → рядок.
@@ -339,7 +335,7 @@ fn render_single(
         ("name", esc(title)),
         (
             "price",
-            esc_any(&product.get("price").unwrap_or(&Value::Null)),
+            esc_any(product.get("price").unwrap_or(&Value::Null)),
         ),
         ("barcode", esc(barcode_val)),
         (
@@ -368,19 +364,17 @@ fn render_single(
         ("barcode_height_mm", esc(&pf(barcode_height_mm))),
         (
             "width",
-            esc(&extra_context
+            esc(extra_context
                 .get("width")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()),
+                .unwrap_or("")),
         ),
         (
             "height",
-            esc(&extra_context
+            esc(extra_context
                 .get("height")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()),
+                .unwrap_or("")),
         ),
     ];
     for (k, v) in replacements.drain(..) {

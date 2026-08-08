@@ -375,6 +375,7 @@ pub trait InvoicesV1Service: Send + Sync {
 
 /// v2-сервіс інвойсів (Python api/v2/invoices.py + InvoiceUseCases).
 #[async_trait::async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait InvoicesV2Service: Send + Sync {
     async fn list_v2(
         &self,

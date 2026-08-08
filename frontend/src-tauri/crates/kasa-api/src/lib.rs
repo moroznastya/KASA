@@ -74,6 +74,10 @@ pub const RUST_PRODUCTS_V2_ENV: &str = "KASA_RUST_PRODUCTS_V2";
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
 pub const RUST_PRRO_ENV: &str = "KASA_RUST_PRRO";
 
+/// Env-флаг Rust-гілки ПРРО v2 (група 8/9): settings + test-connection +
+/// fiscalize під ОРИГІНАЛЬНИМИ URL Python — "1" — Rust виконує.
+pub const RUST_PRRO_V2_ENV: &str = "KASA_RUST_PRRO_V2";
+
 /// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
 pub struct AppState {

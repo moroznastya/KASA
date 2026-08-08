@@ -21,7 +21,7 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 /// Початкова затримка бек-офа, сек (1:1 Python `DEFAULT_INITIAL_BACKOFF_SECONDS`).
 pub const DEFAULT_INITIAL_BACKOFF_SECONDS: u64 = 1;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum PrroGrpcError {
     #[error("Не вдалося створити TLS-канал до {0}: {1}")]
     Channel(String, String),
@@ -60,17 +60,32 @@ impl PrroGrpcClient {
         tls: TlsConfig,
         rro_fn: impl Into<String>,
     ) -> Result<Self, PrroGrpcError> {
-        let mut endpoint = tonic::transport::Endpoint::from_shared(format!("https://{target}"))
-            .map_err(|e| PrroGrpcError::Channel(target.to_string(), e.to_string()))?;
-
-        let mut tls_config = ClientTlsConfig::new().with_native_roots();
-        if let Some(pem) = &tls.ca_cert_pem {
-            let cert = Certificate::from_pem(pem);
-            tls_config = tls_config.ca_certificate(cert);
-        }
-        endpoint = endpoint
-            .tls_config(tls_config)
-            .map_err(|e| PrroGrpcError::Channel(target.to_string(), e.to_string()))?;
+        // PRRO_GRPC_INSECURE=1 → plaintext (для мок-сервера в differential;
+        // Python-аналог: PRRO_USE_SSL=false).
+        let insecure = matches!(
+            std::env::var("PRRO_GRPC_INSECURE")
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase()
+                .as_str(),
+            "1" | "true"
+        );
+        let endpoint = if insecure {
+            tonic::transport::Endpoint::from_shared(format!("http://{target}"))
+                .map_err(|e| PrroGrpcError::Channel(target.to_string(), e.to_string()))?
+        } else {
+            let mut ep = tonic::transport::Endpoint::from_shared(format!("https://{target}"))
+                .map_err(|e| PrroGrpcError::Channel(target.to_string(), e.to_string()))?;
+            let mut tls_config = ClientTlsConfig::new().with_native_roots();
+            if let Some(pem) = &tls.ca_cert_pem {
+                let cert = Certificate::from_pem(pem);
+                tls_config = tls_config.ca_certificate(cert);
+            }
+            ep = ep
+                .tls_config(tls_config)
+                .map_err(|e| PrroGrpcError::Channel(target.to_string(), e.to_string()))?;
+            ep
+        };
 
         let channel = endpoint
             .connect()

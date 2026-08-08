@@ -136,10 +136,11 @@ pub(crate) async fn require_admin(
     state: &AppState,
     claims: &Claims,
 ) -> Result<Uuid, AuthRouteError> {
-    let repo = auth_repo(state)?;
+    // 1:1 Python require_admin_role: роль береться з JWT (scope["user_role"]),
+    // НЕ з БД. Це дозволяє токену з role=admin працювати незалежно від БД.
+    let _ = state;
     let user_id = sub_uuid(claims)?;
-    let user = repo.get_user_by_id(user_id).await?;
-    if user.role != "admin" {
+    if claims.role != "admin" {
         return Err(AuthError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
         )

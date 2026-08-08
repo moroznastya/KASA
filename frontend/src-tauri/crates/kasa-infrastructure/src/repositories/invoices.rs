@@ -1,9 +1,9 @@
 //! Репозиторій інвойсів (етап 8 — група 3): SqlxInvoices.
 //!
 //! 1:1 з Python:
-//!   - v1: api/v1/invoices.py + document_service.confirm/cancel_invoice
-//!   - v2: api/v2/invoices.py + invoice_use_cases (create/confirm/cancel —
-//!         ЗАДУМАНА семантика, Python 500 через змішування entity/ORM)
+//! - v1: api/v1/invoices.py + document_service.confirm/cancel_invoice
+//! - v2: api/v2/invoices.py + invoice_use_cases (create/confirm/cancel —
+//!   ЗАДУМАНА семантика, Python 500 через змішування entity/ORM)
 //!
 //! Грошові поля numeric читаються як `::text` і парсяться: v1 → String
 //! (Decimal-рядок), v2 → f64.
@@ -39,11 +39,6 @@ fn rdec(s: &str) -> rust_decimal::Decimal {
     s.trim()
         .parse::<rust_decimal::Decimal>()
         .unwrap_or_default()
-}
-
-/// Додатний Decimal з рядка (Python: sum(abs(Decimal(str(x))))).
-fn abs_dec(s: &str) -> rust_decimal::Decimal {
-    rdec(s).abs()
 }
 
 const INVOICE_COLS: &str = "i.id, i.number, i.supplier_id, i.invoice_date, i.status::text, \
@@ -213,6 +208,7 @@ impl SqlxInvoices {
     }
 
     /// Python create_ledger_entry (INVOICE/CORRECTION): balance_after = current + amount.
+    #[allow(clippy::too_many_arguments)]
     async fn ledger_entry(
         &self,
         supplier_id: Uuid,
@@ -560,7 +556,7 @@ impl InvoicesV1Service for SqlxInvoices {
             push_set!("total_amount", "numeric", v);
         }
         if !sets.is_empty() {
-            let mut q = format!("UPDATE invoices SET ");
+            let mut q = "UPDATE invoices SET ".to_string();
             q.push_str(&sets.join(", "));
             q.push_str(&format!(", updated_at = now() WHERE id = ${idx}"));
             let mut qb = sqlx::query(&q).bind(id);
@@ -1106,7 +1102,7 @@ impl InvoicesV2Service for SqlxInvoices {
             push_set!("invoice_date", "timestamp", v.format("%Y-%m-%d %H:%M:%S"));
         }
         if !sets.is_empty() {
-            let mut q = format!("UPDATE invoices SET ");
+            let mut q = "UPDATE invoices SET ".to_string();
             q.push_str(&sets.join(", "));
             q.push_str(&format!(", updated_at = now() WHERE id = ${idx}"));
             let mut qb = sqlx::query(&q).bind(id);

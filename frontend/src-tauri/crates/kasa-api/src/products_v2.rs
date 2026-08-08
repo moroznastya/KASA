@@ -146,11 +146,6 @@ fn py_missing(loc: &str) -> ProductsV2ApiError {
     }]}))
 }
 
-/// 422 Pydantic: greater_than → ProductsV2ApiError (одна помилка).
-fn py_gt(loc: &str, value: f64, gt: f64) -> ProductsV2ApiError {
-    v422(json!({"detail": [err_gt(loc, value, gt)]}))
-}
-
 /// Path UUID → 422 uuid_parsing (як FastAPI path param UUID).
 fn path_uuid(raw: &str, field: &'static str) -> Result<Uuid, ProductsV2ApiError> {
     Uuid::parse_str(raw).map_err(|_| {
@@ -180,7 +175,7 @@ pub async fn list_products(
             "ctx": {"ge": 1},
         }]})));
     }
-    if size < 1 || size > 100 {
+    if !(1..=100).contains(&size) {
         return Err(v422(json!({"detail": [{
             "type": if size < 1 { "greater_than_equal" } else { "less_than_equal" },
             "loc": ["query", "size"],

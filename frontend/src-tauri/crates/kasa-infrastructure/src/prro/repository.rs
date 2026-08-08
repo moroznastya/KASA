@@ -415,6 +415,288 @@ impl PrroRepository for SqlxPrroRepository {
         .map_err(Self::map_err)?;
         Ok(())
     }
+
+    // ── Фіскалізація (група 8/9) ───────────────────────────────────────────
+
+    async fn load_receipt_with_items(
+        &self,
+        receipt_id: Uuid,
+    ) -> Result<Option<kasa_prro::prro::ReceiptFiscalRow>, PrroRepoError> {
+        let rec: Option<ReceiptRow> = sqlx::query_as::<_, ReceiptRow>(
+            "SELECT id, receipt_number, cashier_id, total_amount, paid_amount, change_amount, \
+             debtor_id, is_return, notes, payment_method::text, cash_amount, card_amount, \
+             original_receipt_id, return_reason, split_group_id, fiscal_status::text, \
+             fiscal_number, fiscal_serial, fiscal_sent_at, fiscal_error, is_fiscal \
+             FROM receipts WHERE id = $1",
+        )
+        .bind(receipt_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        let Some(rec) = rec else { return Ok(None) };
+        let items: Vec<ReceiptItemRow> = sqlx::query_as::<_, ReceiptItemRow>(
+            "SELECT id, product_id, quantity, price, total, purchase_price, \
+             fiscal_quantity FROM receipt_items WHERE receipt_id = $1 ORDER BY created_at",
+        )
+        .bind(receipt_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(Some(kasa_prro::prro::ReceiptFiscalRow {
+            id: rec.id,
+            receipt_number: rec.receipt_number,
+            cashier_id: rec.cashier_id,
+            total_amount: rec.total_amount,
+            paid_amount: rec.paid_amount,
+            change_amount: rec.change_amount,
+            debtor_id: rec.debtor_id,
+            is_return: rec.is_return,
+            notes: rec.notes,
+            payment_method: rec.payment_method,
+            cash_amount: rec.cash_amount,
+            card_amount: rec.card_amount,
+            original_receipt_id: rec.original_receipt_id,
+            return_reason: rec.return_reason,
+            split_group_id: rec.split_group_id,
+            fiscal_status: rec.fiscal_status,
+            fiscal_number: rec.fiscal_number,
+            fiscal_serial: rec.fiscal_serial,
+            fiscal_sent_at: rec
+                .fiscal_sent_at
+                .map(|d| DateTime::from_naive_utc_and_offset(d, Utc)),
+            fiscal_error: rec.fiscal_error,
+            is_fiscal: rec.is_fiscal,
+            items: items.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn load_product(
+        &self,
+        product_id: Uuid,
+    ) -> Result<Option<kasa_prro::prro::ProductFiscalRow>, PrroRepoError> {
+        let row: Option<ProductRow> = sqlx::query_as::<_, ProductRow>(
+            "SELECT id, title, fiscal_stock, tax_rate FROM products WHERE id = $1",
+        )
+        .bind(product_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(row.map(|r| kasa_prro::prro::ProductFiscalRow {
+            id: r.id,
+            title: r.title,
+            fiscal_stock: r.fiscal_stock,
+            tax_rate: r.tax_rate,
+        }))
+    }
+
+    async fn update_receipt_fiscal_state(
+        &self,
+        receipt_id: Uuid,
+        fiscal_status: &str,
+        fiscal_number: Option<&str>,
+        fiscal_serial: Option<&str>,
+        fiscal_sent_at: Option<DateTime<Utc>>,
+        fiscal_error: Option<&str>,
+        is_fiscal: Option<bool>,
+    ) -> Result<(), PrroRepoError> {
+        let sent = fiscal_sent_at.map(Self::naive);
+        sqlx::query(
+            "UPDATE receipts SET fiscal_status = $2::fiscal_status, \
+             fiscal_number = $3, fiscal_serial = $4, fiscal_sent_at = $5, \
+             fiscal_error = $6, is_fiscal = COALESCE($7, is_fiscal) WHERE id = $1",
+        )
+        .bind(receipt_id)
+        .bind(fiscal_status)
+        .bind(fiscal_number)
+        .bind(fiscal_serial)
+        .bind(sent)
+        .bind(fiscal_error)
+        .bind(is_fiscal)
+        .execute(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(())
+    }
+
+    async fn update_receipt_total(
+        &self,
+        receipt_id: Uuid,
+        total_amount: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        sqlx::query("UPDATE receipts SET total_amount = $2 WHERE id = $1")
+            .bind(receipt_id)
+            .bind(total_amount)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::map_err)?;
+        Ok(())
+    }
+
+    async fn delete_non_fiscal_items(&self, receipt_id: Uuid) -> Result<u64, PrroRepoError> {
+        let res =
+            sqlx::query("DELETE FROM receipt_items WHERE receipt_id = $1 AND fiscal_quantity <= 0")
+                .bind(receipt_id)
+                .execute(&self.pool)
+                .await
+                .map_err(Self::map_err)?;
+        Ok(res.rows_affected())
+    }
+
+    async fn update_item_fiscal(
+        &self,
+        item_id: Uuid,
+        quantity: Decimal,
+        total: Decimal,
+        fiscal_quantity: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        sqlx::query(
+            "UPDATE receipt_items SET quantity = $2, total = $3, fiscal_quantity = $4 \
+             WHERE id = $1",
+        )
+        .bind(item_id)
+        .bind(quantity)
+        .bind(total)
+        .bind(fiscal_quantity)
+        .execute(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(())
+    }
+
+    async fn create_receipt_duplicate(
+        &self,
+        source: &kasa_prro::prro::ReceiptFiscalRow,
+        items: &[kasa_prro::prro::SplitItemInput],
+        is_return: bool,
+        split_group_id: Uuid,
+    ) -> Result<Uuid, PrroRepoError> {
+        let id = Uuid::new_v4();
+        let receipt_number = format!(
+            "NF-{}-{}",
+            source.receipt_number.chars().take(20).collect::<String>(),
+            &Uuid::new_v4().simple().to_string()[..6]
+        );
+        let total_amount: Decimal = items.iter().map(|i| i.total).sum();
+        sqlx::query(
+            "INSERT INTO receipts (id, receipt_number, receipt_type, cashier_id, total_amount, \
+             paid_amount, change_amount, debtor_id, is_return, notes, payment_method, cash_amount, \
+             card_amount, original_receipt_id, return_reason, split_group_id, is_fiscal, \
+             fiscal_status, created_at) \
+             VALUES ($1, $2, 'sale'::receipt_type, $3, $4, $5, $6, $7, $8, $9, \
+             $10::receipt_payment_method, $11, $12, $13, $14, $15, false, 'none'::fiscal_status, now())",
+        )
+        .bind(id)
+        .bind(&receipt_number)
+        .bind(source.cashier_id)
+        .bind(total_amount)
+        .bind(source.paid_amount)
+        .bind(source.change_amount)
+        .bind(source.debtor_id)
+        .bind(is_return)
+        .bind(&source.notes)
+        .bind(&source.payment_method)
+        .bind(source.cash_amount)
+        .bind(source.card_amount)
+        .bind(source.original_receipt_id)
+        .bind(&source.return_reason)
+        .bind(split_group_id)
+        .execute(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        for item in items {
+            sqlx::query(
+                "INSERT INTO receipt_items (id, receipt_id, product_id, quantity, price, total, \
+                 purchase_price, fiscal_quantity, created_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 0, now())",
+            )
+            .bind(Uuid::new_v4())
+            .bind(id)
+            .bind(item.product_id)
+            .bind(item.quantity)
+            .bind(item.price)
+            .bind(item.total)
+            .bind(item.purchase_price)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::map_err)?;
+        }
+        Ok(id)
+    }
+
+    async fn update_product_fiscal_stock(
+        &self,
+        product_id: Uuid,
+        new_stock: Decimal,
+    ) -> Result<(), PrroRepoError> {
+        sqlx::query("UPDATE products SET fiscal_stock = $2 WHERE id = $1")
+            .bind(product_id)
+            .bind(new_stock)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::map_err)?;
+        Ok(())
+    }
+}
+
+/// Рядок receipts для фіскалізації (група 8/9).
+#[derive(sqlx::FromRow)]
+struct ReceiptRow {
+    id: Uuid,
+    receipt_number: String,
+    cashier_id: Uuid,
+    total_amount: Decimal,
+    paid_amount: Option<Decimal>,
+    change_amount: Option<Decimal>,
+    debtor_id: Option<Uuid>,
+    is_return: bool,
+    notes: Option<String>,
+    payment_method: Option<String>,
+    cash_amount: Option<Decimal>,
+    card_amount: Option<Decimal>,
+    original_receipt_id: Option<Uuid>,
+    return_reason: Option<String>,
+    split_group_id: Option<Uuid>,
+    fiscal_status: String,
+    fiscal_number: Option<String>,
+    fiscal_serial: Option<String>,
+    fiscal_sent_at: Option<NaiveDateTime>,
+    fiscal_error: Option<String>,
+    is_fiscal: bool,
+}
+
+/// Рядок receipt_items для фіскалізації.
+#[derive(sqlx::FromRow)]
+struct ReceiptItemRow {
+    id: Uuid,
+    product_id: Uuid,
+    quantity: Decimal,
+    price: Decimal,
+    total: Decimal,
+    purchase_price: Option<Decimal>,
+    fiscal_quantity: Decimal,
+}
+
+impl From<ReceiptItemRow> for kasa_prro::prro::ReceiptItemFiscalRow {
+    fn from(r: ReceiptItemRow) -> Self {
+        Self {
+            id: r.id,
+            product_id: r.product_id,
+            quantity: r.quantity,
+            price: r.price,
+            total: r.total,
+            purchase_price: r.purchase_price,
+            fiscal_quantity: r.fiscal_quantity,
+        }
+    }
+}
+
+/// Рядок products для фіскалізації.
+#[derive(sqlx::FromRow)]
+struct ProductRow {
+    id: Uuid,
+    title: Option<String>,
+    fiscal_stock: Decimal,
+    tax_rate: Option<Decimal>,
 }
 
 /// Дозволяє використовувати sqlx-репозиторій як `PrroSetting`-джерело (не використовується

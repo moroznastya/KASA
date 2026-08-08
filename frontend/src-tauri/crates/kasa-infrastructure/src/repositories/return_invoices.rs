@@ -404,11 +404,6 @@ impl SqlxReturnInvoices {
         Ok(format!("{prefix}{seq:03}"))
     }
 
-    /// Спільна частина confirm/cancel: завантаження з items + exchange invoice.
-    async fn load_full(&self, id: Uuid) -> Result<Option<ReturnInvoiceDto>, ReturnInvoicesError> {
-        self.fetch(id).await
-    }
-
     /// Python session-семантика: грошові поля позицій = вхідні значення
     /// (не перезавантажені з numeric-колонки), cost_price = вхідне або з
     /// продукту, markup = calc_markup_percent.
@@ -614,7 +609,7 @@ impl ReturnInvoicesService for SqlxReturnInvoices {
             push_set!("source_invoice_id", "uuid", v);
         }
         if !sets.is_empty() {
-            let mut q = format!("UPDATE return_invoices SET ");
+            let mut q = "UPDATE return_invoices SET ".to_string();
             q.push_str(&sets.join(", "));
             q.push_str(&format!(", updated_at = now() WHERE id = ${idx}"));
             let mut qb = sqlx::query(&q).bind(id);

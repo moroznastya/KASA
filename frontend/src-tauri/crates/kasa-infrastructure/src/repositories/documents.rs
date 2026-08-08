@@ -940,7 +940,7 @@ impl DocumentsService for SqlxDocuments {
         }
 
         // Python: `all_documents.sort(key=lambda d: d["created_at"] or "", reverse=True)`
-        all.sort_by(|a, b| b.0.cmp(&a.0));
+        all.sort_by_key(|(ts, _)| std::cmp::Reverse(*ts));
         let total = all.len() as i64;
         let offset = ((q.page - 1) * q.size).max(0) as usize;
         let items: Vec<DocumentDto> = all
@@ -2133,9 +2133,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY i.created_at DESC");
-            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
                 let status: String = r.get("status");
                 if !use_ids {
@@ -2187,9 +2185,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY t.created_at DESC");
-            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
                 let status: String = r.get("status");
                 if !use_ids {
@@ -2246,9 +2242,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY w.created_at DESC");
-            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
                 if !use_ids {
                     if let Some(s) = &q.status {
@@ -2308,9 +2302,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY r.created_at DESC");
-            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
                 let status: String = r.get("status");
                 if !use_ids {
@@ -2372,9 +2364,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY p.created_at DESC");
-            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
                 let status: String = r.get("status");
                 if !use_ids {
@@ -2452,9 +2442,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY i.created_at DESC, ii.created_at ASC");
-            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in db_rows {
                 let created: NaiveDateTime = r.get("created_at");
                 rows.push(vec![
@@ -2501,9 +2489,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY t.created_at DESC, ti.created_at ASC");
-            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in db_rows {
                 let created: NaiveDateTime = r.get("created_at");
                 rows.push(vec![
@@ -2552,9 +2538,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY w.created_at DESC, woi.created_at ASC");
-            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in db_rows {
                 let created: NaiveDateTime = r.get("created_at");
                 let price = f64n(&r.get::<Option<String>, _>("price").unwrap_or_default());
@@ -2603,9 +2587,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY r.created_at DESC, ri.created_at ASC");
-            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in db_rows {
                 let created: NaiveDateTime = r.get("created_at");
                 rows.push(vec![
@@ -2653,9 +2635,7 @@ impl SqlxDocuments {
                 }
             }
             sql.push_str(" ORDER BY p.created_at DESC, po.created_at ASC");
-            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids)
-                .await
-                .map_err(|e| de(e))?;
+            let db_rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in db_rows {
                 let created: NaiveDateTime = r.get("created_at");
                 rows.push(vec![
