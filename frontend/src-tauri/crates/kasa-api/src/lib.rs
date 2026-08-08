@@ -25,6 +25,7 @@ pub mod invoices;
 pub mod ledger;
 pub mod pos;
 pub mod print_templates;
+pub mod products_v2;
 pub mod proxy;
 pub mod prro;
 pub mod purchase_orders;
@@ -36,8 +37,8 @@ use std::sync::Arc;
 
 use kasa_domain::{
     AuthService, DebtorService, DocumentsService, InvoicesV1Service, InvoicesV2Service,
-    LedgerService, PosService, PrintTemplatesService, PurchaseOrdersService, ReadDirectories,
-    ReturnInvoicesService, WriteDirectories,
+    LedgerService, PosService, PrintTemplatesService, ProductsV2Service, PurchaseOrdersService,
+    ReadDirectories, ReturnInvoicesService, WriteDirectories,
 };
 use sqlx::PgPool;
 
@@ -65,6 +66,9 @@ pub const RUST_PURCHASE_ORDERS_ENV: &str = "KASA_RUST_PURCHASE_ORDERS";
 
 /// Env-флаг Rust-гілки друку (етап 8, група 6).
 pub const RUST_PRINT_ENV: &str = "KASA_RUST_PRINT";
+
+/// Env-флаг Rust-гілки товарів v2 (етап 8, група 7): "1" — Rust виконує.
+pub const RUST_PRODUCTS_V2_ENV: &str = "KASA_RUST_PRODUCTS_V2";
 
 /// Env-флаг Rust-гілки ПРРО (етап 7.3): "1" — Rust виконує,
 /// "shadow" — Rust готує чек і логує parity, Python виконує (проксі).
@@ -115,6 +119,13 @@ pub struct AppState {
     pub print_templates: Option<Arc<dyn PrintTemplatesService + Send + Sync>>,
     /// Пул друку (require_admin друку незалежно від KASA_RUST_AUTH).
     pub print_pool: Option<PgPool>,
+    /// Rust-репозиторій товарів v2 (етап 8, група 7) — KASA_RUST_PRODUCTS_V2=1.
+    pub products_v2: Option<Arc<dyn ProductsV2Service + Send + Sync>>,
+    /// Пул товарів v2 (require_admin товарів незалежно від KASA_RUST_AUTH).
+    pub products_v2_pool: Option<PgPool>,
+    /// Директорія завантажених файлів (uploads/) — serve та збереження.
+    /// Env KASA_UPLOADS_DIR (абсолютний або відносний шлях), default "uploads".
+    pub uploads_dir: std::path::PathBuf,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -260,6 +271,33 @@ async fn init_print_templates() -> (
         Err(e) => {
             eprintln!(
                 "[kasa-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна ({e}); друк через проксі на Python :8001"
+            );
+            (None, None)
+        }
+    }
+}
+
+/// Ініціалізує Rust-гілку товарів v2 під KASA_RUST_PRODUCTS_V2=1.
+async fn init_products_v2() -> (
+    Option<Arc<dyn ProductsV2Service + Send + Sync>>,
+    Option<PgPool>,
+) {
+    if !env_flag(RUST_PRODUCTS_V2_ENV) {
+        return (None, None);
+    }
+    match kasa_infrastructure::db::connect_readonly_pool(10).await {
+        Ok(pool) => {
+            eprintln!(
+                "[kasa-api] {RUST_PRODUCTS_V2_ENV}=1 — Rust-гілка товарів v2 увімкнена (PostgreSQL)"
+            );
+            let repo =
+                kasa_infrastructure::repositories::products_v2::SqlxProductsV2::new(pool.clone());
+            let svc: Arc<dyn ProductsV2Service + Send + Sync> = Arc::new(repo);
+            (Some(svc), Some(pool))
+        }
+        Err(e) => {
+            eprintln!(
+                "[kasa-api] попередження: {RUST_PRODUCTS_V2_ENV}=1, але БД недоступна ({e}); товари v2 через проксі на Python :8001"
             );
             (None, None)
         }
@@ -433,6 +471,10 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (return_invoices, return_invoices_pool) = init_return_invoices().await;
     let (purchase_orders, purchase_orders_pool) = init_purchase_orders().await;
     let (print_templates, print_pool) = init_print_templates().await;
+    let (products_v2, products_v2_pool) = init_products_v2().await;
+    let uploads_dir = std::env::var("KASA_UPLOADS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("uploads"));
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         http_client: reqwest::Client::builder()
@@ -457,6 +499,9 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         purchase_orders_pool,
         print_templates,
         print_pool,
+        products_v2,
+        products_v2_pool,
+        uploads_dir,
     };
     let app = router_v1::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

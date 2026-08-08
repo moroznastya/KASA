@@ -5,13 +5,13 @@ edition = "2021"
 description = "Kasa POS — вбудований axum-фасад: HTTP gateway, reverse proxy → Python sidecar, JWT-валідація"
 
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 kasa-domain = { path = "../kasa-domain" }
 kasa-application = { path = "../kasa-application" }
 kasa-infrastructure = { path = "../kasa-infrastructure" }
 kasa-prro = { path = "../kasa-prro" }
 uuid = { version = "1", features = ["serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 jsonwebtoken = "9"
 serde = { version = "1", features = ["derive"] }

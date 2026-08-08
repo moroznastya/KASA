@@ -16,8 +16,8 @@ use axum::{
 };
 
 use crate::{
-    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, print_templates, proxy,
-    prro, purchase_orders, readdirs, return_invoices, AppState,
+    auth, auth_routes, crud, debtors, documents, invoices, ledger, pos, print_templates,
+    products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -386,6 +386,46 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/print-templates/:template_id/render",
                 post(print_templates::render_template),
+            );
+    }
+
+    // Товари v2 (етап 8, група 7) — KASA_RUST_PRODUCTS_V2=1.
+    if state.products_v2.is_some() {
+        router = router
+            .route(
+                "/api/v2/products",
+                get(products_v2::list_products).post(products_v2::create_product),
+            )
+            .route(
+                "/api/v2/products/barcode/:barcode",
+                get(products_v2::get_by_barcode),
+            )
+            .route(
+                "/api/v2/products/:product_id/images",
+                post(products_v2::upload_image).layer(products_v2::upload_body_limit()),
+            )
+            .route(
+                "/api/v2/products/:product_id/images/:image_id",
+                delete(products_v2::delete_image),
+            )
+            .route(
+                "/api/v2/products/:product_id/barcodes",
+                post(products_v2::add_barcode),
+            )
+            .route(
+                "/api/v2/products/:product_id/barcodes/:barcode_id",
+                delete(products_v2::delete_barcode),
+            )
+            .route(
+                "/api/v2/products/:product_id",
+                get(products_v2::get_product)
+                    .put(products_v2::update_product)
+                    .delete(products_v2::delete_product),
+            )
+            // Static serve завантажених зображень (Python app.mount /uploads).
+            .route(
+                "/uploads/products/:product_id/:filename",
+                get(products_v2::serve_upload),
             );
     }
 

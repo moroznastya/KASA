@@ -17,6 +17,7 @@ pub mod invoices;
 pub mod ledger;
 pub mod pos;
 pub mod print;
+pub mod products_v2;
 pub mod purchase_orders;
 pub mod repos;
 pub mod return_invoices;
@@ -67,6 +68,10 @@ pub use pos::{
     WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
 pub use print::{PrintError, PrintTemplatesService};
+pub use products_v2::{
+    BarcodeCreateV2Input, ProductBarcodeV2Dto, ProductCreateV2Input, ProductImageV2Dto,
+    ProductListV2Dto, ProductUpdateV2Input, ProductV2Dto, ProductsV2Error, ProductsV2Service,
+};
 pub use purchase_orders::*;
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
 pub use return_invoices::{ReturnInvoicesError, ReturnInvoicesService};
