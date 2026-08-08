@@ -680,6 +680,89 @@ PY :8001 недоторканий, усі процеси зупинені.
 
 ---
 
+## 2.1.9 Етап 8 — група 9/9: OCR (ocr + invoice_ocr) ✅ ЗАВЕРШЕНО — ВСІ 9 ГРУП ГОТОВО
+
+**Коміт:** `196dd9d` — feat(rust): група 9/9 — OCR (ocr + invoice_ocr) 1:1 Python, KASA_RUST_OCR=1
+
+**Що зроблено (ocr.py + invoice_ocr.py, 2 роути, 233 рядки + сервіси 690):**
+- `kasa-ocr` (новий crate):
+  - `gemini.rs` — HTTP-клієнт `models.generateContent` (reqwest):
+    POST `{base}/v1beta/models/gemini-3.5-flash:generateContent?key=...`,
+    тіло `{contents:[{parts:[{text: INVOICE_PROMPT},
+    {inline_data:{mime_type:"image/jpeg",data:base64}}]}]}` (1:1 genai SDK);
+    відповідь `candidates[0].content.parts[].text` (1:1 `response.text`);
+    `classify_error` 1:1 Python (429→ротація+exhausted, 503→15с,
+    502/timeout/deadline/unavailable→5с, max_retries=3, delay 5с між
+    запитами); base URL: `KASA_OCR_BASE_URL` (аналог
+    `GOOGLE_GEMINI_BASE_URL`), дефолт
+    `https://generativelanguage.googleapis.com/`; ключі з keys.txt
+    (`KASA_OCR_KEYS_FILE`, дефолт backend/keys.txt — Python
+    `Path(__file__).parent*4 / "keys.txt"`)
+  - `ocr_service.rs` — `analyze_invoice_image` (цикл ротації/ретраїв 1:1),
+    `parse_gemini_response` (regex `\{.*\}` DOTALL, items не list → [],
+    ValueError → `OcrError::Parse` → роут: `"Внутрішня помилка сервера: ..."`;
+    RuntimeError → `"error": msg` — 1:1 Python try/except)
+  - `invoice_ocr.rs` — `analyze_and_match`: barcode пріоритет (Gemini →
+    regex `[Шш][КкКк]\s*[:：]\s*(\d{8,14})` у назві → назва-цифри 8-14),
+    `_find_product_by_barcode` (barcodes-таблиця → products.barcode →
+    clean-рекурсія: прибрати пробіли/дефіси/підкреслення),
+    `_find_product_by_name` (exact ILIKE → `%name%` → слова best-match),
+    `_make_result_item` (matched_product_id/name/barcode, markup_percent),
+    not_found (null + 0.0)
+  - `repository.rs` — трейт `OcrRepository` (barcode/name lookup) + InMemory
+- `kasa-infrastructure/src/ocr.rs` — `SqlxOcrRepository`: **markup NUMERIC →
+  rust_decimal::Decimal → f64** (sqlx f64 несумісний з NUMERIC!),
+  слова: `ILIKE ANY($1::text[])` (аналог Python `or_(*[ilike %word%])`),
+  best_match = max за кількістю слів у title
+- `kasa-api/src/ocr.rs` — роути під `KASA_RUST_OCR=1` (ОРИГІНАЛЬНІ URL
+  Python): `POST /api/v1/ocr/invoice`, `POST /api/v1/invoice-ocr/analyze`;
+  multipart file + MIME (image/jpeg/png/webp/bmp/tiff — відсортовано як
+  Python `sorted(ALLOWED_IMAGE_TYPES)`), порожній файл → 400 1:1;
+  auth: `Claims` (get_current_user — будь-який валідний токен)
+
+**Ключові рішення (аномалії → фікси):**
+1. **Мок Gemini :5099** — PY google-genai SDK працює на мок через
+   `GOOGLE_GEMINI_BASE_URL` env (SDK `get_base_url` підтримує);
+   Rust — `KASA_OCR_BASE_URL`. Мок читає barcode/назву з файлів
+   (унікальні на запуск) → **детермінований parity** (PY/RS отримують
+   однакову відповідь).
+2. **barcodes-таблиця** тестується окремим товаром (другий штрих-код
+   через мок) — перевірено `match_source=barcode` через `barcodes` JOIN.
+3. **markup NUMERIC → Decimal** — sqlx падав "mismatched types FLOAT8 vs
+   NUMERIC" (маскувалось `if let Ok(Some)` → not_found); фікс: Decimal.
+4. **Недетермінованість еталона**: PY `max()` при рівних ключах залежить
+   від порядку SQL без ORDER BY (різні товари з "x" у назві для
+   слова-"X"). Тест використовує унікальні barcode/назви (exact-збіги) —
+   parity детермінований. Задокументовано.
+5. **OCR-роути не реєструвались**: блок вставлено ВСЕРЕДИНІ `if prro`
+   (закриваюча `}` була після) → fallback на PY :8001 (реальний Gemini).
+   Виправлено: блок після `}`.
+
+**Differential `scripts/e2e_ocr_diff.sh`: 2/2 PASS**
+(мок Gemini :5099 — POST generateContent, PY :8003 з
+GOOGLE_GEMINI_BASE_URL vs RS :8002, спільна БД):
+- POST /api/v1/ocr/invoice — **EXACT parity** (data 1:1, всі поля:
+  document_number/invoice_date/is_fiscal/supplier_name/payment_method/items)
+- POST /api/v1/invoice-ocr/analyze — **parity** (4 товари:
+  1) barcode через products.barcode (markup 20),
+  2) назва exact ILIKE (markup 15),
+  3) not_found (null + 0.0),
+  4) barcode через barcodes-таблицю (додатковий штрих-код))
+  — matched_product_id/name/barcode, markup_percent, match_source
+- мок підтвердив: зображення дійшло (base64 inline_data) в обидва
+- Ручний прогон PY: barcode/name/not_found/barcode ✅
+
+**Реальний Gemini API:** ключ з backend/keys.txt живий (50 моделей
+отримано через /v1beta/models), модель gemini-3.5-flash існує.
+Differential на мокові (детермінованість, нульова вартість).
+
+**Верифікація:** cargo test --workspace 189/189 (+25 OCR: parse 7,
+classify 4, matching 11, MIME 3), clippy 0, fmt чистий. Тестові дані
+видалені (БД 0: товари/barcodes; keystore групи 8 прибрано), PY :8001
+недоторканий, процеси зупинені.
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
@@ -691,7 +774,7 @@ PY :8001 недоторканий, усі процеси зупинені.
 | 6. print+print_templates | v1/print.py(719)+print_templates.py(315) | 1034 | minijinja рендер, ESC/POS, цінники/етикетки | 4-6 год; Jinja2→minijinja сумісність |
 | ~~7. products v2~~ ✅ `cba1afc` | v2/products.py | 360 | реалізовано (multipart upload → uploads/, static serve з диска, barcode-генерація ВІДСУТНЯ в Python — лише зберігання; code128 з групи 3/6) | 44/44 differential PASS |
 | 8. prro v2 | v2/prro.py | 229 | kasa-prro (gRPC+крипто готові в 7.3) | 2-4 год; test-connection, fiscalize |
-| 9. ocr | ocr.py(108)+invoice_ocr.py(125)+services(690) | 923 | **зовнішній Gemini API** (genai SDK) | 3-5 год; клієнт REST Gemini + зіставлення з БД, мок-тест |
+| ~~9. ocr~~ ✅ `196dd9d` | ocr.py(108)+invoice_ocr.py(125)+services(690) | 923 | реалізовано (REST-клієнт generateContent, retry/ротація 1:1, зіставлення з БД; мок Gemini + реальний ключ перевірено) | 2/2 differential PASS |
 
 **⚠️ Технічне виправлення порядку ТЗ:** documents (група 2) глибоко залежить від
 invoices/return_invoices/purchase_orders (copy повертає їхні Response-схеми;
