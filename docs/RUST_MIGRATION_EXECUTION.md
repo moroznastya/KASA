@@ -558,6 +558,70 @@ debtors PASS, purchase_orders 42/42 (регресія зелена), cargo test
 
 ---
 
+## 2.1.7 Етап 8 — група 7/9: Товари v2 (зображення + штрих-коди) ✅ ЗАВЕРШЕНО
+
+**Коміт:** `cba1afc` — feat(rust): група 7/9 — товари v2 (зображення + штрих-коди) 1:1 Python, KASA_RUST_PRODUCTS_V2=1
+
+**Що зроблено:**
+- `kasa-domain::products_v2` — DTO (ProductV2Dto: name/quantity/is_active —
+  ВІДМІННІСТЬ від v1 title/stock; ProductImageV2Dto, ProductBarcodeV2Dto,
+  ProductListV2Dto), inputs, трейт ProductsV2Service (10 методів)
+- `kasa-infrastructure::SqlxProductsV2` — SQL 1:1: list (ILIKE title/barcode/
+  sku БЕЗ barcodes-join — v2 вужчий за v1; category_id; offset/limit БЕЗ
+  ORDER BY як Python), get_by_barcode (основний + barcodes), create (dup →
+  400, price/cost_price None → DEFAULT 0.00, stock 0 → 0.000), update
+  (exclude_unset, barcode '' → NULL, is_active no-op), delete (stock!=0 →
+  400 float-формат), add_image (is_main скидає інші, sort_order=count),
+  delete_image, add_barcode (dup → 409), delete_barcode
+- `kasa-api::products_v2` — 10 роутів під KASA_RUST_PRODUCTS_V2=1 + serve
+  GET /uploads/products/{id}/{file} з диска (Python StaticFiles); Pydantic
+  422 ЗБИРАЄ ВСІ помилки тіла (input=весь body для missing, ctx.gt 0.0 float)
+
+**Ключові рішення:**
+1. **uploads_dir = env KASA_UPLOADS_DIR** (default "uploads") — це ДИРЕКТОРІЯ
+   uploads (не корінь проєкту). Для differential = backend/uploads — спільна
+   з Python StaticFiles (Python CWD = backend/) → serve файлу md5 1:1.
+   У першій версії rel шлях мав подвійний "uploads/uploads" — виправлено
+   differential-ом (serve 404).
+2. **is_active**: колонки НЕМАЄ в products — Python `getattr(entity,
+   "is_active", True)` → Rust завжди true. Update is_active — no-op (ORM
+   атрибут не маппінг).
+3. **Pydantic 422 у create/update**: Python валідує ВСІ поля тіла і збирає
+   всі помилки (missing name з input=весь body + string_too_short barcode
+   одночасно). Rust: парсинг Json<Value> + збір Vec помилок у порядку полів
+   моделі (name, barcode, price) — exact 1:1.
+4. **float-формати**: query 422 input — РЯДОК "0" (Python raw query); 400
+   category_id — одинарні лапки repr; delete stock — "5.0" (py_float_str).
+5. **Barcode-генерація**: у групі 7 Python НЕ генерує штрих-коди (лише
+   зберігає рядок); code128 (price_tag.rs, група 3/6) перевикористовується
+   при друці цінників — регресія print PASS.
+
+**Differential `scripts/e2e_products_v2_diff.sh`: 44/44 PASS**
+- list: base parity, search (total=1), category_id фільтр, 422 page=0/size=0/
+  size=101 (input рядок), 400 category_id не UUID
+- create: PY 201 поля, RS GET exact (спільна БД), дублікат barcode 400
+  detail parity, 422 name=""/barcode=""/price=0/name 256 (exact detail),
+  name missing 422
+- get: exact parity, 404 detail
+- update: parity (normalized), 404, дублікат 400, 422 price=0
+- barcode search: основний exact, додатковий exact, 404
+- images: PY url формат /uploads/products/{id}/{uuid}.png, upload структура
+  parity (normalized), serve md5 1:1 + content-type image/png, is_main=true
+  збережено, upload 404 parity, delete 204, delete 404 parity, serve після
+  delete → 200 (файл з диска НЕ видаляється — 1:1 Python StaticFiles)
+- barcodes: add поля (product_id/is_primary/barcode), 409 дублікат parity,
+  404 товар parity, search за додатковим, delete 204, delete 404 parity
+- delete: 204, 404 parity, stock!=0 400 parity (float detail "5.0 шт.")
+
+**Верифікація:** documents PASS, invoices 29/29, return_invoices 32/32,
+debtors PASS, purchase_orders 42/42, print PASS (регресія зелена), cargo
+test --workspace 155/155 (+3 юніт: py_float_str/to_f64), clippy 0, fmt
+чистий. Тестові дані видалені: БД 0 (товари/зображення/barcodes), файли
+зображень видалено (скрипт + прибирання сиріт-файлів, чиї товари відсутні
+в БД). Python :8001 недоторканий, фасад зупинено.
+
+---
+
 ## 2.2 Етап 8 — аналіз решти 8 груп (карта робіт)
 
 | Група | Файли Python | Обсяг | Залежності | Оцінка |
@@ -567,7 +631,7 @@ debtors PASS, purchase_orders 42/42 (регресія зелена), cargo test
 | 4. return_invoices | v1/return_invoices.py | 428 | stock/ledger | 2-3 год |
 | ~~5. purchase_orders~~ ✅ `db7b69f` | v1/purchase_orders.py | 416 | реалізовано (confirm→Invoice DRAFT 1:1; аномалія: confirm віддає invoice:null) | 42/42 differential PASS |
 | 6. print+print_templates | v1/print.py(719)+print_templates.py(315) | 1034 | minijinja рендер, ESC/POS, цінники/етикетки | 4-6 год; Jinja2→minijinja сумісність |
-| 7. products v2 | v2/products.py | 360 | multipart upload, static serve, barcode-генерація | 2-3 год |
+| ~~7. products v2~~ ✅ `cba1afc` | v2/products.py | 360 | реалізовано (multipart upload → uploads/, static serve з диска, barcode-генерація ВІДСУТНЯ в Python — лише зберігання; code128 з групи 3/6) | 44/44 differential PASS |
 | 8. prro v2 | v2/prro.py | 229 | kasa-prro (gRPC+крипто готові в 7.3) | 2-4 год; test-connection, fiscalize |
 | 9. ocr | ocr.py(108)+invoice_ocr.py(125)+services(690) | 923 | **зовнішній Gemini API** (genai SDK) | 3-5 год; клієнт REST Gemini + зіставлення з БД, мок-тест |
 
