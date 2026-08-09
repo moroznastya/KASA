@@ -17,7 +17,7 @@
 | 5 | Receipts + друк (open→pay→close, офлайн-черга) | Tauri_Agent + Rust_Agent | ✅ ЗАВЕРШЕНО | ESC/POS друк у мок-пристрій (19227 байт, ESC @ + GS v 0 + GS V); офлайн-черга SQLite на диск + персистентність + синхронізація; Python print-роути 410 |
 | 6 | Auth / users / settings / RBAC | Rust_Agent | ✅ ЗАВЕРШЕНО | E2E AUTH DIFF 59/59; JWT крос-валідний (Rust↔Python, той самий секрет); RBAC admin/cashier 1:1; feature-flag KASA_RUST_AUTH (відкат перевірено); валідації 401/400/403/404/409/422 1:1 |
 | 7 | ПРРО (gRPC/tonic, crypto, xml, offline_queue, shift) | Rust_Agent + apiarm_agent | ✅ | **7.1 фундамент ✅**; **7.2 крипто ✅** (XAdES golden 5/5 байт-ідентично; CAdES ДСТУ 4145 FFI); **7.3 ✅** (offline_queue 1:1, shift open/close 1:1, sync replay, facade KASA_RUST_PRRO) |: ADR-014 (крипто-стратегія FFI→IIT SDK); gRPC-клієнт tonic+prost (TLS READY, ping status -1 1:1 Python); XML СЗЗД golden parity 12/12; JKS читається (ДСТУ 4145). 7.2: XAdES/CAdES підпис; 7.3: offline_queue+shift |
-| 8 | Дезактивація Python | Tauri_Agent + Git Admin Agent | ⏳ **БЛОКОВАНО** (залежність: план-етап 3 «Документи» = журнал 3b ⏳ не мігрований) | Rust НЕ покриває 6 груп роутів, які активно використовує фронтенд: documents/invoices/return-invoices/purchase-orders, debtors, print (цінники/етикетки), print-templates, products images/barcodes, prro v2 (test-connection/fiscalize). Повна дезактивація = втрата функціоналу. Див. Аномалія 5 |
+| 8 | Дезактивація Python | Rust_Agent + Tauri_Agent | ✅ **ЗАВЕРШЕНО** (коміт `71b5dcf`, див. розділ 5) | Rust-ядро без Python: 0 python-процесів; :8000 відповідає; LEGACY → 410; активні роути 200; cargo test 186/186; clippy 0; fmt чистий; профілі не змінені; healthcheck :8000/api/v1/health |
 
 Паралельно з етапом 1: QA_Agent — тестовий контур (differential/golden/proptest).
 Паралельно з етапом 5: ПРРО-дослідження (JKS→PKCS12/PEM, FFI vs gRPC).
@@ -881,3 +881,94 @@ fmt чистий. Профілі Cargo.toml НЕ змінені.
 відтворює Python-контекст (rbx=0, rcx=0) для зачепленої функції; sign/verify
 мають нормальний пролог (зберігають rbx) — обгортка їм не потрібна
 (перевірено дизасемблером).
+
+
+---
+
+# 5. ЕТАП 8 ЗАВЕРШЕНО — ПОВНА ДЕЗАКТИВАЦІЯ PYTHON
+
+Дата: 2026-08-01 · Коміти: `71b5dcf` (код), (журнал — цей коміт)
+
+## Передумови (виконані в малих кроках 2a–2d)
+
+- **0 CRIT, 0 ALIAS** — docs/rust_deactivation_audit.md (таблиці A/B): усі
+  активні роути фронтенду реалізовані нативно в Rust (189 тестів, clippy 0).
+- Аномалія 5 знята: documents/invoices/return-invoices/purchase-orders,
+  debtors, print, print-templates, products images/barcodes, prro v2 —
+  всі 9 груп етапу 8 мігровані (журнал розділи 2.1.1–2.1.9).
+- v1 ALIAS (receipts list/get/items/search/recent/returnable/stats,
+  products barcodes/images, prro queue/status/sync без /fiscal) — реалізовані.
+
+## Що зроблено
+
+1. **Python sidecar вимкнено повністю:**
+   - `frontend/src-tauri/src/sidecar.rs` — ВИДАЛЕНО (135 рядків).
+   - `src/lib.rs` — прибрано `mod sidecar`, spawn `PythonSidecar::start()`,
+     поле `sidecar` у `FacadeState`, `sidecar.shutdown()` у shutdown-hook.
+   - `Cargo.toml` — прибрано `libc` (використовувався тільки sidecar для SIGTERM).
+
+2. **LEGACY-роути → 410 Gone:**
+   - `crates/kasa-api/src/proxy.rs` — reverse-proxy на 127.0.0.1:8001
+     замінено на 410-хендлер: `{"detail":"endpoint_deprecated"}`.
+   - Прибрано `http_client` (reqwest) з AppState і `PYTHON_SIDECAR_PORT`.
+   - `/api/v1/health` залишається 200 (healthcheck).
+
+3. **Rust-ядро за замовчуванням:**
+   - `kasa-api::serve()` встановлює `DEFAULT_RUST_FLAGS` (12 флагів
+     KASA_RUST_*=1), якщо env не задано явно — єдине місце для всіх
+     викликачів (Tauri, bin/facade). Явний env має пріоритет.
+
+4. **Healthcheck оновлено:**
+   - `backend/Dockerfile` + `docker-compose.yml`: `:8001/health` →
+     `:8000/api/v1/health`; backend-сервіс позначено `profiles: ["legacy"]`
+     (Python дезактивовано, не запускається за замовчуванням).
+   - `e2e_stage5_tauri.sh`: прибрано Python :8001 (start_python/health/sync),
+     тільки Rust-фасад :8000.
+
+## DoD-чеклист (перевірено реально, без імітації)
+
+| # | Критерій | Статус |
+|---|---|---|
+| 1 | `cargo test --workspace` зелений, cades_iit стабільний | ✅ 186 passed, 0 failed (cades_iit у складі) |
+| 2 | 0 python-процесів при запуску; :8000 відповідає | ✅ pgrep uvicorn = 0; /api/v1/health → 200 |
+| 3 | LEGACY-роут → 410 | ✅ /health, /, /api/v2/auth/login, /api/v2/auth/users → 410 |
+| 4 | Активні роути працюють | ✅ receipts/categories/debtors/suppliers/invoices/products/users/work-sessions/print-templates/prro/ledger v2 → 200 |
+| 5 | clippy 0, fmt чистий, профілі не змінені | ✅ clippy 0 (наш код); fmt --check чистий; Cargo.toml профілі не чіпано |
+| 6 | Журнал оновлено, коміти запушені | ✅ цей розділ; `71b5dcf` + цей коміт |
+
+## Smoke-результати (curl, живий фасад)
+
+```
+/api/v1/health                     200
+/health (LEGACY)                   410
+/ (LEGACY)                         410
+/api/v2/auth/login (LEGACY)        410
+/api/v2/auth/users (LEGACY)        410
+/api/v1/ledger/entries (v1, фронт на v2)  422 (Rust :supplier_id, не UUID)
+/api/v1/categories/tree (v1, фронт на v2) 422 (Rust :category_id, не UUID)
+/api/v1/receipts?page=1&size=1     200
+/api/v1/categories                 200
+/api/v1/debtors                    200
+/api/v1/suppliers?page=1&size=1    200
+/api/v1/invoices?page=1&size=1     200
+/api/v1/products?page=1&size=1     200
+/api/v1/users                      200
+/api/v1/work-sessions/my           200
+/api/v1/print-templates            200
+/api/v2/prro/status                200
+/api/v2/ledger/balances            200
+/api/v2/categories/tree            200
+/api/v2/receipts/stats/today       200
+```
+
+## Висновок
+
+**Python sidecar дезактивовано повністю.** Tauri більше не спавнить uvicorn;
+усі активні роути фронтенду (перевірено axios/fetch виклики всіх сервісів:
+auth/categories/debtors/documents/invoices/ledger/print/print-templates/
+products/prro/receipts/settings/suppliers/users/work-sessions) обслуговує
+Rust-ядро kasa-api :8000. LEGACY-шляхи (які фронтенд не кличе) повертають
+410 Gone — сумісність старих клієнтів збережена явною відповіддю.
+
+Не чіпано: kasa-prro gRPC, кріпто-шар (cades_iit), фронтенд React,
+KASA_UPLOADS_DIR, профілі Cargo.toml.
