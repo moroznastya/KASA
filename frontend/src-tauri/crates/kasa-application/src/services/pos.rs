@@ -6,9 +6,10 @@
 use kasa_domain::{
     MySessionsDto, PosError, PosService as PosPort, ProductRecentSalesDto, PrroShiftDto,
     ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptListDto, ReceiptListQuery,
-    ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, ReturnableQtyDto, ShiftListDto,
-    TransferCreateInput, TransferDto, TransferListDto, TransferUpdateInput, UserSessionsDto,
-    WorkReportDto, WriteOffCreateInput, WriteOffDto, WriteOffListDto, WriteOffUpdateInput,
+    ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto,
+    ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferListDto,
+    TransferUpdateInput, UserSessionsDto, WorkReportDto, WriteOffCreateInput, WriteOffDto,
+    WriteOffListDto, WriteOffUpdateInput,
 };
 use uuid::Uuid;
 
@@ -33,6 +34,12 @@ impl<R: PosPort> PosServiceFacade<R> {
         input: &ReceiptCreateInput,
     ) -> Result<ReceiptDto, PosError> {
         self.repo.create_return_receipt(input).await
+    }
+    pub async fn create_receipt_v1(
+        &self,
+        input: &ReceiptV1CreateInput,
+    ) -> Result<ReceiptV1Dto, PosError> {
+        self.repo.create_receipt_v1(input).await
     }
     pub async fn get_receipt(&self, id: Uuid) -> Result<ReceiptDto, PosError> {
         self.repo.get_receipt(id).await

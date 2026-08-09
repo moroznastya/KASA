@@ -27,9 +27,9 @@ use uuid::Uuid;
 
 use kasa_application::PosServiceFacade;
 use kasa_domain::{
-    DocItemInput, PosError, ReceiptCreateInput, ReceiptItemInput, ReceiptListQuery,
-    ReceiptSearchQuery, TransferCreateInput, TransferUpdateInput, WriteOffCreateInput,
-    WriteOffUpdateInput,
+    DebtPaymentInput, DocItemInput, PosError, ReceiptCreateInput, ReceiptItemInput,
+    ReceiptListQuery, ReceiptSearchQuery, ReceiptV1CreateInput, ReceiptV1ItemInput,
+    TransferCreateInput, TransferUpdateInput, WriteOffCreateInput, WriteOffUpdateInput,
 };
 
 use crate::auth::Claims;
@@ -104,6 +104,14 @@ impl IntoResponse for PosErr {
                 PosError::Infrastructure(msg) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
+                )
+                    .into_response(),
+                PosError::Integrity(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "detail": "Внутрішня помилка сервера",
+                        "type": "IntegrityError",
+                    })),
                 )
                     .into_response(),
             },
@@ -315,6 +323,265 @@ fn parse_receipt_create(v: &Value, cashier_id: Option<Uuid>) -> Result<ReceiptCr
     })
 }
 
+// ─── Парсинг v1 ReceiptCreate (app/schemas/receipt.py) ──────────────────────
+
+/// 422 зі змішаним loc (рядки + числові індекси списків — як Pydantic).
+fn v422v(vtype: &str, loc: &[Value], msg: &str, input: &str) -> PosErr {
+    PosErr::Validation(serde_json::json!({
+        "detail": [{
+            "type": vtype,
+            "loc": loc,
+            "msg": msg,
+            "input": input,
+        }]
+    }))
+}
+
+fn s_l(s: &str) -> Value {
+    Value::String(s.to_string())
+}
+
+/// UUID з об'єкта (required).
+fn req_uuid(obj: &Value, key: &str, loc: &[Value]) -> Result<Uuid, PosErr> {
+    let f = obj
+        .get(key)
+        .ok_or_else(|| v422v("missing", loc, "Field required", ""))?;
+    if f.is_null() {
+        return Err(v422v("missing", loc, "Field required", ""));
+    }
+    let s = f.as_str().ok_or_else(|| {
+        v422v(
+            "uuid_type",
+            loc,
+            "Input should be a valid UUID",
+            &f.to_string(),
+        )
+    })?;
+    Uuid::parse_str(s).map_err(|_| v422v("uuid_parsing", loc, "Input should be a valid UUID", s))
+}
+
+/// UUID з об'єкта (optional).
+fn opt_uuid(obj: &Value, key: &str, loc: &[Value]) -> Result<Option<Uuid>, PosErr> {
+    let Some(f) = obj.get(key) else {
+        return Ok(None);
+    };
+    if f.is_null() {
+        return Ok(None);
+    }
+    let s = f.as_str().ok_or_else(|| {
+        v422v(
+            "uuid_type",
+            loc,
+            "Input should be a valid UUID",
+            &f.to_string(),
+        )
+    })?;
+    Uuid::parse_str(s)
+        .map(Some)
+        .map_err(|_| v422v("uuid_parsing", loc, "Input should be a valid UUID", s))
+}
+
+/// Decimal з об'єкта (required) — зберігає scale, валідує max places.
+fn req_decimal(obj: &Value, key: &str, places: usize, loc: &[Value]) -> Result<String, PosErr> {
+    let f = obj
+        .get(key)
+        .ok_or_else(|| v422v("missing", loc, "Field required", ""))?;
+    if f.is_null() {
+        return Err(v422v("missing", loc, "Field required", ""));
+    }
+    decimal_str(f, places, loc)
+}
+
+/// Decimal з об'єкта (optional).
+fn opt_decimal(
+    obj: &Value,
+    key: &str,
+    places: usize,
+    loc: &[Value],
+) -> Result<Option<String>, PosErr> {
+    let Some(f) = obj.get(key) else {
+        return Ok(None);
+    };
+    if f.is_null() {
+        return Ok(None);
+    }
+    decimal_str(f, places, loc).map(Some)
+}
+
+fn decimal_str(f: &Value, places: usize, loc: &[Value]) -> Result<String, PosErr> {
+    let s = match f {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        _ => {
+            return Err(v422v(
+                "decimal_type",
+                loc,
+                "Input should be a valid decimal",
+                &f.to_string(),
+            ))
+        }
+    };
+    if let Some(dot) = s.find('.') {
+        let frac_len = s[dot + 1..].len();
+        if frac_len > places {
+            return Err(PosErr::Validation(serde_json::json!({
+                "detail": [{
+                    "type": "decimal_max_places",
+                    "loc": loc,
+                    "msg": format!("Decimal input should have no more than {places} decimal places"),
+                    "input": s,
+                    "ctx": { "decimal_places": places },
+                }]
+            })));
+        }
+    }
+    Ok(s)
+}
+
+/// Pydantic v2 bool (lax): true/false/1/0/yes/no/on/off/y/n/t/f.
+fn v1_bool(v: &Value, key: &str) -> Result<bool, PosErr> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(Value::String(s)) => Ok(matches!(
+            s.to_lowercase().as_str(),
+            "true" | "1" | "yes" | "on" | "y" | "t"
+        )),
+        Some(other) => Err(v422(
+            "bool_parsing",
+            &["body", key],
+            "Input should be a valid boolean",
+            &other.to_string(),
+        )),
+    }
+}
+
+fn parse_receipt_v1_item(v: &Value, idx: usize) -> Result<ReceiptV1ItemInput, PosErr> {
+    let idx_v = Value::Number(idx.into());
+    let loc_pid = [s_l("body"), s_l("items"), idx_v.clone(), s_l("product_id")];
+    let loc_qty = [s_l("body"), s_l("items"), idx_v.clone(), s_l("quantity")];
+    let loc_price = [s_l("body"), s_l("items"), idx_v.clone(), s_l("price")];
+    let loc_total = [s_l("body"), s_l("items"), idx_v, s_l("total")];
+    Ok(ReceiptV1ItemInput {
+        product_id: req_uuid(v, "product_id", &loc_pid)?,
+        quantity: req_decimal(v, "quantity", 3, &loc_qty)?,
+        price: req_decimal(v, "price", 2, &loc_price)?,
+        total: opt_decimal(v, "total", 2, &loc_total)?,
+    })
+}
+
+fn parse_receipt_v1(v: &Value, cashier_id: Option<Uuid>) -> Result<ReceiptV1CreateInput, PosErr> {
+    let items = match v.get("items") {
+        None => Vec::new(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .enumerate()
+            .map(|(i, it)| parse_receipt_v1_item(it, i))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(other) => {
+            return Err(v422(
+                "list_type",
+                &["body", "items"],
+                "Input should be a valid list",
+                &other.to_string(),
+            ))
+        }
+    };
+
+    let total_amount = match v.get("total_amount") {
+        Some(f) if !f.is_null() => decimal_str(f, 2, &[s_l("body"), s_l("total_amount")])?,
+        _ => {
+            return Err(PosErr::Validation(serde_json::json!({
+                "detail": [{
+                    "type": "missing",
+                    "loc": ["body", "total_amount"],
+                    "msg": "Field required",
+                    "input": v,
+                }]
+            })));
+        }
+    };
+    let receipt_type = match v.get("receipt_type") {
+        None | Some(Value::Null) => "sale".to_string(),
+        Some(Value::String(s)) if s == "sale" || s == "return" => s.clone(),
+        Some(other) => {
+            return Err(PosErr::Validation(serde_json::json!({
+                "detail": [{
+                    "type": "enum",
+                    "loc": ["body", "receipt_type"],
+                    "msg": "Input should be 'sale' or 'return'",
+                    "input": other.as_str().map(str::to_string).unwrap_or_else(|| other.to_string()),
+                    "ctx": { "expected": "'sale' or 'return'" },
+                }]
+            })));
+        }
+    };
+    let payment_method = match v.get("payment_method") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if matches!(s.as_str(), "cash" | "card" | "mixed") => {
+            Some(s.clone())
+        }
+        Some(other) => {
+            return Err(PosErr::Validation(serde_json::json!({
+                "detail": [{
+                    "type": "enum",
+                    "loc": ["body", "payment_method"],
+                    "msg": "Input should be 'cash', 'card' or 'mixed'",
+                    "input": other.as_str().map(str::to_string).unwrap_or_else(|| other.to_string()),
+                    "ctx": { "expected": "'cash', 'card' or 'mixed'" },
+                }]
+            })));
+        }
+    };
+
+    let debt_payment = match v.get("debt_payment") {
+        None | Some(Value::Null) => None,
+        Some(dp) => {
+            let debtor_id = req_uuid(
+                dp,
+                "debtor_id",
+                &[s_l("body"), s_l("debt_payment"), s_l("debtor_id")],
+            )?;
+            let amount = req_decimal(
+                dp,
+                "amount",
+                2,
+                &[s_l("body"), s_l("debt_payment"), s_l("amount")],
+            )?;
+            Some(DebtPaymentInput { debtor_id, amount })
+        }
+    };
+
+    let receipt_number = v
+        .get("receipt_number")
+        .and_then(|f| f.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    Ok(ReceiptV1CreateInput {
+        receipt_number,
+        receipt_type,
+        cashier_id: opt_uuid(v, "cashier_id", &[s_l("body"), s_l("cashier_id")])?.or(cashier_id),
+        total_amount,
+        paid_amount: opt_decimal(v, "paid_amount", 2, &[s_l("body"), s_l("paid_amount")])?,
+        debtor_id: opt_uuid(v, "debtor_id", &[s_l("body"), s_l("debtor_id")])?,
+        is_return: v1_bool(v, "is_return")?,
+        notes: v.get("notes").and_then(|f| f.as_str()).map(str::to_string),
+        original_receipt_id: opt_uuid(
+            v,
+            "original_receipt_id",
+            &[s_l("body"), s_l("original_receipt_id")],
+        )?,
+        return_reason: v
+            .get("return_reason")
+            .and_then(|f| f.as_str())
+            .map(str::to_string),
+        items,
+        debt_payment,
+        payment_method,
+    })
+}
+
 // ─── Парсинг документів (write-off/transfer) ───────────────────────────────
 
 fn parse_doc_item(v: &Value, idx: usize) -> Result<DocItemInput, PosErr> {
@@ -501,6 +768,22 @@ pub async fn create_return(
     Ok((
         StatusCode::CREATED,
         Json(svc.create_return_receipt(&input).await?),
+    ))
+}
+
+/// POST /api/v1/receipts — v1 create_receipt (боргова семантика) → 201.
+pub async fn create_receipt_v1(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<kasa_domain::ReceiptV1Dto>), PosErr> {
+    let cashier = sub_uuid(&claims).ok();
+    let input = parse_receipt_v1(&body, cashier)?;
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    Ok((
+        StatusCode::CREATED,
+        Json(svc.create_receipt_v1(&input).await?),
     ))
 }
 

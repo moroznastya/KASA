@@ -391,3 +391,74 @@ write-offs/transfers + confirm), видалені напряму з БД (вкл
 (боргові чеки через касу: PosPage/debtor flow). Всі 9 інших CRIT-роутів закрито
 Rust-реалізацією 1:1. Рекомендація: розширити Rust v2 create_sale борговою семантикою
 (окремий підкрок) АБО переключити фронтенд: звичайні чеки вже йдуть v2, боргові — тільки v1.
+
+---
+
+# Оновлення: Малий підкрок 2c/3 (дезактивація — receipts POST, ОСТАННІЙ CRIT)
+
+Дата: 2026-08-01 · Коміт: (див. git log)
+
+## Закрито останній CRIT-роут
+
+| Роут | Статус | Де реалізовано |
+|---|---|---|
+| POST /api/v1/receipts (з борговою семантикою) | ✅ закрито | pos.rs (kasa-api) + create_receipt_v1_impl (kasa-infrastructure) |
+
+Повна 1:1 семантика Python `create_receipt` (app/api/v1/receipts.py:663):
+- **debt_payment**: валідація боржника (404), сума ≤ борг (400), auto-add товару
+  «Борг» (DEBT-PAYMENT, c230fe32-…), INSERT debtor_payments (payment_method='cash'),
+  total_debt -= amount; при боргу ≤ 0 — автознищення боржника (каскад видаляє
+  debtor_payments — FK ON DELETE CASCADE).
+- **звичайний борг** (debtor_id, paid < total): total_debt += (total - paid).
+- **генерація номера**: `RCPT-{Local YYYYMMDD}-{last+1:04d}` з ОСТАННЬОГО чека
+  за created_at DESC (Python `int(number.split('-')[-1])` з catch → 0; hex-номери
+  v2 → 0 — 1:1).
+- **заокруглення** price_rounding (quantize ROUND_HALF_UP: 10/50/100/500).
+- **return-валідація**: returnable = max(0, sold − returned) для кожного item
+  (крім «Борг»), 400 з текстом Python.
+- **allow_negative_stock**: 400 «Недостатньо товару…» або ручне оновлення stock.
+- **Відповідь — identity map Python**: total/paid після rounding (scale 0),
+  change_amount «0.0» (float default 0.00), items: quantity/price/total — вхідні
+  (при >1 позиціях ПЕРША перечитується з БД — емпіричний патерн SQLAlchemy),
+  purchase_price = str(float(cost_price)) («30.0»), total_profit/vat_amount —
+  Python float-str (shortest round-trip).
+- **422 Pydantic**: missing (з input=body), enum (з ctx expected),
+  decimal_max_places (з ctx decimal_places), uuid_parsing.
+- **500 IntegrityError**: неіснуючий товар → Python SQLAlchemy autoflush →
+  FK violation → `{"detail":"Внутрішня помилка сервера","type":"IntegrityError"}`
+  (відтворено 1:1).
+- Фіскалізації в v1 POST **НЕМАЄ** (PRRO тільки у v2) — відтворено як є.
+
+Domain: ReceiptV1CreateInput/ReceiptV1ItemInput/DebtPaymentInput +
+ReceiptV1Dto/ReceiptV1ItemDto + PosService::create_receipt_v1.
+API: POST /api/v1/receipts під KASA_RUST_READDIRS (pos::create_receipt_v1).
+
+Differential-тест: `frontend/src-tauri/scripts/e2e_receipts_post_diff.py` — **ALL PASS**
+(41 перевірка): sale повна оплата, борговий чек, оплата боргу повна (автознищення)
+та часткова (запис debtor_payments), return (original_receipt_id + returnable),
+помилки 400/404/500/422 (деталі R==P), rounding (47.33→47), ПДВ (tax_rate 20%).
+cargo test --workspace: 189 passed, 0 failed. clippy 0, fmt чистий.
+Тестові дані видалені (чеки/боржники/товари/платежі).
+
+## ПІДСУМОК ДЕЗАКТИВАЦІЇ: ВСІ 10 CRIT ЗАКРИТО
+
+| # | CRIT-роут | Статус |
+|---|---|---|
+| 1 | GET /api/v1/categories | ✅ |
+| 2 | POST/PUT/DELETE /api/v1/categories | ✅ |
+| 3 | CRUD /api/v1/products | ✅ |
+| 4 | GET /api/v1/suppliers | ✅ |
+| 5 | GET/POST /api/v1/inventory | ✅ |
+| 6 | GET /api/v1/invoices + /{id} | ✅ |
+| 7 | GET /api/v1/suppliers/{id}/products (+movements) | ✅ |
+| 8 | POST /api/v1/invoices + return-invoices + confirm | ✅ |
+| 9 | GET /api/v1/ledger | ✅ |
+| 10 | POST /api/v1/receipts (борг) | ✅ |
+
+## Оновлений висновок
+
+**Усі 10 CRIT-роутів закрито Rust-реалізацією 1:1 (differential-тести ALL PASS).**
+Залишились тільки ALIAS-роути (v1 GET-списки чеків/боржників/сесій та ін., що
+проксіруються на Python через fallback — безпечно, Python залишається еталоном).
+Дезактивація sidecar можлива: вимкнути Python для CRIT-роутів (KASA_RUST_READDIRS=1),
+перевірити ALIAS-роути фронтендом, потім видалити Python-роутери.

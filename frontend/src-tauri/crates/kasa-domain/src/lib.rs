@@ -59,11 +59,12 @@ pub use ledger::{
     SupplierBalanceV2Dto,
 };
 pub use pos::{
-    iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total, DocItemInput, MySessionsDto,
-    PosError, PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto,
-    ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput,
-    ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery,
-    ReceiptStatsDto, RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput,
+    iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total, DebtPaymentInput,
+    DocItemInput, MySessionsDto, PosError, PosService, ProductBriefInfoDto, ProductRecentSalesDto,
+    PrroShiftDto, ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto,
+    ReceiptItemInput, ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto,
+    ReceiptSearchQuery, ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto,
+    ReceiptV1ItemInput, RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput,
     TransferDto, TransferItemDto, TransferListDto, TransferUpdateInput, UserHoursSummaryDto,
     UserSessionsDto, WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto,
     WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,

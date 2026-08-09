@@ -34,6 +34,9 @@ pub enum PosError {
     /// 500 Internal Server Error.
     #[error("помилка БД: {0}")]
     Infrastructure(String),
+    /// 500 IntegrityError (SQLAlchemy Python) — {"detail":"Внутрішня помилка сервера","type":"IntegrityError"}.
+    #[error("{0}")]
+    Integrity(String),
 }
 
 /// Контракт POS-операцій (етап 3).
@@ -46,6 +49,11 @@ pub trait PosService: Send + Sync {
         &self,
         input: &ReceiptCreateInput,
     ) -> Result<ReceiptDto, PosError>;
+    /// POST /api/v1/receipts (v1) — повна боргова семантика.
+    async fn create_receipt_v1(
+        &self,
+        input: &ReceiptV1CreateInput,
+    ) -> Result<ReceiptV1Dto, PosError>;
     async fn get_receipt(&self, id: Uuid) -> Result<ReceiptDto, PosError>;
     async fn list_receipts(&self, q: &ReceiptListQuery) -> Result<ReceiptListDto, PosError>;
     async fn today_stats(&self) -> Result<ReceiptStatsDto, PosError>;
@@ -117,6 +125,12 @@ impl<T: PosService + ?Sized> PosService for std::sync::Arc<T> {
         input: &ReceiptCreateInput,
     ) -> Result<ReceiptDto, PosError> {
         (**self).create_return_receipt(input).await
+    }
+    async fn create_receipt_v1(
+        &self,
+        input: &ReceiptV1CreateInput,
+    ) -> Result<ReceiptV1Dto, PosError> {
+        (**self).create_receipt_v1(input).await
     }
     async fn get_receipt(&self, id: Uuid) -> Result<ReceiptDto, PosError> {
         (**self).get_receipt(id).await
@@ -254,6 +268,82 @@ pub struct ReceiptCreateInput {
     pub terminal_created_at: Option<NaiveDateTime>,
     pub is_fiscal: bool,
     pub split_group_id: Option<Uuid>,
+}
+
+/// POST /api/v1/receipts — v1 create_receipt (ReceiptCreate + боргова семантика).
+#[derive(Debug, Clone)]
+pub struct ReceiptV1ItemInput {
+    pub product_id: Uuid,
+    pub quantity: String,
+    pub price: String,
+    pub total: Option<String>,
+}
+
+/// debt_payment: оплата боргу через касу (DebtPaymentInfo).
+#[derive(Debug, Clone)]
+pub struct DebtPaymentInput {
+    pub debtor_id: Uuid,
+    pub amount: String,
+}
+
+/// v1 ReceiptCreate (схема app/schemas/receipt.py) — 1:1.
+#[derive(Debug, Clone)]
+pub struct ReceiptV1CreateInput {
+    pub receipt_number: Option<String>,
+    /// "sale" | "return" (ReceiptType).
+    pub receipt_type: String,
+    pub cashier_id: Option<Uuid>,
+    pub total_amount: String,
+    pub paid_amount: Option<String>,
+    pub debtor_id: Option<Uuid>,
+    pub is_return: bool,
+    pub notes: Option<String>,
+    pub original_receipt_id: Option<Uuid>,
+    /// Ігнорується Python v1 (не передається в Receipt(...)) — зберігаємо для parity.
+    pub return_reason: Option<String>,
+    pub items: Vec<ReceiptV1ItemInput>,
+    pub debt_payment: Option<DebtPaymentInput>,
+    /// "cash" | "card" | "mixed" | None (ReceiptPaymentMethod).
+    pub payment_method: Option<String>,
+}
+
+/// Позиція v1 ReceiptItemResponse (1:1: profit/vat_amount завжди null —
+/// Python встановлює лише приватні _vat_amount/_total_profit на рівні чеку).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1ItemDto {
+    pub id: Uuid,
+    pub receipt_id: Uuid,
+    pub product_id: Uuid,
+    pub product_name: String,
+    pub product_barcode: Option<String>,
+    pub quantity: String,
+    pub price: String,
+    pub total: String,
+    pub purchase_price: Option<String>,
+    pub profit: Option<String>,
+    pub vat_amount: Option<String>,
+    pub created_at: String,
+}
+
+/// v1 ReceiptResponse (POST /api/v1/receipts) — 1:1 Python.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1Dto {
+    pub id: Uuid,
+    pub receipt_number: String,
+    pub receipt_type: String,
+    pub cashier_id: Uuid,
+    pub total_amount: String,
+    pub paid_amount: Option<String>,
+    pub change_amount: Option<String>,
+    pub debtor_id: Option<Uuid>,
+    pub is_return: bool,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub items: Vec<ReceiptV1ItemDto>,
+    pub total_profit: String,
+    pub vat_amount: String,
+    pub cashier_name: String,
+    pub payment_method: Option<String>,
 }
 
 /// GET /api/v2/receipts?page=&size=&search=&date_from=&date_to=&payment_method=

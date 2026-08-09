@@ -24,10 +24,11 @@ use kasa_domain::{
     PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput,
     ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput, ReceiptListDto,
     ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
-    RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto,
-    TransferItemDto, TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto,
-    WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto,
-    WriteOffListDto, WriteOffUpdateInput,
+    ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, RecentSaleDto,
+    ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferItemDto,
+    TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto, WorkReportDto,
+    WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto, WriteOffListDto,
+    WriteOffUpdateInput,
 };
 
 /// Локальний екстеншен: sqlx::Error → PosError.
@@ -1619,6 +1620,637 @@ async fn read_transfer(pool: &PgPool, id: Uuid) -> Result<TransferDto, PosError>
     })
 }
 
+// ─── Чеки v1: POST /api/v1/receipts (create_receipt + боргова семантика) ────
+
+/// ID товару "Борг" (barcode: DEBT-PAYMENT) — константа Python v1.
+const DEBT_PRODUCT_ID: &str = "c230fe32-78ef-4501-a21d-71467a668fc4";
+
+/// Python `Decimal.quantize(..., ROUND_HALF_UP)` — value_objects/rounding.py.
+fn round_amount_v1(s: &str, code: i64) -> Result<String, PosError> {
+    use rust_decimal::prelude::*;
+    use rust_decimal::RoundingStrategy;
+    use std::str::FromStr;
+
+    let d = Decimal::from_str(s)
+        .map_err(|_| PosError::BadRequest(format!("Невалідне десяткове число: {s}")))?;
+    let away = RoundingStrategy::MidpointAwayFromZero;
+    let r = match code {
+        1 => d.round_dp_with_strategy(2, away),
+        10 => d.round_dp_with_strategy(1, away),
+        50 => {
+            let doubled = (d * Decimal::TWO).round_dp_with_strategy(0, away);
+            (doubled / Decimal::TWO).round_dp_with_strategy(2, away)
+        }
+        100 => d.round_dp_with_strategy(0, away),
+        500 => {
+            let div = (d / Decimal::from(5)).round_dp_with_strategy(0, away);
+            (div * Decimal::from(5)).round_dp_with_strategy(0, away)
+        }
+        _ => d.round_dp_with_strategy(2, away),
+    };
+    Ok(r.to_string())
+}
+
+/// Python `str(float)` — найкоротший round-trip (Rust Debug f64).
+fn py_float_str(v: f64) -> String {
+    format!("{v:?}")
+}
+
+/// SELECT value FROM system_settings WHERE key=$1 AND is_active=true.
+async fn get_setting_v1(pool: &PgPool, key: &str) -> Result<Option<String>, PosError> {
+    let row = sqlx::query("SELECT value FROM system_settings WHERE key = $1 AND is_active = true")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .pe()?;
+    Ok(row.map(|r| r.get("value")))
+}
+
+/// Python `int(receipt_number.split("-")[-1])` з catch → 0.
+fn last_seq_from_number(n: &str) -> i64 {
+    n.rsplit('-')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+/// Python `max(Decimal("0"), sold - returned)` — повертає рядок як str(Decimal).
+fn returnable_str(sold: &str, returned: &str) -> String {
+    use rust_decimal::prelude::*;
+    use std::str::FromStr;
+    let s = Decimal::from_str(sold).unwrap_or_default();
+    let r = Decimal::from_str(returned).unwrap_or_default();
+    if s > r {
+        (s - r).to_string()
+    } else {
+        Decimal::ZERO.to_string()
+    }
+}
+
+/// Python str(datetime) Pydantic: "2026-08-09T14:19:31.489344" (або без .%f).
+fn iso_naive_str(created: &str) -> String {
+    // created::text з БД: "2026-08-09 14:19:31.489344" або "2026-08-09 14:19:31".
+    if let Some((date, time)) = created.split_once(' ') {
+        let time = if time.contains('.') {
+            time.to_string()
+        } else {
+            time.to_string()
+        };
+        format!("{date}T{time}")
+    } else {
+        created.to_string()
+    }
+}
+
+/// Python `_calc_vat` — ПДВ = (price*qty*rate)/(1+rate), quantize 0.01 HALF_EVEN.
+fn calc_vat_v1(price: &str, quantity: &str, tax_rate: &str) -> String {
+    use rust_decimal::prelude::*;
+    use rust_decimal::RoundingStrategy;
+    use std::str::FromStr;
+    let tr = Decimal::from_str(tax_rate).unwrap_or_default();
+    if tr.is_zero() {
+        return "0.00".to_string();
+    }
+    let price = Decimal::from_str(price).unwrap_or_default();
+    let qty = Decimal::from_str(quantity).unwrap_or_default();
+    let rate = tr / Decimal::from(100);
+    let total = price * qty;
+    let vat = (total * rate) / (Decimal::ONE + rate);
+    vat.round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven)
+        .to_string()
+}
+
+/// POST /api/v1/receipts — 1:1 `create_receipt` (app/api/v1/receipts.py:663).
+#[allow(clippy::too_many_lines)]
+async fn create_receipt_v1_impl(
+    pool: &PgPool,
+    input: &ReceiptV1CreateInput,
+) -> Result<ReceiptV1Dto, PosError> {
+    use rust_decimal::prelude::*;
+    use std::str::FromStr;
+
+    let debt_product = Uuid::parse_str(DEBT_PRODUCT_ID).expect("DEBT_PRODUCT_ID static");
+    let is_debt_payment = input.debt_payment.is_some();
+
+    // ─── Валідація та підготовка оплати боргу ─────────────────────────────
+    let mut debtor_id = input.debtor_id;
+    let mut items = input.items.clone();
+    let mut debt_payment_debt: Option<String> = None; // total_debt::text боржника
+    if let Some(dp) = &input.debt_payment {
+        let row = sqlx::query("SELECT total_debt::text FROM debtors WHERE id = $1")
+            .bind(dp.debtor_id)
+            .fetch_optional(pool)
+            .await
+            .pe()?;
+        let Some(row) = row else {
+            return Err(PosError::NotFound(format!(
+                "Боржника з ID '{}' не знайдено",
+                dp.debtor_id
+            )));
+        };
+        let current_debt: String = row.get("total_debt");
+        let amount = Decimal::from_str(&dp.amount).map_err(|_| {
+            PosError::BadRequest(format!("Невалідне десяткове число: {}", dp.amount))
+        })?;
+        let current = Decimal::from_str(&current_debt).unwrap_or_default();
+        if amount > current {
+            return Err(PosError::BadRequest(format!(
+                "Сума оплати боргу ({}) перевищує поточний борг ({})",
+                dp.amount, current_debt
+            )));
+        }
+        // Якщо товару "Борг" немає серед items — додати автоматично.
+        let has_debt_item = items.iter().any(|i| i.product_id == debt_product);
+        if !has_debt_item {
+            items.push(ReceiptV1ItemInput {
+                product_id: debt_product,
+                quantity: "1".to_string(),
+                price: dp.amount.clone(),
+                total: Some(dp.amount.clone()),
+            });
+        }
+        debtor_id = Some(dp.debtor_id);
+        debt_payment_debt = Some(current_debt);
+    }
+
+    // ─── Генерація номера чеку (RCPT-{YYYYMMDD}-{last+1:04d}) ─────────────
+    let number = match &input.receipt_number {
+        Some(n) if !n.is_empty() => n.clone(),
+        _ => {
+            let last =
+                sqlx::query("SELECT receipt_number FROM receipts ORDER BY created_at DESC LIMIT 1")
+                    .fetch_optional(pool)
+                    .await
+                    .pe()?;
+            let last_num = match last {
+                Some(r) => {
+                    let n: String = r.get("receipt_number");
+                    last_seq_from_number(&n)
+                }
+                None => 0,
+            };
+            let date = chrono::Local::now().format("%Y%m%d");
+            format!("RCPT-{date}-{:04}", last_num + 1)
+        }
+    };
+
+    let cashier_id = input.cashier_id.ok_or_else(|| {
+        PosError::BadRequest("Відсутній ідентифікатор касира в токені".to_string())
+    })?;
+
+    // paid_amount: якщо не передано — повна оплата.
+    let mut paid = input
+        .paid_amount
+        .clone()
+        .unwrap_or_else(|| input.total_amount.clone());
+    let paid_d = Decimal::from_str(&paid)
+        .map_err(|_| PosError::BadRequest(format!("Невалідне десяткове число: {paid}")))?;
+    if paid_d.is_sign_negative() {
+        return Err(PosError::BadRequest(
+            "Сума оплати (paid_amount) не може бути від'ємною".to_string(),
+        ));
+    }
+    let mut total = input.total_amount.clone();
+
+    // ─── Валідація кількості для повернень ────────────────────────────────
+    if input.receipt_type == "return" {
+        for item in &items {
+            if item.product_id == debt_product {
+                continue;
+            }
+            let sold: String = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(ri.quantity), 0)::text FROM receipt_items ri \
+                 JOIN receipts r ON r.id = ri.receipt_id \
+                 WHERE ri.product_id = $1 AND r.receipt_type = 'sale'",
+            )
+            .bind(item.product_id)
+            .fetch_one(pool)
+            .await
+            .pe()?;
+            let returned: String = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(ri.quantity), 0)::text FROM receipt_items ri \
+                 JOIN receipts r ON r.id = ri.receipt_id \
+                 WHERE ri.product_id = $1 AND r.receipt_type = 'return'",
+            )
+            .bind(item.product_id)
+            .fetch_one(pool)
+            .await
+            .pe()?;
+            let returnable = returnable_str(&sold, &returned);
+            let qty = Decimal::from_str(&item.quantity).map_err(|_| {
+                PosError::BadRequest(format!("Невалідне десяткове число: {}", item.quantity))
+            })?;
+            let rb = Decimal::from_str(&returnable).unwrap_or_default();
+            if qty > rb {
+                let name: String = sqlx::query_scalar("SELECT title FROM products WHERE id = $1")
+                    .bind(item.product_id)
+                    .fetch_optional(pool)
+                    .await
+                    .pe()?
+                    .unwrap_or_else(|| item.product_id.to_string());
+                return Err(PosError::BadRequest(format!(
+                    "Товар '{}': можна повернути не більше {} од. (продано: {}, вже повернуто: {})",
+                    name, returnable, returnable, 0
+                )));
+            }
+        }
+    }
+
+    // ─── Здача (change) якщо paid > total ─────────────────────────────────
+    let total_d = Decimal::from_str(&total)
+        .map_err(|_| PosError::BadRequest(format!("Невалідне десяткове число: {total}")))?;
+    let change: Option<String> = if paid_d > total_d {
+        Some((paid_d - total_d).to_string())
+    } else {
+        None
+    };
+
+    // ─── Заокруглення суми чеку (price_rounding) ──────────────────────────
+    let rounding_code: i64 = get_setting_v1(pool, "price_rounding")
+        .await?
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1);
+    if rounding_code != 1 {
+        let rounded = round_amount_v1(&total, rounding_code)?;
+        if paid_d == total_d {
+            paid = rounded.clone();
+        }
+        total = rounded;
+    }
+
+    // ─── Отримуємо debtor (якщо вказано) ──────────────────────────────────
+    let mut debtor_debt: Option<String> = None;
+    if let Some(did) = debtor_id {
+        if !is_debt_payment {
+            let row = sqlx::query("SELECT total_debt::text FROM debtors WHERE id = $1")
+                .bind(did)
+                .fetch_optional(pool)
+                .await
+                .pe()?;
+            let Some(row) = row else {
+                return Err(PosError::NotFound(format!(
+                    "Боржника з ID '{did}' не знайдено"
+                )));
+            };
+            debtor_debt = Some(row.get("total_debt"));
+        } else {
+            debtor_debt = debt_payment_debt.clone();
+        }
+    }
+
+    // ─── Створюємо чек ────────────────────────────────────────────────────
+    let id = Uuid::new_v4();
+    let change_bind = change.as_ref().filter(|c| {
+        Decimal::from_str(c)
+            .map(|v| v > Decimal::ZERO)
+            .unwrap_or(false)
+    });
+    let mut tx = pool.begin().await.pe()?;
+    sqlx::query(
+        r#"
+        INSERT INTO receipts (
+            id, receipt_number, receipt_type, cashier_id, total_amount, paid_amount,
+            change_amount, debtor_id, is_return, notes, payment_method,
+            original_receipt_id, created_at
+        ) VALUES (
+            $1, $2, $3::receipt_type, $4, $5::numeric, $6::numeric, $7::numeric,
+            $8, $9, $10, $11::receipt_payment_method, $12,
+            (now() AT TIME ZONE 'UTC')::timestamp
+        )
+        "#,
+    )
+    .bind(id)
+    .bind(&number)
+    .bind(&input.receipt_type)
+    .bind(cashier_id)
+    .bind(&total)
+    .bind(paid.as_str())
+    .bind(change_bind.as_deref())
+    .bind(debtor_id)
+    .bind(input.is_return)
+    .bind(input.notes.as_deref())
+    .bind(input.payment_method.as_deref())
+    .bind(input.original_receipt_id)
+    .execute(&mut *tx)
+    .await
+    .pe()?;
+
+    // ─── Позиції та оновлення залишків ────────────────────────────────────
+    for item in &items {
+        let item_total = match &item.total {
+            Some(t) => t.clone(),
+            None => {
+                let q = Decimal::from_str(&item.quantity).unwrap_or_default();
+                let p = Decimal::from_str(&item.price).unwrap_or_default();
+                (q * p).to_string()
+            }
+        };
+
+        let prod = sqlx::query("SELECT title, cost_price::text FROM products WHERE id = $1")
+            .bind(item.product_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .pe()?;
+
+        // purchase_price = float(cost_price) (None якщо товар не знайдено).
+        let (title, cost_price): (String, Option<String>) = match &prod {
+            Some(r) => (
+                r.try_get("title").unwrap_or_default(),
+                r.try_get("cost_price").ok().flatten(),
+            ),
+            None => (String::new(), None),
+        };
+
+        // Python: item вставляється, потім update_stock (для не-DEBT).
+        // Неіснуючий товар (не DEBT): SQLAlchemy autoflush при наступному
+        // SELECT → FK violation receipt_items_product_id → 500 IntegrityError.
+        let is_debt_item = item.product_id == debt_product;
+        if prod.is_none() && !is_debt_item {
+            return Err(PosError::Integrity(
+                "insert or update on table \"receipt_items\" violates foreign key constraint \"receipt_items_product_id_fkey\"".to_string(),
+            ));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO receipt_items (
+                id, receipt_id, product_id, quantity, price, total, purchase_price,
+                fiscal_quantity, created_at
+            ) VALUES (
+                $1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, 0,
+                (now() AT TIME ZONE 'UTC')::timestamp
+            )
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(item.product_id)
+        .bind(&item.quantity)
+        .bind(&item.price)
+        .bind(&item_total)
+        .bind(cost_price.as_deref())
+        .execute(&mut *tx)
+        .await
+        .pe()?;
+
+        // Оновлення залишку (крім товару "Борг").
+        if !is_debt_item {
+            if input.receipt_type == "sale" {
+                let qty = Decimal::from_str(&item.quantity).unwrap_or_default();
+                // Python update_stock: if stock + (-qty) < 0 → 400.
+                let stock: Option<String> =
+                    sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
+                        .bind(item.product_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .pe()?;
+                let insufficient = match &stock {
+                    Some(s) => {
+                        let st = Decimal::from_str(s).unwrap_or_default();
+                        st < qty
+                    }
+                    None => false,
+                };
+                if insufficient {
+                    let allow = get_setting_v1(pool, "allow_negative_stock")
+                        .await?
+                        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+                        .unwrap_or(false);
+                    if !allow {
+                        let stock_txt = stock.unwrap_or_default();
+                        return Err(PosError::BadRequest(format!(
+                            "Недостатньо товару '{}' на складі. Доступно: {}, потрібно: {}",
+                            title, stock_txt, item.quantity
+                        )));
+                    }
+                }
+                sqlx::query(
+                    "UPDATE products SET stock = COALESCE(stock, 0) - $1::numeric WHERE id = $2",
+                )
+                .bind(&item.quantity)
+                .bind(item.product_id)
+                .execute(&mut *tx)
+                .await
+                .pe()?;
+            } else {
+                sqlx::query(
+                    "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric WHERE id = $2",
+                )
+                .bind(&item.quantity)
+                .bind(item.product_id)
+                .execute(&mut *tx)
+                .await
+                .pe()?;
+            }
+        }
+    }
+
+    // ─── Логіка боргу ─────────────────────────────────────────────────────
+    if is_debt_payment {
+        let dp = input.debt_payment.as_ref().expect("is_debt_payment");
+        // DebtorPayment (payment_method='cash' — оплата через касу).
+        sqlx::query(
+            r#"
+            INSERT INTO debtor_payments (id, debtor_id, amount, payment_method, created_at)
+            VALUES ($1, $2, $3::numeric, 'cash', (now() AT TIME ZONE 'UTC')::timestamp)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(dp.debtor_id)
+        .bind(&dp.amount)
+        .execute(&mut *tx)
+        .await
+        .pe()?;
+
+        let current =
+            Decimal::from_str(debt_payment_debt.as_deref().unwrap_or("0")).unwrap_or_default();
+        let amount = Decimal::from_str(&dp.amount).unwrap_or_default();
+        let new_debt = current - amount;
+        if new_debt <= Decimal::ZERO {
+            // Python float(total_debt) <= 0 → видалити боржника (каскад видалить payment).
+            sqlx::query("DELETE FROM debtors WHERE id = $1")
+                .bind(dp.debtor_id)
+                .execute(&mut *tx)
+                .await
+                .pe()?;
+        } else {
+            sqlx::query("UPDATE debtors SET total_debt = $1::numeric WHERE id = $2")
+                .bind(new_debt.to_string())
+                .bind(dp.debtor_id)
+                .execute(&mut *tx)
+                .await
+                .pe()?;
+        }
+    } else if let Some(debt_txt) = &debtor_debt {
+        let paid_final = Decimal::from_str(&paid).unwrap_or_default();
+        let total_final = Decimal::from_str(&total).unwrap_or_default();
+        if paid_final < total_final {
+            let debt_amount = total_final - paid_final;
+            let current = Decimal::from_str(debt_txt).unwrap_or_default();
+            let new_debt = current + debt_amount;
+            let did = debtor_id.expect("debtor_debt — лише при debtor_id");
+            if new_debt <= Decimal::ZERO {
+                sqlx::query("DELETE FROM debtors WHERE id = $1")
+                    .bind(did)
+                    .execute(&mut *tx)
+                    .await
+                    .pe()?;
+            } else {
+                sqlx::query("UPDATE debtors SET total_debt = $1::numeric WHERE id = $2")
+                    .bind(new_debt.to_string())
+                    .bind(did)
+                    .execute(&mut *tx)
+                    .await
+                    .pe()?;
+            }
+        }
+    }
+
+    tx.commit().await.pe()?;
+
+    // ─── Відповідь (1:1 _fill_product_names_and_profit) ───────────────────
+    let row = sqlx::query(
+        r#"
+        SELECT r.id, r.receipt_number, r.receipt_type::text, r.cashier_id,
+               r.total_amount::text, r.paid_amount::text, r.change_amount::text,
+               r.debtor_id, r.is_return, r.notes, r.payment_method::text,
+               r.created_at::text, u.name AS cashier_name
+        FROM receipts r
+        LEFT JOIN users u ON u.id = r.cashier_id
+        WHERE r.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .pe()?;
+
+    let item_rows = sqlx::query(
+        r#"
+        SELECT ri.id, ri.receipt_id, ri.product_id, p.title, p.barcode,
+               ri.quantity::text, ri.price::text, ri.total::text,
+               ri.purchase_price::text, ri.created_at::text,
+               p.cost_price::text, p.tax_rate::text
+        FROM receipt_items ri
+        LEFT JOIN products p ON p.id = ri.product_id
+        WHERE ri.receipt_id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .pe()?;
+
+    let created: String = row.get("created_at");
+    let mut total_profit = Decimal::ZERO;
+    let mut total_vat = Decimal::ZERO;
+    let mut items_dto = Vec::with_capacity(item_rows.len());
+    // Відповідь Python — identity map (expire_on_commit=False): quantity/price/total —
+    // ВХІДНІ значення, purchase_price = float(cost_price) (str(float)).
+    for (idx, r) in item_rows.iter().enumerate() {
+        let it = items
+            .get(idx)
+            .ok_or_else(|| PosError::Infrastructure("items/rows mismatch".to_string()))?;
+        let cost_price: Option<String> = r.try_get("cost_price").ok().flatten();
+        let title: Option<String> = r.try_get("title").ok().flatten();
+        let barcode: Option<String> = r.try_get("barcode").ok().flatten();
+        let item_created: String = r.get("created_at");
+
+        // Прибуток (якщо purchase_price є): total - purchase_price*quantity.
+        // Python: Decimal(str(item.total)) - Decimal(str(float(cost_price)))*Decimal(quantity).
+        let item_total_in = match &it.total {
+            Some(t) => t.clone(),
+            None => {
+                let q = Decimal::from_str(&it.quantity).unwrap_or_default();
+                let p = Decimal::from_str(&it.price).unwrap_or_default();
+                (q * p).to_string()
+            }
+        };
+        if let Some(cost_txt) = &cost_price {
+            let it_t = Decimal::from_str(&item_total_in).unwrap_or_default();
+            let c = Decimal::from_str(&py_float_str(cost_txt.parse::<f64>().unwrap_or_default()))
+                .unwrap_or_default();
+            let q = Decimal::from_str(&it.quantity).unwrap_or_default();
+            total_profit += it_t - c * q;
+        }
+        // ПДВ (якщо product є і tax_rate не None).
+        let tax_rate: Option<String> = r.try_get("tax_rate").ok().flatten();
+        let vat = match &tax_rate {
+            Some(tr) => calc_vat_v1(&it.price, &it.quantity, tr),
+            None => "0.00".to_string(),
+        };
+        let vat_d = Decimal::from_str(&vat).unwrap_or_default();
+        total_vat += vat_d;
+
+        // Python (емпірично): при >1 позиціях ПЕРША перечитується з БД
+        // (SQLAlchemy selectinload + expire), решта — вхідні (identity map).
+        // При 1 позиції — вхідні. DEBT — завжди вхідні.
+        let from_db = items.len() > 1 && idx == 0;
+        let qty_dto = if from_db {
+            r.get::<String, _>("quantity")
+        } else {
+            it.quantity.clone()
+        };
+        let price_dto = if from_db {
+            r.get::<String, _>("price")
+        } else {
+            it.price.clone()
+        };
+        let total_dto = if from_db {
+            r.get::<String, _>("total")
+        } else {
+            item_total_in
+        };
+        let pp_dto = cost_price.as_ref().map(|c| {
+            if from_db {
+                c.clone()
+            } else {
+                py_float_str(c.parse::<f64>().unwrap_or_default())
+            }
+        });
+        items_dto.push(ReceiptV1ItemDto {
+            id: r.get("id"),
+            receipt_id: r.get("receipt_id"),
+            product_id: r.get("product_id"),
+            product_name: title.unwrap_or_default(),
+            product_barcode: barcode,
+            quantity: qty_dto,
+            price: price_dto,
+            total: total_dto,
+            purchase_price: pp_dto,
+            profit: None,
+            vat_amount: None,
+            created_at: iso_naive_str(&item_created),
+        });
+    }
+
+    // change_amount: Python передає None → ORM default 0.00 (asdecimal=False
+    // → float 0.0) → "0.0"; при change>0 — Decimal(paid-total) як є.
+    let change_dto = match &change {
+        Some(c) => c.clone(),
+        None => "0.0".to_string(),
+    };
+    let cashier_name: Option<String> = row.try_get("cashier_name").ok().flatten();
+    Ok(ReceiptV1Dto {
+        id: row.get("id"),
+        receipt_number: row.get("receipt_number"),
+        receipt_type: row.get("receipt_type"),
+        cashier_id: row.get("cashier_id"),
+        total_amount: total,
+        paid_amount: Some(paid),
+        change_amount: Some(change_dto),
+        debtor_id: debtor_id,
+        is_return: row.get("is_return"),
+        notes: row.get("notes"),
+        created_at: iso_naive_str(&created),
+        items: items_dto,
+        total_profit: py_float_str(total_profit.to_f64().unwrap_or_default()),
+        vat_amount: py_float_str(total_vat.to_f64().unwrap_or_default()),
+        cashier_name: cashier_name.unwrap_or_else(|| "Невідомо".to_string()),
+        payment_method: input.payment_method.clone(),
+    })
+}
+
 // ─── impl PosService ────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
@@ -1636,6 +2268,13 @@ impl PosService for SqlxPos {
         input: &ReceiptCreateInput,
     ) -> Result<ReceiptDto, PosError> {
         create_receipt_impl(&self.pool, input, "return").await
+    }
+
+    async fn create_receipt_v1(
+        &self,
+        input: &ReceiptV1CreateInput,
+    ) -> Result<ReceiptV1Dto, PosError> {
+        create_receipt_v1_impl(&self.pool, input).await
     }
 
     async fn get_receipt(&self, id: Uuid) -> Result<ReceiptDto, PosError> {

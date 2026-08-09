@@ -151,6 +151,7 @@ pub fn build_router(state: AppState) -> Router {
                 get(pos::returnable_quantity),
             )
             .route("/api/v2/receipts", get(pos::list_receipts))
+            .route("/api/v1/receipts", post(pos::create_receipt_v1))
             .route("/api/v2/receipts/sale", post(pos::create_sale))
             .route("/api/v2/receipts/return", post(pos::create_return))
             .route(
