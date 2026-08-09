@@ -312,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn empty_items_returns_empty() {
         let r = repo();
-        let svc = InvoiceOcrService::new(r);
+        let _svc = InvoiceOcrService::new(r);
         let data = InvoiceData {
             document_number: Some("ПН-1".to_string()),
             invoice_date: None,

@@ -824,7 +824,7 @@ impl ReadDirectories for SqlxDirectories {
 
         // Сортування за датою DESC (стабільне — як Python `sort(reverse=True)`).
         // Python: total_movements=len(movements) ДО обрізання; movements[:limit] після.
-        movements.sort_by(|a, b| b.date.cmp(&a.date));
+        movements.sort_by_key(|m| std::cmp::Reverse(m.date));
         let total_movements = movements.len() as i64;
         movements.truncate(limit as usize);
 

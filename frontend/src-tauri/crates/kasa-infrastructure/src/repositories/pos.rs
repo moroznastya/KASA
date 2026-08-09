@@ -1692,11 +1692,7 @@ fn returnable_str(sold: &str, returned: &str) -> String {
 fn iso_naive_str(created: &str) -> String {
     // created::text з БД: "2026-08-09 14:19:31.489344" або "2026-08-09 14:19:31".
     if let Some((date, time)) = created.split_once(' ') {
-        let time = if time.contains('.') {
-            time.to_string()
-        } else {
-            time.to_string()
-        };
+        let time = time.to_string();
         format!("{date}T{time}")
     } else {
         created.to_string()
@@ -1926,7 +1922,7 @@ async fn create_receipt_v1_impl(
     .bind(cashier_id)
     .bind(&total)
     .bind(paid.as_str())
-    .bind(change_bind.as_deref())
+    .bind(change_bind)
     .bind(debtor_id)
     .bind(input.is_return)
     .bind(input.notes.as_deref())
@@ -2240,7 +2236,7 @@ async fn create_receipt_v1_impl(
         total_amount: total,
         paid_amount: Some(paid),
         change_amount: Some(change_dto),
-        debtor_id: debtor_id,
+        debtor_id,
         is_return: row.get("is_return"),
         notes: row.get("notes"),
         created_at: iso_naive_str(&created),
