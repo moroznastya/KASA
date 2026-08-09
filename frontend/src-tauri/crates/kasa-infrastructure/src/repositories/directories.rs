@@ -14,8 +14,11 @@ use uuid::Uuid;
 
 use kasa_domain::{
     BarcodeDto, CategoryDto, DirectoryError, Page, ProductDto, ProductFilters, ProductImageDto,
-    ReadDirectories, SupplierDto,
+    ReadDirectories, SupplierDto, SupplierProductItem, SupplierProductMovement,
+    SupplierProductMovementsResponse, SupplierProductsResponse,
 };
+use rust_decimal::Decimal as RDecimal;
+use std::str::FromStr;
 
 /// sqlx-реалізація [`ReadDirectories`] (тільки читання).
 #[derive(Clone)]
@@ -496,6 +499,341 @@ impl ReadDirectories for SqlxDirectories {
             })
             .collect())
     }
+
+    // ─── Дезактивація Python (CRIT): товари постачальника та рух ──────────
+
+    async fn supplier_products(
+        &self,
+        supplier_id: Uuid,
+        search: Option<&str>,
+    ) -> Result<SupplierProductsResponse, DirectoryError> {
+        // 1. Постачальник (404 з текстом Python-еталону).
+        let sup = sqlx::query("SELECT id, name FROM suppliers WHERE id = $1")
+            .bind(supplier_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        let Some(sr) = sup else {
+            return Err(DirectoryError::NotFound(format!(
+                "Постачальника з ID '{supplier_id}' не знайдено"
+            )));
+        };
+        let supplier_name: String = sr.get("name");
+
+        // 2. IDs товарів: UNION трьох джерел (як Python union()).
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT ii.product_id FROM invoice_items ii
+             JOIN invoices i ON i.id = ii.invoice_id
+             WHERE i.supplier_id = $1 AND i.status = 'confirmed'
+             UNION
+             SELECT rii.product_id FROM return_invoice_items rii
+             JOIN return_invoices ri ON ri.id = rii.return_invoice_id
+             WHERE ri.supplier_id = $1 AND ri.status = 'confirmed'
+             UNION
+             SELECT id FROM products WHERE supplier_id = $1",
+        )
+        .bind(supplier_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        if ids.is_empty() {
+            return Ok(SupplierProductsResponse {
+                supplier_id,
+                supplier_name,
+                total_products: 0,
+                total_stock_value: "0.00".to_string(),
+                products: Vec::new(),
+            });
+        }
+
+        // 3. Товари (search ILIKE по title/barcode/sku + ORDER BY title).
+        let mut qb = QueryBuilder::new(
+            "SELECT p.id, p.barcode, p.sku, p.title, p.price::text,
+                    p.cost_price::text, p.stock::text, p.unit,
+                    c.name AS category_name
+             FROM products p
+             LEFT JOIN categories c ON c.id = p.category_id
+             WHERE p.id = ANY(",
+        );
+        qb.push_bind(&ids);
+        qb.push(")");
+        if let Some(q) = search {
+            let pattern = format!("%{q}%");
+            qb.push(" AND (p.title ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR p.barcode ILIKE ");
+            qb.push_bind(pattern.clone());
+            qb.push(" OR p.sku ILIKE ");
+            qb.push_bind(pattern);
+            qb.push(")");
+        }
+        qb.push(" ORDER BY p.title");
+        let rows = qb.build().fetch_all(&self.pool).await.map_err(db_err)?;
+
+        // 4. total_stock_value: Decimal-множення як Python (scale сумується).
+        let mut total = RDecimal::ZERO;
+        let mut products = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let stock = r
+                .get::<Option<String>, _>("stock")
+                .and_then(|s| RDecimal::from_str(&s).ok())
+                .unwrap_or_default();
+            let cost = r
+                .get::<Option<String>, _>("cost_price")
+                .and_then(|s| RDecimal::from_str(&s).ok())
+                .unwrap_or_default();
+            total += stock * cost;
+            products.push(SupplierProductItem {
+                id: r.get("id"),
+                barcode: r.get("barcode"),
+                sku: r.get("sku"),
+                title: r.get("title"),
+                price: r.get("price"),
+                cost_price: r.get("cost_price"),
+                stock: r.get("stock"),
+                unit: r.get("unit"),
+                category_name: r.get("category_name"),
+            });
+        }
+
+        Ok(SupplierProductsResponse {
+            supplier_id,
+            supplier_name,
+            total_products: products.len() as i64,
+            total_stock_value: total.to_string(),
+            products,
+        })
+    }
+
+    async fn product_movements(
+        &self,
+        supplier_id: Uuid,
+        product_id: Uuid,
+        limit: i64,
+    ) -> Result<SupplierProductMovementsResponse, DirectoryError> {
+        // 1. Постачальник (404).
+        let sup = sqlx::query("SELECT id, name FROM suppliers WHERE id = $1")
+            .bind(supplier_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        if sup.is_none() {
+            return Err(DirectoryError::NotFound(format!(
+                "Постачальника з ID '{supplier_id}' не знайдено"
+            )));
+        }
+
+        // 2. Товар (404) з категорією.
+        let prod = sqlx::query(
+            "SELECT p.id, p.barcode, p.sku, p.title, p.price::text,
+                    p.cost_price::text, p.stock::text, p.unit,
+                    c.name AS category_name
+             FROM products p
+             LEFT JOIN categories c ON c.id = p.category_id
+             WHERE p.id = $1",
+        )
+        .bind(product_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(pr) = prod else {
+            return Err(DirectoryError::NotFound(format!(
+                "Товар з ID '{product_id}' не знайдено"
+            )));
+        };
+        let product = SupplierProductItem {
+            id: pr.get("id"),
+            barcode: pr.get("barcode"),
+            sku: pr.get("sku"),
+            title: pr.get("title"),
+            price: pr.get("price"),
+            cost_price: pr.get("cost_price"),
+            stock: pr.get("stock"),
+            unit: pr.get("unit"),
+            category_name: pr.get("category_name"),
+        };
+
+        let mut movements: Vec<SupplierProductMovement> = Vec::new();
+
+        // 3.1 Прибуткові накладні (прихід) — тільки цього постачальника, CONFIRMED.
+        let rows = sqlx::query(
+            "SELECT ii.id, i.invoice_date AS d, i.number AS n, i.id AS doc_id,
+                    ii.quantity::text AS qty, ii.price::text AS price, ii.total::text AS total
+             FROM invoice_items ii
+             JOIN invoices i ON i.id = ii.invoice_id
+             WHERE ii.product_id = $1 AND i.supplier_id = $2 AND i.status = 'confirmed'
+             ORDER BY i.invoice_date DESC
+             LIMIT $3",
+        )
+        .bind(product_id)
+        .bind(supplier_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for r in &rows {
+            let number: String = r.get("n");
+            movements.push(SupplierProductMovement {
+                id: r.get("id"),
+                date: r.get("d"),
+                document_type: "invoice".to_string(),
+                document_number: number.clone(),
+                document_id: r.get("doc_id"),
+                quantity: r.get("qty"),
+                price: r.get("price"),
+                total: r.get("total"),
+                notes: Some(format!("Прибуткова накладна: {number}")),
+            });
+        }
+
+        // 3.2 Повернення постачальнику (витрата) — CONFIRMED, знак мінус у SQL.
+        let rows = sqlx::query(
+            "SELECT rii.id, ri.return_date AS d, ri.number AS n, ri.id AS doc_id,
+                    (-(rii.quantity))::text AS qty, rii.price::text AS price,
+                    (-(rii.total))::text AS total
+             FROM return_invoice_items rii
+             JOIN return_invoices ri ON ri.id = rii.return_invoice_id
+             WHERE rii.product_id = $1 AND ri.supplier_id = $2 AND ri.status = 'confirmed'
+             ORDER BY ri.return_date DESC
+             LIMIT $3",
+        )
+        .bind(product_id)
+        .bind(supplier_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for r in &rows {
+            let number: String = r.get("n");
+            movements.push(SupplierProductMovement {
+                id: r.get("id"),
+                date: r.get("d"),
+                document_type: "return_invoice".to_string(),
+                document_number: number.clone(),
+                document_id: r.get("doc_id"),
+                quantity: r.get("qty"),
+                price: r.get("price"),
+                total: r.get("total"),
+                notes: Some(format!("Повернення постачальнику: {number}")),
+            });
+        }
+
+        // 3.3 Чеки (продаж — витрата). БЕЗ фільтру по постачальнику (як Python).
+        let rows = sqlx::query(
+            "SELECT ri.id, r.created_at AS d, r.receipt_number AS n, r.id AS doc_id,
+                    (-(ri.quantity))::text AS qty, ri.price::text AS price,
+                    (-(ri.total))::text AS total
+             FROM receipt_items ri
+             JOIN receipts r ON r.id = ri.receipt_id
+             WHERE ri.product_id = $1 AND r.is_return = false
+             ORDER BY r.created_at DESC
+             LIMIT $2",
+        )
+        .bind(product_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for r in &rows {
+            let number: String = r.get("n");
+            movements.push(SupplierProductMovement {
+                id: r.get("id"),
+                date: r.get("d"),
+                document_type: "receipt".to_string(),
+                document_number: number.clone(),
+                document_id: r.get("doc_id"),
+                quantity: r.get("qty"),
+                price: r.get("price"),
+                total: r.get("total"),
+                notes: Some(format!("Чек: {number}")),
+            });
+        }
+
+        // 3.4 Списання (витрата). БЕЗ статус-фільтру (як Python).
+        //     price/total: Python `item.price or 0` / `item.quantity * (item.price or 0)`
+        //     — Decimal-арифметика зі scale, відтворюємо через rust_decimal.
+        let rows = sqlx::query(
+            "SELECT wi.id, w.created_at AS d, w.number AS n, w.id AS doc_id,
+                    wi.quantity::text AS qty, wi.price::text AS price
+             FROM write_off_items wi
+             JOIN write_offs w ON w.id = wi.write_off_id
+             WHERE wi.product_id = $1
+             ORDER BY w.created_at DESC
+             LIMIT $2",
+        )
+        .bind(product_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for r in &rows {
+            let number: String = r.get("n");
+            let qty_s: String = r.get("qty");
+            let price_s: String = r.get("price");
+            let price_d = py_or_zero(&price_s);
+            let qty_d = RDecimal::from_str(&qty_s).unwrap_or_default();
+            let price_decimal = RDecimal::from_str(&price_d).unwrap_or_default();
+            movements.push(SupplierProductMovement {
+                id: r.get("id"),
+                date: r.get("d"),
+                document_type: "write_off".to_string(),
+                document_number: number.clone(),
+                document_id: r.get("doc_id"),
+                quantity: format!("-{qty_s}"),
+                price: Some(price_d),
+                total: Some((-(qty_d * price_decimal)).to_string()),
+                notes: Some(format!("Списання: {number}")),
+            });
+        }
+
+        // 3.5 Переміщення (витрата зі складу) — CONFIRMED.
+        let rows = sqlx::query(
+            "SELECT ti.id, t.created_at AS d, t.number AS n, t.id AS doc_id,
+                    ti.quantity::text AS qty, ti.price::text AS price
+             FROM transfer_items ti
+             JOIN transfers t ON t.id = ti.transfer_id
+             WHERE ti.product_id = $1 AND t.status = 'confirmed'
+             ORDER BY t.created_at DESC
+             LIMIT $2",
+        )
+        .bind(product_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for r in &rows {
+            let number: String = r.get("n");
+            let qty_s: String = r.get("qty");
+            let price_s: String = r.get("price");
+            let price_d = py_or_zero(&price_s);
+            let qty_d = RDecimal::from_str(&qty_s).unwrap_or_default();
+            let price_decimal = RDecimal::from_str(&price_d).unwrap_or_default();
+            movements.push(SupplierProductMovement {
+                id: r.get("id"),
+                date: r.get("d"),
+                document_type: "transfer".to_string(),
+                document_number: number.clone(),
+                document_id: r.get("doc_id"),
+                quantity: format!("-{qty_s}"),
+                price: Some(price_d),
+                total: Some((-(qty_d * price_decimal)).to_string()),
+                notes: Some(format!("Переміщення: {number}")),
+            });
+        }
+
+        // Сортування за датою DESC (стабільне — як Python `sort(reverse=True)`).
+        // Python: total_movements=len(movements) ДО обрізання; movements[:limit] після.
+        movements.sort_by(|a, b| b.date.cmp(&a.date));
+        let total_movements = movements.len() as i64;
+        movements.truncate(limit as usize);
+
+        Ok(SupplierProductMovementsResponse {
+            product,
+            movements,
+            total_movements,
+        })
+    }
 }
 
 // ─── Продукти: SQL + фільтри ───────────────────────────────────────────────
@@ -708,6 +1046,16 @@ fn relevance_sort_key(q: &str, p: &ProductRow) -> (u8, String) {
         (3, title)
     } else {
         (4, title)
+    }
+}
+
+/// Python `Decimal(str(x or 0))`: нульове значення (Decimal('0.00') falsy)
+/// стає `0` (int) → `Decimal('0')` → рядок "0". Відтворюємо це для
+/// price/total write_off/transfer.
+fn py_or_zero(s: &str) -> String {
+    match RDecimal::from_str(s) {
+        Ok(d) if d.is_zero() => "0".to_string(),
+        _ => s.to_string(),
     }
 }
 

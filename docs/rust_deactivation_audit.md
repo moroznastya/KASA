@@ -344,3 +344,50 @@ Differential-тест: `frontend/src-tauri/scripts/e2e_categories_v2_diff.sh` �
 Рекомендація: закрити suppliers (окремий підкрок), receipts POST — окремий підкрок
 з domain-змінами АБО переключити фронтенд на наявні механізми (v2 sale для звичайних
 чеків вже працює; боргові чеки — тільки v1).
+
+---
+
+# Оновлення: Малий підкрок 2b/3 (дезактивація — suppliers products + movements)
+
+Дата: 2026-08-01 · Коміт: (див. git log)
+
+## Закрито 2 CRIT-роути (Rust-реалізація 1:1 з Python)
+
+| Роут | Статус | Де реалізовано |
+|---|---|---|
+| GET /api/v1/suppliers/{id}/products | ✅ закрито | suppliers.rs + ReadDirectories::supplier_products |
+| GET /api/v1/suppliers/{id}/products/{pid}/movements | ✅ закрито | suppliers.rs + ReadDirectories::product_movements |
+
+Деталі (1:1 `SupplierProductService` Python):
+- **products**: UNION 3 джерел (invoice_items confirmed + return_invoice_items confirmed
+  + products.supplier_id) → товари з category LEFT JOIN, search ILIKE title/barcode/sku,
+  `ORDER BY title`, `total_stock_value` = Σ(stock×cost_price) Decimal-множенням
+  (rust_decimal, scale сумується як Python), 404 постачальника.
+- **movements**: 5 джерел — invoice (прихід, +), return_invoice/receipt/write_off/transfer
+  (витрата, −). Сортування date DESC (стабільне, як Python), `total_movements` ДО обрізання,
+  `movements[:limit]` після (Python так само). Receipt БЕЗ фільтру постачальника,
+  write_off БЕЗ статус-фільтру, transfer CONFIRMED — точно як Python.
+  `py_or_zero` відтворює Python `Decimal(str(x or 0))` для write_off/transfer.
+- **422 limit**: Pydantic v2 формат — `input` рядком + `ctx {ge/le}`.
+
+Змінені крейти: kasa-domain (DTO suppliers.rs + 2 методи trait), kasa-infrastructure
+(SQL), kasa-api (suppliers.rs + монтування під KASA_RUST_READDIRS).
+
+Differential-тест: `frontend/src-tauri/scripts/e2e_suppliers_products_diff.py` — **ALL PASS**
+(14 перевірок: 404×3, пустий постачальник, products+search parity, movements всіх 5 типів
+parity, P2 тільки invoice, limit=0/501→422 parity, limit=2 обрізання parity).
+Тестові дані створювались через Python API (справжній flow: invoices/returns/receipts/
+write-offs/transfers + confirm), видалені напряму з БД (включно з supplier_ledger).
+
+## НЕ закрито (1 CRIT)
+
+| Роут | Причина аномалії | Обсяг роботи |
+|---|---|---|
+| POST /api/v1/receipts | **Повна боргова семантика**: debt_payment (товар DEBT-PAYMENT, DebtorPayment, автознищення боржника при 0), debtor_id, original_receipt_id, return-валідація, генерація RCPT-номера, заокруглення, фіскалізація. Rust v2 create_sale НЕ підтримує борг (немає debtor_id/debt_payment у ReceiptCreateInput) | зміна domain-контрактів + SQL + ~400 рядків |
+
+## Оновлений висновок
+
+**Дезактивація sidecar все ще НЕ можлива** — залишився 1 CRIT: POST /api/v1/receipts
+(боргові чеки через касу: PosPage/debtor flow). Всі 9 інших CRIT-роутів закрито
+Rust-реалізацією 1:1. Рекомендація: розширити Rust v2 create_sale борговою семантикою
+(окремий підкрок) АБО переключити фронтенд: звичайні чеки вже йдуть v2, боргові — тільки v1.

@@ -18,7 +18,7 @@ use axum::{
 use crate::{
     auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
     print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
-    AppState,
+    suppliers, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -99,6 +99,20 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v1/inventory/:id/confirm",
                 post(crud::confirm_inventory),
+            );
+    }
+
+    // Rust-гілка товарів постачальника та руху (дезактивація Python, CRIT)
+    // — під тим самим feature-flag. Статичні сегменти ПЕРЕД /:id (як FastAPI).
+    if state.readdirs.is_some() {
+        router = router
+            .route(
+                "/api/v1/suppliers/:supplier_id/products/:product_id/movements",
+                get(suppliers::movements),
+            )
+            .route(
+                "/api/v1/suppliers/:supplier_id/products",
+                get(suppliers::products),
             );
     }
 

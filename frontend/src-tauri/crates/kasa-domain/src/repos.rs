@@ -4,6 +4,7 @@
 //! заховані в kasa-infrastructure.
 
 use crate::dto::{CategoryDto, Page, ProductDto, SupplierDto};
+use crate::suppliers::{SupplierProductMovementsResponse, SupplierProductsResponse};
 use uuid::Uuid;
 
 /// Помилки read-шару довідників (мапляться з інфраструктурних).
@@ -70,6 +71,25 @@ pub trait ReadDirectories: Send + Sync {
     async fn get_supplier(&self, id: Uuid) -> Result<SupplierDto, DirectoryError>;
     /// Всі постачальники без пагінації (для випадаючих списків).
     async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, DirectoryError>;
+
+    // ─── Дезактивація Python (CRIT): товари постачальника та рух ──────────
+    /// Товари постачальника з залишками та загальною вартістю
+    /// (1:1 `SupplierProductService.get_supplier_products` Python-еталону).
+    async fn supplier_products(
+        &self,
+        supplier_id: Uuid,
+        search: Option<&str>,
+    ) -> Result<SupplierProductsResponse, DirectoryError>;
+
+    /// Рух товару по 5 типах документів (invoice, return_invoice, receipt,
+    /// write_off, transfer) з сортуванням за датою та limit
+    /// (1:1 `SupplierProductService.get_product_movements` Python-еталону).
+    async fn product_movements(
+        &self,
+        supplier_id: Uuid,
+        product_id: Uuid,
+        limit: i64,
+    ) -> Result<SupplierProductMovementsResponse, DirectoryError>;
 }
 
 /// Фільтри пошуку товарів — відповідають query-параметрам Python-еталону.
@@ -164,5 +184,24 @@ impl<T: ReadDirectories + ?Sized> ReadDirectories for std::sync::Arc<T> {
 
     async fn list_all_suppliers(&self) -> Result<Vec<SupplierDto>, DirectoryError> {
         (**self).list_all_suppliers().await
+    }
+
+    async fn supplier_products(
+        &self,
+        supplier_id: Uuid,
+        search: Option<&str>,
+    ) -> Result<SupplierProductsResponse, DirectoryError> {
+        (**self).supplier_products(supplier_id, search).await
+    }
+
+    async fn product_movements(
+        &self,
+        supplier_id: Uuid,
+        product_id: Uuid,
+        limit: i64,
+    ) -> Result<SupplierProductMovementsResponse, DirectoryError> {
+        (**self)
+            .product_movements(supplier_id, product_id, limit)
+            .await
     }
 }

@@ -22,6 +22,7 @@ pub mod purchase_orders;
 pub mod repos;
 pub mod return_invoices;
 pub mod settings;
+pub mod suppliers;
 pub mod write;
 
 /// Типізовані помилки доменного шару (thiserror).
@@ -77,6 +78,10 @@ pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
 pub use return_invoices::{ReturnInvoicesError, ReturnInvoicesService};
 pub use settings::{
     determine_module, determine_value_type, humanize_key, validate_and_normalize_setting_value,
+};
+pub use suppliers::{
+    SupplierProductItem, SupplierProductMovement, SupplierProductMovementsResponse,
+    SupplierProductsResponse,
 };
 pub use write::{
     calc_markup, CategoryCreateInput, CategoryUpdateInput, InventoryCountsDto,

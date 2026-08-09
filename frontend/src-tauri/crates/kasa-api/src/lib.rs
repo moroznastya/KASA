@@ -34,6 +34,7 @@ pub mod purchase_orders;
 pub mod readdirs;
 pub mod return_invoices;
 pub mod router_v1;
+pub mod suppliers;
 
 use std::sync::Arc;
 
