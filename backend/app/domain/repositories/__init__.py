@@ -1,4 +1,4 @@
-"""Repository Interfaces (Ports) для доменного шару Kasa POS."""
+"""Repository Interfaces (Ports) для доменного шару Torgashka POS."""
 
 from .i_product_repository import IProductRepository
 from .i_invoice_repository import IInvoiceRepository

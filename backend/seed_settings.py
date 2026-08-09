@@ -1,5 +1,5 @@
 """
-Seed-дані для системних налаштувань Kasa POS.
+Seed-дані для системних налаштувань Torgashka POS.
 Заповнює таблицю system_settings початковими значеннями.
 """
 import uuid

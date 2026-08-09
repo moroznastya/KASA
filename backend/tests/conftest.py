@@ -1,5 +1,5 @@
 """
-Глобальні фікстури для тестування Kasa POS — SQLite in-memory.
+Глобальні фікстури для тестування Torgashka POS — SQLite in-memory.
 
 Надає:
   - engine — create_async_engine (SQLite in-memory, per-test)

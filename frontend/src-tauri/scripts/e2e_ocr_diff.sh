@@ -6,8 +6,8 @@ RS=http://127.0.0.1:8002
 PASS=0; FAIL=0
 TS=$(date +%s)
 UQ="e2eocr_${TS}"
-BACKEND="/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/backend"
-TAURI_DIR="/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/frontend/src-tauri"
+BACKEND="/home/anastasia/Andriy/aegis_v3/Niko/Projects/torgashka/backend"
+TAURI_DIR="/home/anastasia/Andriy/aegis_v3/Niko/Projects/torgashka/frontend/src-tauri"
 IMG=/tmp/e2eocr_invoice.png
 KEY_FILE="$BACKEND/keys.txt"
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
@@ -37,11 +37,11 @@ nohup python3 /tmp/mock_gemini.py > /tmp/mock_gemini.log 2>&1 &
 sleep 1
 log "мок Gemini :5099"
 (cd "$BACKEND" && GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:5099/ \
-  nohup venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8003 > /tmp/kasa_py_8003.log 2>&1 &)
+  nohup venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8003 > /tmp/torgashka_py_8003.log 2>&1 &)
 sleep 5
-(cd "$TAURI_DIR" && KASA_RUST_OCR=1 KASA_FACADE_ADDR=127.0.0.1:8002 \
-  KASA_OCR_BASE_URL=http://127.0.0.1:5099/ KASA_OCR_KEYS_FILE="$KEY_FILE" \
-  nohup ./target/debug/facade > /tmp/kasa_facade_8002.log 2>&1 &)
+(cd "$TAURI_DIR" && TORGASHKA_RUST_OCR=1 TORGASHKA_FACADE_ADDR=127.0.0.1:8002 \
+  TORGASHKA_OCR_BASE_URL=http://127.0.0.1:5099/ TORGASHKA_OCR_KEYS_FILE="$KEY_FILE" \
+  nohup ./target/debug/facade > /tmp/torgashka_facade_8002.log 2>&1 &)
 sleep 3
 echo "part2 ok"
 

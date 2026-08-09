@@ -1,4 +1,4 @@
-# 🏪 Kasa POS v3.0
+# 🏪 Torgashka v3.0
 
 **Enterprise-рівень POS-система (Каса + Склад/ERP)** для малого та середнього бізнесу.
 
@@ -50,11 +50,11 @@ cd frontend/src-tauri
 
 # Debug-збірка
 cargo build
-./target/debug/kasa-pos
+./target/debug/torgashka
 
 # або release:
 cargo build --release
-./target/release/kasa-pos
+./target/release/torgashka
 ```
 
 Бінарник слухає **http://127.0.0.1:8000** — це і є backend системи (Rust-фасад, axum).
@@ -93,13 +93,13 @@ kasa/
 │   ├── src/                  # React компоненти
 │   ├── src-tauri/            # Tauri оболонка + Rust-фасад (100% Rust)
 │   │   ├── crates/
-│   │   │   ├── kasa-api/             # HTTP-фасад (axum), роути v1
+│   │   │   ├── torgashka-api/        # HTTP-фасад (axum), роути v1
 │   │   │   ├── kasa-application/     # Застосунковий шар (use cases)
 │   │   │   ├── kasa-domain/          # Доменні сутності та правила
 │   │   │   ├── kasa-infrastructure/  # PostgreSQL, репозиторії, міграції
 │   │   │   ├── kasa-ocr/             # OCR (розпізнавання документів)
 │   │   │   └── kasa-prro/            # ПРРО/фіскалізація
-│   │   └── target/debug/kasa-pos     # Зібраний бінарник (слухає :8000)
+│   │   └── target/debug/torgashka     # Зібраний бінарник (слухає :8000)
 │   └── package.json          # Node.js залежності
 ├── backend/                  # 🧪 LEGACY Python-бекенд (FastAPI) — дезактивований
 │   ├── app/                  #   Еталон для differential-тестів, НЕ runtime
@@ -154,4 +154,4 @@ MIT License — для внутрішнього використання та к
 
 ---
 
-*Kasa POS v3.0 — Rust-фасад (axum) | React | Tauri | PostgreSQL | Clean Architecture / DDD*
+*Torgashka v3.0 — Rust-фасад (axum) | React | Tauri | PostgreSQL | Clean Architecture / DDD*

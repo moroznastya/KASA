@@ -1,4 +1,4 @@
-"""Application Layer для Kasa POS.
+"""Application Layer для Torgashka POS.
 
 Містить:
 - DTO (Data Transfer Objects) для передачі даних між шарами

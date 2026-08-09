@@ -3,14 +3,14 @@ members = ["crates/*"]
 resolver = "2"
 
 [package]
-name = "kasa-pos"
+name = "torgashka"
 version = "1.0.0"
-description = "Kasa POS — Enterprise POS-система для малого та середнього бізнесу"
-authors = ["Kasa Team"]
+description = "Torgashka — Enterprise POS-система для малого та середнього бізнесу"
+authors = ["Torgashka Team"]
 edition = "2021"
 
 [lib]
-name = "kasa_pos_lib"
+name = "torgashka_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -36,10 +36,10 @@ tauri-plugin-updater = "2"
 serde_json = "1"
 dirs-next = "2"
 # ── Крейт інфраструктури: апаратні інтеграції, друк, офлайн-БД ───────────
-kasa-infrastructure = { path = "crates/kasa-infrastructure" }
-kasa-api = { path = "crates/kasa-api" }
+torgashka-infrastructure = { path = "crates/torgashka-infrastructure" }
+torgashka-api = { path = "crates/torgashka-api" }
 # ── SIGTERM для graceful shutdown фасаду (Unix) ─────────────────────────
-tokio = { version = "1", features = ["rt", "signal"] }
+tokio = { version = "1", features = ["rt", "signal", "net"] }
 
 # ── Профілі збірки ────────────────────────────────────────────────────────
 # Повний debuginfo у debug-профілі роздуває бінарники до 300-400 МБ кожен

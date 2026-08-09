@@ -45,7 +45,7 @@ export const Header: React.FC = () => {
       {/* Module name */}
       <div>
         <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          {moduleNames[activeModule] || 'Kasa POS'}
+          {moduleNames[activeModule] || 'Torgashka'}
         </h1>
       </div>
 

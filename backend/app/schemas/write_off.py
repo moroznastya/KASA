@@ -1,5 +1,7 @@
 """
 Pydantic схеми для моделей WriteOff та WriteOffItem (Списання товару).
+
+reason — рядок: назва причини з персистентного довідника write_off_reasons.
 """
 
 from decimal import Decimal
@@ -8,8 +10,6 @@ from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
-
-from app.infrastructure.persistence.models.write_off import WriteOffReason
 
 
 class WriteOffItemCreate(BaseModel):
@@ -36,7 +36,7 @@ class WriteOffItemResponse(BaseModel):
 class WriteOffCreate(BaseModel):
     """Схема створення нового списання."""
     number: Optional[str] = Field(None, max_length=50, description="Номер документа (якщо не вказано — генерується автоматично)")
-    reason: WriteOffReason = Field(..., description="Причина списання")
+    reason: str = Field(..., min_length=2, max_length=100, description="Причина списання (назва з довідника write_off_reasons)")
     write_off_date: datetime = Field(..., description="Дата списання")
     notes: Optional[str] = Field(None, description="Нотатки")
     items: list[WriteOffItemCreate] = Field(default_factory=list, description="Позиції списання")
@@ -45,7 +45,7 @@ class WriteOffCreate(BaseModel):
 class WriteOffUpdate(BaseModel):
     """Схема оновлення списання. Всі поля опціональні."""
     number: Optional[str] = Field(None, max_length=50, description="Номер документа")
-    reason: Optional[WriteOffReason] = Field(None, description="Причина списання")
+    reason: Optional[str] = Field(None, min_length=2, max_length=100, description="Причина списання (назва з довідника)")
     write_off_date: Optional[datetime] = Field(None, description="Дата списання")
     notes: Optional[str] = Field(None, description="Нотатки")
     items: Optional[list[WriteOffItemCreate]] = Field(None, description="Позиції списання")
@@ -55,7 +55,7 @@ class WriteOffResponse(BaseModel):
     """Схема відповіді з даними списання."""
     id: UUID
     number: str
-    reason: WriteOffReason
+    reason: str
     write_off_date: datetime
     notes: Optional[str] = None
     status: str = "confirmed"

@@ -2,29 +2,21 @@
 Моделі WriteOff та WriteOffItem (Списання товару).
 
 Фіксує списання товару зі складу (псування, термін придатності, крадіжка тощо).
+Причина списання (reason) — РЯДОК: назва з персистентного довідника
+write_off_reasons (див. models/reasons.py). Користувач може додати нову
+причину, яка зберігається в довіднику і доступна в наступних накладних.
 """
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    ForeignKey, String, Text, Numeric, DateTime,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
-
-
-class WriteOffReason(str, PyEnum):
-    """Причина списання товару."""
-    EXPIRED = "expired"           # Закінчився термін придатності
-    DAMAGED = "damaged"           # Пошкодження / бій
-    DEFECT = "defect"             # Брак / дефект
-    THEFT = "theft"               # Крадіжка
-    INVENTORY = "inventory"       # Інвентаризація (нестача)
-    OTHER = "other"               # Інше
 
 
 class WriteOff(Base):
@@ -45,10 +37,18 @@ class WriteOff(Base):
         index=True,
         comment="Номер документа списання",
     )
-    reason: Mapped[WriteOffReason] = mapped_column(
-        Enum(WriteOffReason, name="write_off_reason", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
+    reason: Mapped[str] = mapped_column(
+        String(100),
         nullable=False,
-        comment="Причина списання",
+        comment="Причина списання (назва з довідника write_off_reasons)",
+    )
+    # Deprecated: раніше використовувалось для довільної причини (reason='other').
+    # Тепер причина — завжди назва рядком з персистентного списку.
+    # Колонку залишено для зворотної сумісності зі старими даними.
+    custom_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Deprecated: довільна причина списання (більше не використовується)",
     )
     write_off_date: Mapped[datetime] = mapped_column(
         DateTime,
@@ -103,7 +103,7 @@ class WriteOff(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<WriteOff {self.number} ({self.reason.value})>"
+        return f"<WriteOff {self.number} ({self.reason})>"
 
 
 class WriteOffItem(Base):

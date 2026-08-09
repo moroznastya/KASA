@@ -1,4 +1,4 @@
-"""Use Cases для доменного шару Kasa POS."""
+"""Use Cases для доменного шару Torgashka POS."""
 
 from .category_use_cases import (
     CreateCategoryUseCase,

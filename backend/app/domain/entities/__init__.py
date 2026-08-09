@@ -1,4 +1,4 @@
-"""Domain Entities для доменного шару Kasa POS."""
+"""Domain Entities для доменного шару Torgashka POS."""
 
 from .product import Product
 from .invoice import Invoice, InvoiceItem, InvoiceStatus

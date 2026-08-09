@@ -1,5 +1,5 @@
 """
-Модель системних налаштувань Kasa POS.
+Модель системних налаштувань Torgashka POS.
 Key-Value зберігання згрупованих за модулями налаштувань.
 """
 from __future__ import annotations

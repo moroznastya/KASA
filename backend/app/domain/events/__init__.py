@@ -1,4 +1,4 @@
-"""Domain Events для Kasa POS."""
+"""Domain Events для Torgashka POS."""
 
 from .base_event import BaseDomainEvent
 from .product_events import ProductCreated, ProductUpdated, ProductDeleted, StockChanged

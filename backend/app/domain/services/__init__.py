@@ -1,4 +1,4 @@
-"""Domain Services для доменного шару Kasa POS."""
+"""Domain Services для доменного шару Torgashka POS."""
 
 from .pricing_service import PricingService
 from .stock_service import StockService

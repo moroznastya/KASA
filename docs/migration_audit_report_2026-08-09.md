@@ -1,4 +1,4 @@
-# Аудит повноти міграції Kasa POS: Python → Rust
+# Аудит повноти міграції Torgashka: Python → Rust
 
 **Дата:** 2026-08-09
 **Аудитор:** QA_Agent (NIKO 4.0.0)
@@ -47,7 +47,7 @@ Python-процеси (uvicorn/fastapi) **не запущені**; порти 80
 | .env (src-tauri) | Тільки ключі Tauri updater | `frontend/src-tauri/.env`: `TAURI_SIGNING_PRIVATE_KEY_PATH/PASSWORD` |
 | Env-прапори Rust | `KASA_RUST_*=1` — дефолт у коді, не в .env | `crates/kasa-api/src/lib.rs:84-98` — `DEFAULT_RUST_FLAGS` 12 флагів, усі `"1"` |
 | systemd | Немає юнітів | `/etc/systemd/system/` та `~/.config/systemd/user/` — 0 збігів kasa/pos |
-| Autostart | Rust-бінарник, але **мертвий шлях** | `~/.config/autostart/"Kasa POS.desktop"` → `Exec=/home/anastasia/nastya/aegis_v3/kasa/frontend/src-tauri/target/debug/kasa-pos --autostart` — шлях **не існує** (старий шлях, `/home/anastasia/nastya/...` замість `/home/anastasia/Andriy/...`) |
+| Autostart | Rust-бінарник, але **мертвий шлях** | `~/.config/autostart/"Torgashka.desktop"` → `Exec=/home/anastasia/nastya/aegis_v3/kasa/frontend/src-tauri/target/debug/kasa-pos --autostart` — шлях **не існує** (старий шлях, `/home/anastasia/nastya/...` замість `/home/anastasia/Andriy/...`) |
 | scripts/ (корінь) | 1 файл — dev-інструмент | `scripts/gen_golden_vectors.py` — генерація golden-векторів для Rust-тестів, не runtime |
 | CI | Python **АКТИВНИЙ у CI** | `.github/workflows/ci.yml`: `lint-backend` (ruff+mypy), `test-backend` (pytest, 466 unit-тестів, coverage), `build` (Docker image backend). `rust-core.yml` — окремий job (cargo fmt/clippy/test) |
 
@@ -145,7 +145,7 @@ Python-процеси (uvicorn/fastapi) **не запущені**; порти 80
 | # | Дія | Пріоритет |
 |---|---|---|
 | 1 | **Видалити `ui/`** (або зафіксувати архівним tag `legacy/ui-customtkinter-v3.0.1`) — мертвий код, 0 посилань | Високий |
-| 2 | **Оновити autostart** `~/.config/autostart/Kasa POS.desktop` → актуальний шлях бінарника (або перейти на Tauri autostart-плагін, який уже зареєстрований у `lib.rs:105-112`) | Високий |
+| 2 | **Оновити autostart** `~/.config/autostart/Torgashka.desktop` → актуальний шлях бінарника (або перейти на Tauri autostart-плагін, який уже зареєстрований у `lib.rs:105-112`) | Високий |
 | 3 | **Оновити README.md/STRUCTURE.md/SYSTEM_STATE.md**: прибрати інструкції запуску Python (`venv`, `:8001`, `docker-compose up -d` = вся система), описати Rust-фасад `:8000` | Середній |
 | 4 | **Видалити 16 неактуальних e2e_*_diff скриптів** (або перенести в `docs/scr/` як історію міграції); лишити/розвивати `e2e_stage5_tauri.sh` як e2e-стандарт | Середній |
 | 5 | **`backend/` (568 МБ)**: зберегти, поки CI та golden-тести залежать від Python-еталона. Коли Rust-тести стануть самодостатніми — видалити `backend/`, `backend/venv`, `backend/htmlcov`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache` і прибрати Python-jobs з CI | Пізніше |

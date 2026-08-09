@@ -1,5 +1,5 @@
 # ============================================================================
-# Kasa POS — Rust Core CI (етап 0.4 міграції Kasa → Rust)
+# Torgashka POS — Rust Core CI (етап 0.4 міграції Torgashka → Rust)
 # ============================================================================
 # Стратегія: docs/RUST_MIGRATION_PLAN.md §6 (CI)
 #   rust-core: cargo fmt --check → cargo clippy -D warnings → cargo test

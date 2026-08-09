@@ -5,7 +5,7 @@
 set -u
 RUST=http://127.0.0.1:8002/api/v1
 PY=http://127.0.0.1:8001/api/v1
-TOKEN=$(cat /tmp/kasa_token)
+TOKEN=$(cat /tmp/torgashka_token)
 AUTH="Authorization: Bearer $TOKEN"
 CT="Content-Type: application/json"
 TS=$(date +%s)

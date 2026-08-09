@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Kasa POS — Tauri Команди системної інтеграції
+// Torgashka — Tauri Команди системної інтеграції
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Містить команди для:
@@ -88,8 +88,8 @@ pub fn get_barcode_scanner_info() -> Result<serde_json::Value, String> {
 /// Отримати список USB-пристроїв (для налагодження)
 #[tauri::command]
 pub fn get_usb_devices() -> Result<Vec<serde_json::Value>, String> {
-    // Етап 0: тонка обгортка — логіка перенесена в kasa-infrastructure::devices.
-    Ok(kasa_infrastructure::devices::list_usb_devices())
+    // Етап 0: тонка обгортка — логіка перенесена в torgashka-infrastructure::devices.
+    Ok(torgashka_infrastructure::devices::list_usb_devices())
 }
 
 /// Отримати стан системи (для дашборду)
@@ -102,7 +102,7 @@ pub fn get_system_status() -> Result<serde_json::Value, String> {
         "online": check_online(),
         "hostname": std::env::var("HOSTNAME").unwrap_or_default(),
         "username": std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default(),
-        "app_data_dir": dirs_next::data_dir().map(|d| d.join("kasa-pos").to_string_lossy().to_string()).unwrap_or_default(),
+        "app_data_dir": dirs_next::data_dir().map(|d| d.join("torgashka").to_string_lossy().to_string()).unwrap_or_default(),
     }))
 }
 

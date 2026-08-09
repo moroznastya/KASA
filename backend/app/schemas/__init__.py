@@ -1,5 +1,5 @@
 """
-Ініціалізація всіх Pydantic схем Kasa POS.
+Ініціалізація всіх Pydantic схем Torgashka POS.
 
 Експортує всі Create/Update/Response схеми для зручного імпорту.
 """

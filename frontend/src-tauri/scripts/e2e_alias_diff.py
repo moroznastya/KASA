@@ -18,7 +18,7 @@ import uuid
 
 PY = "http://127.0.0.1:8001"
 RS = "http://127.0.0.1:8002"
-TOKEN = open("/tmp/kasa_token").read().strip()
+TOKEN = open("/tmp/torgashka_token").read().strip()
 PASS = 0
 FAIL = 0
 

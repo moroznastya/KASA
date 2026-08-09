@@ -1,4 +1,4 @@
-# План міграції Kasa POS з Python на Rust
+# План міграції Torgashka з Python на Rust
 
 > Версія: 1.0 | Дата: 2026-08-07
 > Джерела: консультації Rust_Agent, System_Architect_Agent, DB_Admin_Agent, QA_Agent + інвентаризація коду

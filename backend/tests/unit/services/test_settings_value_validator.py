@@ -158,7 +158,7 @@ class TestOtherKeys:
 
     def test_arbitrary_values_pass(self):
         """Довільні ключі не валідуються."""
-        assert v("company_name", "<b>Kasa</b>") == "<b>Kasa</b>"
+        assert v("company_name", "<b>Torgashka</b>") == "<b>Torgashka</b>"
         assert v("price_tag_fields", '["name","price","barcode"]') == (
             '["name","price","barcode"]'
         )

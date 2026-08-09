@@ -27,7 +27,7 @@ from app.infrastructure.persistence.models.category import Category
 from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem, WriteOffReason
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 from app.domain.services.auth_service import AuthService
 
 
@@ -262,7 +262,7 @@ async def seed():
         write_off = WriteOff(
             id=uuid4(),
             number="WO-2026-0001",
-            reason=WriteOffReason.EXPIRED.value,  # Використовуємо .value для lowercase
+            reason='Прострочений термін',  # Назва з довідника write_off_reasons
             write_off_date=now - timedelta(days=1),
             notes="Списання прострочених молочних продуктів",
             status="confirmed",

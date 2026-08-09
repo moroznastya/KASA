@@ -29,6 +29,7 @@ import SelectItemsFromReceipt from '@/components/pos/SelectItemsFromReceipt';
 import type { ReturnCartItem } from '@/components/pos/SelectItemsFromReceipt';
 import ReturnWithoutReceipt from '@/components/pos/ReturnWithoutReceipt';
 import type { ReceiptSearchResult } from '@/types/receipt';
+import { markSelectOnMouseDown, preventSelectionClearOnMouseUp } from '@/utils/selectOnFocus';
 
 /** Фіскальні реквізити чеку — ЄДИНІ поля, які мерджимо поверх реального чеку.
  *  Жодних сумарних/позиційних даних тут немає, щоб не перезаписувати
@@ -966,6 +967,7 @@ const PosPage: React.FC = () => {
         payment_method: paymentMethod,
         cash_amount: parseFloat(cashAmount) || 0,
         card_amount: parseFloat(cardAmount) || 0,
+        cashier_name: useAuthStore.getState().user?.name,
         // Дані карткового терміналу (якщо транзакція підтверджена)
         ...terminalPayload,
       };
@@ -1143,6 +1145,7 @@ const PosPage: React.FC = () => {
         payment_method: paymentMethod,
         cash_amount: parseFloat(cashAmount) || 0,
         card_amount: parseFloat(cardAmount) || 0,
+        cashier_name: useAuthStore.getState().user?.name,
         // Дані карткового терміналу (якщо транзакція підтверджена)
         ...terminalPayload,
       };
@@ -1233,6 +1236,7 @@ const PosPage: React.FC = () => {
           quantity: item.quantity,
           price: item.price,
         })),
+        cashier_name: useAuthStore.getState().user?.name,
       };
 
       const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
@@ -1840,12 +1844,14 @@ const PosPage: React.FC = () => {
                         <input
                           type="number"
                           value={editingQuantity[item.product_id] !== undefined ? editingQuantity[item.product_id] : item.quantity}
+                          onMouseDown={markSelectOnMouseDown}
+                          onMouseUp={preventSelectionClearOnMouseUp}
                           onFocus={(e) => {
                             setEditingQuantity((prev) => ({
                               ...prev,
                               [item.product_id]: String(item.quantity),
                             }));
-                            e.target.select();
+                            e.currentTarget.select();
                           }}
                           onChange={(e) => {
                             const val = e.target.value;

@@ -1,4 +1,4 @@
-# Архітектура сервісів Kasa POS
+# Архітектура сервісів Torgashka
 
 **Версія:** 1.0.0  
 **Дата:** 2025-01-20  
@@ -307,7 +307,7 @@ class SystemContext:
     request_method: str = ""
     
     # Інформація про систему
-    app_name: str = "Kasa POS"
+    app_name: str = "Torgashka"
     app_version: str = "1.0.0"
     
     # Метadata

@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri/tauri.conf.json",
-  "productName": "Kasa POS",
+  "productName": "Torgashka",
   "version": "1.0.0",
-  "identifier": "com.kasa.pos",
+  "identifier": "com.torgashka.pos",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -10,19 +10,6 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Kasa POS",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1024,
-        "minHeight": 600,
-        "resizable": true,
-        "fullscreen": false,
-        "center": true,
-        "decorations": true
-      }
-    ],
     "security": {
       "csp": null
     }
@@ -31,7 +18,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "publisher": "Kasa POS",
+    "publisher": "Torgashka",
     "icon": [
       "icons/icon.ico",
       "icons/32x32.png",
@@ -40,7 +27,10 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["Ukrainian", "English"],
+        "languages": [
+          "Ukrainian",
+          "English"
+        ],
         "displayLanguageSelector": true
       }
     }
@@ -49,7 +39,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFN0RBMkE3OEVGMkY3RApSV1I5TCs5NEt0cm5DOTJqU0k5dTFNZ0FOZkZBNmc2Z2F5UGxFRGRONGRKZExmWmRNcHk0MTVaUwo=",
       "endpoints": [
-        "https://github.com/kasa-pos/kasa-pos/releases/latest/download/latest.json"
+        "https://github.com/torgashka/torgashka/releases/latest/download/latest.json"
       ]
     }
   }

@@ -1,4 +1,4 @@
-# Rust Audit Report — Kasa POS
+# Rust Audit Report — Torgashka
 
 **Дата:** 2026-08-09
 **Об'єкт:** `/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/frontend/src-tauri`

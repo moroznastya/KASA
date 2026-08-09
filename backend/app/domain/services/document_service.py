@@ -386,12 +386,21 @@ class DocumentService:
                 detail=f"Списання з ID '{write_off_id}' не знайдено",
             )
 
+        # Ідемпотентність: якщо документ вже проведено — не зменшуємо
+        # залишки повторно. Це захищає від подвійного списання, коли
+        # create_write_off вже підтвердив документ, а фронтенд/користувач
+        # викликає POST /write-offs/{id}/confirm ще раз (кнопка
+        # "Створити та підтвердити", batch-confirm тощо).
+        if write_off.status == "confirmed":
+            return write_off
+
         for item in write_off.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
                 quantity_change=-item.quantity,
             )
 
+        write_off.status = "confirmed"
         await self.session.flush()
         return write_off
 

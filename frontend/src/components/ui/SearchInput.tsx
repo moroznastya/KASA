@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, X } from 'lucide-react';
+import { markSelectOnMouseDown, preventSelectionClearOnMouseUp, selectAllOnFocus } from '@/utils/selectOnFocus';
 
 interface SearchInputProps {
   value: string;
@@ -63,7 +64,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
         placeholder={placeholder}
         aria-label={label || placeholder}
         className="input-field pl-10 pr-8"
-      />
+       onMouseDown={markSelectOnMouseDown} onMouseUp={preventSelectionClearOnMouseUp} onFocus={selectAllOnFocus} />
       {localValue && (
         <button
           onClick={handleClear}

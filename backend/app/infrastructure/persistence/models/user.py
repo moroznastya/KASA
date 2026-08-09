@@ -28,7 +28,7 @@ class UserRole(str, PyEnum):
 
 
 class User(Base):
-    """Користувач системи Kasa."""
+    """Користувач системи Torgashka."""
 
     __tablename__ = "users"
 

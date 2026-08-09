@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E differential AUTH/USERS/SETTINGS/RBAC (етап 6):
-# Rust-фасад (:8002, KASA_RUST_AUTH=1) vs Python (:8001), СПІЛЬНА БД.
+# Rust-фасад (:8002, TORGASHKA_RUST_AUTH=1) vs Python (:8001), СПІЛЬНА БД.
 # Покриває:
 #   - auth: login / login-pin / refresh / logout / verify / users-list / users/me
 #   - users CRUD: list (page/size), get, create (авто-логін, 409), update
@@ -10,7 +10,7 @@
 #   - settings: GET всі/модуль (404), PUT key (upsert + валідації 422),
 #     PUT batch, 403 для cashier
 #   - JWT parity: токен Rust → Python verify/refresh і навпаки
-# Потрібно: Python :8001, фасад :8002 (KASA_RUST_AUTH=1), admin/admin123.
+# Потрібно: Python :8001, фасад :8002 (TORGASHKA_RUST_AUTH=1), admin/admin123.
 set -u
 # Python rate_limit: 5 login/хв → чекаємо скидання вікна після попереднього прогону.
 sleep 65

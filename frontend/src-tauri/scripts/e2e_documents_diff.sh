@@ -6,11 +6,11 @@
 # Створення тестових документів — через Python :8001 (Rust покриває лише
 # документні роути, CRUD інвойсів — наступні групи).
 # Cleanup: тестові документи (Diff Doc%) видаляються SQL-ом наприкінці.
-# Потрібно: Python :8001, фасад :8002 (KASA_RUST_DOCUMENTS=1), /tmp/kasa_token.
+# Потрібно: Python :8001, фасад :8002 (TORGASHKA_RUST_DOCUMENTS=1), /tmp/torgashka_token.
 set -u
 RUST=http://127.0.0.1:8002/api/v1
 PY=http://127.0.0.1:8001/api/v1
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null)
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null)
 AUTH="Authorization: Bearer $TOKEN"
 CT="Content-Type: application/json"
 TS=$(date +%s)

@@ -1,13 +1,13 @@
 # ============================================================================
-# Kasa POS — Backend pyproject.toml
+# Torgashka POS — Backend pyproject.toml
 # ============================================================================
 # Конфігурація: ruff (лінтер/форматер), mypy (перевірка типів), pytest
 # ============================================================================
 
 [project]
-name = "kasa-pos-backend"
+name = "torgashka-pos-backend"
 version = "1.0.0"
-description = "Kasa POS — Enterprise Point of Sale System (Backend)"
+description = "Torgashka POS — Enterprise Point of Sale System (Backend)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111.0",

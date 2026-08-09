@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_documents_diff.sh — differential-тест інвойсів (етап 8, група 3).
-# Rust :8002 (KASA_RUST_INVOICES=1) vs Python :8001 (еталон).
+# Rust :8002 (TORGASHKA_RUST_INVOICES=1) vs Python :8001 (еталон).
 #
 # Покриває (v1+v2):
 #   v1: create/get/list(фільтри+пагінація)/update(scalar+items)/delete/
@@ -15,7 +15,7 @@
 set -u
 PY=http://127.0.0.1:8001
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)

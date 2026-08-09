@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_purchase_orders_diff.sh — differential-тест замовлень постачальнику
-# (етап 8, група 5). Rust :8002 (KASA_RUST_PURCHASE_ORDERS=1) vs Python
+# (етап 8, група 5). Rust :8002 (TORGASHKA_RUST_PURCHASE_ORDERS=1) vs Python
 # :8001 (еталон).
 #
 # Покриває (6 роутів v1):
@@ -15,7 +15,7 @@
 set -u
 PY=http://127.0.0.1:8001
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)

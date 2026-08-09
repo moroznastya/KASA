@@ -1,5 +1,5 @@
 # ============================================================================
-# Kasa POS — CI Pipeline
+# Torgashka POS — CI Pipeline
 # ============================================================================
 # Запускається при push/PR в main, develop, feature/* гілки.
 # ============================================================================
@@ -33,7 +33,7 @@
 #     - `createUpdaterArtifacts: true` (вже увімкнено в tauri.conf.json)
 #     - secrets репозиторію (Settings → Secrets and variables → Actions):
 #         TAURI_SIGNING_PRIVATE_KEY       — ВМІСТ приватного ключа
-#                                           (frontend/src-tauri/.tauri/kasa-pos.key)
+#                                           (frontend/src-tauri/.tauri/torgashka.key)
 #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD — пароль ключа
 #     - публікація GitHub Release з артефактами + latest.json
 #       (endpoint у tauri.conf.json: https://github.com/kasa-pos/kasa-pos/releases/latest/download/latest.json
@@ -43,7 +43,7 @@
 #      плагіном — немає підписаних артефактів на release.
 # ============================================================================
 
-name: 🧪 Kasa POS — CI
+name: 🧪 Torgashka POS — CI
 
 on:
   push:
@@ -234,7 +234,7 @@ jobs:
     steps:
       - name: 📊 Generate summary
         run: |
-          echo "## ✅ Kasa POS — CI Results" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Torgashka POS — CI Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
@@ -254,7 +254,7 @@ jobs:
   #
   #   Потрібно:
   #     1. Задати Secrets у репозиторії:
-  #          TAURI_SIGNING_PRIVATE_KEY         (вміст frontend/src-tauri/.tauri/kasa-pos.key)
+  #          TAURI_SIGNING_PRIVATE_KEY         (вміст frontend/src-tauri/.tauri/torgashka.key)
   #          TAURI_SIGNING_PRIVATE_KEY_PASSWORD
   #     2. Замінити kasa-pos/kasa-pos на реальний owner/repo.
   #     3. Увімкнути workflow_dispatch/тег v* для тригера.
@@ -303,8 +303,8 @@ jobs:
   #         TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
   #       with:
   #         tagName: v__VERSION__
-  #         releaseName: "Kasa POS v__VERSION__"
-  #         releaseBody: "Нова версія Kasa POS"
+  #         releaseName: "Torgashka POS v__VERSION__"
+  #         releaseBody: "Нова версія Torgashka POS"
   #         releaseDraft: true
   #         prerelease: false
   #         createUpdaterArtifacts: true

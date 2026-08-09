@@ -1,5 +1,5 @@
 # ============================================================================
-# Kasa POS — Docker Compose
+# Torgashka POS — Docker Compose
 # ============================================================================
 # Запуск:         docker compose up -d
 # Зупинка:        docker compose down
@@ -108,7 +108,7 @@ services:
       # 🔐 Обов'язкові змінні оточення — без дефолтного пароля!
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       ACCESS_TOKEN_EXPIRE_MINUTES: 480
-      APP_NAME: "Kasa POS"
+      APP_NAME: "Torgashka POS"
       DEBUG: "False"
       CORS_ORIGINS: "http://localhost:3000,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000"
     ports:

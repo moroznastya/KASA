@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_print_diff.sh — differential-тест друку (етап 8, група 6).
-# Rust :8002 (KASA_RUST_PRINT=1) vs Python :8001 (еталон).
+# Rust :8002 (TORGASHKA_RUST_PRINT=1) vs Python :8001 (еталон).
 #
 # Покриває:
 #   print.py (4 роути): price-tags/render (HTML A4 grid + meta),
@@ -21,7 +21,7 @@
 set -u
 PY=http://127.0.0.1:8001
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)
@@ -139,7 +139,7 @@ R=$(curl -s -m 5 "$RS/api/v1/print-templates/$PID_R" -H "$AUTH")
 if echo "$R" | grep -q '"is_default":true'; then ok "set-default через RS: is_default=true (get)"; else bad "set-default is_default: $R"; fi
 
 # ── 9. RENDER шаблону (replace {{var}} + font) — exact ──────────────────────
-RD='{"data":{"shop_name":"Kasa Тест","total":"777.50","fiscal_block":"FB-123"}}'
+RD='{"data":{"shop_name":"Torgashka Тест","total":"777.50","fiscal_block":"FB-123"}}'
 P=$(curl -s -m 5 -X POST "$PY/api/v1/print-templates/$PID_P/render" -H "$AUTH" -H "Content-Type: application/json" -d "$RD")
 R=$(curl -s -m 5 -X POST "$RS/api/v1/print-templates/$PID_P/render" -H "$AUTH" -H "Content-Type: application/json" -d "$RD")
 if [ "$(echo "$P" | py_exact)" = "$(echo "$R" | py_exact)" ]; then ok "render parity (exact, font apply)"; else bad "render parity"; echo "  PY: $(echo "$P" | head -c 200)"; echo "  RS: $(echo "$R" | head -c 200)"; fi

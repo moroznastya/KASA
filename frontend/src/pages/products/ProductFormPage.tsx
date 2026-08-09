@@ -518,8 +518,8 @@ const ProductFormPage: React.FC = () => {
               type="number"
               min="0"
               value={form.stock}
-              onChange={(e) => handleChange('stock', parseInt(e.target.value) || 0)}
-              error={errors.stock}
+              disabled
+              helperText="Облікова кількість. Змінюється через накладні, списання та інвентаризацію"
             />
             <Input
               label="Рекомендований залишок"

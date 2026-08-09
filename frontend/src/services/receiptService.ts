@@ -64,7 +64,8 @@ export interface SearchReceiptsResponse {
 /** Мапінг v2 ReceiptItemResponse → фронтовий ReceiptItem */
 function mapReceiptItem(raw: {
   product_id: string;
-  name: string;
+  name?: string | null;
+  product_name?: string | null;
   quantity: number;
   price: number;
   tax_rate?: number;
@@ -73,7 +74,7 @@ function mapReceiptItem(raw: {
   return {
     id: raw.product_id,
     product_id: raw.product_id,
-    product_name: raw.name || '',
+    product_name: raw.name || raw.product_name || '',
     product_barcode: null,
     quantity: raw.quantity,
     price: String(raw.price ?? 0),
@@ -94,6 +95,7 @@ function mapCreatedReceipt(raw: {
   cash_amount?: number | null;
   card_amount?: number | null;
   change_amount?: number | null;
+  cashier_name?: string | null;
   is_fiscal?: boolean;
   fiscal_status?: string | null;
   fiscal_number?: string | null;
@@ -132,6 +134,7 @@ function mapCreatedReceipt(raw: {
     card_amount: String(raw.card_amount ?? 0),
     change_amount: String(raw.change_amount ?? 0),
     cashier_id: data.cashier_id ?? '',
+    cashier_name: data.cashier_name ?? raw.cashier_name ?? '',
     created_by: data.cashier_id ?? '',
     created_at: raw.created_at ?? new Date().toISOString(),
     // ── Фіскалізація ──
@@ -270,8 +273,8 @@ export const receiptService = {
     const response = await api.get<
       Array<{
         product_id: string;
-        name: string;
-        product_name?: string;
+        name?: string | null;
+        product_name?: string | null;
         product_barcode?: string | null;
         quantity: number;
         price: number;
@@ -283,7 +286,8 @@ export const receiptService = {
     return response.data.map((item) => ({
       ...mapReceiptItem({
         product_id: item.product_id,
-        name: item.name || item.product_name || '',
+        name: item.name,
+        product_name: item.product_name,
         quantity: item.quantity,
         price: item.price,
         tax_rate: item.tax_rate,

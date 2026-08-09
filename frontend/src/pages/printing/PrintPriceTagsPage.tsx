@@ -146,7 +146,7 @@ const PrintPriceTagsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк цінників — Kasa POS</title>
+              <title>Друк цінників — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: A4; }
@@ -175,7 +175,7 @@ const PrintPriceTagsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк цінників — Kasa POS</title>
+              <title>Друк цінників — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: A4; }

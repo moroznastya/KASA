@@ -1,7 +1,7 @@
 """
 Infrastructure Layer: SQLAlchemy ORM Models.
 
-Всі моделі даних Kasa POS визначені тут.
+Всі моделі даних Torgashka POS визначені тут.
 Порядок імпорту важливий — спочатку батьківські моделі (без FK),
 потім дочірні (з FK).
 """
@@ -23,6 +23,7 @@ from app.infrastructure.persistence.models.product_image import ProductImage  # 
 # ── Документи ──────────────────────────────────
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem  # noqa: F401
 from app.infrastructure.persistence.models.transfer import Transfer, TransferItem  # noqa: F401
+from app.infrastructure.persistence.models.reasons import WriteOffReason  # noqa: F401
 from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem  # noqa: F401
 from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem  # noqa: F401
 from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus  # noqa: F401

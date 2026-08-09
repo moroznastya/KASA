@@ -410,10 +410,10 @@ const DevicesPage: React.FC = () => {
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 p-10 text-center">
           <Plug className="w-12 h-12 mx-auto text-gray-300 dark:text-slate-600 mb-4" />
           <p className="text-lg font-medium text-gray-900 dark:text-white">
-            Доступно лише в десктоп-версії Kasa POS
+            Доступно лише в десктоп-версії Torgashka
           </p>
           <p className="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md mx-auto">
-            Цей розділ працює через Tauri Desktop API. Відкрийте застосунок Kasa POS на
+            Цей розділ працює через Tauri Desktop API. Відкрийте застосунок Torgashka на
             комп'ютері, щоб налаштувати касові ваги, платіжні термінали та принтери чеків.
           </p>
         </div>

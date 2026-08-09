@@ -163,6 +163,10 @@ async def create_write_off(
         reason=data.reason,
         write_off_date=data.write_off_date,
         notes=data.notes,
+        # Тимчасово draft: confirm_write_off (нижче) проведе документ.
+        # Це робить POST /write-offs/{id}/confirm ідемпотентним —
+        # повторний confirm не зменшує залишки вдруге.
+        status="draft",
         created_by_id=current_user.id,
     )
     session.add(write_off)
@@ -181,7 +185,8 @@ async def create_write_off(
 
     await session.flush()
 
-    # Автоматично підтверджуємо списання (оновлюємо залишки)
+    # Автоматично підтверджуємо списання (оновлюємо залишки).
+    # confirm_write_off ставить статус confirmed; повторні виклики — no-op.
     doc_service = DocumentService(session)
     await doc_service.confirm_write_off(write_off.id)
 

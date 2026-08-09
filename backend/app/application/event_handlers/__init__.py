@@ -1,4 +1,4 @@
-"""Event Handlers для Kasa POS."""
+"""Event Handlers для Torgashka POS."""
 
 from .logging_handler import LoggingHandler
 from .cache_handler import CacheInvalidationHandler

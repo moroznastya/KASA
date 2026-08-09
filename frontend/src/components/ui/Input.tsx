@@ -1,4 +1,5 @@
 import React, { forwardRef } from 'react';
+import { markSelectOnMouseDown, preventSelectionClearOnMouseUp, selectAllOnFocus } from '@/utils/selectOnFocus';
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
@@ -34,6 +35,12 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                 ? (e) => (e.target as HTMLInputElement).blur()
                 : undefined
             }
+            onMouseDown={markSelectOnMouseDown}
+            onMouseUp={preventSelectionClearOnMouseUp}
+            onFocus={(e) => {
+              props.onFocus?.(e);
+              selectAllOnFocus(e);
+            }}
             aria-invalid={error ? true : undefined}
             aria-describedby={
               error ? (id ? `${id}-error` : undefined) : helperText ? (id ? `${id}-helper` : undefined) : undefined

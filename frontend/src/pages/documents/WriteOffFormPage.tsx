@@ -3,13 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
+import { useWriteOffReasons, useCreateWriteOffReason } from '@/hooks/useWriteOffReasons';
 import { Button } from '@/components/ui/Button';
 import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+
 interface CartItem {
   product_id: string;
   product_title: string;
@@ -19,12 +22,25 @@ interface CartItem {
   price: number;
 }
 
+/** Поточна дата в ISO-форматі (YYYY-MM-DD), локальний час */
+function todayISO(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 10);
+}
+
 const WriteOffFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { goBack } = useBackNavigation();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
+  const { data: reasons = [], isLoading: reasonsLoading } = useWriteOffReasons();
+  const createReasonMutation = useCreateWriteOffReason();
 
+  const [reason, setReason] = useState('');
+  const [newReasonName, setNewReasonName] = useState('');
+  const [writeOffDate, setWriteOffDate] = useState(todayISO());
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -109,15 +125,48 @@ const WriteOffFormPage: React.FC = () => {
   const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
+  const handleAddNewReason = async () => {
+    const name = newReasonName.trim();
+    if (name.length < 2) {
+      toast.error('Назва причини має містити щонайменше 2 символи');
+      return;
+    }
+    // Дублікат серед вже завантажених причин (case-insensitive)
+    if (reasons.some((r) => r.name.toLowerCase() === name.toLowerCase())) {
+      toast.error(`Причина «${name}» вже існує в списку`);
+      return;
+    }
+    try {
+      const created = await createReasonMutation.mutateAsync(name);
+      toast.success(`Причину «${created.name}» додано`);
+      setReason(created.name);
+      setNewReasonName('');
+    } catch {
+      toast.error('Не вдалося додати причину. Можливо, вона вже існує.');
+    }
+  };
+
   const handleSave = async (andConfirm: boolean = false) => {
     if (cart.length === 0) {
       toast.error('Додайте хоча б один товар');
       return;
     }
 
+    if (!reason) {
+      toast.error('Оберіть причину списання');
+      return;
+    }
+
+    if (reason === '__new__') {
+      toast.error('Спершу додайте нову причину списання');
+      return;
+    }
+
     try {
       const doc = await createMutation.mutateAsync({
         document_type: 'write_off',
+        reason,
+        write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
         notes: notes || undefined,
         items: cart.map(({ product_title, product_barcode, ...item }) => ({
           product_id: item.product_id,
@@ -128,6 +177,8 @@ const WriteOffFormPage: React.FC = () => {
       });
 
       if (andConfirm) {
+        // create вже проводить документ (залишки зменшено, статус confirmed).
+        // confirmDocument ідемпотентний — повторний confirm не зменшить залишки вдруге.
         await confirmMutation.mutateAsync({ id: doc.id, documentType: 'write_off' });
       }
 
@@ -162,6 +213,7 @@ const WriteOffFormPage: React.FC = () => {
             label="Додати товар"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
+            autoFocus
             placeholder="Пошук за назвою або штрих-кодом..."
             icon={<Search className="w-4 h-4" />}
           />
@@ -270,11 +322,69 @@ const WriteOffFormPage: React.FC = () => {
           </div>
         )}
 
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Select
+            label="Причина списання"
+            required
+            placeholder={reasonsLoading ? 'Завантаження причин...' : 'Оберіть причину...'}
+            disabled={reasonsLoading}
+            options={[
+              ...reasons.map((r) => ({ value: r.name, label: r.name })),
+              { value: '__new__', label: '＋ Нова причина…' },
+            ]}
+            value={reason}
+            onChange={(e) => {
+              setReason(e.target.value);
+              if (e.target.value !== '__new__') setNewReasonName('');
+            }}
+          />
+
+          <Input
+            label="Дата списання"
+            type="date"
+            value={writeOffDate}
+            onChange={(e) => setWriteOffDate(e.target.value)}
+          />
+        </div>
+
+        {reason === '__new__' && (
+          <div className="rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10 p-4 space-y-3">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Нова причина списання
+            </p>
+            <div className="flex gap-2">
+              <Input
+                value={newReasonName}
+                onChange={(e) => setNewReasonName(e.target.value)}
+                placeholder="Введіть назву нової причини..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddNewReason();
+                  }
+                }}
+              />
+              <Button
+                variant="secondary"
+                onClick={handleAddNewReason}
+                icon={<Plus className="w-4 h-4" />}
+                isLoading={createReasonMutation.isPending}
+                className="shrink-0"
+              >
+                Додати
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400">
+              Нова причина збережеться в довіднику і буде доступна в наступних накладних.
+            </p>
+          </div>
+        )}
+
         <Input
-          label="Причина списання"
+          label="Нотатки (додаткові)"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="Опишіть причину списання..."
+          placeholder="Додаткові нотатки до списання (необов'язково)..."
         />
 
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">

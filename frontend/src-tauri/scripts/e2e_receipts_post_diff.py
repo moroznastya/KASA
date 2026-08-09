@@ -30,7 +30,7 @@ from uuid import uuid4
 PY = "http://127.0.0.1:8001"
 RUST = "http://127.0.0.1:8002"
 
-TOKEN = open("/tmp/kasa_token").read().strip()
+TOKEN = open("/tmp/torgashka_token").read().strip()
 AUTH = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 # ID товару "Борг" (barcode: DEBT-PAYMENT) — константа Python v1.

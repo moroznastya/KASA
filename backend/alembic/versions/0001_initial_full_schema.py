@@ -1,6 +1,6 @@
 """Початкова міграція: створення всіх таблиць.
 
-Створює повну схему БД для Kasa POS:
+Створює повну схему БД для Torgashka POS:
   - Довідники: users, categories, suppliers
   - Товари: products, barcodes, product_images
   - Документи: invoices, transfers, write_offs, return_invoices

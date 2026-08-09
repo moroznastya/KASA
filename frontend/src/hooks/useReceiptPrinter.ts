@@ -472,7 +472,7 @@ function printViaBrowser(html: string): void {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Друк — Kasa POS</title>
+  <title>Друк — Torgashka</title>
   <style>
     ${BROWSER_PRINT_STYLES}
     /* Друк на всю ширину: body точно 58mm */

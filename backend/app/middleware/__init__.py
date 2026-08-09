@@ -1,5 +1,5 @@
 """
-Ініціалізація middleware Kasa POS.
+Ініціалізація middleware Torgashka POS.
 """
 
 from app.middleware.auth_middleware import AuthMiddleware

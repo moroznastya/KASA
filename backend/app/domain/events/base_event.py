@@ -1,7 +1,7 @@
 """
 Domain Event: Base Domain Event.
 
-Базовий клас для всіх доменних подій в Kasa POS.
+Базовий клас для всіх доменних подій в Torgashka POS.
 """
 
 from __future__ import annotations

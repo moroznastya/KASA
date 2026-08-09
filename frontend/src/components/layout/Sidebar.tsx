@@ -165,7 +165,7 @@ export const Sidebar: React.FC = () => {
           </div>
           {sidebarOpen && (
             <span className="font-bold text-lg text-gray-900 dark:text-gray-100 whitespace-nowrap">
-              Kasa POS
+              Torgashka
             </span>
           )}
         </div>

@@ -1,4 +1,4 @@
-"""Value Objects для доменного шару Kasa POS."""
+"""Value Objects для доменного шару Torgashka POS."""
 
 from .money import Money
 from .barcode import Barcode

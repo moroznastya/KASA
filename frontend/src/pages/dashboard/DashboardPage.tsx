@@ -83,7 +83,7 @@ const DashboardPage: React.FC = () => {
             Панель керування
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Огляд системи Kasa POS
+            Огляд системи Torgashka
           </p>
         </div>
         <Button onClick={() => navigate('/pos')} icon={<ShoppingCart className="w-4 h-4" />}>

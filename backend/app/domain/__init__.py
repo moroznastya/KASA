@@ -1,5 +1,5 @@
 """
-Domain шар Kasa POS.
+Domain шар Torgashka POS.
 
 Містить бізнес-логіку та доменні сервіси.
 """

@@ -141,25 +141,28 @@ export const ledgerService = {
   },
 
   async getSupplierInvoices(supplierId: string): Promise<InvoiceInfo[]> {
-    // v2 InvoiceResponse: {id, number, total, status, created_at, ...}
+    // v1 InvoiceResponse: {items: [{id, number, total_amount, paid_amount, remaining, ...}]}
     const response = await api.get<{
       items: Array<{
         id: string;
         number: string;
-        total?: number | null;
+        total_amount?: string | null;
+        paid_amount?: string | null;
+        remaining?: string | null;
         status: string;
         created_at?: string | null;
         supplier_id?: string | null;
       }>;
     }>('/invoices', {
-      params: { supplier_id: supplierId, status: 'confirmed' },
-      ...V2,
+      params: { supplier_id: supplierId, page: 1, size: 200 },
     });
     return (response.data.items || []).map((inv) => ({
       id: inv.id,
       number: inv.number,
       invoice_date: inv.created_at ?? '',
-      total_amount: String(inv.total ?? 0),
+      total_amount: inv.total_amount ?? '0',
+      paid_amount: inv.paid_amount,
+      remaining: inv.remaining,
       supplier_id: inv.supplier_id ?? supplierId,
       status: inv.status,
     }));

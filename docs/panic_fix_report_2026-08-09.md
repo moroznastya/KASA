@@ -2,7 +2,7 @@
 
 Дата: 2026-08-09
 Виконавець: Rust_Agent (NIKO)
-Проєкт: Kasa POS (`frontend/src-tauri`)
+Проєкт: Torgashka (`frontend/src-tauri`)
 Статус: ✅ ВИКОНАНО, всі критерії прийняття задоволені
 
 ---

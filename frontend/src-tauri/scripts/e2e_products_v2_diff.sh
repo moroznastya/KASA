@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_products_v2_diff.sh — differential-тест товарів v2 (етап 8, група 7).
-# Rust :8002 (KASA_RUST_PRODUCTS_V2=1) vs Python :8001 (еталон), СПІЛЬНА БД.
+# Rust :8002 (TORGASHKA_RUST_PRODUCTS_V2=1) vs Python :8001 (еталон), СПІЛЬНА БД.
 #
 # Покриває v2/products.py (10 роутів):
 #   GET  /api/v2/products (list: search, category_id, пагінація, 422)
@@ -22,7 +22,7 @@
 set -u
 PY=http://127.0.0.1:8001
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)
@@ -215,7 +215,7 @@ curl -s -X DELETE "$RS/api/v2/products/$PID_A" -H "$AUTH" >/dev/null
 python3 - "$PID_A" "$IMG_BASE" << 'PYEOF'
 import os, sys
 pid, imgbase = sys.argv[1], sys.argv[2]
-base = os.environ.get("KASA_UPLOADS_DIR", "uploads")
+base = os.environ.get("TORGASHKA_UPLOADS_DIR", "uploads")
 d = os.path.join(base, "products", pid)
 if os.path.isdir(d):
     for f in os.listdir(d):

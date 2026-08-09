@@ -9,7 +9,7 @@
   4. Рухи по 5 типах документів (invoice/return_invoice/receipt/write_off/transfer) — parity
   5. limit=0 / limit=501 → 422 (R==P)
 Cleanup: тестові записи видаляються напряму з БД (psycopg2) у кінці.
-Потрібно: Python :8001, фасад :8002 (KASA_RUST_READDIRS=1), /tmp/kasa_token.
+Потрібно: Python :8001, фасад :8002 (TORGASHKA_RUST_READDIRS=1), /tmp/torgashka_token.
 """
 import json
 import sys
@@ -21,7 +21,7 @@ import psycopg2
 
 RUST = "http://127.0.0.1:8002"
 PY = "http://127.0.0.1:8001"
-TOKEN = open("/tmp/kasa_token").read().strip()
+TOKEN = open("/tmp/torgashka_token").read().strip()
 AUTH = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 DB = dict(dbname="pos_system", user="postgres", password="VgxWd7MBJ10X", host="localhost", port=5432)
 

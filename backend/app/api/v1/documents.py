@@ -912,6 +912,7 @@ async def copy_document(
         new_doc = WriteOff(
             number=new_number,
             reason=original.reason,
+            custom_reason=original.custom_reason,
             write_off_date=now,
             notes=f"Копія списання №{original.number}. {original.notes or ''}",
             status="draft",

@@ -294,7 +294,7 @@ async def render_template(
     Замінює всі {{variable}} у вмісті шаблону на відповідні значення.
     Повертає готовий HTML-рядок.
 
-    Тіло запиту: { "data": { "shop_name": "Kasa", "total": "100.00", ... } }
+    Тіло запиту: { "data": { "shop_name": "Torgashka", "total": "100.00", ... } }
     """
     result = await session.execute(
         select(PrintTemplate).where(PrintTemplate.id == template_id)

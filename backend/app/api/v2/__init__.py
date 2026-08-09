@@ -1,4 +1,4 @@
-"""API v2 — Use Cases based API для Kasa POS."""
+"""API v2 — Use Cases based API для Torgashka POS."""
 
 from fastapi import APIRouter
 

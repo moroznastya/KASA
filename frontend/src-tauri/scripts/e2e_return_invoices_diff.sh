@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_return_invoices_diff.sh — differential-тест повернень (етап 8, група 4).
-# Rust :8002 (KASA_RUST_RETURN_INVOICES=1) vs Python :8001 (еталон).
+# Rust :8002 (TORGASHKA_RUST_RETURN_INVOICES=1) vs Python :8001 (еталон).
 #
 # Покриває (7 роутів v1):
 #   create (автономер ПВ-, total=sum, cost_price з продукту, markup),
@@ -19,7 +19,7 @@
 set -u
 PY=http://127.0.0.1:8001
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)

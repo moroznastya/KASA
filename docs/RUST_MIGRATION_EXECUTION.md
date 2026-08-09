@@ -1,4 +1,4 @@
-# Виконавчий план міграції Kasa POS → Rust
+# Виконавчий план міграції Torgashka → Rust
 
 > Джерело стратегії: `docs/RUST_MIGRATION_PLAN.md` (v1.0, затверджений)
 > Виконавчий контроль: NIKO (координація, моніторинг)
@@ -113,7 +113,7 @@
 - [x] Структура CAdES: ContentInfo/signedData (OID 1.2.840.113549.1.7.2) — як
       Java ee.SignInternal(true, data) офіційного семпла programika/prro_sample
 - [x] get_serial_number/get_signer_name 1:1 Python: RSA 7AED6274... / Тестовий
-      Підписант Kasa; ДСТУ 5E984D52... / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА
+      Підписант Torgashka; ДСТУ 5E984D52... / МОРОЗ АНАСТАСІЯ-РОКСОЛАНА ВАСИЛІВНА
 - [x] Фабрика signer_from_key_material: OID ДСТУ 4145 → IitSigner (CAdES),
       RSA/ECDSA → XadesSigner (XAdES) — шлях XML → підпис → gRPC sendChkV2 готовий
 - [x] cargo test 43/43 (kasa-prro), clippy 0, fmt чистий; workspace 112 passed

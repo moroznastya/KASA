@@ -2,7 +2,7 @@
 """Генератор golden-векторів XML СЗЗД з Python-еталона (для Rust-тестів).
 
 Відтворює /tmp/golden_vectors.json, на основі якого зафіксовано
-crates/kasa-prro/tests/golden_xml.rs. Запуск з кореня kasa/:
+crates/torgashka-prro/tests/golden_xml.rs. Запуск з кореня kasa/:
 
     backend/venv/bin/python scripts/gen_golden_vectors.py > /tmp/golden_vectors.json
 

@@ -4,8 +4,8 @@
 #
 # Потрібно:
 #   - PostgreSQL (як у backend/.env),
-#   - JWT у /tmp/kasa_token (Authorization: Bearer),
-#   - фасад :8000 (Rust-ядро; serve() вмикає KASA_RUST_*=1 за замовчуванням).
+#   - JWT у /tmp/torgashka_token (Authorization: Bearer),
+#   - фасад :8000 (Rust-ядро; serve() вмикає TORGASHKA_RUST_*=1 за замовчуванням).
 #
 # Що перевіряється (реально, без імітації):
 #   1. health: фасад :8000 /api/v1/health → 200.
@@ -27,12 +27,12 @@ TAURI_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 ROOT=$(cd "$TAURI_DIR/../.." && pwd)
 
 API=http://127.0.0.1:8000/api
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null)
-if [ -z "$TOKEN" ]; then echo "❌ /tmp/kasa_token порожній"; exit 1; fi
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null)
+if [ -z "$TOKEN" ]; then echo "❌ /tmp/torgashka_token порожній"; exit 1; fi
 AUTH="Authorization: Bearer $TOKEN"
 CT="Content-Type: application/json"
 TS=$(date +%s)
-XDG=/tmp/kasa-stage5-$TS
+XDG=/tmp/torgashka-stage5-$TS
 FAIL=0
 
 # ─── Допоміжні ─────────────────────────────────────────────────────────────
@@ -49,8 +49,8 @@ jid() { python3 -c "import sys,json;print(json.load(sys.stdin)['$1'])"; }
 
 start_facade() {
   if ! curl -s -o /dev/null http://127.0.0.1:8000/api/v1/health; then
-    (cd "$TAURI_DIR" && KASA_RUST_READDIRS=1 nohup ./target/debug/facade \
-      > /tmp/kasa_facade_8000.log 2>&1 &)
+    (cd "$TAURI_DIR" && TORGASHKA_RUST_READDIRS=1 nohup ./target/debug/facade \
+      > /tmp/torgashka_facade_8000.log 2>&1 &)
     for _ in $(seq 1 20); do curl -s -o /dev/null http://127.0.0.1:8000/api/v1/health && break; sleep 0.5; done
   fi
 }
@@ -88,7 +88,7 @@ STOCK=$(curl -s $API/v1/products/$PID -H "$AUTH" | python3 -c "import sys,json;p
 [ "$STOCK" == "98.000" ] && echo "  ✅ stock після pay: $STOCK (100-2)" || { echo "  ❌ stock: $STOCK"; FAIL=1; }
 
 echo "  close: друк чека → реальний Rust-конвеєр ESC/POS → мок-пристрій (файл)"
-( cd "$TAURI_DIR" && cargo test -q -p kasa-infrastructure --test stage5_tauri print_receipt_to_mock_device -- --nocapture 2>&1 | tail -8 )
+( cd "$TAURI_DIR" && cargo test -q -p torgashka-infrastructure --test stage5_tauri print_receipt_to_mock_device -- --nocapture 2>&1 | tail -8 )
 if [ "${PIPESTATUS[0]}" == "0" ]; then echo "  ✅ друк (close): ESC/POS потік записано у мок-пристрій"; else echo "  ❌ друк: тест-контур не пройшов"; FAIL=1; fi
 
 # ─── 3. Офлайн-черга: сервер down → у чергу; сервер up → синхронізація ──────
@@ -102,7 +102,7 @@ else
 fi
 
 mkdir -p "$XDG"
-OQ() { (cd "$TAURI_DIR" && XDG_DATA_HOME="$XDG" cargo run -q -p kasa-infrastructure --example offline_queue -- "$@"); }
+OQ() { (cd "$TAURI_DIR" && XDG_DATA_HOME="$XDG" cargo run -q -p torgashka-infrastructure --example offline_queue -- "$@"); }
 
 OFFLINE_RECEIPT="{\"receipt_type\":\"sale\",\"items\":[{\"product_id\":\"$PID\",\"quantity\":1,\"price\":100,\"tax_rate\":20}],\"payment_method\":\"cash\",\"cash_amount\":100,\"total_amount\":100,\"paid_amount\":100}"
 OFF_ID=$(OQ save "$OFFLINE_RECEIPT" | tail -1)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # e2e_prro_v2_diff.sh — differential-тест ПРРО v2 (етап 8, група 8/9).
-# Rust :8002 (KASA_RUST_PRRO_V2=1) vs Python :8003 (еталон, PRRO env),
+# Rust :8002 (TORGASHKA_RUST_PRRO_V2=1) vs Python :8003 (еталон, PRRO env),
 # СПІЛЬНА БД + МОК gRPC ChkIncomeService :50051.
 #
 # Покриває (v2/prro.py — решта вже в 7.3 fiscal/*):
@@ -20,14 +20,14 @@
 set -u
 PY=http://127.0.0.1:8003
 RS=http://127.0.0.1:8002
-TOKEN=$(cat /tmp/kasa_token 2>/dev/null || echo "")
+TOKEN=$(cat /tmp/torgashka_token 2>/dev/null || echo "")
 AUTH="Authorization: Bearer $TOKEN"
 PASS=0; FAIL=0
 TS=$(date +%s)
 UQ="e2eprro_${TS}"
-KEY_SRC="/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/backend/certs/prro-test/pb_3791505547 (2).jks"
-BACKEND="/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/backend"
-TAURI_DIR="/home/anastasia/Andriy/aegis_v3/Niko/Projects/kasa/frontend/src-tauri"
+KEY_SRC="/home/anastasia/Andriy/aegis_v3/Niko/Projects/torgashka/backend/certs/prro-test/pb_3791505547 (2).jks"
+BACKEND="/home/anastasia/Andriy/aegis_v3/Niko/Projects/torgashka/backend"
+TAURI_DIR="/home/anastasia/Andriy/aegis_v3/Niko/Projects/torgashka/frontend/src-tauri"
 
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 ok()   { PASS=$((PASS+1)); echo "  ✅ $1"; }
@@ -82,17 +82,17 @@ log "мок gRPC :50051 — $(ss -tln | grep -c 50051) портів"
 
 (cd "$BACKEND" && PRRO_TEST_URL=127.0.0.1:50051 PRRO_USE_SSL=false \
   nohup venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8003 \
-  > /tmp/kasa_py_8003.log 2>&1 &)
+  > /tmp/torgashka_py_8003.log 2>&1 &)
 sleep 5
 log "Python :8003 — $(ss -tln | grep -c 8003) портів"
 
-(cd "$TAURI_DIR" && KASA_RUST_PRRO=1 KASA_RUST_PRRO_V2=1 \
-  KASA_FACADE_ADDR=127.0.0.1:8002 \
+(cd "$TAURI_DIR" && TORGASHKA_RUST_PRRO=1 TORGASHKA_RUST_PRRO_V2=1 \
+  TORGASHKA_FACADE_ADDR=127.0.0.1:8002 \
   PRRO_TEST_URL=127.0.0.1:50051 PRRO_GRPC_INSECURE=1 \
   PRRO_KEYSTORE_PATH="$BACKEND/app/infrastructure/.prro_keystore.json" \
   PRRO_MASTER_KEY_PATH="$BACKEND/app/infrastructure/.prro_master.key" \
   PRRO_CERTS_DIR="$BACKEND/certs" \
-  nohup ./target/debug/facade > /tmp/kasa_facade_8002.log 2>&1 &)
+  nohup ./target/debug/facade > /tmp/torgashka_facade_8002.log 2>&1 &)
 sleep 3
 log "Rust :8002 — $(ss -tln | grep -c 8002) портів"
 

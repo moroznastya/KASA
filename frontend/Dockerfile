@@ -1,5 +1,5 @@
 # ============================================================================
-# Kasa POS Frontend — Multi-stage Dockerfile
+# Torgashka Frontend — Multi-stage Dockerfile
 # ============================================================================
 # Багатостадійна збірка: node build → nginx production
 # ============================================================================
@@ -12,7 +12,7 @@
 FROM node:20-alpine AS builder
 
 LABEL stage="builder"
-LABEL description="Kasa Frontend — build stage"
+LABEL description="Torgashka Frontend — build stage"
 
 WORKDIR /build
 
@@ -31,11 +31,11 @@ RUN npm run build
 # ─── Stage 2: Nginx Production ──────────────────────────────────────────────
 FROM nginx:1.27-alpine AS production
 
-LABEL maintainer="Kasa POS Team"
-LABEL description="Kasa POS Frontend — React + TypeScript"
+LABEL maintainer="Torgashka Team"
+LABEL description="Torgashka Frontend — React + TypeScript"
 LABEL version="1.0.0"
 LABEL org.opencontainers.image.source="https://github.com/niko-pos/niko"
-LABEL org.opencontainers.image.description="Kasa POS — Point of Sale System Frontend"
+LABEL org.opencontainers.image.description="Torgashka — Point of Sale System Frontend"
 
 # Видаляємо дефолтну конфігурацію Nginx
 RUN rm -rf /usr/share/nginx/html/* && \

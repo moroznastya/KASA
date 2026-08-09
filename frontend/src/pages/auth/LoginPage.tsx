@@ -94,7 +94,7 @@ const LoginPage: React.FC = () => {
           <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4 shadow-lg shadow-primary-200 dark:shadow-primary-900/30">
             <span className="text-white font-bold text-2xl">K</span>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Kasa POS</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Torgashka</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Система управління продажами
           </p>
@@ -171,7 +171,7 @@ const LoginPage: React.FC = () => {
         </div>
 
         <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-6">
-          Kasa POS v1.0 &copy; {new Date().getFullYear()}
+          Torgashka v1.0 &copy; {new Date().getFullYear()}
         </p>
       </div>
     </div>

@@ -7,13 +7,13 @@
 #   - валідації: 404/400/422/500 (ValueError) — 1:1
 #   - конкурентність: 2 паралельні POST → обидва 201, жоден запис не втрачено
 #   - cleanup: тестові дані (E4-/LEDGER-) повністю видаляються
-# Потрібно: Python :8001, фасад :8002 (KASA_RUST_READDIRS=1), /tmp/kasa_token.
+# Потрібно: Python :8001, фасад :8002 (TORGASHKA_RUST_READDIRS=1), /tmp/torgashka_token.
 set -u
 RUST=http://127.0.0.1:8002/api/v1
 PY=http://127.0.0.1:8001/api/v1
 RUSTV2=http://127.0.0.1:8002/api/v2
 PYV2=http://127.0.0.1:8001/api/v2
-TOKEN=$(cat /tmp/kasa_token)
+TOKEN=$(cat /tmp/torgashka_token)
 AUTH="Authorization: Bearer $TOKEN"
 CT="Content-Type: application/json"
 TS=$(date +%s)

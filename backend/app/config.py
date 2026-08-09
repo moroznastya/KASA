@@ -1,5 +1,5 @@
 """
-Конфігурація застосунку Kasa POS.
+Конфігурація застосунку Torgashka POS.
 
 Використовує Pydantic Settings для читання змінних оточення
 або .env файлу (в корені backend/ — рівень вище від app/).
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # Налаштування застосунку
     # ──────────────────────────────────────────────
-    APP_NAME: str = "Kasa POS"
+    APP_NAME: str = "Torgashka"
     DEBUG: bool = False
 
     model_config = SettingsConfigDict(

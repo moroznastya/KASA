@@ -332,10 +332,7 @@ const DocumentViewPage: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Причина списання</p>
                 <p className="font-medium text-gray-900 dark:text-gray-100">
-                  {doc.reason === 'expired' ? 'Прострочений термін' :
-                   doc.reason === 'damaged' ? 'Пошкодження' :
-                   doc.reason === 'lost' ? 'Втрата' :
-                   doc.reason === 'other' ? 'Інше' : doc.reason || '-'}
+                  {doc.reason || '-'}
                 </p>
               </div>
               <div>
@@ -632,6 +629,28 @@ const DocumentViewPage: React.FC = () => {
                         {formatCurrency(Number(doc.total_amount))}
                       </td>
                     </tr>
+                    {docType === 'invoice' && (doc.paid_amount != null || doc.remaining != null) && (
+                      <>
+                        <tr className="bg-gray-50 dark:bg-slate-800/50">
+                          <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400">
+                            Сплачено:
+                          </td>
+                          <td colSpan={3} className="px-4 py-2 font-medium text-green-600 dark:text-green-400 text-right">
+                            {formatCurrency(Number(doc.paid_amount || 0))}
+                          </td>
+                        </tr>
+                        <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                          <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400">
+                            Залишок до оплати:
+                          </td>
+                          <td colSpan={3} className={`px-4 py-2 font-bold text-right ${
+                            Number(doc.remaining) > 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+                          }`}>
+                            {formatCurrency(Number(doc.remaining || 0))}
+                          </td>
+                        </tr>
+                      </>
+                    )}
                   </tfoot>
                 )}
                 {docType === 'inventory' && (
