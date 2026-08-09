@@ -15,9 +15,9 @@ import { Category, CategoryCreate, CategoryUpdate } from '@/types/product';
 // ═════════════════════════════════════════════════════════════════════════════
 
 // API_ROOT: у DEV лишається відносний шлях (dev-проксі Vite),
-// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://localhost:8000,
+// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://127.0.0.1:8000,
 // щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
-const API_ROOT = import.meta.env.DEV ? '' : 'http://localhost:8000';
+const API_ROOT = import.meta.env.DEV ? '' : 'http://127.0.0.1:8000';
 const V2 = { baseURL: `${API_ROOT}/api/v2` } as const;
 
 export const categoryService = {

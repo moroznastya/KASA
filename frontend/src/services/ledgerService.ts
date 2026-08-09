@@ -17,9 +17,9 @@ import { PaginatedResponse, SearchParams } from '@/types/api';
 // ═════════════════════════════════════════════════════════════════════════════
 
 // API_ROOT: у DEV лишається відносний шлях (dev-проксі Vite),
-// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://localhost:8000,
+// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://127.0.0.1:8000,
 // щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
-const API_ROOT = import.meta.env.DEV ? '' : 'http://localhost:8000';
+const API_ROOT = import.meta.env.DEV ? '' : 'http://127.0.0.1:8000';
 // Ключ об'єкта API_ROOT НЕ мініфікується esbuild — літерал лишається
 // в бандлі, щоб перевірка grep -c 'API_ROOT' по бінарнику давала > 0.
 const V2 = { baseURL: `${API_ROOT}/api/v2`, API_ROOT } as const;
