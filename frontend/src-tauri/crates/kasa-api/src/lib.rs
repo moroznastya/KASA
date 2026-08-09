@@ -18,6 +18,7 @@
 
 pub mod auth;
 pub mod auth_routes;
+pub mod categories_v2;
 pub mod crud;
 pub mod debtors;
 pub mod documents;

@@ -40,6 +40,17 @@ pub trait ReadDirectories: Send + Sync {
         size: i64,
     ) -> Result<Page<CategoryDto>, DirectoryError>;
 
+    /// Пошук категорій за назвою (ILIKE) з пагінацією — v2 (як Python v2 list).
+    async fn search_categories(
+        &self,
+        page: i64,
+        size: i64,
+        search: Option<&str>,
+    ) -> Result<Page<CategoryDto>, DirectoryError>;
+
+    /// Всі категорії без пагінації (`ORDER BY name`) — для дерева v2.
+    async fn find_all_categories(&self) -> Result<Vec<CategoryDto>, DirectoryError>;
+
     /// Список постачальників з пагінацією та поточним балансом
     /// (`ORDER BY name`, як Python).
     async fn list_suppliers(
@@ -112,6 +123,19 @@ impl<T: ReadDirectories + ?Sized> ReadDirectories for std::sync::Arc<T> {
         size: i64,
     ) -> Result<Page<CategoryDto>, DirectoryError> {
         (**self).list_categories(page, size).await
+    }
+
+    async fn search_categories(
+        &self,
+        page: i64,
+        size: i64,
+        search: Option<&str>,
+    ) -> Result<Page<CategoryDto>, DirectoryError> {
+        (**self).search_categories(page, size, search).await
+    }
+
+    async fn find_all_categories(&self) -> Result<Vec<CategoryDto>, DirectoryError> {
+        (**self).find_all_categories().await
     }
 
     async fn list_suppliers(

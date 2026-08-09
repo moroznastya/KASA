@@ -612,6 +612,25 @@ impl WriteDirectories for SqlxWriteDirectories {
         Ok(())
     }
 
+    async fn category_name_exists(
+        &self,
+        name: &str,
+        exclude_id: Option<Uuid>,
+    ) -> Result<bool, WriteError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM categories
+                WHERE name = $1 AND ($2::uuid IS NULL OR id <> $2)
+             )",
+        )
+        .bind(name)
+        .bind(exclude_id)
+        .fetch_one(&self.pool)
+        .await
+        .wr()?;
+        Ok(exists)
+    }
+
     // ─── Suppliers ──────────────────────────────────────────────────────────
     async fn create_supplier(
         &self,

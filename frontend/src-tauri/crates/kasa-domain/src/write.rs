@@ -65,6 +65,13 @@ pub trait WriteDirectories: Send + Sync {
     ) -> Result<CategoryDto, WriteError>;
     async fn delete_category(&self, id: Uuid) -> Result<(), WriteError>;
 
+    /// Чи існує категорія з такою назвою (для 400 валідацій Python v2).
+    async fn category_name_exists(
+        &self,
+        name: &str,
+        exclude_id: Option<Uuid>,
+    ) -> Result<bool, WriteError>;
+
     // ─── Suppliers ──────────────────────────────────────────────────────────
     async fn create_supplier(&self, input: &SupplierCreateInput)
         -> Result<SupplierDto, WriteError>;
@@ -128,6 +135,14 @@ impl<T: WriteDirectories + ?Sized> WriteDirectories for std::sync::Arc<T> {
     }
     async fn delete_category(&self, id: Uuid) -> Result<(), WriteError> {
         (**self).delete_category(id).await
+    }
+
+    async fn category_name_exists(
+        &self,
+        name: &str,
+        exclude_id: Option<Uuid>,
+    ) -> Result<bool, WriteError> {
+        (**self).category_name_exists(name, exclude_id).await
     }
     async fn create_supplier(
         &self,

@@ -16,8 +16,9 @@ use axum::{
 };
 
 use crate::{
-    auth, auth_routes, crud, debtors, documents, invoices, ledger, ocr, pos, print_templates,
-    products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, AppState,
+    auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
+    print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
+    AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -31,6 +32,23 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/products", get(readdirs::list_products))
             .route("/api/v1/categories", get(readdirs::list_categories))
             .route("/api/v1/suppliers", get(readdirs::list_suppliers));
+    }
+
+    // Rust-гілка категорій v2 (дезактивація Python, CRIT) — під KASA_RUST_READDIRS.
+    // Порядок: /tree ПЕРЕД /:category_id — як FastAPI.
+    if state.readdirs.is_some() {
+        router = router
+            .route(
+                "/api/v2/categories",
+                get(categories_v2::list).post(categories_v2::create),
+            )
+            .route("/api/v2/categories/tree", get(categories_v2::tree))
+            .route(
+                "/api/v2/categories/:category_id",
+                get(categories_v2::get)
+                    .put(categories_v2::update)
+                    .delete(categories_v2::delete),
+            );
     }
 
     // Rust-гілка CRUD (етап 2) — під тим самим feature-flag.
@@ -268,6 +286,7 @@ pub fn build_router(state: AppState) -> Router {
     if state.debtors.is_some() {
         router = router
             .route("/api/v1/debtors/search", get(debtors::search))
+            .route("/api/v1/debtors/:debtor_id/pay", post(debtors::pay))
             .route(
                 "/api/v1/debtors/:debtor_id",
                 get(debtors::get).put(debtors::update).post(debtors::pay),

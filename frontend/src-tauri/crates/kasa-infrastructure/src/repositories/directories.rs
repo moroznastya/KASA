@@ -181,6 +181,88 @@ impl ReadDirectories for SqlxDirectories {
         })
     }
 
+    async fn search_categories(
+        &self,
+        page: i64,
+        size: i64,
+        search: Option<&str>,
+    ) -> Result<Page<CategoryDto>, DirectoryError> {
+        // Динамічний WHERE (як Python: `if query: stmt = stmt.where(...)`).
+        let like = search.map(|q| format!("%{q}%"));
+        let (total_sql, rows_sql) = match &like {
+            Some(_) => (
+                "SELECT count(*) FROM categories WHERE name ILIKE $1",
+                "SELECT id, name, description, parent_id, created_at, updated_at
+                 FROM categories
+                 WHERE name ILIKE $3
+                 ORDER BY name
+                 LIMIT $1 OFFSET $2",
+            ),
+            None => (
+                "SELECT count(*) FROM categories",
+                "SELECT id, name, description, parent_id, created_at, updated_at
+                 FROM categories
+                 ORDER BY name
+                 LIMIT $1 OFFSET $2",
+            ),
+        };
+        let mut q_total = sqlx::query_scalar(total_sql);
+        if let Some(l) = &like {
+            q_total = q_total.bind(l);
+        }
+        let total: i64 = q_total.fetch_one(&self.pool).await.map_err(db_err)?;
+
+        let offset = ((page - 1) * size).max(0);
+        let mut q_rows = sqlx::query(rows_sql).bind(size).bind(offset);
+        if let Some(l) = &like {
+            q_rows = q_rows.bind(l);
+        }
+        let rows = q_rows.fetch_all(&self.pool).await.map_err(db_err)?;
+
+        let items = rows
+            .iter()
+            .map(|r| CategoryDto {
+                id: r.get("id"),
+                name: r.get("name"),
+                description: r.get("description"),
+                parent_id: r.get("parent_id"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect();
+
+        Ok(Page {
+            items,
+            total,
+            page,
+            page_size: size,
+            pages: total_pages(total, size),
+        })
+    }
+
+    async fn find_all_categories(&self) -> Result<Vec<CategoryDto>, DirectoryError> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, parent_id, created_at, updated_at
+             FROM categories
+             ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        Ok(rows
+            .iter()
+            .map(|r| CategoryDto {
+                id: r.get("id"),
+                name: r.get("name"),
+                description: r.get("description"),
+                parent_id: r.get("parent_id"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
+
     async fn list_suppliers(
         &self,
         page: i64,
