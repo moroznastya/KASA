@@ -10,10 +10,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
+    http::{header, HeaderName, HeaderValue, Method},
     middleware,
     routing::{delete, get, post, put},
     Router,
 };
+
+use tower_http::cors::CorsLayer;
 
 use crate::{
     auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
@@ -23,6 +26,34 @@ use crate::{
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
+    // CORS-шар (GUI Tauri webview: tauri://localhost → http://127.0.0.1:8000).
+    // Найзовніший шар: preflight OPTIONS обробляється до auth_middleware.
+    let cors = CorsLayer::new()
+        .allow_origin([
+            HeaderValue::from_static("tauri://localhost"),
+            HeaderValue::from_static("http://tauri.localhost"),
+            HeaderValue::from_static("http://localhost:5173"),
+            HeaderValue::from_static("http://127.0.0.1:5173"),
+            HeaderValue::from_static("http://localhost:8000"),
+            HeaderValue::from_static("http://127.0.0.1:8000"),
+        ])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+            Method::PATCH,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ORIGIN,
+            HeaderName::from_static("x-requested-with"),
+        ])
+        .allow_credentials(true);
+
     let mut router = Router::new().route("/api/v1/health", get(health));
 
     // Rust-гілка довідників — лише коли feature-flag увімкнено (readdirs Some).
@@ -544,6 +575,7 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
+        .layer(cors)
         .with_state(state)
 }
 
