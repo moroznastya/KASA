@@ -7,7 +7,7 @@
 // Авторизація: list/get — get_current_user (будь-яка JWT-роль);
 //   create/update/delete/confirm — require_admin (як Python).
 // Монтуються лише під KASA_RUST_PURCHASE_ORDERS=1; інакше — fallback на
-// Python :8001.
+// fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

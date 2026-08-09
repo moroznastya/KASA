@@ -38,8 +38,7 @@ dirs-next = "2"
 # ── Крейт інфраструктури: апаратні інтеграції, друк, офлайн-БД ───────────
 kasa-infrastructure = { path = "crates/kasa-infrastructure" }
 kasa-api = { path = "crates/kasa-api" }
-# ── SIGTERM для graceful shutdown Python sidecar (Unix) ───────────────────
-libc = "0.2"
+# ── SIGTERM для graceful shutdown фасаду (Unix) ─────────────────────────
 tokio = { version = "1", features = ["rt", "signal"] }
 
 # ── Профілі збірки ────────────────────────────────────────────────────────

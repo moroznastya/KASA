@@ -11,7 +11,7 @@
 // Авторизація: v1 — get_current_user (list/get/create/payment/price/print),
 //   require_admin (update/delete/confirm) — як Python; v2 — глобальний
 //   AuthMiddleware (будь-яка JWT-роль), require_admin не потрібен.
-// Монтуються лише під KASA_RUST_INVOICES=1; інакше — fallback на Python :8001.
+// Монтуються лише під KASA_RUST_INVOICES=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

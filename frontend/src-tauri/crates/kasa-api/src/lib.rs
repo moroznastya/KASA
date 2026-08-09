@@ -1,19 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // kasa-api — вбудований axum-фасад Kasa POS (Strangler Fig, етап 1)
 // ─────────────────────────────────────────────────────────────────────────────
-// Вбудований HTTP-шлюз на 127.0.0.1:8000 (той самий порт, що мав Python).
+// Вбудований HTTP-шлюз на 127.0.0.1:8000 — Rust-ядро (дезактивація Python).
 // Фронтенд (axios → http://localhost:8000/api/v1) не змінюється взагалі:
-//   - /api/v1/health → нативний Rust-хендлер
-//   - довідники (products, categories, suppliers) → Rust-гілка ПІД
-//     feature-flag KASA_RUST_READDIRS=1, інакше → reverse proxy на :8001
-//   - решта /api/v1/*  → reverse proxy на Python sidecar :8001 (reqwest)
+//   - /api/v1/health → нативний Rust-хендлер (200)
+//   - активні роути (0 CRIT, 0 ALIAS) → нативні Rust-хендлери ПІД
+//     feature-flag KASA_RUST_*=1 (дефолт у Tauri: 1)
+//   - LEGACY-роути (фронтенд не кличе) → fallback → 410 Gone
 //   - JWT-валідація (HS256) на всі роути, крім /health.
 //
 // Схема:
-//   frontend (axios) ──► kasa-api :8000 ──► Python sidecar :8001 (FastAPI)
+//   frontend (axios) ──► kasa-api :8000 (Rust-ядро, PostgreSQL)
 //                              │
-//                              ├──► Rust readdirs (БД PostgreSQL, read-only)
-//                              └──► (майбутнє) нативні Rust-хендлери
+//                              └──► LEGACY-шляхи → 410 Gone
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod auth;
@@ -44,9 +43,6 @@ use kasa_domain::{
     ReadDirectories, ReturnInvoicesService, WriteDirectories,
 };
 use sqlx::PgPool;
-
-/// Порт Python sidecar (FastAPI). Константа — єдине джерело істини.
-pub const PYTHON_SIDECAR_PORT: u16 = 8001;
 
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
 pub const DEFAULT_FACADE_ADDR: &str = "127.0.0.1:8000";
@@ -82,13 +78,29 @@ pub const RUST_PRRO_ENV: &str = "KASA_RUST_PRRO";
 pub const RUST_PRRO_V2_ENV: &str = "KASA_RUST_PRRO_V2";
 pub const RUST_OCR_ENV: &str = "KASA_RUST_OCR";
 
+/// Дефолтні значення feature-флагів після повної дезактивації Python (етап 8).
+/// serve() встановлює їх, якщо env не задано явно — Rust-ядро за замовчуванням
+/// для будь-якого викликача (Tauri, bin/facade, тести). Явний env має пріоритет.
+pub const DEFAULT_RUST_FLAGS: [(&str, &str); 12] = [
+    (RUST_READDIRS_ENV, "1"),
+    (RUST_AUTH_ENV, "1"),
+    (RUST_DEBTORS_ENV, "1"),
+    (RUST_DOCUMENTS_ENV, "1"),
+    (RUST_INVOICES_ENV, "1"),
+    (RUST_RETURN_INVOICES_ENV, "1"),
+    (RUST_PURCHASE_ORDERS_ENV, "1"),
+    (RUST_PRINT_ENV, "1"),
+    (RUST_PRODUCTS_V2_ENV, "1"),
+    (RUST_PRRO_ENV, "1"),
+    (RUST_PRRO_V2_ENV, "1"),
+    (RUST_OCR_ENV, "1"),
+];
+
 /// Спільний стан фасаду: JWT-секрет + HTTP-клієнт + (опц.) Rust-репозиторій.
 #[derive(Clone)]
 pub struct AppState {
     /// Секрет підпису/перевірки JWT (HS256), спільний із Python-бекендом.
     pub jwt_secret: Arc<String>,
-    /// HTTP-клієнт для reverse proxy на Python sidecar.
-    pub http_client: reqwest::Client,
     /// Rust-репозиторій довідників (Some лише коли KASA_RUST_READDIRS=1).
     pub readdirs: Option<Arc<dyn ReadDirectories + Send + Sync>>,
     /// Rust-репозиторій запису (CRUD, етап 2) — той самий пул.
@@ -160,8 +172,7 @@ fn env_flag(name: &str) -> bool {
 /// Ініціалізує Rust-гілку довідників під feature-flag (етапи 1–2).
 ///
 /// Якщо `KASA_RUST_READDIRS=1` і БД доступна — повертає (пул, read-репо,
-/// write-репо). Інакше `None` (фасад лишається проксі, режим відкату на
-/// Python :8001 зберігається).
+/// write-репо). Інакше `None` (роути не монтуються → fallback → 410).
 async fn init_readdirs() -> Option<(
     PgPool,
     Arc<dyn ReadDirectories + Send + Sync>,
@@ -198,7 +209,7 @@ async fn init_readdirs() -> Option<(
         Err(e) => {
             eprintln!(
                 "[kasa-api] попередження: {RUST_READDIRS_ENV}=1, але БД недоступна ({e}); \
-                 довідники працюють через проксі на Python :8001 (режим відкату)"
+                 довідники не змонтовано (LEGACY → 410)"
             );
             None
         }
@@ -224,7 +235,7 @@ async fn init_ocr() -> (Option<std::sync::Arc<kasa_ocr::OcrService>>, Option<PgP
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_OCR_ENV}=1, але БД недоступна ({e}); OCR через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_OCR_ENV}=1, але БД недоступна ({e}); OCR не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -248,14 +259,14 @@ async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
             }
             Err(e) => {
                 eprintln!(
-                        "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено ({e}); проксі на Python :8001"
+                        "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено ({e}); роути не змонтовано (LEGACY → 410)"
                     );
                 None
             }
         },
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але БД недоступна ({e}); проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_PRRO_ENV}={mode}, але БД недоступна ({e}); роути не змонтовано (LEGACY → 410)"
             );
             None
         }
@@ -282,7 +293,7 @@ async fn init_documents() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна ({e}); документи через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна ({e}); документи через роути не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -308,7 +319,7 @@ async fn init_print_templates() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна ({e}); друк через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна ({e}); друк через роути не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -335,7 +346,7 @@ async fn init_products_v2() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_PRODUCTS_V2_ENV}=1, але БД недоступна ({e}); товари v2 через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_PRODUCTS_V2_ENV}=1, але БД недоступна ({e}); товари v2 через роути не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -364,7 +375,7 @@ async fn init_return_invoices() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_RETURN_INVOICES_ENV}=1, але БД недоступна ({e}); повернення через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_RETURN_INVOICES_ENV}=1, але БД недоступна ({e}); повернення через роути не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -392,7 +403,7 @@ async fn init_purchase_orders() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_PURCHASE_ORDERS_ENV}=1, але БД недоступна ({e}); замовлення через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_PURCHASE_ORDERS_ENV}=1, але БД недоступна ({e}); замовлення через роути не змонтовано (LEGACY → 410)"
             );
             (None, None)
         }
@@ -421,7 +432,7 @@ async fn init_invoices() -> (
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_INVOICES_ENV}=1, але БД недоступна ({e}); інвойси через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_INVOICES_ENV}=1, але БД недоступна ({e}); інвойси через роути не змонтовано (LEGACY → 410)"
             );
             (None, None, None)
         }
@@ -445,7 +456,7 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
         }
         Err(e) => {
             eprintln!(
-                "[kasa-api] попередження: {RUST_DEBTORS_ENV}=1, але БД недоступна ({e}); боржники через проксі на Python :8001"
+                "[kasa-api] попередження: {RUST_DEBTORS_ENV}=1, але БД недоступна ({e}); боржники через роути не змонтовано (LEGACY → 410)"
             );
             None
         }
@@ -470,6 +481,13 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Етап 8 — повна дезактивація Python sidecar: Rust-ядро за замовчуванням.
+    // Env-флаги можна явно перевизначити (напр. KASA_RUST_PRRO=0) для тестів.
+    for (flag, val) in DEFAULT_RUST_FLAGS {
+        if std::env::var_os(flag).is_none() {
+            std::env::set_var(flag, val);
+        }
+    }
     let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
         Some((pool, read, write, pos, ledger, auth)) => (
             Some(read),
@@ -494,7 +512,7 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!(
-                    "[kasa-api] попередження: {RUST_AUTH_ENV}=1, але БД недоступна ({e}); auth через проксі на Python :8001"
+                    "[kasa-api] попередження: {RUST_AUTH_ENV}=1, але БД недоступна ({e}); auth через роути не змонтовано (LEGACY → 410)"
                 );
                 None
             }
@@ -516,9 +534,6 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (ocr, ocr_pool) = init_ocr().await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
-        http_client: reqwest::Client::builder()
-            .timeout(proxy::PROXY_TIMEOUT)
-            .build()?,
         readdirs,
         write,
         write_pool,

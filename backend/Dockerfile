@@ -74,9 +74,11 @@ ENV PATH=/opt/venv/bin:$PATH \
 # Переключаємося на non-root користувача
 USER kasa
 
-# Health check (перевіряє /health ендпоінт FastAPI)
+# ⚠️ ЕТАП 8: Python sidecar дезактивовано — Rust-ядро kasa-api :8000.
+# Healthcheck перевіряє Rust-фасад (/api/v1/health). Контейнер збережено
+# як legacy (docker-compose: profiles: legacy, не запускається за замовчуванням).
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" || exit 1
 
 # Відкриваємо порт
 EXPOSE 8001

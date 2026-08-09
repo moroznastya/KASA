@@ -11,7 +11,7 @@
 //   GET  /api/v1/debtors/{id}/receipts          — чеки боржника
 //   GET  /api/v1/debtors/{id}/payments          — історія оплат
 // Авторизація: JWT на весь роутер (get_current_user — будь-яка роль).
-// Монтуються лише під KASA_RUST_DEBTORS=1; інакше — fallback на Python :8001.
+// Монтуються лише під KASA_RUST_DEBTORS=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

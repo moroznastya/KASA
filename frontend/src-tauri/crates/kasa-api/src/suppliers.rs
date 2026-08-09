@@ -4,7 +4,7 @@
 //   GET /api/v1/suppliers/{id}/products            — товари з залишками
 //   GET /api/v1/suppliers/{id}/products/{pid}/movements — рух по 5 документах
 // Авторизація: JWT глобально (як Python — get_current_user).
-// Монтуються під KASA_RUST_READDIRS=1; інакше — fallback на Python :8001.
+// Монтуються під KASA_RUST_READDIRS=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

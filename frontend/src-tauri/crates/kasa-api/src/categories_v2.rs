@@ -8,7 +8,7 @@
 //   PUT    /api/v2/categories/{id}       — оновлення (404; 400 self-parent/exists)
 //   DELETE /api/v2/categories/{id}       — видалення (204; 404)
 // Авторизація: JWT глобально (як Python v2 — без require_admin).
-// Монтуються під KASA_RUST_READDIRS=1; інакше — fallback на Python :8001.
+// Монтуються під KASA_RUST_READDIRS=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

@@ -11,7 +11,7 @@
 // Статуси: 201 (create receipt/doc), 200, 204 (delete), 404, 400, 403, 422.
 // Авторизація: як Python (JWT на весь роутер; require_admin — POST/PUT/DELETE
 // документів, report/user сесій, shift/close).
-// Монтуються лише під KASA_RUST_READDIRS=1; інакше — fallback на Python :8001.
+// Монтуються лише під KASA_RUST_READDIRS=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

@@ -8,8 +8,7 @@
 
 pub mod commands;
 
-// ── Вбудований HTTP-фасад (axum) + Python sidecar (етап 0.2) ──────────────
-mod sidecar;
+// ── Вбудований HTTP-фасад (axum) — Rust-ядро (дезактивація Python) ──────
 
 // ── Імпорти ─────────────────────────────────────────────────────────────────
 
@@ -53,12 +52,10 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 // ── Стан фасаду/сайдкара для graceful shutdown ──────────────────────────────
 
-/// Стан вбудованого axum-фасаду та Python sidecar (для shutdown-hook).
+/// Стан вбудованого axum-фасаду (для shutdown-hook).
 struct FacadeState {
     /// Таск axum-фасаду (abort при виході).
     facade: tauri::async_runtime::JoinHandle<()>,
-    /// Python sidecar (SIGTERM → kill при виході).
-    sidecar: std::sync::Mutex<sidecar::PythonSidecar>,
 }
 
 // ── Точка входу ─────────────────────────────────────────────────────────────
@@ -198,22 +195,18 @@ pub fn run() {
             // логуються в stderr (eprintln!).
             kasa_infrastructure::devices::init_auto_connect(app.handle());
 
-            // ── Вбудований axum-фасад :8000 + Python sidecar :8001 ──────
-            // Unified Tauri (Strangler Fig): фасад біндиться на :8000 (той самий
-            // порт, що мав Python), Python переїжджає на :8001 як sidecar.
-            // run_facade спавнить tokio-таск у глобальному runtime
-            // (tauri::async_runtime = tokio runtime застосунку).
+            // ── Вбудований axum-фасад :8000 — Rust-ядро (етап 8) ───────
+            // Повна дезактивація Python sidecar: фасад біндиться на :8000 і
+            // обслуговує ВСІ активні роути нативно (0 CRIT, 0 ALIAS).
+            // Дефолтні KASA_RUST_*=1 встановлює kasa_api::serve (єдине місце);
+            // LEGACY-роути → 410 (fallback).
             let facade_addr = kasa_api::DEFAULT_FACADE_ADDR.to_string();
             let facade = tauri::async_runtime::spawn(async move {
                 if let Err(e) = kasa_api::serve(&facade_addr).await {
                     eprintln!("[kasa-api] фасад завершився з помилкою: {e}");
                 }
             });
-            let sidecar = sidecar::PythonSidecar::start();
-            app.manage(FacadeState {
-                facade,
-                sidecar: std::sync::Mutex::new(sidecar),
-            });
+            app.manage(FacadeState { facade });
 
             // ── SIGTERM → graceful shutdown ─────────────────────────────
             // Дефолтний обробник SIGTERM вбиває процес без RunEvent::Exit,
@@ -294,9 +287,7 @@ pub fn run() {
                 state.facade.abort();
                 // 2) Flush черг офлайн-синхронізації. На етапі 0 черг немає;
                 //    місце для sync-флашу на наступних етапах.
-                // 3) Graceful shutdown Python sidecar (SIGTERM → kill).
-                let mut sidecar = state.sidecar.lock().unwrap();
-                sidecar.shutdown();
+                // Python sidecar дезактивовано (етап 8) — нема чого зупиняти.
             }
         });
 }

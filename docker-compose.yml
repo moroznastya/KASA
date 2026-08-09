@@ -80,13 +80,17 @@ services:
       - test
       - ci
 
-  # ─── Backend (FastAPI) ────────────────────────────────────────────────────
+  # ─── Backend (FastAPI) — ⚠️ LEGACY (етап 8: Python sidecar дезактивовано) ─
+  # Rust-ядро kasa-api слухає :8000 (Tauri/фасад) — healthcheck нижче
+  # перевіряє його /api/v1/health. Сервіс не запускається за замовчуванням
+  # (profiles: legacy) і збережений лише для відкату/налагодження.
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: kasa-backend
     restart: unless-stopped
+    profiles: ["legacy"]
     depends_on:
       db:
         condition: service_healthy
@@ -110,7 +114,8 @@ services:
     ports:
       - "8001:8001"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      # Rust-ядро :8000 (Python sidecar дезактивовано, етап 8)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 30s
       timeout: 10s
       retries: 3

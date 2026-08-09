@@ -3,20 +3,20 @@
 # E2E етап 5 (Tauri-обгортка): друк чеків open→pay→close + офлайн-черга.
 #
 # Потрібно:
-#   - PostgreSQL (як у backend/.env), Python sidecar :8001 (backend/venv),
+#   - PostgreSQL (як у backend/.env),
 #   - JWT у /tmp/kasa_token (Authorization: Bearer),
-#   - фасад :8000 з Rust-гілкою: KASA_RUST_READDIRS=1 (sale обробляє Rust).
+#   - фасад :8000 (Rust-ядро; serve() вмикає KASA_RUST_*=1 за замовчуванням).
 #
 # Що перевіряється (реально, без імітації):
-#   1. health: фасад :8000 і Python :8001 → 200.
+#   1. health: фасад :8000 /api/v1/health → 200.
 #   2. open→pay→close: створення товару → POST /api/v2/receipts/sale (pay)
 #      через фасад → 201 + receipt_number; stock зменшено; друк (close):
 #      реальний Rust-конвеєр print_raster_image → ESC/POS → МОК-пристрій
 #      (файл), структура потоку валідується (ESC @ / GS v 0 / GS V).
 #      Фізичного принтера на dev-машині немає → мок = тестовий контур.
-#   3. Офлайн-черга: зупинка Python+фасад (офлайн) → чек збережено у SQLite
+#   3. Офлайн-черга: зупинка фасаду (офлайн) → чек збережено у SQLite
 #      чергу НА ДИСК (offline_queue save → count=1, персистентність через
-#      повторне відкриття БД) → підняття серверів → синхронізація (як у
+#      повторне відкриття БД) → підняття фасаду → синхронізація (як у
 #      frontend syncReceipts: POST sale + mark_receipt_synced) → count=0,
 #      чек реально існує в backend.
 #   4. Очищення тестових даних (API + SQL), health 200 після змін.
@@ -25,10 +25,8 @@ set -u
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 TAURI_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 ROOT=$(cd "$TAURI_DIR/../.." && pwd)
-BACKEND=$ROOT/backend
 
 API=http://127.0.0.1:8000/api
-PY=http://127.0.0.1:8001/api
 TOKEN=$(cat /tmp/kasa_token 2>/dev/null)
 if [ -z "$TOKEN" ]; then echo "❌ /tmp/kasa_token порожній"; exit 1; fi
 AUTH="Authorization: Bearer $TOKEN"
@@ -49,14 +47,6 @@ req() { # method path body(- = без тіла) base
 get_body() { cat /tmp/e2e5_body; }
 jid() { python3 -c "import sys,json;print(json.load(sys.stdin)['$1'])"; }
 
-start_python() {
-  if ! curl -s -o /dev/null http://127.0.0.1:8001/health; then
-    (cd "$BACKEND" && nohup venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 \
-      > /tmp/kasa_py_8001.log 2>&1 &)
-    for _ in $(seq 1 20); do curl -s -o /dev/null http://127.0.0.1:8001/health && break; sleep 0.5; done
-  fi
-}
-
 start_facade() {
   if ! curl -s -o /dev/null http://127.0.0.1:8000/api/v1/health; then
     (cd "$TAURI_DIR" && KASA_RUST_READDIRS=1 nohup ./target/debug/facade \
@@ -66,7 +56,6 @@ start_facade() {
 }
 
 stop_all() {
-  pkill -f "uvicorn app.main:app --host 127.0.0.1 --port 8001" 2>/dev/null
   pkill -f "target/debug/facade" 2>/dev/null
   sleep 1
 }
@@ -75,12 +64,11 @@ echo "═══ ЕТАП 5 (Tauri): друк чеків open→pay→close + о�
 
 # ─── 1. Запуск серверів + health ───────────────────────────────────────────
 echo "── 1. Сервери ──"
-start_python; start_facade
+start_facade
 sleep 2
-H1=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/health)
 H2=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH" http://127.0.0.1:8000/api/v1/health)
-echo "  Python :8001 /health → $H1 | Фасад :8000 /api/v1/health → $H2"
-[ "$H1" == "200" ] && [ "$H2" == "200" ] || { echo "❌ health не 200"; FAIL=1; }
+echo "  Фасад :8000 /api/v1/health → $H2"
+[ "$H2" == "200" ] || { echo "❌ health не 200"; FAIL=1; }
 
 # ─── 2. open→pay→close (через фасад :8000, Rust-гілка POS) ─────────────────
 echo "── 2. open→pay→close ──"
@@ -126,12 +114,11 @@ echo "  save у чергу → id=$OFF_ID, count=$CNT1"
 CNT2=$(OQ count | tail -1)
 [ "$CNT2" == "1" ] && echo "  ✅ персистентність: після перезапуску процесу count=$CNT2 (SQLite на диску)" || { echo "  ❌ count після перезапуску: $CNT2"; FAIL=1; }
 
-# Піднімаємо сервери → синхронізація (як syncReceipts у frontend).
-start_python; start_facade
+# Піднімаємо фасад → синхронізація (як syncReceipts у frontend).
+start_facade
 sleep 2
-H1=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/health)
 H2=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH" http://127.0.0.1:8000/api/v1/health)
-echo "  сервери піднято: Python $H1, Фасад $H2"
+echo "  фасад піднято: :8000 /api/v1/health → $H2"
 
 SYNCED=0
 while IFS= read -r line; do
@@ -173,11 +160,10 @@ echo "  🧹 тестові дані видалено (товар, чеки, off
 
 # ─── 5. Фінальний health (нічого не зламано) ───────────────────────────────
 echo "── 5. Фінальний health ──"
-H1=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/health)
 H2=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH" http://127.0.0.1:8000/api/v1/health)
 H3=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH" http://127.0.0.1:8000/api/v1/products?page=1\&size=1)
-echo "  Python :8001 → $H1 | Фасад :8000 health → $H2 | Фасад products → $H3"
-[ "$H1" == "200" ] && [ "$H2" == "200" ] && [ "$H3" == "200" ] && echo "  ✅ фасад і sidecar живі після змін" || { echo "  ❌ health не 200"; FAIL=1; }
+echo "  Фасад :8000 health → $H2 | Фасад products → $H3"
+[ "$H2" == "200" ] && [ "$H3" == "200" ] && echo "  ✅ Rust-ядро живе після змін" || { echo "  ❌ health не 200"; FAIL=1; }
 
 echo "════════════════════════════════════"
 [ $FAIL -eq 0 ] && echo "ЕТАП 5 (Tauri): ВСІ ПЕРЕВІРКИ ПРОЙДЕНО ✅" || echo "ЕТАП 5 (Tauri): Є ПОМИЛКИ ❌"

@@ -3,9 +3,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Зараз:
 //   GET /api/v1/health            → нативний Rust-хендлер (200 {"status":"ok"})
-//   GET /api/v1/products|categories|suppliers → Rust-гілка ПІД feature-flag
-//     KASA_RUST_READDIRS=1 (інакше ці шляхи йдуть у fallback → Python :8001)
-//   все інше                     → reverse proxy на Python sidecar :8001
+//   активні роути (0 CRIT, 0 ALIAS) → Rust-гілки ПІД feature-flag
+//     KASA_RUST_*=1 (дефолт у Tauri: 1; інакше шляхи йдуть у fallback → 410)
+//   все інше (LEGACY)             → fallback → 410 Gone (Python дезактивовано)
 // JWT-валідація — на весь роутер (middleware), /health пропускається всередині.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ pub fn build_router(state: AppState) -> Router {
     let mut router = Router::new().route("/api/v1/health", get(health));
 
     // Rust-гілка довідників — лише коли feature-flag увімкнено (readdirs Some).
-    // Інакше ці шляхи потрапляють у fallback → проксі на Python :8001.
+    // Інакше ці шляхи потрапляють у fallback → 410 (дезактивація).
     if state.readdirs.is_some() {
         router = router
             .route("/api/v1/products", get(readdirs::list_products))

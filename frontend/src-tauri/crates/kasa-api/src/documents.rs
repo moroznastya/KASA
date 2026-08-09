@@ -11,7 +11,7 @@
 // Авторизація: list/export — будь-яка JWT-роль (middleware); batch/delete/copy
 //   — require_admin (як Python); print — optional (Bearer або ?token=, шлях
 //   публічний для middleware — auth у хендлері, 1:1 get_current_user_optional).
-// Монтуються лише під KASA_RUST_DOCUMENTS=1; інакше — fallback на Python :8001.
+// Монтуються лише під KASA_RUST_DOCUMENTS=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{

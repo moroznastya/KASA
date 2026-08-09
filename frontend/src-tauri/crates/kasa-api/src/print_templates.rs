@@ -13,7 +13,7 @@
 // Авторизація: list/get/default/render — get_current_user; all/create/update/
 //   delete/set-default — require_admin; printers — публічний (Python без
 //   Depends; додано у PUBLIC_PATHS фасаду).
-// Монтуються лише під KASA_RUST_PRINT=1; інакше — fallback на Python :8001.
+// Монтуються лише під KASA_RUST_PRINT=1; інакше — fallback → 410 (дезактивація).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
