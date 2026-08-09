@@ -462,3 +462,64 @@ cargo test --workspace: 189 passed, 0 failed. clippy 0, fmt чистий.
 проксіруються на Python через fallback — безпечно, Python залишається еталоном).
 Дезактивація sidecar можлива: вимкнути Python для CRIT-роутів (KASA_RUST_READDIRS=1),
 перевірити ALIAS-роути фронтендом, потім видалити Python-роутери.
+
+---
+
+# Оновлення: Малий підкрок 2d/3 (дезактивація — ALIAS-роути, ОСТАННЯ ПРОГАЛИНА)
+
+Дата: 2026-08-01 · Коміт: (див. git log)
+
+## Закрито всі 9 ALIAS з таблиці B + перевірено додаткові зі списку
+
+### v1 receipts (1:1 Python deprecated v1)
+
+| Роут | Рішення | Примітка |
+|---|---|---|
+| GET /api/v1/receipts | **1:1 новий** list_receipts_v1 | фільтри cashier_id/receipt_type/date_from/date_to/payment_method, пагінація {items,total,page,page_size,pages}; LIST: total_profit/vat_amount/items.vat_amount — **числа** (Python float), GET — рядки (Decimal) |
+| GET /api/v1/receipts/{id} | **1:1 новий** get_receipt_v1 | ReceiptV1Dto + _fill (total_profit/vat/cashier_name), change_amount з БД "0.00", items.vat_amount null |
+| GET /api/v1/receipts/{id}/items | **1:1 новий** receipt_items_v1 | ReceiptV1ItemDto (Decimal quantity "1.000"), purchase_price з БД БЕЗ float-fallback |
+| GET /api/v1/receipts/search | **1:1 новий** search_receipts_v1 | total = count БЕЗ DISTINCT (Python count(r.id) з JOIN — дублікати позицій, баг 1:1); total_amount Decimal-рядок "120.00" |
+| GET /api/v1/receipts/by-product/{q}/recent-sales | **обгортка** навколо v2 | Python v1 model_dump() конвертує Decimal→float — формат == v2 Rust; {items,total} + 404 якщо пусто |
+| GET /api/v1/receipts/products/{id}/returnable-quantity | аліас → v2 | Python float == Rust f64 — 1:1 |
+| GET /api/v1/receipts/stats/today | аліас → v2 | той самий dict (total_sales/returns/profit/vat/count/items/date) |
+
+### products v1 barcodes/images (аліаси на v2 хендлери)
+
+| Роут | Рішення |
+|---|---|
+| POST /api/v1/products/{id}/barcodes | products_v2::add_barcode (409 дублікат — Python той самий) |
+| DELETE /api/v1/products/{id}/barcodes/{bid} | products_v2::delete_barcode (204) |
+| POST /api/v1/products/{id}/images | products_v2::upload_image (+body limit) |
+| DELETE /api/v1/products/{id}/images/{iid} | products_v2::delete_image (204) |
+
+### prro v2 аліаси без /fiscal (реальні шляхи фронтенду prroService)
+
+| Роут | Рішення |
+|---|---|
+| GET /api/v2/prro/status | prro::status |
+| GET /api/v2/prro/queue | prro::queue |
+| POST /api/v2/prro/sync | prro::sync_queue |
+
+## Differential-тест
+
+`frontend/src-tauri/scripts/e2e_alias_diff.py` — **ALL PASS (27 перевірок)**:
+GET v1 receipts list/get/items (parity на ТИХ САМИХ id — обидва читають одну БД),
+list з фільтром receipt_type, search (total з дублікатами 1:1), stats/today,
+returnable-quantity, recent-sales (обгортка {items,total}), products barcodes
+POST/DELETE (200/204), prro status/queue/sync (аліаси без /fiscal).
+
+cargo test --workspace: 189 passed, 0 failed. clippy 0, fmt чистий.
+Тестові дані видалені (чеки/товари/barcodes).
+
+## ПІДСУМОК: 0 CRIT, 0 ALIAS
+
+| Категорія | Статус |
+|---|---|
+| CRIT (10) | ✅ всі закрито (попередні етапи) |
+| ALIAS (9 + search/items/recent/returnable/stats) | ✅ всі закрито |
+| LEGACY (15) | 410 Gone — сумісність старих клієнтів збережена |
+
+**Дезактивація sidecar МОЖЛИВА**: `KASA_RUST_READDIRS=1` покриває всі CRIT+ALIAS.
+Python залишається еталоном для не-CRIT (LEGACY/непокриті v2-бізнес-роути).
+Перед вимкненням: оновити healthcheck (`/health` → `/api/v1/health`) та
+перевірити ALIAS-роути фронтендом (список чеків/деталі — v1 формат).

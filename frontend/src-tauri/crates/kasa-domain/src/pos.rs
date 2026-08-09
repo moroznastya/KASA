@@ -66,6 +66,19 @@ pub trait PosService: Send + Sync {
     async fn returnable_quantity(&self, product_id: Uuid) -> Result<ReturnableQtyDto, PosError>;
     async fn receipt_items(&self, receipt_id: Uuid) -> Result<Vec<ReceiptItemDetailDto>, PosError>;
 
+    // ─── Чеки v1: LIST/GET (1:1 Python deprecated v1) ──────────────────────
+    /// GET /api/v1/receipts — історія з фільтрами cashier/receipt_type.
+    async fn list_receipts_v1(&self, q: &ReceiptV1ListQuery) -> Result<ReceiptV1ListDto, PosError>;
+    /// GET /api/v1/receipts/{id} — повний чек v1.
+    async fn get_receipt_v1(&self, id: Uuid) -> Result<ReceiptV1Dto, PosError>;
+    /// GET /api/v1/receipts/{id}/items — позиції чеку v1.
+    async fn receipt_items_v1(&self, receipt_id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError>;
+    /// GET /api/v1/receipts/search — 1:1 Python v1 (total з дублікатами JOIN).
+    async fn search_receipts_v1(
+        &self,
+        q: &ReceiptSearchQuery,
+    ) -> Result<ReceiptV1SearchDto, PosError>;
+
     // ─── Робочі сесії ───────────────────────────────────────────────────────
     async fn my_sessions(
         &self,
@@ -157,6 +170,26 @@ impl<T: PosService + ?Sized> PosService for std::sync::Arc<T> {
     async fn receipt_items(&self, receipt_id: Uuid) -> Result<Vec<ReceiptItemDetailDto>, PosError> {
         (**self).receipt_items(receipt_id).await
     }
+
+    async fn list_receipts_v1(&self, q: &ReceiptV1ListQuery) -> Result<ReceiptV1ListDto, PosError> {
+        (**self).list_receipts_v1(q).await
+    }
+
+    async fn get_receipt_v1(&self, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
+        (**self).get_receipt_v1(id).await
+    }
+
+    async fn receipt_items_v1(&self, receipt_id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+        (**self).receipt_items_v1(receipt_id).await
+    }
+
+    async fn search_receipts_v1(
+        &self,
+        q: &ReceiptSearchQuery,
+    ) -> Result<ReceiptV1SearchDto, PosError> {
+        (**self).search_receipts_v1(q).await
+    }
+
     async fn my_sessions(
         &self,
         user_id: Uuid,
@@ -321,7 +354,7 @@ pub struct ReceiptV1ItemDto {
     pub total: String,
     pub purchase_price: Option<String>,
     pub profit: Option<String>,
-    pub vat_amount: Option<String>,
+    pub vat_amount: Option<serde_json::Value>,
     pub created_at: String,
 }
 
@@ -340,8 +373,9 @@ pub struct ReceiptV1Dto {
     pub notes: Option<String>,
     pub created_at: String,
     pub items: Vec<ReceiptV1ItemDto>,
-    pub total_profit: String,
-    pub vat_amount: String,
+    /// GET/POST — рядок "10.0" (Decimal); LIST — число 10.0 (float Python).
+    pub total_profit: serde_json::Value,
+    pub vat_amount: serde_json::Value,
     pub cashier_name: String,
     pub payment_method: Option<String>,
 }
@@ -454,6 +488,62 @@ pub struct ReceiptSearchItemDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ReceiptSearchDto {
     pub items: Vec<ReceiptSearchItemDto>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub pages: i64,
+}
+
+// ─── Чеки v1: LIST/GET (1:1 Python app/api/v1/receipts.py) ────────────────
+
+/// GET /api/v1/receipts?cashier_id=&receipt_type=&date_from=&date_to=&page=&size=&payment_method=
+/// 1:1 Python v1 list_receipts (deprecated).
+#[derive(Debug, Clone, Default)]
+pub struct ReceiptV1ListQuery {
+    pub cashier_id: Option<Uuid>,
+    pub receipt_type: Option<String>,
+    pub date_from: Option<NaiveDateTime>,
+    pub date_to: Option<NaiveDateTime>,
+    pub page: i64,
+    pub size: i64,
+    pub payment_method: Option<String>,
+}
+
+/// GET /api/v1/receipts → {items, total, page, page_size, pages}
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1ListDto {
+    pub items: Vec<ReceiptV1Dto>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub pages: i64,
+}
+
+/// GET /api/v1/receipts/by-product/{query}/recent-sales → {items, total}
+/// Python v1: ProductRecentSalesListResponse.model_dump() — Decimal→float (числа),
+/// тож формат == v2 Rust; відмінність тільки в обгортці {items, total}.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1RecentSalesListDto {
+    pub items: Vec<ProductRecentSalesDto>,
+    pub total: i64,
+}
+
+/// Елемент v1 search (ReceiptSearchResult) — total_amount Decimal-рядок.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1SearchItemDto {
+    pub id: Uuid,
+    pub receipt_number: String,
+    pub receipt_type: String,
+    pub total_amount: String,
+    pub created_at: Option<String>,
+    pub cashier_name: String,
+    pub items_count: i64,
+}
+
+/// GET /api/v1/receipts/search → {items, total, page, page_size, pages}
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReceiptV1SearchDto {
+    pub items: Vec<ReceiptV1SearchItemDto>,
     pub total: i64,
     pub page: i64,
     pub page_size: i64,

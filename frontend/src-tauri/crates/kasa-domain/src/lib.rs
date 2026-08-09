@@ -64,10 +64,11 @@ pub use pos::{
     PrroShiftDto, ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto,
     ReceiptItemInput, ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto,
     ReceiptSearchQuery, ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto,
-    ReceiptV1ItemInput, RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput,
-    TransferDto, TransferItemDto, TransferListDto, TransferUpdateInput, UserHoursSummaryDto,
-    UserSessionsDto, WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto,
-    WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
+    ReceiptV1ItemInput, ReceiptV1ListDto, ReceiptV1ListQuery, ReceiptV1RecentSalesListDto,
+    ReceiptV1SearchDto, ReceiptV1SearchItemDto, RecentSaleDto, ReturnableQtyDto, ShiftListDto,
+    TransferCreateInput, TransferDto, TransferItemDto, TransferListDto, TransferUpdateInput,
+    UserHoursSummaryDto, UserSessionsDto, WorkReportDto, WorkSessionDto, WriteOffCreateInput,
+    WriteOffDto, WriteOffItemDto, WriteOffListDto, WriteOffUpdateInput,
 };
 pub use print::{PrintError, PrintTemplatesService};
 pub use products_v2::{

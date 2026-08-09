@@ -24,7 +24,8 @@ use kasa_domain::{
     PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput,
     ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput, ReceiptListDto,
     ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
-    ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, RecentSaleDto,
+    ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, ReceiptV1ListDto,
+    ReceiptV1ListQuery, ReceiptV1SearchDto, ReceiptV1SearchItemDto, RecentSaleDto,
     ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferItemDto,
     TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto, WorkReportDto,
     WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto, WriteOffListDto,
@@ -2244,10 +2245,412 @@ async fn create_receipt_v1_impl(
         notes: row.get("notes"),
         created_at: iso_naive_str(&created),
         items: items_dto,
-        total_profit: py_float_str(total_profit.to_f64().unwrap_or_default()),
-        vat_amount: py_float_str(total_vat.to_f64().unwrap_or_default()),
+        total_profit: serde_json::Value::String(py_float_str(
+            total_profit.to_f64().unwrap_or_default(),
+        )),
+        vat_amount: serde_json::Value::String(py_float_str(total_vat.to_f64().unwrap_or_default())),
         cashier_name: cashier_name.unwrap_or_else(|| "Невідомо".to_string()),
         payment_method: input.payment_method.clone(),
+    })
+}
+
+// ─── Чеки v1: LIST/GET/items (1:1 Python app/api/v1/receipts.py) ────────────
+
+/// Побудова v1 item DTO з рядка items SELECT. Повертає (DTO, profit, vat).
+/// - pp_fallback: Python _fill ставить float(cost_price) якщо purchase_price None
+///   (GET/LIST чека); items-роут цього НЕ робить.
+/// - items_vat: LIST ставить item.vat_amount = float(_vat_amount); GET/items — None.
+#[allow(clippy::type_complexity)]
+fn build_v1_item_from_row(
+    r: &sqlx::postgres::PgRow,
+    pp_fallback: bool,
+    items_vat: bool,
+) -> (
+    ReceiptV1ItemDto,
+    rust_decimal::Decimal,
+    rust_decimal::Decimal,
+) {
+    use rust_decimal::prelude::*;
+    use std::str::FromStr;
+    let quantity: String = r.get("quantity");
+    let price: String = r.get("price");
+    let total: String = r.get("total");
+    let cost_price: Option<String> = r.try_get("cost_price").ok().flatten();
+    let db_pp: Option<String> = r.try_get("purchase_price").ok().flatten();
+    let pp_txt = match (&db_pp, pp_fallback, &cost_price) {
+        (Some(pp), _, _) => Some(pp.clone()),
+        (None, true, Some(c)) => Some(py_float_str(c.parse::<f64>().unwrap_or_default())),
+        _ => None,
+    };
+    let mut profit = Decimal::ZERO;
+    if let Some(pp) = &pp_txt {
+        let t = Decimal::from_str(&total).unwrap_or_default();
+        let c = Decimal::from_str(pp).unwrap_or_default();
+        let q = Decimal::from_str(&quantity).unwrap_or_default();
+        profit = t - c * q;
+    }
+    let tax_rate: Option<String> = r.try_get("tax_rate").ok().flatten();
+    let vat = match &tax_rate {
+        Some(tr) => calc_vat_v1(&price, &quantity, tr),
+        None => "0.00".to_string(),
+    };
+    let vat_d = Decimal::from_str(&vat).unwrap_or_default();
+    let vat_dto = if items_vat {
+        Some(serde_json::Value::from(vat_d.to_f64().unwrap_or_default()))
+    } else {
+        None
+    };
+    let title: Option<String> = r.try_get("title").ok().flatten();
+    let barcode: Option<String> = r.try_get("barcode").ok().flatten();
+    let created: String = r.get("created_at");
+    let dto = ReceiptV1ItemDto {
+        id: r.get("id"),
+        receipt_id: r.get("receipt_id"),
+        product_id: r.get("product_id"),
+        product_name: title.unwrap_or_default(),
+        product_barcode: barcode,
+        quantity,
+        price,
+        total,
+        purchase_price: pp_txt,
+        profit: None,
+        vat_amount: vat_dto,
+        created_at: iso_naive_str(&created),
+    };
+    (dto, profit, vat_d)
+}
+
+/// Режим відповіді v1: GET — Decimal-рядки (Python ReceiptResponse),
+/// LIST — float-числа (Python r_dict["total_profit"] = float).
+#[derive(Clone, Copy, PartialEq)]
+enum V1RespMode {
+    Get,
+    List,
+}
+
+/// Побудова повного v1 чека з рядка receipts + item_rows.
+#[allow(clippy::type_complexity)]
+fn build_v1_receipt_dto(
+    row: sqlx::postgres::PgRow,
+    item_rows: Vec<sqlx::postgres::PgRow>,
+    mode: V1RespMode,
+) -> ReceiptV1Dto {
+    use rust_decimal::prelude::*;
+    let mut total_profit = Decimal::ZERO;
+    let mut total_vat = Decimal::ZERO;
+    let mut items_dto = Vec::with_capacity(item_rows.len());
+    for r in &item_rows {
+        let (dto, profit, vat) = build_v1_item_from_row(r, true, mode == V1RespMode::List);
+        total_profit += profit;
+        total_vat += vat;
+        items_dto.push(dto);
+    }
+    let change: String = row.get("change_amount");
+    let cashier_name: Option<String> = row.try_get("cashier_name").ok().flatten();
+    ReceiptV1Dto {
+        id: row.get("id"),
+        receipt_number: row.get("receipt_number"),
+        receipt_type: row.get("receipt_type"),
+        cashier_id: row.get("cashier_id"),
+        total_amount: row.get("total_amount"),
+        paid_amount: row.try_get("paid_amount").ok().flatten(),
+        change_amount: Some(change),
+        debtor_id: row.try_get("debtor_id").ok().flatten(),
+        is_return: row.get("is_return"),
+        notes: row.try_get("notes").ok().flatten(),
+        created_at: iso_naive_str(&row.get::<String, _>("created_at")),
+        items: items_dto,
+        total_profit: match mode {
+            V1RespMode::Get => {
+                serde_json::Value::String(py_float_str(total_profit.to_f64().unwrap_or_default()))
+            }
+            V1RespMode::List => serde_json::Value::from(total_profit.to_f64().unwrap_or_default()),
+        },
+        vat_amount: match mode {
+            V1RespMode::Get => {
+                serde_json::Value::String(py_float_str(total_vat.to_f64().unwrap_or_default()))
+            }
+            V1RespMode::List => serde_json::Value::from(total_vat.to_f64().unwrap_or_default()),
+        },
+        cashier_name: cashier_name.unwrap_or_else(|| "Невідомо".to_string()),
+        payment_method: row.try_get("payment_method").ok().flatten(),
+    }
+}
+
+const V1_ITEMS_SELECT: &str = r#"
+    SELECT ri.id, ri.receipt_id, ri.product_id, p.title, p.barcode,
+           ri.quantity::text, ri.price::text, ri.total::text,
+           ri.purchase_price::text, ri.created_at::text,
+           p.cost_price::text, p.tax_rate::text
+    FROM receipt_items ri
+    LEFT JOIN products p ON p.id = ri.product_id
+"#;
+
+/// GET /api/v1/receipts/{id} — 1:1 Python get_receipt.
+async fn get_receipt_v1_impl(pool: &PgPool, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
+    let row = sqlx::query(
+        r#"
+        SELECT r.id, r.receipt_number, r.receipt_type::text, r.cashier_id,
+               r.total_amount::text, r.paid_amount::text, r.change_amount::text,
+               r.debtor_id, r.is_return, r.notes, r.created_at::text,
+               r.payment_method::text, u.name AS cashier_name
+        FROM receipts r
+        LEFT JOIN users u ON u.id = r.cashier_id
+        WHERE r.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .pe()?;
+    let Some(row) = row else {
+        return Err(PosError::NotFound(format!("Чек з ID '{id}' не знайдено")));
+    };
+    let item_rows = sqlx::query(&format!("{V1_ITEMS_SELECT} WHERE ri.receipt_id = $1"))
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .pe()?;
+    Ok(build_v1_receipt_dto(row, item_rows, V1RespMode::Get))
+}
+
+/// GET /api/v1/receipts — 1:1 Python list_receipts (фільтри + пагінація).
+async fn list_receipts_v1_impl(
+    pool: &PgPool,
+    q: &ReceiptV1ListQuery,
+) -> Result<ReceiptV1ListDto, PosError> {
+    // Значення фільтрів валідовані парсерами (Uuid/enum/NaiveDateTime) — format! безпечний.
+    let mut conds: Vec<String> = Vec::new();
+    if let Some(cid) = q.cashier_id {
+        conds.push(format!("cashier_id = '{cid}'"));
+    }
+    if let Some(rt) = &q.receipt_type {
+        if rt == "sale" || rt == "return" {
+            conds.push(format!("receipt_type = '{rt}'"));
+        }
+    }
+    if let Some(df) = q.date_from {
+        conds.push(format!(
+            "created_at >= '{}'",
+            df.format("%Y-%m-%d %H:%M:%S%.f")
+        ));
+    }
+    if let Some(dt) = q.date_to {
+        conds.push(format!(
+            "created_at <= '{}'",
+            dt.format("%Y-%m-%d %H:%M:%S%.f")
+        ));
+    }
+    if let Some(pm) = &q.payment_method {
+        if matches!(pm.as_str(), "cash" | "card" | "mixed") {
+            conds.push(format!("payment_method = '{pm}'"));
+        }
+    }
+    let where_sql = if conds.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conds.join(" AND "))
+    };
+
+    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM receipts{where_sql}"))
+        .fetch_one(pool)
+        .await
+        .pe()?;
+    let offset = (q.page - 1) * q.size;
+    let rows = sqlx::query(&format!(
+        r#"
+        SELECT r.id, r.receipt_number, r.receipt_type::text, r.cashier_id,
+               r.total_amount::text, r.paid_amount::text, r.change_amount::text,
+               r.debtor_id, r.is_return, r.notes, r.created_at::text,
+               r.payment_method::text, u.name AS cashier_name
+        FROM receipts r
+        LEFT JOIN users u ON u.id = r.cashier_id
+        {where_sql}
+        ORDER BY r.created_at DESC
+        LIMIT {size} OFFSET {offset}
+        "#,
+        size = q.size,
+        offset = offset,
+    ))
+    .fetch_all(pool)
+    .await
+    .pe()?;
+
+    let mut items_map: std::collections::HashMap<Uuid, Vec<sqlx::postgres::PgRow>> =
+        std::collections::HashMap::new();
+    if !rows.is_empty() {
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|r| r.get::<Uuid, _>("id").to_string())
+            .collect();
+        let item_rows = sqlx::query(&format!(
+            "{V1_ITEMS_SELECT} WHERE ri.receipt_id = ANY('{{{}}}'::uuid[])",
+            ids.join(",")
+        ))
+        .fetch_all(pool)
+        .await
+        .pe()?;
+        for r in item_rows {
+            items_map.entry(r.get("receipt_id")).or_default().push(r);
+        }
+    }
+
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let id: Uuid = row.get("id");
+            let it_rows = items_map.remove(&id).unwrap_or_default();
+            build_v1_receipt_dto(row, it_rows, V1RespMode::List)
+        })
+        .collect();
+
+    let pages = if total > 0 {
+        (total + q.size - 1) / q.size
+    } else {
+        1
+    };
+    Ok(ReceiptV1ListDto {
+        items,
+        total,
+        page: q.page,
+        page_size: q.size,
+        pages: pages.max(1),
+    })
+}
+
+/// GET /api/v1/receipts/{id}/items — 1:1 Python get_receipt_items.
+async fn receipt_items_v1_impl(pool: &PgPool, id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM receipts WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .pe()?;
+    if exists.is_none() {
+        return Err(PosError::NotFound(format!("Чек з ID '{id}' не знайдено")));
+    }
+    let rows = sqlx::query(&format!(
+        "{V1_ITEMS_SELECT} WHERE ri.receipt_id = $1 ORDER BY ri.created_at"
+    ))
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .pe()?;
+    Ok(rows
+        .iter()
+        .map(|r| build_v1_item_from_row(r, false, false).0)
+        .collect())
+}
+
+/// GET /api/v1/receipts/search — 1:1 Python v1 search_receipts.
+/// Відмінності від v2: total = count БЕЗ DISTINCT (Python count(r.id) з JOIN —
+/// дублікати позицій), total_amount — Decimal-рядок ("120.00").
+async fn search_receipts_v1_impl(
+    pool: &PgPool,
+    q: &ReceiptSearchQuery,
+) -> Result<ReceiptV1SearchDto, PosError> {
+    let rtype = q.receipt_type.as_deref().unwrap_or("sale");
+    let mut count_sql = format!(
+        "SELECT count(r.id) FROM receipts r \
+         LEFT JOIN receipt_items ri ON ri.receipt_id = r.id \
+         LEFT JOIN products p ON p.id = ri.product_id \
+         WHERE r.receipt_type = '{}'",
+        rtype
+    );
+    let mut base = format!(
+        "SELECT r.id, r.receipt_number, r.receipt_type::text, r.total_amount::text, \
+         r.created_at::text, u.name AS cashier_name \
+         FROM receipts r \
+         LEFT JOIN users u ON u.id = r.cashier_id \
+         LEFT JOIN receipt_items ri ON ri.receipt_id = r.id \
+         LEFT JOIN products p ON p.id = ri.product_id \
+         WHERE r.receipt_type = '{}'",
+        rtype
+    );
+    // Python додає JOIN тільки якщо q непорожній; у нас JOIN завжди — але
+    // фільтр (number ILIKE OR title ILIKE) додається тільки при q.
+    let mut binds: Vec<String> = Vec::new();
+    if let Some(dt) = q.date_from {
+        binds.push(dt.format("%Y-%m-%d %H:%M:%S%.f").to_string());
+        let i = binds.len();
+        count_sql.push_str(&format!(" AND r.created_at >= ${i}::timestamp"));
+        base.push_str(&format!(" AND r.created_at >= ${i}::timestamp"));
+    }
+    if let Some(dt) = q.date_to {
+        binds.push(dt.format("%Y-%m-%d %H:%M:%S%.f").to_string());
+        let i = binds.len();
+        count_sql.push_str(&format!(" AND r.created_at <= ${i}::timestamp"));
+        base.push_str(&format!(" AND r.created_at <= ${i}::timestamp"));
+    }
+    let qq = q.q.trim();
+    if !qq.is_empty() {
+        binds.push(format!("%{qq}%"));
+        let i = binds.len();
+        count_sql.push_str(&format!(
+            " AND (r.receipt_number ILIKE ${i} OR p.title ILIKE ${i})"
+        ));
+        base.push_str(&format!(
+            " AND (r.receipt_number ILIKE ${i} OR p.title ILIKE ${i})"
+        ));
+    }
+    // Python: count БЕЗ distinct() → з дублікатами рядків JOIN (баг 1:1).
+    let total: i64 = {
+        let mut cq = sqlx::query(&count_sql);
+        for b in &binds {
+            cq = cq.bind(b);
+        }
+        cq.fetch_one(pool).await.pe()?.get("count")
+    };
+    let offset = (q.page - 1) * q.size;
+    base.push_str(
+        " GROUP BY r.id, r.receipt_number, r.receipt_type, r.total_amount, r.created_at, u.name",
+    );
+    base.push_str(&format!(
+        " ORDER BY r.created_at DESC LIMIT {} OFFSET {}",
+        q.size, offset
+    ));
+    let mut qr = sqlx::query(&base);
+    for b in &binds {
+        qr = qr.bind(b);
+    }
+    let rows = qr.fetch_all(pool).await.pe()?;
+    let mut items = Vec::new();
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let created: String = row.get("created_at");
+        let created = NaiveDateTime::parse_from_str(&created, "%Y-%m-%d %H:%M:%S%.f")
+            .unwrap_or_else(|_| Utc::now().naive_utc());
+        let item_count: i64 =
+            sqlx::query("SELECT count(*) FROM receipt_items WHERE receipt_id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .pe()?
+                .get("count");
+        items.push(ReceiptV1SearchItemDto {
+            id,
+            receipt_number: row.get("receipt_number"),
+            receipt_type: row.get("receipt_type"),
+            total_amount: row
+                .get::<Option<String>, _>("total_amount")
+                .unwrap_or_else(|| "0".to_string()),
+            created_at: Some(iso_naive(created)),
+            cashier_name: row
+                .get::<Option<String>, _>("cashier_name")
+                .unwrap_or_default(),
+            items_count: item_count,
+        });
+    }
+    let pages = if total > 0 {
+        (total + q.size - 1) / q.size
+    } else {
+        1
+    };
+    Ok(ReceiptV1SearchDto {
+        items,
+        total,
+        page: q.page,
+        page_size: q.size,
+        pages,
     })
 }
 
@@ -2328,6 +2731,25 @@ impl PosService for SqlxPos {
             total_returned: returned,
             returnable: (sold - returned).max(0.0),
         })
+    }
+
+    async fn list_receipts_v1(&self, q: &ReceiptV1ListQuery) -> Result<ReceiptV1ListDto, PosError> {
+        list_receipts_v1_impl(&self.pool, q).await
+    }
+
+    async fn get_receipt_v1(&self, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
+        get_receipt_v1_impl(&self.pool, id).await
+    }
+
+    async fn receipt_items_v1(&self, receipt_id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+        receipt_items_v1_impl(&self.pool, receipt_id).await
+    }
+
+    async fn search_receipts_v1(
+        &self,
+        q: &ReceiptSearchQuery,
+    ) -> Result<ReceiptV1SearchDto, PosError> {
+        search_receipts_v1_impl(&self.pool, q).await
     }
 
     async fn receipt_items(&self, receipt_id: Uuid) -> Result<Vec<ReceiptItemDetailDto>, PosError> {

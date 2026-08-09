@@ -7,9 +7,10 @@ use kasa_domain::{
     MySessionsDto, PosError, PosService as PosPort, ProductRecentSalesDto, PrroShiftDto,
     ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptListDto, ReceiptListQuery,
     ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto,
-    ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferListDto,
-    TransferUpdateInput, UserSessionsDto, WorkReportDto, WriteOffCreateInput, WriteOffDto,
-    WriteOffListDto, WriteOffUpdateInput,
+    ReceiptV1ItemDto, ReceiptV1ListDto, ReceiptV1ListQuery, ReceiptV1SearchDto, ReturnableQtyDto,
+    ShiftListDto, TransferCreateInput, TransferDto, TransferListDto, TransferUpdateInput,
+    UserSessionsDto, WorkReportDto, WriteOffCreateInput, WriteOffDto, WriteOffListDto,
+    WriteOffUpdateInput,
 };
 use uuid::Uuid;
 
@@ -75,6 +76,28 @@ impl<R: PosPort> PosServiceFacade<R> {
     ) -> Result<Vec<ReceiptItemDetailDto>, PosError> {
         self.repo.receipt_items(receipt_id).await
     }
+    pub async fn list_receipts_v1(
+        &self,
+        q: &ReceiptV1ListQuery,
+    ) -> Result<ReceiptV1ListDto, PosError> {
+        self.repo.list_receipts_v1(q).await
+    }
+    pub async fn get_receipt_v1(&self, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
+        self.repo.get_receipt_v1(id).await
+    }
+    pub async fn receipt_items_v1(
+        &self,
+        receipt_id: Uuid,
+    ) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+        self.repo.receipt_items_v1(receipt_id).await
+    }
+    pub async fn search_receipts_v1(
+        &self,
+        q: &ReceiptSearchQuery,
+    ) -> Result<ReceiptV1SearchDto, PosError> {
+        self.repo.search_receipts_v1(q).await
+    }
+
     pub async fn my_sessions(
         &self,
         user_id: Uuid,

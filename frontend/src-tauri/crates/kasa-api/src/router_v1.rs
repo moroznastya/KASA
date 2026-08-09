@@ -159,6 +159,24 @@ pub fn build_router(state: AppState) -> Router {
                 get(pos::receipt_items),
             )
             .route("/api/v2/receipts/:receipt_id", get(pos::get_receipt))
+            // v1 ALIAS (1:1 Python deprecated): list/get/items/recent — свої
+            // хендлери; search/stats/returnable — ті самі v2 (формат той самий).
+            .route("/api/v1/receipts/stats/today", get(pos::today_stats))
+            .route("/api/v1/receipts/search", get(pos::search_receipts_v1))
+            .route(
+                "/api/v1/receipts/by-product/:query/recent-sales",
+                get(pos::recent_sales_v1),
+            )
+            .route(
+                "/api/v1/receipts/products/:product_id/returnable-quantity",
+                get(pos::returnable_quantity),
+            )
+            .route("/api/v1/receipts", get(pos::list_receipts_v1))
+            .route(
+                "/api/v1/receipts/:receipt_id/items",
+                get(pos::receipt_items_v1),
+            )
+            .route("/api/v1/receipts/:receipt_id", get(pos::get_receipt_v1))
             // Робочі сесії
             .route("/api/v1/work-sessions/my", get(pos::my_sessions))
             .route("/api/v1/work-sessions/report", get(pos::work_report))
@@ -208,7 +226,11 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v2/prro/fiscal/shifts", get(prro::list_shifts))
             .route("/api/v2/prro/fiscal/sync", post(prro::sync_queue))
             .route("/api/v2/prro/fiscal/queue", get(prro::queue))
-            .route("/api/v2/prro/fiscal/status", get(prro::status));
+            .route("/api/v2/prro/fiscal/status", get(prro::status))
+            // v2 ALIAS без /fiscal — реальні шляхи фронтенду (prroService).
+            .route("/api/v2/prro/sync", post(prro::sync_queue))
+            .route("/api/v2/prro/queue", get(prro::queue))
+            .route("/api/v2/prro/status", get(prro::status));
     }
 
     // Rust-гілка ПРРО v2 (група 8/9) — KASA_RUST_PRRO_V2=1: settings +
@@ -484,6 +506,23 @@ pub fn build_router(state: AppState) -> Router {
             .route(
                 "/api/v2/products/:product_id/barcodes/:barcode_id",
                 delete(products_v2::delete_barcode),
+            )
+            // v1 ALIAS — ті самі хендлери (Python v1 deprecated).
+            .route(
+                "/api/v1/products/:product_id/barcodes",
+                post(products_v2::add_barcode),
+            )
+            .route(
+                "/api/v1/products/:product_id/barcodes/:barcode_id",
+                delete(products_v2::delete_barcode),
+            )
+            .route(
+                "/api/v1/products/:product_id/images",
+                post(products_v2::upload_image).layer(products_v2::upload_body_limit()),
+            )
+            .route(
+                "/api/v1/products/:product_id/images/:image_id",
+                delete(products_v2::delete_image),
             )
             .route(
                 "/api/v2/products/:product_id",

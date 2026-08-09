@@ -832,6 +832,24 @@ pub async fn search_receipts(
     Ok(Json(svc.search_receipts(&query).await?))
 }
 
+/// GET /api/v1/receipts/search — 1:1 Python v1 (total з дублікатами JOIN).
+pub async fn search_receipts_v1(
+    State(state): State<AppState>,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<kasa_domain::ReceiptV1SearchDto>, PosErr> {
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    let query = kasa_domain::ReceiptSearchQuery {
+        q: q.q.unwrap_or_default(),
+        date_from: q.date_from.as_deref().and_then(parse_dt),
+        date_to: q.date_to.as_deref().and_then(parse_dt),
+        receipt_type: q.receipt_type,
+        page: q.page.unwrap_or(1),
+        size: q.size.unwrap_or(20),
+    };
+    Ok(Json(svc.search_receipts_v1(&query).await?))
+}
+
 /// GET /api/v2/receipts/by-product/{query}/recent-sales
 pub async fn recent_sales(
     State(state): State<AppState>,
@@ -875,6 +893,104 @@ pub async fn get_receipt(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok(Json(svc.get_receipt(id).await?))
+}
+
+// ─── Чеки v1: LIST/GET/items (1:1 Python deprecated v1) ─────────────────────
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListV1Query {
+    pub cashier_id: Option<String>,
+    pub receipt_type: Option<String>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub page: Option<i64>,
+    pub size: Option<i64>,
+    pub payment_method: Option<String>,
+}
+
+/// Python `_normalize_date_to`: дата з часом 00:00:00 → 23:59:59.999999.
+fn normalize_date_to(dt: chrono::NaiveDateTime) -> chrono::NaiveDateTime {
+    use chrono::Timelike;
+    if dt.hour() == 0 && dt.minute() == 0 && dt.second() == 0 && dt.nanosecond() == 0 {
+        dt.date()
+            .and_hms_nano_opt(23, 59, 59, 999_999_000)
+            .unwrap_or(dt)
+    } else {
+        dt
+    }
+}
+
+/// GET /api/v1/receipts
+pub async fn list_receipts_v1(
+    State(state): State<AppState>,
+    Query(q): Query<ListV1Query>,
+) -> Result<Json<kasa_domain::ReceiptV1ListDto>, PosErr> {
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    let query = kasa_domain::ReceiptV1ListQuery {
+        cashier_id: q
+            .cashier_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok()),
+        receipt_type: q.receipt_type,
+        date_from: q.date_from.as_deref().and_then(parse_dt),
+        date_to: q
+            .date_to
+            .as_deref()
+            .and_then(parse_dt)
+            .map(normalize_date_to),
+        page: q.page.unwrap_or(1).max(1),
+        size: q.size.unwrap_or(20).clamp(1, 100),
+        payment_method: q.payment_method,
+    };
+    Ok(Json(svc.list_receipts_v1(&query).await?))
+}
+
+/// GET /api/v1/receipts/{receipt_id}
+pub async fn get_receipt_v1(
+    State(state): State<AppState>,
+    Path(receipt_id): Path<String>,
+) -> Result<Json<kasa_domain::ReceiptV1Dto>, PosErr> {
+    let id = path_uuid(receipt_id, "receipt_id")?;
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    Ok(Json(svc.get_receipt_v1(id).await?))
+}
+
+/// GET /api/v1/receipts/{receipt_id}/items
+pub async fn receipt_items_v1(
+    State(state): State<AppState>,
+    Path(receipt_id): Path<String>,
+) -> Result<Json<Vec<kasa_domain::ReceiptV1ItemDto>>, PosErr> {
+    let id = path_uuid(receipt_id, "receipt_id")?;
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    Ok(Json(svc.receipt_items_v1(id).await?))
+}
+
+/// GET /api/v1/receipts/by-product/{query}/recent-sales — 1:1 Python v1.
+/// Python v1: ProductRecentSalesListResponse.model_dump() → Decimal конвертується
+/// у float (числа) — формат == v2 Rust; обгортка {items, total} + 404 якщо пусто.
+pub async fn recent_sales_v1(
+    State(state): State<AppState>,
+    Path(query): Path<String>,
+    Query(q): Query<LimitQuery>,
+) -> Result<Json<kasa_domain::ReceiptV1RecentSalesListDto>, PosErr> {
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    let limit = q.limit.unwrap_or(5).clamp(1, 20);
+    let items = svc.recent_sales_by_product(&query, limit).await?;
+    if items.is_empty() {
+        return Err(kasa_domain::PosError::NotFound(format!(
+            "Товарів за запитом '{query}' не знайдено. Спробуйте ввести штрих-код або назву товару"
+        ))
+        .into());
+    }
+    let total = items.len() as i64;
+    Ok(Json(kasa_domain::ReceiptV1RecentSalesListDto {
+        items,
+        total,
+    }))
 }
 
 // ─── Робочі сесії ──────────────────────────────────────────────────────────
