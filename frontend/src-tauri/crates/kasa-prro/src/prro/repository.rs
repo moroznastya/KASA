@@ -155,17 +155,20 @@ impl InMemoryPrroRepository {
 
     /// Вставляє зміну напряму (для фіксації початкового стану в тестах).
     pub fn seed_shift(&self, shift: PrroShift) {
-        self.shifts.lock().unwrap().push(shift);
+        self.shifts
+            .lock()
+            .expect("lock poisoned: shifts")
+            .push(shift);
     }
 
     /// Вставляє запис черги напряму.
     pub fn seed_queue(&self, item: PrroQueueItem) {
-        self.queue.lock().unwrap().push(item);
+        self.queue.lock().expect("lock poisoned: queue").push(item);
     }
 
     /// Перевизначає created_at запису черги (для тестів expired).
     pub fn set_queue_created_at(&self, item_id: Uuid, created_at: DateTime<Utc>) {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("lock poisoned: queue");
         if let Some(item) = queue.iter_mut().find(|i| i.id == item_id) {
             item.created_at = created_at;
         }
@@ -173,25 +176,37 @@ impl InMemoryPrroRepository {
 
     /// Вставляє налаштування напряму.
     pub fn seed_setting(&self, key: &str, value: &str) {
-        self.settings.lock().unwrap().push(PrroSetting {
-            key_name: key.to_string(),
-            value: Some(value.to_string()),
-        });
+        self.settings
+            .lock()
+            .expect("lock poisoned: settings")
+            .push(PrroSetting {
+                key_name: key.to_string(),
+                value: Some(value.to_string()),
+            });
     }
 
     pub fn seed_receipt(&self, receipt: ReceiptFiscalRow) {
-        self.receipts.lock().unwrap().push(receipt);
+        self.receipts
+            .lock()
+            .expect("lock poisoned: receipts")
+            .push(receipt);
     }
 
     pub fn seed_product(&self, product: ProductFiscalRow) {
-        self.products.lock().unwrap().push(product);
+        self.products
+            .lock()
+            .expect("lock poisoned: products")
+            .push(product);
     }
 }
 
 #[async_trait]
 impl PrroRepository for InMemoryPrroRepository {
     async fn create_shift(&self, shift: PrroShift) -> Result<PrroShift, PrroRepoError> {
-        self.shifts.lock().unwrap().push(shift.clone());
+        self.shifts
+            .lock()
+            .expect("lock poisoned: shifts")
+            .push(shift.clone());
         Ok(shift)
     }
 
@@ -199,7 +214,7 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .shifts
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|s| s.id == shift_id)
             .cloned())
@@ -212,14 +227,14 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .shifts
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|s| s.shift_number == shift_number)
             .cloned())
     }
 
     async fn get_open_shift(&self) -> Result<Option<PrroShift>, PrroRepoError> {
-        let shifts = self.shifts.lock().unwrap();
+        let shifts = self.shifts.lock().expect("lock poisoned: shifts");
         Ok(shifts
             .iter()
             .filter(|s| matches!(s.status, super::models::PrroShiftStatus::Open))
@@ -232,7 +247,7 @@ impl PrroRepository for InMemoryPrroRepository {
         page: u32,
         size: u32,
     ) -> Result<(Vec<PrroShift>, u64), PrroRepoError> {
-        let shifts = self.shifts.lock().unwrap();
+        let shifts = self.shifts.lock().expect("lock poisoned: shifts");
         let mut sorted: Vec<_> = shifts.iter().cloned().collect();
         sorted.sort_by_key(|s| std::cmp::Reverse(s.shift_number));
         let total = sorted.len() as u64;
@@ -255,7 +270,7 @@ impl PrroRepository for InMemoryPrroRepository {
         signer_serial: Option<String>,
         signer_name: Option<String>,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
-        let mut shifts = self.shifts.lock().unwrap();
+        let mut shifts = self.shifts.lock().expect("lock poisoned: shifts");
         let shift = shifts
             .iter_mut()
             .find(|s| s.id == shift_id)
@@ -280,7 +295,7 @@ impl PrroRepository for InMemoryPrroRepository {
         last_local_number: Option<i64>,
         last_mac: Option<String>,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
-        let mut shifts = self.shifts.lock().unwrap();
+        let mut shifts = self.shifts.lock().expect("lock poisoned: shifts");
         let shift = shifts
             .iter_mut()
             .find(|s| s.id == shift_id)
@@ -297,7 +312,10 @@ impl PrroRepository for InMemoryPrroRepository {
     }
 
     async fn add_to_queue(&self, item: PrroQueueItem) -> Result<PrroQueueItem, PrroRepoError> {
-        self.queue.lock().unwrap().push(item.clone());
+        self.queue
+            .lock()
+            .expect("lock poisoned: queue")
+            .push(item.clone());
         Ok(item)
     }
 
@@ -305,14 +323,14 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .queue
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|i| i.id == item_id)
             .cloned())
     }
 
     async fn list_pending(&self, limit: u32) -> Result<Vec<PrroQueueItem>, PrroRepoError> {
-        let queue = self.queue.lock().unwrap();
+        let queue = self.queue.lock().expect("lock poisoned: queue");
         let mut items: Vec<_> = queue
             .iter()
             .filter(|i| {
@@ -333,7 +351,7 @@ impl PrroRepository for InMemoryPrroRepository {
         let mut items: Vec<_> = self
             .queue
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .filter(|i| i.shift_id == Some(shift_id))
             .cloned()
@@ -346,7 +364,7 @@ impl PrroRepository for InMemoryPrroRepository {
         let mut items: Vec<_> = self
             .queue
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .filter(|i| i.receipt_id == Some(receipt_id))
             .cloned()
@@ -360,7 +378,7 @@ impl PrroRepository for InMemoryPrroRepository {
         item_id: Uuid,
         sent_at: Option<DateTime<Utc>>,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("lock poisoned: queue");
         let item = queue
             .iter_mut()
             .find(|i| i.id == item_id)
@@ -376,7 +394,7 @@ impl PrroRepository for InMemoryPrroRepository {
         item_id: Uuid,
         error: String,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("lock poisoned: queue");
         let item = queue
             .iter_mut()
             .find(|i| i.id == item_id)
@@ -390,14 +408,14 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .queue
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .filter(|i| matches!(i.status, super::models::PrroQueueStatus::Pending))
             .count() as u64)
     }
 
     async fn delete_queue_item(&self, item_id: Uuid) -> Result<bool, PrroRepoError> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("lock poisoned: queue");
         let before = queue.len();
         queue.retain(|i| i.id != item_id);
         Ok(queue.len() != before)
@@ -407,14 +425,14 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .settings
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|s| s.key_name == key)
             .and_then(|s| s.value.clone()))
     }
 
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), PrroRepoError> {
-        let mut settings = self.settings.lock().unwrap();
+        let mut settings = self.settings.lock().expect("lock poisoned: settings");
         if let Some(s) = settings.iter_mut().find(|s| s.key_name == key) {
             s.value = Some(value.to_string());
         } else {
@@ -433,7 +451,7 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .receipts
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|r| r.id == receipt_id)
             .cloned())
@@ -446,7 +464,7 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(self
             .products
             .lock()
-            .unwrap()
+            .expect("lock poisoned: mutex")
             .iter()
             .find(|p| p.id == product_id)
             .cloned())
@@ -462,7 +480,7 @@ impl PrroRepository for InMemoryPrroRepository {
         fiscal_error: Option<&str>,
         is_fiscal: Option<bool>,
     ) -> Result<(), PrroRepoError> {
-        let mut receipts = self.receipts.lock().unwrap();
+        let mut receipts = self.receipts.lock().expect("lock poisoned: receipts");
         let r = receipts
             .iter_mut()
             .find(|r| r.id == receipt_id)
@@ -483,7 +501,7 @@ impl PrroRepository for InMemoryPrroRepository {
         receipt_id: Uuid,
         total_amount: Decimal,
     ) -> Result<(), PrroRepoError> {
-        let mut receipts = self.receipts.lock().unwrap();
+        let mut receipts = self.receipts.lock().expect("lock poisoned: receipts");
         let r = receipts
             .iter_mut()
             .find(|r| r.id == receipt_id)
@@ -493,7 +511,7 @@ impl PrroRepository for InMemoryPrroRepository {
     }
 
     async fn delete_non_fiscal_items(&self, receipt_id: Uuid) -> Result<u64, PrroRepoError> {
-        let mut receipts = self.receipts.lock().unwrap();
+        let mut receipts = self.receipts.lock().expect("lock poisoned: receipts");
         let r = receipts
             .iter_mut()
             .find(|r| r.id == receipt_id)
@@ -510,7 +528,7 @@ impl PrroRepository for InMemoryPrroRepository {
         total: Decimal,
         fiscal_quantity: Decimal,
     ) -> Result<(), PrroRepoError> {
-        let mut receipts = self.receipts.lock().unwrap();
+        let mut receipts = self.receipts.lock().expect("lock poisoned: receipts");
         for r in receipts.iter_mut() {
             if let Some(item) = r.items.iter_mut().find(|i| i.id == item_id) {
                 item.quantity = quantity;
@@ -569,7 +587,10 @@ impl PrroRepository for InMemoryPrroRepository {
                 })
                 .collect(),
         };
-        self.receipts.lock().unwrap().push(dup);
+        self.receipts
+            .lock()
+            .expect("lock poisoned: receipts")
+            .push(dup);
         Ok(id)
     }
 
@@ -578,7 +599,7 @@ impl PrroRepository for InMemoryPrroRepository {
         product_id: Uuid,
         new_stock: Decimal,
     ) -> Result<(), PrroRepoError> {
-        let mut products = self.products.lock().unwrap();
+        let mut products = self.products.lock().expect("lock poisoned: products");
         let p = products
             .iter_mut()
             .find(|p| p.id == product_id)

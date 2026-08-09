@@ -479,10 +479,10 @@ fn spawn_printer_monitor(
 /// Запустити фонове підключення за конфігом. Якщо пристрій уже підключений —
 /// повертає поточний статус; якщо у стані error/disconnected — перезапускає.
 fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus, String> {
-    let mut map = connections().lock().unwrap();
+    let mut map = connections().lock().expect("lock poisoned: connections");
 
     if let Some(h) = map.get(&cfg.id) {
-        let st = h.status.lock().unwrap().clone();
+        let st = h.status.lock().expect("lock poisoned: status").clone();
         if st.status == "connected" {
             return Ok(st);
         }
@@ -573,13 +573,13 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
         },
     );
 
-    let current = status.lock().unwrap().clone();
+    let current = status.lock().expect("lock poisoned: status").clone();
     Ok(current)
 }
 
 /// Зупинити фонове з'єднання (якщо активне) і прибрати з глобального стану.
 fn stop_connection(id: &str) {
-    let mut map = connections().lock().unwrap();
+    let mut map = connections().lock().expect("lock poisoned: connections");
     if let Some(h) = map.remove(id) {
         h.stop.store(true, Ordering::Relaxed);
         if let Some(t) = h.thread {
@@ -679,13 +679,13 @@ pub fn connect_device(app: AppHandle, id: String) -> Result<DeviceStatus, String
 /// Розірвати з'єднання пристрою.
 #[tauri::command]
 pub fn disconnect_device(id: String) -> Result<DeviceStatus, String> {
-    let mut map = connections().lock().unwrap();
+    let mut map = connections().lock().expect("lock poisoned: connections");
     if let Some(h) = map.remove(&id) {
         h.stop.store(true, Ordering::Relaxed);
         if let Some(t) = h.thread {
             let _ = t.join();
         }
-        Ok(h.status.lock().unwrap().clone())
+        Ok(h.status.lock().expect("lock poisoned: status").clone())
     } else {
         Ok(DeviceStatus {
             id,
@@ -700,11 +700,11 @@ pub fn disconnect_device(id: String) -> Result<DeviceStatus, String> {
 #[tauri::command]
 pub fn get_devices_status(app: AppHandle) -> Result<Vec<DeviceStatus>, String> {
     let devices = load_devices(&app)?;
-    let map = connections().lock().unwrap();
+    let map = connections().lock().expect("lock poisoned: connections");
     let mut result = Vec::with_capacity(devices.len());
     for cfg in &devices {
         if let Some(h) = map.get(&cfg.id) {
-            result.push(h.status.lock().unwrap().clone());
+            result.push(h.status.lock().expect("lock poisoned: status").clone());
         } else {
             result.push(DeviceStatus {
                 id: cfg.id.clone(),

@@ -44,35 +44,41 @@ impl MockChkSender {
     }
 
     pub fn push_ok(&self, id: impl Into<String>) {
-        self.responses.lock().unwrap().push(Ok(CheckResponse {
-            id: id.into(),
-            status: 1,
-            id_sign: vec![],
-            data_sign: vec![],
-            error_message: String::new(),
-        }));
+        self.responses
+            .lock()
+            .expect("lock poisoned: responses")
+            .push(Ok(CheckResponse {
+                id: id.into(),
+                status: 1,
+                id_sign: vec![],
+                data_sign: vec![],
+                error_message: String::new(),
+            }));
     }
 
     pub fn push_fail(&self, error_message: &str, status: i32) {
-        self.responses.lock().unwrap().push(Ok(CheckResponse {
-            id: String::new(),
-            status,
-            id_sign: vec![],
-            data_sign: vec![],
-            error_message: error_message.to_string(),
-        }));
+        self.responses
+            .lock()
+            .expect("lock poisoned: responses")
+            .push(Ok(CheckResponse {
+                id: String::new(),
+                status,
+                id_sign: vec![],
+                data_sign: vec![],
+                error_message: error_message.to_string(),
+            }));
     }
 
     pub fn calls_len(&self) -> usize {
-        self.calls.lock().unwrap().len()
+        self.calls.lock().expect("lock poisoned: calls").len()
     }
 }
 
 #[async_trait]
 impl ChkSender for MockChkSender {
     async fn send_chk(&self, check: Check) -> Result<CheckResponse, PrroGrpcError> {
-        self.calls.lock().unwrap().push(check);
-        let mut responses = self.responses.lock().unwrap();
+        self.calls.lock().expect("lock poisoned: calls").push(check);
+        let mut responses = self.responses.lock().expect("lock poisoned: responses");
         if responses.is_empty() {
             return Ok(CheckResponse {
                 id: "mock-id".into(),
@@ -99,7 +105,7 @@ impl MockLastChk {
     }
 
     pub fn set_ok(&self, id: impl Into<String>) {
-        *self.response.lock().unwrap() = Some(Ok(CheckResponse {
+        *self.response.lock().expect("lock poisoned: response") = Some(Ok(CheckResponse {
             id: id.into(),
             status: 1,
             id_sign: vec![],
@@ -122,7 +128,12 @@ impl ChkSender for MockLastChk {
     }
 
     async fn last_chk(&self) -> Result<CheckResponse, PrroGrpcError> {
-        match self.response.lock().unwrap().as_ref() {
+        match self
+            .response
+            .lock()
+            .expect("lock poisoned: response")
+            .as_ref()
+        {
             Some(r) => (*r).clone(),
             None => Err(PrroGrpcError::Rpc {
                 status: tonic::Status::unimplemented("lastChk не підтримується"),

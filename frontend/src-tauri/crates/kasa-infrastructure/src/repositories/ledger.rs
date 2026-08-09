@@ -174,19 +174,21 @@ impl LedgerService for SqlxLedger {
         .le()?;
         let items = rows
             .iter()
-            .map(|r| LedgerEntryV1Dto {
-                id: r.try_get("id").expect("id"),
-                supplier_id,
-                operation_type: r.try_get("operation_type").expect("type"),
-                document_id: r.try_get("document_id").expect("doc_id"),
-                document_number: r.try_get("document_number").expect("doc_num"),
-                amount: r.try_get("amount").expect("amount"),
-                balance_after: r.try_get("balance_after").expect("bal"),
-                operation_date: r.try_get("operation_date").expect("op_date"),
-                notes: r.try_get("notes").expect("notes"),
-                created_at: r.try_get("created_at").expect("created_at"),
+            .map(|r| -> Result<LedgerEntryV1Dto, LedgerError> {
+                Ok(LedgerEntryV1Dto {
+                    id: r.try_get("id").le()?,
+                    supplier_id,
+                    operation_type: r.try_get("operation_type").le()?,
+                    document_id: r.try_get("document_id").le()?,
+                    document_number: r.try_get("document_number").le()?,
+                    amount: r.try_get("amount").le()?,
+                    balance_after: r.try_get("balance_after").le()?,
+                    operation_date: r.try_get("operation_date").le()?,
+                    notes: r.try_get("notes").le()?,
+                    created_at: r.try_get("created_at").le()?,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(LedgerHistoryV1Dto {
             items,
             total,
@@ -286,24 +288,26 @@ impl LedgerService for SqlxLedger {
         let rows = qb2.build().fetch_all(pool).await.le()?;
         let items = rows
             .iter()
-            .map(|r| LedgerEntryV2Dto {
-                id: r.try_get("id").expect("id"),
-                supplier_id: r.try_get("supplier_id").expect("sid"),
-                amount: r.try_get("amount").expect("amount"),
-                operation_type: r.try_get("operation_type").expect("type"),
-                balance_after: r.try_get("balance_after").expect("bal"),
-                created_at: r.try_get("created_at").expect("created_at"),
-                document_id: r.try_get("document_id").expect("doc_id"),
-                document_number: r
-                    .try_get::<Option<String>, _>("document_number")
-                    .expect("doc_num")
-                    .unwrap_or_default(),
-                notes: r
-                    .try_get::<Option<String>, _>("notes")
-                    .expect("notes")
-                    .unwrap_or_default(),
+            .map(|r| -> Result<LedgerEntryV2Dto, LedgerError> {
+                Ok(LedgerEntryV2Dto {
+                    id: r.try_get("id").le()?,
+                    supplier_id: r.try_get("supplier_id").le()?,
+                    amount: r.try_get("amount").le()?,
+                    operation_type: r.try_get("operation_type").le()?,
+                    balance_after: r.try_get("balance_after").le()?,
+                    created_at: r.try_get("created_at").le()?,
+                    document_id: r.try_get("document_id").le()?,
+                    document_number: r
+                        .try_get::<Option<String>, _>("document_number")
+                        .le()?
+                        .unwrap_or_default(),
+                    notes: r
+                        .try_get::<Option<String>, _>("notes")
+                        .le()?
+                        .unwrap_or_default(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(LedgerListV2Dto {
             items,
             total,
@@ -432,18 +436,17 @@ impl LedgerService for SqlxLedger {
         .le()?;
         Ok(rows
             .iter()
-            .map(|r| SupplierBalanceV2Dto {
-                supplier_id: r.try_get("supplier_id").expect("sid"),
-                supplier_name: r.try_get("supplier_name").expect("name"),
-                balance: r
-                    .try_get::<Option<f64>, _>("balance")
-                    .expect("balance")
-                    .unwrap_or(0.0),
-                last_operation_date: r
-                    .try_get::<Option<NaiveDateTime>, _>("last_operation_date")
-                    .expect("last_date"),
+            .map(|r| -> Result<SupplierBalanceV2Dto, LedgerError> {
+                Ok(SupplierBalanceV2Dto {
+                    supplier_id: r.try_get("supplier_id").le()?,
+                    supplier_name: r.try_get("supplier_name").le()?,
+                    balance: r.try_get::<Option<f64>, _>("balance").le()?.unwrap_or(0.0),
+                    last_operation_date: r
+                        .try_get::<Option<NaiveDateTime>, _>("last_operation_date")
+                        .le()?,
+                })
             })
-            .collect())
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }
 
