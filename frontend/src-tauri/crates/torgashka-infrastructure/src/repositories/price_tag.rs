@@ -910,10 +910,107 @@ fn code128_bytes(text: &str) -> Vec<u8> {
     out
 }
 
-/// Python _generate_qr_svg (fallback-стиль: [QR: data]).
-fn generate_qr_svg(data: &str, _box_size_mm: f64) -> String {
+/// Python _generate_qr_svg (реальний QR: error correction M, border=1,
+/// квадрат зі стороною box_size_mm, підпис цифрами внизу).
+/// Fallback-стиль [QR: ...] — лише при помилці кодування (дані завеликі).
+fn generate_qr_svg(data: &str, box_size_mm: f64) -> String {
+    if data.trim().is_empty() {
+        return String::new();
+    }
+    let qr = match qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M) {
+        Ok(q) => q,
+        Err(_) => {
+            // Fallback: як Python при помилці генерації (екранований текст).
+            return format!(
+                "<span style=\"font-family: monospace; font-size: 10px;\">[QR: {}]</span>",
+                esc(data)
+            );
+        }
+    };
+    let n = qr.width();
+    let border = 1usize; // quiet zone, як Python border=1
+    let total = n + 2 * border;
+    let colors = qr.to_colors();
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {t} {t}\" style=\"width: {w}mm; height: {w}mm; max-width: 100%; height: auto;\">",
+        t = total,
+        w = pf(box_size_mm)
+    );
+    svg.push_str("<rect x=\"0\" y=\"0\" width=\"100%\" height=\"100%\" fill=\"white\"/>");
+    // Run-length: послідовні темні модулі рядка → один <rect> (як SvgPathImage).
+    for y in 0..n {
+        let row = y * n;
+        let mut x = 0usize;
+        while x < n {
+            if colors[row + x] == qrcode::Color::Dark {
+                let start = x;
+                while x < n && colors[row + x] == qrcode::Color::Dark {
+                    x += 1;
+                }
+                svg.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"1\" fill=\"black\"/>",
+                    start + border,
+                    y + border,
+                    x - start
+                ));
+            } else {
+                x += 1;
+            }
+        }
+    }
+    svg.push_str("</svg>");
+    // Підпис цифрами (як code128: до 20 символів + …), екранований.
+    let display = if data.len() > 20 {
+        let mut t: String = data.chars().take(20).collect();
+        t.push('…');
+        t
+    } else {
+        data.to_string()
+    };
     format!(
-        "<span style=\"font-family: monospace; font-size: 10px; letter-spacing: 1px;\">[QR: {}]</span>",
-        esc(data)
+        "<div style=\"display: flex; flex-direction: column; align-items: center;\">{svg}\
+         <span style=\"font-family: monospace; font-size: 9px; font-weight: bold; color: #000; \
+         margin-top: 1px; letter-spacing: 0.5px;\">{}</span></div>",
+        esc(&display)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qr_svg_is_real_svg_not_stub() {
+        let out = generate_qr_svg("TEST123", 12.0);
+        assert!(out.contains("<svg"), "має бути SVG, отримано: {out}");
+        assert!(!out.contains("[QR:"), "не має бути заглушки, отримано: {out}");
+        assert!(out.contains("viewBox"), "viewBox відсутній");
+        assert!(out.contains("fill=\"black\""), "чорні модулі відсутні");
+        assert!(out.contains("TEST123"), "підпис цифрами відсутній");
+    }
+
+    #[test]
+    fn qr_svg_empty_data_returns_empty() {
+        assert_eq!(generate_qr_svg("", 12.0), "");
+        assert_eq!(generate_qr_svg("   ", 12.0), "");
+        assert_eq!(generate_qr_svg("\n\t ", 12.0), "");
+    }
+
+    #[test]
+    fn qr_svg_square_and_scaled_to_mm() {
+        let out = generate_qr_svg("https://example.com/item/42", 30.0);
+        assert!(out.contains("width: 30.0mm; height: 30.0mm"), "масштаб мм: {out}");
+        // viewBox має бути квадратним (total = n + 2)
+        let vb = out.split("viewBox=\"").nth(1).and_then(|s| s.split('\"').next()).unwrap_or("");
+        let dims: Vec<&str> = vb.split(' ').collect();
+        assert_eq!(dims.len(), 4, "viewBox: {vb}");
+        assert_eq!(dims[2], dims[3], "viewBox має бути квадратним: {vb}");
+    }
+
+    #[test]
+    fn qr_svg_escapes_caption() {
+        let out = generate_qr_svg("<script>alert(1)</script>", 12.0);
+        assert!(!out.contains("<script>"), "XSS: підпис не екрановано");
+        assert!(out.contains("&lt;script&gt;"), "екранування відсутнє");
+    }
 }
