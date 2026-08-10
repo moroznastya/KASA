@@ -323,13 +323,22 @@ fn render_single(
         .get("barcode_height_mm")
         .and_then(|v| v.as_f64())
         .unwrap_or(12.0);
+    let barcode_max_width_mm = extra_context
+        .get("barcode_max_width_mm")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(40.0);
     // Крок 3: заміна змінних.
     let barcode_val = product
         .get("barcode")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let title = product.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    let barcode_image = generate_barcode_svg(barcode_val, barcode_height_mm, &barcode_type);
+    let barcode_image = generate_barcode_svg(
+        barcode_val,
+        barcode_height_mm,
+        &barcode_type,
+        barcode_max_width_mm,
+    );
     let mut replacements: Vec<(&str, String)> = vec![
         ("title", esc(title)),
         ("name", esc(title)),
@@ -497,6 +506,38 @@ pub(crate) fn calc_grid(
     (cols.max(1), rows.max(1), (cols.max(1)) * (rows.max(1)))
 }
 
+/// Витягує базовий (дизайнерський) розмір поля з шаблону:
+/// `<body data-base-w="40" data-base-h="43" ...>`.
+/// Повертає (w, h) лише якщо обидва атрибути присутні й парсяться як f64.
+fn extract_base_size(template: &str) -> Option<(f64, f64)> {
+    let re_w = regex::Regex::new(r#"data-base-w="([\d.]+)""#).unwrap();
+    let re_h = regex::Regex::new(r#"data-base-h="([\d.]+)""#).unwrap();
+    let w = re_w.captures(template)?.get(1)?.as_str().parse::<f64>().ok()?;
+    let h = re_h.captures(template)?.get(1)?.as_str().parse::<f64>().ok()?;
+    Some((w, h))
+}
+
+/// Масштабує відрендерений вміст поля через CSS `transform: scale()`.
+/// Використовується коли фактичний розмір друку (w×h) відрізняється від
+/// базового розміру шаблону (bw×bh): контейнер фіксованого розміру w×h
+/// з overflow:hidden, всередині — вміст базового розміру, стиснутий/розтягнутий.
+/// При 1:1 (|w/bw−1|<0.001 і |h/bh−1|<0.001) повертає rendered без змін.
+fn apply_scale(rendered: &str, base: (f64, f64), w: f64, h: f64) -> String {
+    let (bw, bh) = base;
+    if (w / bw - 1.0).abs() < 0.001 && (h / bh - 1.0).abs() < 0.001 {
+        return rendered.to_string();
+    }
+    format!(
+        r#"<div style="width: {w}mm; height: {h}mm; overflow: hidden;"><div style="width: {bw}mm; height: {bh}mm; transform: scale({fx},{fy}); transform-origin: top left;">{rendered}</div></div>"#,
+        w = pf(w),
+        h = pf(h),
+        bw = pf(bw),
+        bh = pf(bh),
+        fx = pf(w / bw),
+        fy = pf(h / bh)
+    )
+}
+
 // ─── Grid (A4) ──────────────────────────────────────────────────────────────
 
 pub(crate) fn render_price_tags_grid(
@@ -544,14 +585,26 @@ pub(crate) fn render_price_tags_grid(
         .get("barcode_height_mm")
         .and_then(|v| v.as_f64())
         .unwrap_or(7.0);
-    let barcode_height_mm = barcode_h.min((height_mm * 0.28).max(3.0));
+    let barcode_type = settings
+        .get("barcode_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("code128");
+    let barcode_height_mm = if barcode_type == "qr" {
+        barcode_h
+            .max(width_mm * 0.28)
+            .min((height_mm * 0.35).max(3.0))
+    } else {
+        barcode_h.max(10.0).min((height_mm * 0.28).max(3.0))
+    };
     let expanded = expand_products(products);
     let extra_context = json!({
         "width": pf(width_mm),
         "height": pf(height_mm),
-        "barcode_type": settings.get("barcode_type").and_then(|v| v.as_str()).unwrap_or("code128"),
-        "barcode_height_mm": pf(barcode_height_mm),
+        "barcode_type": barcode_type,
+        "barcode_height_mm": barcode_height_mm,
+        "barcode_max_width_mm": width_mm * 0.92,
     });
+    let base = extract_base_size(template);
     let mut rendered_items = Vec::new();
     for mut product in expanded {
         if product
@@ -562,12 +615,16 @@ pub(crate) fn render_price_tags_grid(
         {
             product["created_date"] = json!(chrono::Utc::now().format("%d.%m.%Y").to_string());
         }
-        rendered_items.push(render_single(
+        let mut item = render_single(
             template,
             &product,
             enabled_fields.as_ref(),
             &extra_context,
-        ));
+        );
+        if let Some(b) = base {
+            item = apply_scale(&item, b, width_mm, height_mm);
+        }
+        rendered_items.push(item);
     }
     let (cols, rows, per_page) = calc_grid(
         width_mm,
@@ -661,18 +718,37 @@ pub(crate) fn render_labels_sequential(
     } else {
         width_mm.min(48.0)
     };
+    let barcode_type = settings
+        .get("barcode_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("code128");
+    let barcode_h = settings
+        .get("barcode_height_mm")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(12.0);
+    let barcode_height_mm = if barcode_type == "qr" {
+        (barcode_h * 1.35).min(height_mm * 0.58).max(12.0)
+    } else {
+        barcode_h.max(12.0).min(height_mm * 0.65)
+    };
     let expanded = expand_products(products);
     let total_labels = expanded.len() as i64;
     let extra_context = json!({
         "width": pf(effective_width),
         "height": pf(height_mm),
-        "barcode_type": settings.get("barcode_type").and_then(|v| v.as_str()).unwrap_or("code128"),
-        "barcode_height_mm": pf(settings.get("barcode_height_mm").and_then(|v| v.as_f64()).unwrap_or(12.0)),
+        "barcode_type": barcode_type,
+        "barcode_height_mm": barcode_height_mm,
+        "barcode_max_width_mm": effective_width * 0.92,
     });
+    let base = extract_base_size(template);
     let mut labels_html = String::new();
     for (i, mut product) in expanded.into_iter().enumerate() {
         product["created_date"] = json!(chrono::Local::now().format("%d.%m.%Y").to_string());
-        let rendered = render_single(template, &product, enabled_fields.as_ref(), &extra_context);
+        let mut rendered =
+            render_single(template, &product, enabled_fields.as_ref(), &extra_context);
+        if let Some(b) = base {
+            rendered = apply_scale(&rendered, b, effective_width, height_mm);
+        }
         let mut label = build_label_html(&rendered, effective_width, height_mm, gap_mm);
         if (i as i64) < total_labels - 1 {
             label.push_str("\n<div style=\"page-break-after: always;\"></div>");
@@ -727,27 +803,49 @@ fn empty_html(page_type: &str) -> String {
 /// Python _generate_barcode_svg (Code128) / _generate_qr_svg.
 /// Структура SVG відрізняється від python-barcode (різні генератори);
 /// параметри (module_width=0.25, quiet_zone=1.0, без тексту) — ті самі.
-fn generate_barcode_svg(barcode_text: &str, height_mm: f64, barcode_type: &str) -> String {
+fn generate_barcode_svg(
+    barcode_text: &str,
+    height_mm: f64,
+    barcode_type: &str,
+    max_width_mm: f64,
+) -> String {
     if barcode_text.trim().is_empty() {
         return String::new();
     }
     let btype = barcode_type.to_lowercase();
     if btype == "qr" {
-        return generate_qr_svg(barcode_text, height_mm);
+        let box_size = height_mm.min(max_width_mm);
+        return generate_qr_svg(barcode_text, box_size);
     }
     // Code128: спрощений, але валідний SVG (чередування чорних/білих модулів).
     let bytes = code128_bytes(barcode_text);
+    // Адаптивна ширина модуля:
+    //   natural = сума всіх модулів (PATTERNS + stop) × 0.25мм.
+    //   - natural > max_width  → стиснути, щоб total_w (з quiet zone) ≤ max_width;
+    //   - natural < 75% ширини → розтягнути до max_width (cap 0.4мм/модуль),
+    //     щоб короткі коди заповнювали контейнер, а не "плавали" зліва.
+    let total_modules: u32 = bytes.iter().map(|&b| b as u32).sum();
+    let natural = total_modules as f64 * 0.25;
+    let mut module_width = 0.25;
+    if natural > max_width_mm {
+        // Знаменник (total_modules + 2): quiet zone (2 модулі) теж має
+        // лишитись у межах max_width_mm → total_w = (N+2)·mw ≤ max_width.
+        module_width = (max_width_mm / (total_modules as f64 + 2.0)).max(0.15);
+    } else if natural < max_width_mm * 0.75 {
+        module_width = (max_width_mm / total_modules as f64).min(0.4);
+    }
     let mut bars: Vec<(f64, f64)> = Vec::new(); // (x, width)
     let mut x: f64 = 0.0;
     let mut is_bar = true;
     for &b in &bytes {
         if is_bar {
-            bars.push((x, b as f64 * 0.25));
+            bars.push((x, b as f64 * module_width));
         }
-        x += b as f64 * 0.25;
+        x += b as f64 * module_width;
         is_bar = !is_bar;
     }
-    let total_w = x + 2.0;
+    let quiet = 2.0 * module_width;
+    let total_w = x + quiet;
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" \
          style=\"max-width: 100%; height: auto;\" width=\"{w}\" height=\"{h}\">",
@@ -757,7 +855,7 @@ fn generate_barcode_svg(barcode_text: &str, height_mm: f64, barcode_type: &str) 
     for (bx, bw) in bars {
         svg.push_str(&format!(
             "<rect x=\"{}\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"black\"/>",
-            pf(bx + 1.0),
+            pf(bx + module_width),
             pf(bw),
             pf(height_mm)
         ));
@@ -1013,4 +1111,105 @@ mod tests {
         assert!(!out.contains("<script>"), "XSS: підпис не екрановано");
         assert!(out.contains("&lt;script&gt;"), "екранування відсутнє");
     }
+
+    // ─── Code128: адаптивна ширина ──────────────────────────────────────
+
+    /// Ширина SVG у мм = ширина viewBox (для Code128 одиниці viewBox = мм).
+    fn svg_width_mm(out: &str) -> f64 {
+        let after = out.find("viewBox=").map(|i| &out[i + 8..]).unwrap_or("");
+        let vb = after.split('"').nth(1).unwrap_or("");
+        vb.split_whitespace()
+            .nth(2)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(f64::NAN)
+    }
+
+    /// Мінімальна ширина штриха (rect) у мм.
+    fn min_rect_width(out: &str) -> f64 {
+        let re = regex::Regex::new(r#"<rect[^>]*width="([\d.]+)""#).unwrap();
+        re.captures_iter(out)
+            .filter_map(|c| c[1].parse::<f64>().ok())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn code128_fits_max_width() {
+        // EAN-13 (13 цифр): природна ширина ≈ 44.5мм > 36.8 → має вписатись.
+        let out = generate_barcode_svg("4820012345678", 12.0, "code128", 36.8);
+        let w = svg_width_mm(&out);
+        assert!(
+            w <= 36.8 + 1e-9,
+            "ширина {w}мм > 36.8мм (не вписано в max_width)"
+        );
+        assert!(w > 30.0, "занадто вузький: {w}мм (має заповнювати контейнер)");
+        assert!(!out.contains("[QR:"), "не має бути заглушки");
+    }
+
+    #[test]
+    fn code128_short_code_stretched() {
+        // "12345" → 90 модулів, природна ширина 22.5мм < 75% від 36.8 → розтяг.
+        let out = generate_barcode_svg("12345", 12.0, "code128", 36.8);
+        let w = svg_width_mm(&out);
+        let natural: f64 = 90.0 * 0.25;
+        assert!(
+            w >= natural.min(36.8) - 1e-9,
+            "ширина {w}мм менша за min(природна, max_width)"
+        );
+        let min_bar = min_rect_width(&out);
+        assert!(
+            min_bar > 0.25,
+            "штрихи не розтягнуті (module_width > 0.25): {min_bar}мм"
+        );
+    }
+
+    #[test]
+    fn qr_box_size_capped_by_max_width() {
+        // QR: box_size = min(height_mm, max_width_mm) → 20.0мм, не 30.0.
+        let out = generate_barcode_svg("TEST", 30.0, "qr", 20.0);
+        assert!(
+            out.contains("width: 20.0mm; height: 20.0mm"),
+            "QR не обмежено max_width: {out}"
+        );
+    }
+
+    // ─── Масштабування полів (transform scale) ──────────────────────────
+
+    #[test]
+    fn apply_scale_noop_when_same_size() {
+        let html = "<div>TEST</div>";
+        assert_eq!(apply_scale(html, (40.0, 43.0), 40.0, 43.0), html);
+    }
+
+    #[test]
+    fn apply_scale_wraps_when_resized() {
+        let html = "<div>TEST</div>";
+        let out = apply_scale(html, (40.0, 43.0), 30.0, 25.0);
+        assert!(
+            out.contains("width: 30.0mm; height: 25.0mm; overflow: hidden;"),
+            "зовнішній контейнер: {out}"
+        );
+        assert!(
+            out.contains("width: 40.0mm; height: 43.0mm;"),
+            "внутрішній div базового розміру: {out}"
+        );
+        assert!(
+            out.contains("transform: scale(0.75,0.581"),
+            "scale-фактори: {out}"
+        );
+        assert!(out.contains("transform-origin: top left;"), "origin: {out}");
+    }
+
+    #[test]
+    fn extract_base_size_parses_and_none() {
+        assert_eq!(
+            extract_base_size(r#"<html><body data-base-w="40" data-base-h="43">..."#),
+            Some((40.0, 43.0))
+        );
+        assert_eq!(extract_base_size("<html><body>..."), None);
+        assert_eq!(
+            extract_base_size(r#"<html><body data-base-w="40">..."#),
+            None
+        );
+    }
+
 }
