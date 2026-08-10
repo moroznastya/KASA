@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import React, { useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
@@ -42,6 +43,7 @@ const round2 = (val: number): number => Math.round(val * 100) / 100;
 
 const InventoryFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
   const { goBack } = useBackNavigation();
@@ -284,6 +286,7 @@ const InventoryFormPage: React.FC = () => {
         }
       }
 
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
       navigate('/documents');
     } catch {
       // Error handled

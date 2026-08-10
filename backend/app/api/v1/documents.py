@@ -402,7 +402,8 @@ async def list_documents(
         writeoffs = writeoffs_result.scalars().all()
 
         for wo in writeoffs:
-            if status and status != "confirmed":
+            wo_status = wo.status.value if hasattr(wo.status, 'value') else str(wo.status)
+            if status and wo_status != status:
                 continue
             if search and search.lower() not in (wo.number or '').lower():
                 continue
@@ -418,7 +419,7 @@ async def list_documents(
                 doc_id=wo.id,
                 doc_type="write_off",
                 number=wo.number,
-                status="confirmed",
+                status=wo_status,
                 total_amount=float(wo.total_amount) if wo.total_amount else total,
                 supplier_name="",
                 supplier_id_str=None,

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package, ImageUp, Loader2, Camera, Image as ImageIcon, Percent, DollarSign, Hash } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts, useCreateProduct } from '@/hooks/useProducts';
@@ -87,6 +87,7 @@ function buildCategoryOptions(categories: Category[], depth: number = 0): { valu
 
 const InvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { id: editId } = useParams<{ id: string }>();
   const isEdit = !!editId;
   const { goBack } = useBackNavigation();
@@ -490,6 +491,7 @@ const InvoiceFormPage: React.FC = () => {
         
         await api.put(`/invoices/${editId}`, payload);
         toast.success("Накладну оновлено");
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
         navigate("/documents");
         return;
       }
@@ -518,6 +520,7 @@ const InvoiceFormPage: React.FC = () => {
           await confirmMutation.mutateAsync({ id: draftId, documentType: "invoice" });
         }
         
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
         navigate("/documents");
         return;
       }

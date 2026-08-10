@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Banknote, RefreshCw, BookOpen, Package, FileText } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
@@ -63,6 +63,7 @@ const RETURN_ACTION_OPTIONS: { value: ReturnActionType; label: string; descripti
 
 const ReturnInvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { id: editId } = useParams<{ id: string }>();
   const isEdit = !!editId;
   const { goBack } = useBackNavigation();
@@ -408,6 +409,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
         // Редагування — PUT
         await api.put(`/return-invoices/${editId}`, basePayload);
         toast.success('Повернення оновлено');
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
         navigate('/documents');
         return;
       }

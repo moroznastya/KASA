@@ -651,7 +651,7 @@ impl DocumentsService for SqlxDocuments {
         // ── Списання ──
         if q.document_type.is_none() || q.document_type.as_deref() == Some("write_off") {
             let mut sql = String::from(
-                r#"SELECT w.id, w.number, w.total_amount::text, w.created_at, w.created_by_id,
+                r#"SELECT w.id, w.number, w.total_amount::text, w.status::text, w.created_at, w.created_by_id,
                           u.name AS creator,
                           (SELECT COALESCE(sum(p.price*woi.quantity),0)
                            FROM write_off_items woi JOIN products p ON p.id = woi.product_id
@@ -682,8 +682,9 @@ impl DocumentsService for SqlxDocuments {
                 .await
                 .map_err(|e| de(e.to_string()))?;
             for r in rows {
+                let wo_status: String = r.get("status");
                 if let Some(s) = &q.status {
-                    if s != "confirmed" {
+                    if &wo_status != s {
                         continue;
                     }
                 }
@@ -706,7 +707,7 @@ impl DocumentsService for SqlxDocuments {
                         id: r.get::<Uuid, _>("id").to_string(),
                         document_type: "write_off".into(),
                         document_number: number,
-                        status: "confirmed".into(),
+                        status: wo_status,
                         total_amount: serde_json::json!(total_amount),
                         purchase_total: None,
                         supplier_name: String::new(),
@@ -2217,7 +2218,7 @@ impl SqlxDocuments {
 
         if q.document_type.is_none() || q.document_type.as_deref() == Some("write_off") {
             let mut sql = String::from(
-                r#"SELECT w.id, w.number, w.total_amount::text, w.created_at FROM write_offs w WHERE 1=1"#,
+                r#"SELECT w.id, w.number, w.total_amount::text, w.status::text, w.created_at FROM write_offs w WHERE 1=1"#,
             );
             if use_ids {
                 sql.push_str(" AND w.id = ANY($1)");
@@ -2244,9 +2245,10 @@ impl SqlxDocuments {
             sql.push_str(" ORDER BY w.created_at DESC");
             let rows = fetch_docs_ids(&self.pool, &sql, &q.ids).await.map_err(de)?;
             for r in rows {
+                let wo_status: String = r.get("status");
                 if !use_ids {
                     if let Some(s) = &q.status {
-                        if s != "confirmed" {
+                        if &wo_status != s {
                             continue;
                         }
                     }
@@ -2259,7 +2261,7 @@ impl SqlxDocuments {
                 all_docs.push(vec![
                     "Списання".into(),
                     r.get::<String, _>("number"),
-                    "confirmed".into(),
+                    wo_status,
                     day_time_str(created),
                     String::new(),
                     pystr(f64n(
@@ -2515,7 +2517,7 @@ impl SqlxDocuments {
 
         {
             let mut sql = String::from(
-                r#"SELECT w.id, w.number, w.created_at, w.reason::text,
+                r#"SELECT w.id, w.number, w.status::text, w.created_at, w.reason::text,
                           woi.quantity::text AS qty, p.title, p.barcode, p.price::text AS price
                    FROM write_offs w
                    JOIN write_off_items woi ON woi.write_off_id = w.id
@@ -2543,12 +2545,13 @@ impl SqlxDocuments {
                 let created: NaiveDateTime = r.get("created_at");
                 let price = f64n(&r.get::<Option<String>, _>("price").unwrap_or_default());
                 let qty = f64n(&r.get::<String, _>("qty"));
+                let wo_status: String = r.get("status");
                 rows.push(vec![
                     "Списання".into(),
                     r.get::<String, _>("number"),
                     day_str(created),
                     r.get::<String, _>("reason"),
-                    "confirmed".into(),
+                    wo_status,
                     String::new(),
                     r.get::<Option<String>, _>("title")
                         .unwrap_or_else(|| "Невідомий товар".into()),

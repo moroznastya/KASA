@@ -38,6 +38,16 @@ const RETURN_ACTION_LABELS: Record<string, { label: string; icon: React.ReactNod
 };
 
 /** Визначає тип документа з URL шляху */
+/** Мапа типу документа → сегмент шляху для редагування (маршрути в App.tsx з дефісом) */
+const documentEditPaths: Record<string, string> = {
+  invoice: 'invoice',
+  purchase_order: 'purchase-order',
+  transfer: 'transfer',
+  write_off: 'write-off',
+  return_invoice: 'return',
+  inventory: 'inventory',
+};
+
 function getDocumentTypeFromPath(pathname: string): string {
   if (pathname.includes('/inventory/')) return 'inventory';
   if (pathname.includes('/invoice/')) return 'invoice';
@@ -875,7 +885,7 @@ const DocumentViewPage: React.FC = () => {
           )}
           <Button 
             variant="secondary"
-            onClick={() => navigate(docType === "return_invoice" ? `/documents/return/${id}/edit` : `/documents/${docType}/${id}/edit`)}
+            onClick={() => navigate(`/documents/${documentEditPaths[docType] ?? docType}/${id}/edit`)}
             className="flex items-center gap-2"
           >
             <Edit className="w-4 h-4" />

@@ -586,10 +586,11 @@ impl InvoicesV1Service for SqlxInvoices {
             let mut q = "UPDATE invoices SET ".to_string();
             q.push_str(&sets.join(", "));
             q.push_str(&format!(", updated_at = now() WHERE id = ${idx}"));
-            let mut qb = sqlx::query(&q).bind(id);
+            let mut qb = sqlx::query(&q);
             for v in &vals {
                 qb = qb.bind(v);
             }
+            qb = qb.bind(id);
             qb.execute(&self.pool)
                 .await
                 .map_err(|e| de(e.to_string()))?;
@@ -1132,10 +1133,11 @@ impl InvoicesV2Service for SqlxInvoices {
             let mut q = "UPDATE invoices SET ".to_string();
             q.push_str(&sets.join(", "));
             q.push_str(&format!(", updated_at = now() WHERE id = ${idx}"));
-            let mut qb = sqlx::query(&q).bind(id);
+            let mut qb = sqlx::query(&q);
             for v in &vals {
                 qb = qb.bind(v);
             }
+            qb = qb.bind(id);
             qb.execute(&self.pool)
                 .await
                 .map_err(|e| de(e.to_string()))?;
