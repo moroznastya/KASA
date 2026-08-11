@@ -2,12 +2,12 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use rust_decimal::Decimal;
+use sqlx::PgPool;
 use torgashka_prro::prro::{
     PrroQueueItem, PrroQueueStatus, PrroRepoError, PrroRepository, PrroSetting, PrroShift,
     PrroShiftStatus,
 };
-use rust_decimal::Decimal;
-use sqlx::PgPool;
 use uuid::Uuid;
 
 /// sqlx-рядок таблиці prro_shifts (для FromRow → доменна модель).

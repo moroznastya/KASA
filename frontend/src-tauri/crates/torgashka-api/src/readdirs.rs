@@ -18,7 +18,9 @@ use axum::{
 use serde::Deserialize;
 
 use torgashka_application::ReadDirectoryService;
-use torgashka_domain::{CategoryDto, DirectoryError, Page, ProductDto, ProductFilters, SupplierDto};
+use torgashka_domain::{
+    CategoryDto, DirectoryError, Page, ProductDto, ProductFilters, SupplierDto,
+};
 use uuid::Uuid;
 
 use crate::AppState;

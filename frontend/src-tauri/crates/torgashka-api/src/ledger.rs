@@ -29,7 +29,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use torgashka_application::services::ledger::LedgerServiceFacade;
-use torgashka_domain::{LedgerEntriesQuery, LedgerEntryInput, LedgerError, LedgerService as LedgerPort};
+use torgashka_domain::{
+    LedgerEntriesQuery, LedgerEntryInput, LedgerError, LedgerService as LedgerPort,
+};
 
 use crate::auth::Claims;
 use crate::AppState;

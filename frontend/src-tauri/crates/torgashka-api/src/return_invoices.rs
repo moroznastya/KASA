@@ -73,9 +73,11 @@ async fn require_admin_ret(state: &AppState, claims: &Claims) -> Result<Uuid, Re
         .clone()
         .ok_or_else(|| RetErr::Forbidden("Rust-гілка повернень вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        RetErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        RetErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)

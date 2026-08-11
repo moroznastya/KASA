@@ -146,8 +146,8 @@ fn offline_queue_roundtrip_on_disk() {
 
     // ── Персистентність: «перезапуск» — новий екземпляр, той самий файл ──
     drop(db);
-    let db2 =
-        torgashka_infrastructure::offline::db::OfflineDatabase::new().expect("БД відкрита повторно");
+    let db2 = torgashka_infrastructure::offline::db::OfflineDatabase::new()
+        .expect("БД відкрита повторно");
     assert_eq!(
         db2.count_unsynced_receipts().expect("count"),
         1,

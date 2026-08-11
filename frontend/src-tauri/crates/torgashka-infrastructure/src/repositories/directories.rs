@@ -12,13 +12,13 @@ use chrono::NaiveDateTime;
 use sqlx::{PgPool, QueryBuilder, Row};
 use uuid::Uuid;
 
+use rust_decimal::Decimal as RDecimal;
+use std::str::FromStr;
 use torgashka_domain::{
     BarcodeDto, CategoryDto, DirectoryError, Page, ProductDto, ProductFilters, ProductImageDto,
     ReadDirectories, SupplierDto, SupplierProductItem, SupplierProductMovement,
     SupplierProductMovementsResponse, SupplierProductsResponse,
 };
-use rust_decimal::Decimal as RDecimal;
-use std::str::FromStr;
 
 /// sqlx-реалізація [`ReadDirectories`] (тільки читання).
 #[derive(Clone)]

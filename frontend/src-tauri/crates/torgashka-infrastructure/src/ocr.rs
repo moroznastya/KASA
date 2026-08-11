@@ -3,10 +3,10 @@
 //! (таблиці `barcodes` + `products`).
 
 use async_trait::async_trait;
-use torgashka_ocr::{OcrRepoError, OcrRepository, ProductLookup};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+use torgashka_ocr::{OcrRepoError, OcrRepository, ProductLookup};
 use uuid::Uuid;
 
 /// sqlx-рядок products (поля, потрібні invoice_ocr).

@@ -13,12 +13,12 @@
 //! створює токени тим самим форматом/секретом, що Python.
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::PgPool;
 use torgashka_domain::{
     generate_login_from_name, AuthError, AuthService, LoginPinRequest, LoginRequest, LoginResult,
     PublicUserDto, SettingDto, SettingsModulesDto, UserCreateInput, UserDto, UserListDto,
     UserUpdateInput,
 };
-use sqlx::PgPool;
 use uuid::Uuid;
 
 /// SQL-репозиторій auth поверх спільного пулу PostgreSQL.

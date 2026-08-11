@@ -17,7 +17,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-use torgashka_domain::{DirectoryError, SupplierProductMovementsResponse, SupplierProductsResponse};
+use torgashka_domain::{
+    DirectoryError, SupplierProductMovementsResponse, SupplierProductsResponse,
+};
 
 use crate::AppState;
 

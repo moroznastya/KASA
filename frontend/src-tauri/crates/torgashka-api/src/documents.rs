@@ -26,7 +26,9 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_application::DocumentsServiceFacade;
-use torgashka_domain::{BatchConfirmInput, DocListQuery, DocumentsError, DocumentsService, ExportQuery};
+use torgashka_domain::{
+    BatchConfirmInput, DocListQuery, DocumentsError, DocumentsService, ExportQuery,
+};
 
 use crate::{auth::Claims, auth_routes::AuthRouteError, AppState};
 
@@ -92,9 +94,11 @@ async fn require_admin_docs(state: &AppState, claims: &Claims) -> Result<Uuid, D
         .clone()
         .ok_or_else(|| DocErr::Forbidden("Rust-гілка документів вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        DocErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        DocErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)
@@ -524,9 +528,11 @@ pub async fn print(
         )))
     })?;
     let claims = crate::auth::validate_jwt(&token_str, &state.jwt_secret).map_err(|_| {
-        DocErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний або прострочений токен".to_string(),
-        )))
+        DocErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний або прострочений токен".to_string(),
+            ),
+        ))
     })?;
     if claims.sub.is_empty() {
         return Err(DocErr::Auth(AuthRouteError::Plain(
@@ -536,9 +542,11 @@ pub async fn print(
         )));
     }
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        DocErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        DocErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     // Python: шукає користувача, 401 якщо не знайдено, 403 якщо деактивований.
     let repo = crate::auth_routes::auth_repo(&state).map_err(DocErr::Auth)?;

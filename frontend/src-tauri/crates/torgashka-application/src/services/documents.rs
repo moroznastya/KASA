@@ -3,11 +3,11 @@
 //! [`DocumentsServiceFacade`] — тонкий фасад над портом
 //! [`torgashka_domain::DocumentsService`]. Валідація вхідних даних — на рівні API.
 
+use serde_json::Value;
 use torgashka_domain::{
     BatchConfirmInput, BatchConfirmResultDto, DocListDto, DocListQuery, DocPrintDto,
     DocumentsError, DocumentsService as DocumentsPort, ExportData, ExportQuery,
 };
-use serde_json::Value;
 use uuid::Uuid;
 
 /// Фасад операцій з документами. Параметризується реалізацією [`DocumentsPort`].

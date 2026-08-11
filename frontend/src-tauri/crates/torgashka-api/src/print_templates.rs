@@ -85,9 +85,11 @@ async fn require_admin_print(state: &AppState, claims: &Claims) -> Result<Uuid, 
         .clone()
         .ok_or_else(|| PrintErr::Forbidden("Rust-гілка друку вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        PrintErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        PrintErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)

@@ -139,9 +139,10 @@ impl GeminiClient {
     /// Створює клієнт: env `TORGASHKA_OCR_BASE_URL` / `TORGASHKA_OCR_KEYS_FILE` /
     /// `TORGASHKA_OCR_MODEL`, дефолти — як у Python. Завантажує ключі з keys.txt.
     pub fn new() -> Self {
-        let base_url =
-            std::env::var("TORGASHKA_OCR_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        let model = std::env::var("TORGASHKA_OCR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let base_url = std::env::var("TORGASHKA_OCR_BASE_URL")
+            .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+        let model =
+            std::env::var("TORGASHKA_OCR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
         let keys_file = std::env::var("TORGASHKA_OCR_KEYS_FILE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {

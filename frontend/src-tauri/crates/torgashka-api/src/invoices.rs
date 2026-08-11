@@ -84,9 +84,11 @@ async fn require_admin_inv(state: &AppState, claims: &Claims) -> Result<Uuid, In
         .clone()
         .ok_or_else(|| InvErr::Forbidden("Rust-гілка інвойсів вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        InvErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        InvErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)
@@ -200,9 +202,11 @@ pub async fn v1_create(
         .as_ref()
         .ok_or_else(|| InvErr::Forbidden("Rust-гілка інвойсів вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        InvErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        InvErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let out = svc.create_v1(&input, user_id).await?;
     Ok((

@@ -1366,10 +1366,7 @@ mod tests {
 
     #[test]
     fn reason_name_missing_or_not_string() {
-        assert!(matches!(
-            name_err(json!({})),
-            PosErr::Validation(_)
-        ));
+        assert!(matches!(name_err(json!({})), PosErr::Validation(_)));
         assert!(matches!(
             name_err(json!({"name": 123})),
             PosErr::Validation(_)
@@ -1403,7 +1400,13 @@ mod tests {
         ));
         // Рівно 100 символів — проходить (chars, не байти).
         let ok = "д".repeat(100);
-        assert_eq!(parse_write_off_reason_name(&json!({"name": ok})).unwrap().chars().count(), 100);
+        assert_eq!(
+            parse_write_off_reason_name(&json!({"name": ok}))
+                .unwrap()
+                .chars()
+                .count(),
+            100
+        );
         // 100 символів "д" = 200 байтів — байтовий len() не має відхиляти.
         assert_eq!(ok.len(), 200);
     }

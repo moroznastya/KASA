@@ -33,8 +33,11 @@ fn cades_signer_serial_and_name_match_python() {
         return;
     };
     let mut sdk = torgashka_prro::crypto::iit::IitSdk::load(&so).expect("SDK завантажується");
-    sdk.initialize(None, &torgashka_prro::crypto::default_iit_cert_store().unwrap())
-        .expect("EUInitialize");
+    sdk.initialize(
+        None,
+        &torgashka_prro::crypto::default_iit_cert_store().unwrap(),
+    )
+    .expect("EUInitialize");
     sdk.load_jks_key(&dstu_jks_path(), "test2003")
         .expect("JKS ДСТУ завантажується");
 
@@ -58,8 +61,11 @@ fn cades_sign_verify_and_structure() {
         return;
     };
     let mut sdk = torgashka_prro::crypto::iit::IitSdk::load(&so).expect("SDK");
-    sdk.initialize(None, &torgashka_prro::crypto::default_iit_cert_store().unwrap())
-        .expect("init");
+    sdk.initialize(
+        None,
+        &torgashka_prro::crypto::default_iit_cert_store().unwrap(),
+    )
+    .expect("init");
     sdk.load_jks_key(&dstu_jks_path(), "test2003").expect("jks");
 
     let xml = b"<DAT DI=\"1\" FN=\"4538765845\" TN=\"345612052809\" V=\"1\" ZN=\"AA57506761\"><C T=\"0\"><P C=\"120\" NM=\"Test\" PRC=\"100\" Q=\"1\" SM=\"100\" TX=\"0\"/></C><TS>20260807112601</TS></DAT>";
@@ -112,8 +118,11 @@ fn cades_verify_python_golden_signature() {
     assert!(golden.len() > 2000, "golden не порожній");
 
     let mut sdk = torgashka_prro::crypto::iit::IitSdk::load(&so).expect("SDK");
-    sdk.initialize(None, &torgashka_prro::crypto::default_iit_cert_store().unwrap())
-        .expect("init");
+    sdk.initialize(
+        None,
+        &torgashka_prro::crypto::default_iit_cert_store().unwrap(),
+    )
+    .expect("init");
     sdk.load_jks_key(&dstu_jks_path(), "test2003").expect("jks");
     assert!(
         sdk.verify_data_internal(&golden, None).expect("verify"),

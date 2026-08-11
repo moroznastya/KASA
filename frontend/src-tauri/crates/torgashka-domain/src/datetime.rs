@@ -7,8 +7,8 @@
 //! наносекунди (serde `%.f` приймає до 9 цифр, але NaiveDateTime має
 //! наносекундну точність — залишаємо як є, головне прибрати `Z`/offset).
 
-use serde::{Deserialize, Deserializer};
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Deserializer};
 
 /// Розбирає рядок дати: ISO з `Z`/offset або без — у `NaiveDateTime`.
 pub fn parse_naive_dt(s: &str) -> Option<NaiveDateTime> {
@@ -60,9 +60,8 @@ where
     D: Deserializer<'de>,
 {
     let s = String::deserialize(d)?;
-    parse_naive_dt(&s).ok_or_else(|| {
-        serde::de::Error::custom(format!("invalid datetime format: '{s}'"))
-    })
+    parse_naive_dt(&s)
+        .ok_or_else(|| serde::de::Error::custom(format!("invalid datetime format: '{s}'")))
 }
 
 /// `Option<NaiveDateTime>` з JSON (null / відсутнє → None).

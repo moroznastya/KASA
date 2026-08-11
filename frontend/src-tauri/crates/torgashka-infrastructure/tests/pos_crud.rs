@@ -240,16 +240,23 @@ async fn write_off_and_transfer_flow() {
         }],
     };
     let wo = r.create_write_off(&wo).await.expect("write-off");
-    assert_eq!(wo.status, "confirmed");
+    // Python-еталон (api/v1/write_offs.py:166-169): create → draft,
+    // проведення — через confirm_write_off. Draft НЕ змінює залишки.
+    assert_eq!(wo.status, "draft");
     assert!(wo.number.starts_with("СП-"));
     assert_eq!(wo.items[0].quantity, "2"); // вхідна scale
-    assert_eq!(wo.total_amount.as_deref(), Some("0.0")); // float-джерело Python
+    assert_eq!(wo.total_amount.as_deref(), Some("200.00")); // 2 шт × 100.00
+    assert_eq!(stock_of(&p, pid).await, 100000);
+
+    // Проведення: confirm → status confirmed, stock зменшується на 2.
+    let wo = r.confirm_write_off(wo.id).await.expect("confirm write-off");
+    assert_eq!(wo.status, "confirmed");
     assert_eq!(stock_of(&p, pid).await, 98000);
 
     // GET → scale БД.
     let got = r.get_write_off(wo.id).await.expect("get");
     assert_eq!(got.items[0].quantity, "2.000");
-    assert_eq!(got.total_amount.as_deref(), Some("0.00"));
+    assert_eq!(got.total_amount.as_deref(), Some("200.00"));
 
     // Transfer: create draft → confirm → cancel (відкат).
     let tr = TransferCreateInput {

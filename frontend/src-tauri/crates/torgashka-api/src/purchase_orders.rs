@@ -78,9 +78,11 @@ async fn require_admin_po(state: &AppState, claims: &Claims) -> Result<Uuid, PoE
         .clone()
         .ok_or_else(|| PoErr::Forbidden("Rust-гілка замовлень вимкнена".to_string()))?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
-        PoErr::Auth(AuthRouteError::Plain(torgashka_domain::AuthError::Unauthorized(
-            "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
-        )))
+        PoErr::Auth(AuthRouteError::Plain(
+            torgashka_domain::AuthError::Unauthorized(
+                "Недійсний токен: відсутній ідентифікатор користувача".to_string(),
+            ),
+        ))
     })?;
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)

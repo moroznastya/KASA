@@ -32,7 +32,9 @@ async fn get_available_ports() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn get_devices_status(app: tauri::AppHandle) -> Result<Vec<torgashka_infrastructure::devices::DeviceStatus>, String> {
+async fn get_devices_status(
+    app: tauri::AppHandle,
+) -> Result<Vec<torgashka_infrastructure::devices::DeviceStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         torgashka_infrastructure::devices::get_devices_status(app)
     })
@@ -41,14 +43,16 @@ async fn get_devices_status(app: tauri::AppHandle) -> Result<Vec<torgashka_infra
 }
 
 #[tauri::command]
-async fn get_system_printers() -> Result<Vec<torgashka_infrastructure::devices::PrinterInfo>, String> {
+async fn get_system_printers() -> Result<Vec<torgashka_infrastructure::devices::PrinterInfo>, String>
+{
     tauri::async_runtime::spawn_blocking(torgashka_infrastructure::devices::get_system_printers)
         .await
         .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn get_detected_devices() -> Result<torgashka_infrastructure::devices::DetectedDevices, String> {
+async fn get_detected_devices() -> Result<torgashka_infrastructure::devices::DetectedDevices, String>
+{
     tauri::async_runtime::spawn_blocking(torgashka_infrastructure::devices::get_detected_devices)
         .await
         .map_err(|e| e.to_string())?
@@ -60,8 +64,6 @@ async fn get_scanners() -> Result<Vec<torgashka_infrastructure::devices::Scanner
         .await
         .map_err(|e| e.to_string())?
 }
-
-
 
 // ── Допоміжні функції роботи з вікном ───────────────────────────────────────
 

@@ -20,10 +20,10 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use torgashka_domain::{
-    iso_utc_z, parse_scaled2, parse_scaled3, DocItemInput, MySessionsDto, PosError,
-    PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput,
-    ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput, ReceiptListDto,
-    ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
+    iso_utc_z, parse_scaled2, parse_scaled3, DocItemInput, MySessionsDto, PosError, PosService,
+    ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput, ReceiptDto,
+    ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput, ReceiptListDto, ReceiptListQuery,
+    ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
     ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, ReceiptV1ListDto,
     ReceiptV1ListQuery, ReceiptV1SearchDto, ReceiptV1SearchItemDto, RecentSaleDto,
     ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferItemDto,
@@ -158,7 +158,6 @@ async fn resolve_item_prices(
     };
     Ok((cost_out, price_out))
 }
-
 
 // ─── Чеки v2: створення ────────────────────────────────────────────────────
 
@@ -3084,12 +3083,13 @@ impl PosService for SqlxPos {
 
     async fn create_write_off_reason(&self, name: &str) -> Result<WriteOffReasonItem, PosError> {
         // 409: дублікат назви (case-insensitive) — як Python.
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM write_off_reasons WHERE lower(name) = lower($1))")
-                .bind(name)
-                .fetch_one(&self.pool)
-                .await
-                .pe()?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM write_off_reasons WHERE lower(name) = lower($1))",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await
+        .pe()?;
         if exists {
             return Err(PosError::Conflict(format!("Причина «{name}» вже існує")));
         }
