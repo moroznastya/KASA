@@ -327,6 +327,10 @@ fn render_single(
         .get("barcode_max_width_mm")
         .and_then(|v| v.as_f64())
         .unwrap_or(40.0);
+    let qr_scale = extra_context
+        .get("qr_scale")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.9);
     // Крок 3: заміна змінних.
     let barcode_val = product
         .get("barcode")
@@ -338,6 +342,7 @@ fn render_single(
         barcode_height_mm,
         &barcode_type,
         barcode_max_width_mm,
+        qr_scale,
     );
     let mut replacements: Vec<(&str, String)> = vec![
         ("title", esc(title)),
@@ -384,6 +389,14 @@ fn render_single(
                 .get("height")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")),
+        ),
+        (
+            "root_font_mm",
+            esc(&extra_context
+                .get("root_font_mm")
+                .and_then(|v| v.as_f64())
+                .map(pf)
+                .unwrap_or_default()),
         ),
     ];
     for (k, v) in replacements.drain(..) {
@@ -512,8 +525,18 @@ pub(crate) fn calc_grid(
 fn extract_base_size(template: &str) -> Option<(f64, f64)> {
     let re_w = regex::Regex::new(r#"data-base-w="([\d.]+)""#).unwrap();
     let re_h = regex::Regex::new(r#"data-base-h="([\d.]+)""#).unwrap();
-    let w = re_w.captures(template)?.get(1)?.as_str().parse::<f64>().ok()?;
-    let h = re_h.captures(template)?.get(1)?.as_str().parse::<f64>().ok()?;
+    let w = re_w
+        .captures(template)?
+        .get(1)?
+        .as_str()
+        .parse::<f64>()
+        .ok()?;
+    let h = re_h
+        .captures(template)?
+        .get(1)?
+        .as_str()
+        .parse::<f64>()
+        .ok()?;
     Some((w, h))
 }
 
@@ -527,15 +550,28 @@ fn apply_scale(rendered: &str, base: (f64, f64), w: f64, h: f64) -> String {
     if (w / bw - 1.0).abs() < 0.001 && (h / bh - 1.0).abs() < 0.001 {
         return rendered.to_string();
     }
-    format!(
+    let fx = w / bw;
+    let fy = h / bh;
+    let mut out = String::new();
+    if (fx - fy).abs() > 0.001 {
+        // Нерівномірний scale спотворює квадратний QR у прямокутник —
+        // компенсуємо зворотним scale для .qr-wrap (див. generate_qr_svg).
+        out.push_str(&format!(
+            "<style>.qr-wrap{{transform: scale({ix},{iy}); transform-origin: center;}}</style>",
+            ix = pf(1.0 / fx),
+            iy = pf(1.0 / fy)
+        ));
+    }
+    out.push_str(&format!(
         r#"<div style="width: {w}mm; height: {h}mm; overflow: hidden;"><div style="width: {bw}mm; height: {bh}mm; transform: scale({fx},{fy}); transform-origin: top left;">{rendered}</div></div>"#,
         w = pf(w),
         h = pf(h),
         bw = pf(bw),
         bh = pf(bh),
-        fx = pf(w / bw),
-        fy = pf(h / bh)
-    )
+        fx = pf(fx),
+        fy = pf(fy)
+    ));
+    out
 }
 
 // ─── Grid (A4) ──────────────────────────────────────────────────────────────
@@ -589,13 +625,11 @@ pub(crate) fn render_price_tags_grid(
         .get("barcode_type")
         .and_then(|v| v.as_str())
         .unwrap_or("code128");
-    let barcode_height_mm = if barcode_type == "qr" {
-        barcode_h
-            .max(width_mm * 0.28)
-            .min((height_mm * 0.35).max(3.0))
-    } else {
-        barcode_h.max(10.0).min((height_mm * 0.28).max(3.0))
-    };
+    // Code128 на ціннику: мінімум 16мм, не більше 45% висоти цінника.
+    // (flex-контейнер стискає код до доступного місця, якщо контент
+    //  назви/ціни займає більше простору; 16мм гарантує читабельність.)
+    let barcode_height_mm =
+        (barcode_h.max(16.0).min((height_mm * 0.45).max(3.0)) * 10.0).round() / 10.0;
     let expanded = expand_products(products);
     let extra_context = json!({
         "width": pf(width_mm),
@@ -603,6 +637,10 @@ pub(crate) fn render_price_tags_grid(
         "barcode_type": barcode_type,
         "barcode_height_mm": barcode_height_mm,
         "barcode_max_width_mm": width_mm * 0.92,
+        // QR на ціннику = номінал code128 (1:1): вміщується разом із
+        // назвою (2 рядки) та ціною в 43мм, зберігаючи однакову висоту.
+        "qr_scale": 1.0,
+        "root_font_mm": ((height_mm * 0.093) * 10.0).round() / 10.0,
     });
     let base = extract_base_size(template);
     let mut rendered_items = Vec::new();
@@ -615,12 +653,7 @@ pub(crate) fn render_price_tags_grid(
         {
             product["created_date"] = json!(chrono::Utc::now().format("%d.%m.%Y").to_string());
         }
-        let mut item = render_single(
-            template,
-            &product,
-            enabled_fields.as_ref(),
-            &extra_context,
-        );
+        let mut item = render_single(template, &product, enabled_fields.as_ref(), &extra_context);
         if let Some(b) = base {
             item = apply_scale(&item, b, width_mm, height_mm);
         }
@@ -726,11 +759,11 @@ pub(crate) fn render_labels_sequential(
         .get("barcode_height_mm")
         .and_then(|v| v.as_f64())
         .unwrap_or(12.0);
-    let barcode_height_mm = if barcode_type == "qr" {
-        (barcode_h * 1.35).min(height_mm * 0.58).max(12.0)
-    } else {
-        barcode_h.max(12.0).min(height_mm * 0.65)
-    };
+    // Code128 на етикетці: barcode_h×1.5, не більше 36% висоти етикетки.
+    // Обмеження 36% гарантує, що svg (45мм завширшки) + цифровий підпис
+    // вміщуються у 40мм разом із датою/назвою/ціною без обрізання.
+    let barcode_height_mm =
+        ((barcode_h * 1.5).min(height_mm * 0.36).max(10.0) * 10.0).round() / 10.0;
     let expanded = expand_products(products);
     let total_labels = expanded.len() as i64;
     let extra_context = json!({
@@ -739,6 +772,11 @@ pub(crate) fn render_labels_sequential(
         "barcode_type": barcode_type,
         "barcode_height_mm": barcode_height_mm,
         "barcode_max_width_mm": effective_width * 0.92,
+        // QR на етикетці = 92% номіналу code128 (15.2×0.92 = 14.0мм):
+        // гарантовано вміщується разом із датою + назвою (2 рядки) +
+        // ціною у висоту 40мм без обрізання.
+        "qr_scale": 0.92,
+        "root_font_mm": ((height_mm * 0.119) * 10.0).round() / 10.0,
     });
     let base = extract_base_size(template);
     let mut labels_html = String::new();
@@ -808,23 +846,38 @@ fn generate_barcode_svg(
     height_mm: f64,
     barcode_type: &str,
     max_width_mm: f64,
+    qr_scale: f64,
 ) -> String {
     if barcode_text.trim().is_empty() {
         return String::new();
     }
     let btype = barcode_type.to_lowercase();
     if btype == "qr" {
-        let box_size = height_mm.min(max_width_mm);
+        // QR = qr_scale × запланованої висоти (зменшено, щоб вміщатись разом
+        // з цифровим підписом та рештою контенту етикетки/цінника),
+        // обмежений max_width_mm і мінімумом 8мм.
+        // Округлення до 1 знака: інакше 26.4×0.62 дає "16.368000000000002" в HTML.
+        let box_size = ((height_mm * qr_scale).min(max_width_mm).max(8.0) * 10.0).round() / 10.0;
         return generate_qr_svg(barcode_text, box_size);
     }
-    // Code128: спрощений, але валідний SVG (чередування чорних/білих модулів).
-    let bytes = code128_bytes(barcode_text);
+    // Code128 через стандартну бібліотеку barcoders (замість ручної таблиці).
+    // Префікс 'Ɓ' = Code128B: покриває весь ASCII 32–127 (цифри, літери, символи).
+    // encode() → Vec<u8> (0/1): start(11) + 11 на символ + checksum(11) + stop+term(13).
+    let encoded = match barcoders::sym::code128::Code128::new(format!("\u{0181}{barcode_text}")) {
+        Ok(b) => b.encode(),
+        Err(_) => {
+            return format!(
+                "<span style=\"font-family: monospace; font-size: 10px;\">[штрих-код: {}]</span>",
+                esc(barcode_text)
+            );
+        }
+    };
     // Адаптивна ширина модуля:
-    //   natural = сума всіх модулів (PATTERNS + stop) × 0.25мм.
+    //   natural = сума всіх модулів × 0.25мм.
     //   - natural > max_width  → стиснути, щоб total_w (з quiet zone) ≤ max_width;
     //   - natural < 75% ширини → розтягнути до max_width (cap 0.4мм/модуль),
     //     щоб короткі коди заповнювали контейнер, а не "плавали" зліва.
-    let total_modules: u32 = bytes.iter().map(|&b| b as u32).sum();
+    let total_modules = encoded.len() as u32;
     let natural = total_modules as f64 * 0.25;
     let mut module_width = 0.25;
     if natural > max_width_mm {
@@ -834,30 +887,40 @@ fn generate_barcode_svg(
     } else if natural < max_width_mm * 0.75 {
         module_width = (max_width_mm / total_modules as f64).min(0.4);
     }
-    let mut bars: Vec<(f64, f64)> = Vec::new(); // (x, width)
-    let mut x: f64 = 0.0;
-    let mut is_bar = true;
-    for &b in &bytes {
-        if is_bar {
-            bars.push((x, b as f64 * module_width));
+    // Згрупувати модулі у штрихи: послідовні 1 = один <rect>.
+    let mut bars: Vec<(u32, u32)> = Vec::new(); // (start_module, end_module_exclusive)
+    let mut i = 0usize;
+    while i < encoded.len() {
+        if encoded[i] == 1 {
+            let bar_start = i;
+            while i < encoded.len() && encoded[i] == 1 {
+                i += 1;
+            }
+            bars.push((bar_start as u32, i as u32));
+        } else {
+            i += 1;
         }
-        x += b as f64 * module_width;
-        is_bar = !is_bar;
     }
     let quiet = 2.0 * module_width;
-    let total_w = x + quiet;
+    let total_w = total_modules as f64 * module_width + quiet;
+    // shape-rendering="crispEdges": чіткі краї без антиаліасингу (виразність).
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" \
-         style=\"max-width: 100%; height: auto;\" width=\"{w}\" height=\"{h}\">",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\"          shape-rendering=\"crispEdges\" style=\"width: {w}mm; max-width: 100%; height: auto;\"          width=\"{w}\" height=\"{h}\">",
         w = pf(total_w),
         h = pf(height_mm)
     );
-    for (bx, bw) in bars {
+    // Біле тло під штрихами — контраст чорних штрихів.
+    svg.push_str(&format!(
+        "<rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"white\"/>",
+        w = pf(total_w),
+        h = pf(height_mm)
+    ));
+    for (bs, be) in &bars {
         svg.push_str(&format!(
-            "<rect x=\"{}\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"black\"/>",
-            pf(bx + module_width),
-            pf(bw),
-            pf(height_mm)
+            "<rect x=\"{x}\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"black\"/>",
+            x = pf(*bs as f64 * module_width + module_width),
+            w = pf((*be - *bs) as f64 * module_width),
+            h = pf(height_mm)
         ));
     }
     svg.push_str("</svg>");
@@ -869,143 +932,11 @@ fn generate_barcode_svg(
         barcode_text.to_string()
     };
     format!(
-        "<div style=\"display: flex; flex-direction: column; align-items: center;\">{svg}\
+        "<div class=\"qr-wrap\" style=\"display: flex; flex-direction: column; align-items: center;\">{svg}\
          <span style=\"font-family: monospace; font-size: 9px; font-weight: bold; color: #000; \
          margin-top: 1px; letter-spacing: 0.5px;\">{}</span></div>",
         esc(&display)
     )
-}
-
-/// Мінімальний Code128 (кодування ASCII → послідовність ширин модулів).
-fn code128_bytes(text: &str) -> Vec<u8> {
-    // Таблиця Code128 (pattern: 6 елементів, ширина в модулях; 1=bar, 0=space).
-    const PATTERNS: [[u8; 6]; 106] = [
-        [2, 1, 2, 2, 2, 2],
-        [2, 2, 2, 1, 2, 2],
-        [2, 2, 2, 2, 2, 1],
-        [1, 2, 1, 2, 2, 3],
-        [1, 2, 1, 3, 2, 2],
-        [1, 3, 1, 2, 2, 2],
-        [1, 2, 2, 2, 1, 3],
-        [1, 2, 2, 3, 1, 2],
-        [1, 3, 2, 2, 1, 2],
-        [2, 2, 1, 2, 1, 3],
-        [2, 2, 1, 3, 1, 2],
-        [2, 3, 1, 2, 1, 2],
-        [1, 1, 2, 2, 3, 2],
-        [1, 2, 2, 1, 3, 2],
-        [1, 2, 2, 2, 3, 1],
-        [1, 1, 3, 2, 2, 2],
-        [1, 2, 3, 1, 2, 2],
-        [1, 2, 3, 2, 2, 1],
-        [2, 2, 3, 2, 1, 1],
-        [2, 2, 1, 1, 3, 2],
-        [2, 2, 1, 2, 3, 1],
-        [2, 1, 3, 2, 1, 2],
-        [2, 2, 3, 1, 1, 2],
-        [3, 1, 2, 1, 3, 1],
-        [3, 1, 1, 2, 2, 2],
-        [3, 2, 1, 1, 2, 2],
-        [3, 2, 1, 2, 2, 1],
-        [3, 1, 2, 2, 1, 2],
-        [3, 2, 2, 1, 1, 2],
-        [3, 2, 2, 2, 1, 1],
-        [2, 1, 2, 1, 2, 3],
-        [2, 1, 2, 3, 2, 1],
-        [2, 3, 2, 1, 2, 1],
-        [1, 1, 1, 3, 2, 3],
-        [1, 3, 1, 1, 2, 3],
-        [1, 3, 1, 3, 2, 1],
-        [1, 1, 2, 3, 1, 3],
-        [1, 3, 2, 1, 1, 3],
-        [1, 3, 2, 3, 1, 1],
-        [2, 1, 1, 3, 1, 3],
-        [2, 3, 1, 1, 1, 3],
-        [2, 3, 1, 3, 1, 1],
-        [1, 1, 2, 1, 3, 3],
-        [1, 1, 2, 3, 3, 1],
-        [1, 3, 2, 1, 3, 1],
-        [1, 1, 3, 1, 2, 3],
-        [1, 1, 3, 3, 2, 1],
-        [1, 3, 3, 1, 2, 1],
-        [3, 1, 3, 1, 2, 1],
-        [2, 1, 1, 3, 3, 1],
-        [2, 3, 1, 1, 3, 1],
-        [2, 1, 3, 1, 1, 3],
-        [2, 1, 3, 3, 1, 1],
-        [2, 1, 3, 1, 3, 1],
-        [3, 1, 1, 1, 2, 3],
-        [3, 1, 1, 3, 2, 1],
-        [3, 3, 1, 1, 2, 1],
-        [3, 1, 2, 1, 1, 3],
-        [3, 1, 2, 3, 1, 1],
-        [3, 3, 2, 1, 1, 1],
-        [3, 1, 4, 1, 1, 1],
-        [2, 2, 1, 4, 1, 1],
-        [4, 3, 1, 1, 1, 1],
-        [1, 1, 1, 2, 2, 4],
-        [1, 1, 1, 4, 2, 2],
-        [1, 2, 1, 1, 2, 4],
-        [1, 2, 1, 4, 2, 1],
-        [1, 4, 1, 1, 2, 2],
-        [1, 4, 1, 2, 2, 1],
-        [1, 1, 2, 2, 1, 4],
-        [1, 1, 2, 4, 1, 2],
-        [1, 2, 2, 1, 1, 4],
-        [1, 2, 2, 4, 1, 1],
-        [1, 4, 2, 1, 1, 2],
-        [1, 4, 2, 2, 1, 1],
-        [2, 4, 1, 2, 1, 1],
-        [2, 2, 1, 1, 1, 4],
-        [4, 1, 3, 1, 1, 1],
-        [2, 4, 1, 1, 1, 2],
-        [1, 3, 4, 1, 1, 1],
-        [1, 1, 1, 2, 4, 2],
-        [1, 2, 1, 1, 4, 2],
-        [1, 2, 1, 2, 4, 1],
-        [1, 1, 4, 2, 1, 2],
-        [1, 2, 4, 1, 1, 2],
-        [1, 2, 4, 2, 1, 1],
-        [4, 1, 1, 2, 1, 2],
-        [4, 2, 1, 1, 1, 2],
-        [4, 2, 1, 2, 1, 1],
-        [2, 1, 2, 1, 4, 1],
-        [2, 1, 4, 1, 2, 1],
-        [4, 1, 2, 1, 2, 1],
-        [1, 1, 1, 1, 4, 3],
-        [1, 1, 1, 3, 4, 1],
-        [1, 3, 1, 1, 4, 1],
-        [1, 1, 4, 1, 1, 3],
-        [1, 1, 4, 3, 1, 1],
-        [4, 1, 1, 1, 1, 3],
-        [4, 1, 1, 3, 1, 1],
-        [1, 1, 3, 1, 4, 1],
-        [1, 1, 4, 1, 3, 1],
-        [3, 1, 1, 1, 4, 1],
-        [4, 1, 1, 1, 3, 1],
-        [2, 1, 1, 4, 1, 2],
-        [2, 1, 1, 2, 1, 4],
-        [2, 1, 1, 2, 3, 2],
-    ];
-    // Кодуємо (Start B + data + checksum + Stop).
-    let bytes: Vec<u8> = text.as_bytes().to_vec();
-    let mut codes: Vec<usize> = Vec::with_capacity(bytes.len() + 3);
-    codes.push(104); // Start B
-    let mut sum: usize = 104;
-    for (i, &b) in bytes.iter().enumerate() {
-        let code = (b - 32) as usize; // Code B: ASCII 32..127 → 0..95
-        codes.push(code);
-        sum += code * (i + 1);
-    }
-    codes.push(sum % 103);
-    // Stop (106) НЕ додається в codes: PATTERNS має 106 елементів (0..105),
-    // stop pattern обробляється окремо нижче (7 модулів з додатковою смугою).
-    let mut out: Vec<u8> = Vec::new();
-    for c in &codes {
-        out.extend_from_slice(&PATTERNS[*c]);
-    }
-    out.extend_from_slice(&[2, 3, 3, 1, 1, 1, 2]);
-    out
 }
 
 /// Python _generate_qr_svg (реальний QR: error correction M, border=1,
@@ -1015,7 +946,8 @@ fn generate_qr_svg(data: &str, box_size_mm: f64) -> String {
     if data.trim().is_empty() {
         return String::new();
     }
-    let qr = match qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M) {
+    let qr = match qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M)
+    {
         Ok(q) => q,
         Err(_) => {
             // Fallback: як Python при помилці генерації (екранований текст).
@@ -1030,7 +962,7 @@ fn generate_qr_svg(data: &str, box_size_mm: f64) -> String {
     let total = n + 2 * border;
     let colors = qr.to_colors();
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {t} {t}\" style=\"width: {w}mm; height: {w}mm; max-width: 100%; height: auto;\">",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {t} {t}\" style=\"width: {w}mm; height: {w}mm;\">",
         t = total,
         w = pf(box_size_mm)
     );
@@ -1066,7 +998,7 @@ fn generate_qr_svg(data: &str, box_size_mm: f64) -> String {
         data.to_string()
     };
     format!(
-        "<div style=\"display: flex; flex-direction: column; align-items: center;\">{svg}\
+        "<div class=\"qr-wrap\" style=\"display: flex; flex-direction: column; align-items: center;\">{svg}\
          <span style=\"font-family: monospace; font-size: 9px; font-weight: bold; color: #000; \
          margin-top: 1px; letter-spacing: 0.5px;\">{}</span></div>",
         esc(&display)
@@ -1081,9 +1013,16 @@ mod tests {
     fn qr_svg_is_real_svg_not_stub() {
         let out = generate_qr_svg("TEST123", 12.0);
         assert!(out.contains("<svg"), "має бути SVG, отримано: {out}");
-        assert!(!out.contains("[QR:"), "не має бути заглушки, отримано: {out}");
+        assert!(
+            !out.contains("[QR:"),
+            "не має бути заглушки, отримано: {out}"
+        );
         assert!(out.contains("viewBox"), "viewBox відсутній");
         assert!(out.contains("fill=\"black\""), "чорні модулі відсутні");
+        assert!(
+            out.contains("class=\"qr-wrap\""),
+            "зовнішня обгортка має мати class qr-wrap: {out}"
+        );
         assert!(out.contains("TEST123"), "підпис цифрами відсутній");
     }
 
@@ -1096,10 +1035,19 @@ mod tests {
 
     #[test]
     fn qr_svg_square_and_scaled_to_mm() {
-        let out = generate_qr_svg("https://example.com/item/42", 30.0);
-        assert!(out.contains("width: 30.0mm; height: 30.0mm"), "масштаб мм: {out}");
+        // QR = 90% висоти: generate_barcode_svg(..., height=30, max_width=30)
+        // → box_size = min(30×0.9, 30) = 27.0мм.
+        let out = generate_barcode_svg("https://example.com/item/42", 30.0, "qr", 30.0, 0.9);
+        assert!(
+            out.contains("width: 27.0mm; height: 27.0mm"),
+            "масштаб мм (очікується 27.0мм = 90% висоти): {out}"
+        );
         // viewBox має бути квадратним (total = n + 2)
-        let vb = out.split("viewBox=\"").nth(1).and_then(|s| s.split('\"').next()).unwrap_or("");
+        let vb = out
+            .split("viewBox=\"")
+            .nth(1)
+            .and_then(|s| s.split('\"').next())
+            .unwrap_or("");
         let dims: Vec<&str> = vb.split(' ').collect();
         assert_eq!(dims.len(), 4, "viewBox: {vb}");
         assert_eq!(dims[2], dims[3], "viewBox має бути квадратним: {vb}");
@@ -1135,20 +1083,23 @@ mod tests {
     #[test]
     fn code128_fits_max_width() {
         // EAN-13 (13 цифр): природна ширина ≈ 44.5мм > 36.8 → має вписатись.
-        let out = generate_barcode_svg("4820012345678", 12.0, "code128", 36.8);
+        let out = generate_barcode_svg("4820012345678", 12.0, "code128", 36.8, 0.9);
         let w = svg_width_mm(&out);
         assert!(
             w <= 36.8 + 1e-9,
             "ширина {w}мм > 36.8мм (не вписано в max_width)"
         );
-        assert!(w > 30.0, "занадто вузький: {w}мм (має заповнювати контейнер)");
+        assert!(
+            w > 30.0,
+            "занадто вузький: {w}мм (має заповнювати контейнер)"
+        );
         assert!(!out.contains("[QR:"), "не має бути заглушки");
     }
 
     #[test]
     fn code128_short_code_stretched() {
         // "12345" → 90 модулів, природна ширина 22.5мм < 75% від 36.8 → розтяг.
-        let out = generate_barcode_svg("12345", 12.0, "code128", 36.8);
+        let out = generate_barcode_svg("12345", 12.0, "code128", 36.8, 0.9);
         let w = svg_width_mm(&out);
         let natural: f64 = 90.0 * 0.25;
         assert!(
@@ -1163,12 +1114,77 @@ mod tests {
     }
 
     #[test]
+    fn barcoders_code128_valid_structure() {
+        // Start-патерн Code128A = 11010000100 (barcoders, префікс '\u{00C0}').
+        let a = barcoders::sym::code128::Code128::new("\u{00C0}TEST")
+            .unwrap()
+            .encode();
+        let start_a: String = a
+            .iter()
+            .take(11)
+            .map(|&v| if v == 1 { '1' } else { '0' })
+            .collect();
+        assert_eq!(start_a, "11010000100", "Code128A start-патерн");
+
+        // Наш генератор (Code128B, префікс '\u{0181}'): start + stop+term валідні.
+        let b = barcoders::sym::code128::Code128::new("\u{0181}4820012345678")
+            .unwrap()
+            .encode();
+        let start_b: String = b
+            .iter()
+            .take(11)
+            .map(|&v| if v == 1 { '1' } else { '0' })
+            .collect();
+        assert_eq!(start_b, "11010010000", "Code128B start-патерн");
+        let tail: String = b
+            .iter()
+            .skip(b.len() - 13)
+            .map(|&v| if v == 1 { '1' } else { '0' })
+            .collect();
+        assert_eq!(tail, "1100011101011", "stop+term патерн");
+
+        // Інтеграція: generate_barcode_svg рендерить через barcoders
+        // (crispEdges = без антиаліасингу, біле тло для контрасту).
+        let out = generate_barcode_svg("4820012345678", 12.0, "code128", 36.8, 0.9);
+        assert!(out.contains("<svg"), "SVG відсутній: {out}");
+        assert!(
+            out.contains("shape-rendering=\"crispEdges\""),
+            "crispEdges відсутній: {out}"
+        );
+        assert!(
+            out.contains("<rect x=\"0\" y=\"0\" width=\"36.8\" height=\"12.0\" fill=\"white\"/>"),
+            "біле тло відсутнє: {out}"
+        );
+    }
+
+    #[test]
     fn qr_box_size_capped_by_max_width() {
-        // QR: box_size = min(height_mm, max_width_mm) → 20.0мм, не 30.0.
-        let out = generate_barcode_svg("TEST", 30.0, "qr", 20.0);
+        // QR: box_size = (height×0.9).min(max_width).max(8).
+        // min(27, 20) = 20.0мм — обмеження max_width.
+        let out = generate_barcode_svg("TEST", 30.0, "qr", 20.0, 0.9);
         assert!(
             out.contains("width: 20.0mm; height: 20.0mm"),
             "QR не обмежено max_width: {out}"
+        );
+    }
+
+    #[test]
+    fn qr_box_size_equals_height() {
+        // min(30×0.9, 30) = 27.0мм — QR = 90% запланованої висоти.
+        let out = generate_barcode_svg("TEST", 30.0, "qr", 30.0, 0.9);
+        assert!(
+            out.contains("width: 27.0mm; height: 27.0mm"),
+            "QR має бути 90% висоти (27.0мм): {out}"
+        );
+    }
+
+    #[test]
+    fn qr_box_size_has_8mm_floor() {
+        // (5×0.9=4.5).min(10)=4.5 < 8 → нижня межа 8.0мм (сканованість).
+        let out = generate_barcode_svg("TEST", 5.0, "qr", 10.0, 0.9);
+        assert!(
+            out.contains("width: 8.0mm; height: 8.0mm"),
+            "QR менше 8мм (нижня межа не застосована): {out}"
         );
     }
 
@@ -1200,6 +1216,193 @@ mod tests {
     }
 
     #[test]
+    fn apply_scale_nonuniform_adds_qr_counter_scale() {
+        let html = "<div>TEST</div>";
+        // Етикетка escpos 58x40 → effective 48x40: scale(0.8276, 1.0) — нерівномірний.
+        let out = apply_scale(html, (58.0, 40.0), 48.0, 40.0);
+        assert!(
+            out.contains(".qr-wrap{transform: scale(1.208"),
+            "counter-scale для QR відсутній: {out}"
+        );
+        assert!(
+            out.contains("transform-origin: center;"),
+            "transform-origin: center відсутній: {out}"
+        );
+        assert!(
+            out.contains("transform: scale(0.8275862068965517,1.0)"),
+            "основний scale збережено: {out}"
+        );
+    }
+
+    #[test]
+    fn apply_scale_uniform_no_style() {
+        let html = "<div>TEST</div>";
+        // Рівномірний scale (0.75, 0.75) — counter-scale не потрібен.
+        let out = apply_scale(html, (40.0, 40.0), 30.0, 30.0);
+        assert!(
+            !out.contains("<style>"),
+            "рівномірний scale не має додавати <style>: {out}"
+        );
+        assert!(
+            out.contains("transform: scale(0.75,0.75)"),
+            "scale-фактори: {out}"
+        );
+    }
+
+    #[test]
+    fn labels_sequential_code128_nominal_height() {
+        let template = "<div>{{barcode_image}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 58.0, "height_mm": 40.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "code128",
+            "barcode_height_mm": 12.0,
+        });
+        let html = render_labels_sequential(template, &products, &settings);
+        // (12*1.5=18).min(40*0.36=14.4).max(10) = 14.4 → svg viewBox висота = 14.4
+        // (номінал; QR при цьому = 14.4×0.92 = 13.2мм).
+        assert!(
+            regex::Regex::new(r#"viewBox="0 0 [\d.]+ 14\.4"#)
+                .unwrap()
+                .is_match(&html),
+            "code128 етикетка: viewBox має бути 14.4мм, отримано: {html}"
+        );
+    }
+
+    #[test]
+    fn labels_sequential_qr_box_fits_within_height() {
+        let template = "<div>{{barcode_image}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 58.0, "height_mm": 40.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "qr",
+            "barcode_height_mm": 12.0,
+        });
+        let html = render_labels_sequential(template, &products, &settings);
+        // (12*1.5=18).min(40*0.36=14.4).max(10) = 14.4 → QR box = 14.4×0.92 = 13.2мм
+        // (max_width = 48*0.92 = 44.16, min(13.25, 44.16) = 13.25 → round = 13.2).
+        assert!(
+            regex::Regex::new(r#"style="width: 13\.2mm; height: 13\.2mm"#)
+                .unwrap()
+                .is_match(&html),
+            "QR етикетка: очікується box 13.2мм (92% висоти, вміщається), отримано: {html}"
+        );
+    }
+
+    #[test]
+    fn price_tags_grid_qr_box_scaled() {
+        let template = "<div>{{barcode_image}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 40.0, "height_mm": 43.0, "gap_mm": 3.0, "margin_mm": 10.0,
+            "barcode_type": "qr", "barcode_height_mm": 40.0,
+        });
+        let html = render_price_tags_grid(template, &products, &settings);
+        // 40.max(16).min(43*0.45=19.35) = 19.35 → round(1 знак) = 19.4 → box = 19.4×1.0 = 19.4мм
+        // (max_width = 36.8, min(19.4, 36.8) = 19.4).
+        let re = regex::Regex::new(r#"style="width: ([\d.]+)mm; height: ([\d.]+)mm"#).unwrap();
+        let caps = re.captures(&html).expect("QR svg не знайдено");
+        let w: f64 = caps[1].parse().unwrap();
+        let h: f64 = caps[2].parse().unwrap();
+        assert!((w - h).abs() < 0.01, "QR має бути квадратним: {w}x{h}");
+        assert!(
+            (w - 19.4).abs() < 0.01,
+            "QR цінник {w}мм ≠ 19.4мм (номінал code128): {html}"
+        );
+    }
+
+    #[test]
+    fn price_tags_grid_code128_nominal_height() {
+        let template = "<div>{{barcode_image}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 40.0, "height_mm": 43.0, "gap_mm": 3.0, "margin_mm": 10.0,
+            "barcode_type": "code128", "barcode_height_mm": 12.0,
+        });
+        let html = render_price_tags_grid(template, &products, &settings);
+        // 12.max(16).min(43*0.45=19.35) = 16.0 → svg viewBox висота = 16.0
+        // (номінал; фактична висота при height:auto ≈ 16.0×36.8/45 ≈ 13.1мм,
+        //  QR при цьому = 16.0×0.62 = 9.9мм).
+        assert!(
+            regex::Regex::new(r#"viewBox="0 0 [\d.]+ 16\.0"#)
+                .unwrap()
+                .is_match(&html),
+            "code128 цінник: viewBox має бути 16.0мм, отримано: {html}"
+        );
+    }
+
+    #[test]
+    fn code128_and_qr_same_height() {
+        // Вимога користувача: фактична висота Code128 ≈ висота QR.
+        // QR = 90% від номіналу (viewBox) Code128: box = barcode_height×0.9,
+        // code128 viewBox = barcode_height (при height:auto масштабується від ширини).
+        // Перевіряємо на рівні рендеру: однакові параметри, різні типи.
+        let template = "<div>{{barcode_image}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+
+        let qr_settings = json!({
+            "width_mm": 58.0, "height_mm": 42.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "qr",
+            "barcode_height_mm": 12.0,
+        });
+        let c128_settings = json!({
+            "width_mm": 58.0, "height_mm": 42.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "code128",
+            "barcode_height_mm": 12.0,
+        });
+        let qr_html = render_labels_sequential(template, &products, &qr_settings);
+        let qr_re =
+            regex::Regex::new(r#"<svg[^>]*style="width: ([\d.]+)mm; height: ([\d.]+)mm"#).unwrap();
+        let qr_caps = qr_re.captures(&qr_html).expect("QR svg не знайдено");
+        let qr_h: f64 = qr_caps[2].parse().unwrap();
+
+        let c128_html = render_labels_sequential(template, &products, &c128_settings);
+        let c128_re = regex::Regex::new(r#"viewBox="0 0 [\d.]+ ([\d.]+)""#).unwrap();
+        let c128_caps = c128_re
+            .captures(&c128_html)
+            .expect("code128 svg не знайдено");
+        let c128_h: f64 = c128_caps[1].parse().unwrap();
+
+        // Етикетка 58×42: (12×1.5=18).min(42×0.36=15.12).max(10) = 15.12 → 15.1мм.
+        assert!(
+            (c128_h - 15.1).abs() < 0.01,
+            "етикетка: code128 viewBox = {c128_h}мм, очікується 15.1мм"
+        );
+        assert!(
+            (qr_h - 13.9).abs() < 0.01,
+            "етикетка: QR {qr_h}мм ≠ 13.9мм (15.1×0.92)"
+        );
+
+        // Цінник 40×43: code128 viewBox = 26.7, QR = 26.7×0.9 = 24.0мм.
+        let qr_settings = json!({
+            "width_mm": 40.0, "height_mm": 43.0, "gap_mm": 3.0, "margin_mm": 10.0,
+            "barcode_type": "qr", "barcode_height_mm": 12.0,
+        });
+        let c128_settings = json!({
+            "width_mm": 40.0, "height_mm": 43.0, "gap_mm": 3.0, "margin_mm": 10.0,
+            "barcode_type": "code128", "barcode_height_mm": 12.0,
+        });
+        let qr_html = render_price_tags_grid(template, &products, &qr_settings);
+        let qr_caps = qr_re.captures(&qr_html).expect("QR svg не знайдено");
+        let qr_h: f64 = qr_caps[2].parse().unwrap();
+
+        let c128_html = render_price_tags_grid(template, &products, &c128_settings);
+        let c128_caps = c128_re
+            .captures(&c128_html)
+            .expect("code128 svg не знайдено");
+        let c128_h: f64 = c128_caps[1].parse().unwrap();
+
+        assert!(
+            (c128_h - 16.0).abs() < 0.01,
+            "цінник: code128 viewBox = {c128_h}мм, очікується 16.0мм"
+        );
+        assert!(
+            (qr_h - 16.0).abs() < 0.01,
+            "цінник: QR = {qr_h}мм, очікується 16.0мм (1:1 з code128)"
+        );
+    }
+
+    #[test]
     fn extract_base_size_parses_and_none() {
         assert_eq!(
             extract_base_size(r#"<html><body data-base-w="40" data-base-h="43">..."#),
@@ -1212,4 +1415,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn price_tags_grid_root_font_mm_43mm_equals_4() {
+        // root_font_mm = (43*0.093=3.999 → round) = 4.0мм
+        let template = "<div>{{root_font_mm}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 40.0, "height_mm": 43.0, "gap_mm": 3.0, "margin_mm": 10.0,
+            "barcode_type": "code128", "barcode_height_mm": 12.0,
+        });
+        let html = render_price_tags_grid(template, &products, &settings);
+        assert!(
+            html.contains("4.0"),
+            "цінник 40×43: root_font_mm має бути 4.0, отримано: {html}"
+        );
+    }
+
+    #[test]
+    fn labels_sequential_root_font_mm_42mm_equals_5() {
+        // root_font_mm = (42*0.119=4.998 → round) = 5.0мм
+        let template = "<div>{{root_font_mm}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 58.0, "height_mm": 42.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "code128",
+            "barcode_height_mm": 12.0,
+        });
+        let html = render_labels_sequential(template, &products, &settings);
+        assert!(
+            html.contains("5.0"),
+            "етикетка 58×42: root_font_mm має бути 5.0, отримано: {html}"
+        );
+    }
+
+    #[test]
+    fn labels_sequential_root_font_mm_40mm_equals_48() {
+        // root_font_mm = (40*0.119=4.76 → round) = 4.8мм
+        let template = "<div>{{root_font_mm}}</div>";
+        let products = vec![json!({"barcode": "4820012345678", "copies": 1})];
+        let settings = json!({
+            "width_mm": 58.0, "height_mm": 40.0, "gap_mm": 2.0,
+            "print_mode": "escpos", "barcode_type": "qr",
+            "barcode_height_mm": 12.0,
+        });
+        let html = render_labels_sequential(template, &products, &settings);
+        assert!(
+            html.contains("4.8"),
+            "етикетка 58×40: root_font_mm має бути 4.8, отримано: {html}"
+        );
+    }
 }
