@@ -944,7 +944,7 @@ fn make_check(
 ) -> crate::proto::Check {
     crate::proto::Check {
         rro_fn: xml_builder.rro_fn().to_string(),
-        date_time: now.timestamp(),
+        date_time: crate::grpc::check_date_time_from(now),
         check_sign,
         local_number: local_number as i32,
         check_type: CheckType::Chk as i32,

@@ -39,9 +39,16 @@ impl<R: OcrRepository> InvoiceOcrService<R> {
     }
 
     /// Аналізує накладну та зіставляє товари з БД — 1:1 Python `analyze_and_match`.
-    pub async fn analyze_and_match(&self, image_data: &[u8]) -> Result<Value, OcrError> {
+    pub async fn analyze_and_match(
+        &self,
+        content_type: &str,
+        image_data: &[u8],
+    ) -> Result<Value, OcrError> {
         // Крок 1: Аналіз накладної через Gemini.
-        let ocr_result = self.ocr.analyze_invoice_image(image_data).await?;
+        let ocr_result = self
+            .ocr
+            .analyze_invoice_image(content_type, image_data)
+            .await?;
 
         if ocr_result.items.is_empty() {
             // Python: return {"success": True, "data": {**ocr_result, "items": []}}

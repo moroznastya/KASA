@@ -36,11 +36,18 @@ pub struct TlsConfig {
     pub ca_cert_pem: Option<Vec<u8>>,
 }
 
+/// Формує date_time з моменту часу у форматі `yyyyMMddHHmmss` (локальний час) — 1:1 Python.
+pub fn check_date_time_from(now: chrono::DateTime<chrono::Utc>) -> i64 {
+    let s = now
+        .with_timezone(&chrono::Local)
+        .format("%Y%m%d%H%M%S")
+        .to_string();
+    s.parse::<i64>().unwrap_or(0)
+}
+
 /// Формує date_time у форматі `yyyyMMddHHmmss` (локальний час) — 1:1 Python.
 pub fn check_date_time() -> i64 {
-    let now = chrono::Local::now();
-    let s = now.format("%Y%m%d%H%M%S").to_string();
-    s.parse::<i64>().unwrap_or(0)
+    check_date_time_from(chrono::Utc::now())
 }
 
 /// gRPC-клієнт сервісу ChkIncomeService.

@@ -83,7 +83,7 @@ impl SyncOfflineQueueUseCase {
                     .map_err(|e| PrroShiftError::new(e.to_string(), "SIGN_ERROR"))?;
                 let check = Check {
                     rro_fn: xml_builder.rro_fn().to_string(),
-                    date_time: chrono::Utc::now().timestamp(),
+                    date_time: crate::grpc::check_date_time(),
                     check_sign: signed,
                     local_number: item.local_number as i32,
                     check_type: check_type_code(&item.check_type),

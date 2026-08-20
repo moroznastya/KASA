@@ -5,12 +5,18 @@
 //! POST {base}/{api_version}/models/{model}:generateContent?key={api_key}
 //! {"contents": [{"parts": [
 //!     {"text": INVOICE_PROMPT},
-//!     {"inline_data": {"mime_type": "image/jpeg", "data": "<base64>"}}
+//!     {"inline_data": {"mime_type": "<реальний content_type>", "data": "<base64>"}}
 //! ]}]}
 //! ```
 //! Відповідь: `candidates[0].content.parts[].text` (Python `response.text`).
 //! Base URL: env `TORGASHKA_OCR_BASE_URL` (аналог `GOOGLE_GEMINI_BASE_URL`),
 //! дефолт `https://generativelanguage.googleapis.com/`.
+//!
+//! Відмінність від Python (виправлення багів):
+//! - `mime_type` береться з реального content_type файлу (не хардкод image/jpeg);
+//! - обробляються `finishReason` (SAFETY/MAX_TOKENS/RECITATION) та
+//!   `promptFeedback.blockReason` — замість порожньої помилки парсингу JSON
+//!   користувач отримує змістовну причину.
 
 use base64::Engine;
 use serde_json::json;
@@ -115,6 +121,118 @@ pub enum GeminiError {
     /// Порожній текст у відповіді (Python ValueError).
     #[error("Порожній текст у відповіді Gemini")]
     EmptyText,
+    /// Відповідь заблокована safety-політикою: finishReason=SAFETY /
+    /// PROHIBITED_CONTENT або promptFeedback.blockReason.
+    #[error("Gemini заблокував відповідь (safety): {0}")]
+    Blocked(String),
+    /// Відповідь обрізана (finishReason=MAX_TOKENS).
+    #[error("Відповідь Gemini обрізана (MAX_TOKENS)")]
+    Truncated,
+    /// Інший finishReason (RECITATION тощо).
+    #[error("Gemini finishReason={0}")]
+    FinishReason(String),
+}
+
+/// Будує тіло запиту generateContent — окремо для юніт-тестів.
+///
+/// `mime_type` — реальний content_type файлу (вже валідований через
+/// ALLOWED_IMAGE_TYPES на рівні API). НЕ хардкодимо image/jpeg: PNG/WebP/
+/// TIFF/BMP з JPEG-заголовком Gemini не розпізнає.
+fn build_request_body(content_type: &str, image_data: &[u8]) -> serde_json::Value {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
+    json!({
+        "contents": [{
+            "parts": [
+                {"text": INVOICE_PROMPT},
+                {"inline_data": {"mime_type": content_type, "data": b64}}
+            ]
+        }]
+    })
+}
+
+/// Збирає summary safetyRatings (MEDIUM/HIGH) для діагностики блокування.
+fn safety_ratings_summary(candidate: &serde_json::Value) -> String {
+    let Some(ratings) = candidate.get("safetyRatings").and_then(|s| s.as_array()) else {
+        return String::new();
+    };
+    ratings
+        .iter()
+        .filter_map(|r| {
+            let category = r.get("category").and_then(|c| c.as_str()).unwrap_or("?");
+            let probability = r.get("probability").and_then(|p| p.as_str()).unwrap_or("?");
+            // NEGLIGIBLE/LOW/UNKNOWN — не блокуючі; показуємо лише суттєві.
+            if matches!(probability, "NEGLIGIBLE" | "LOW" | "UNKNOWN") {
+                None
+            } else {
+                Some(format!("{category}={probability}"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Витягує текст з JSON-відповіді Gemini — окремо для юніт-тестів.
+///
+/// Обробляє `promptFeedback.blockReason` (навіть без кандидатів) та
+/// `candidates[0].finishReason` != STOP → змістовна помилка замість
+/// порожнього тексту/NoCandidates.
+fn extract_response_text(response_json: &str) -> Result<String, GeminiError> {
+    let v: serde_json::Value = serde_json::from_str(response_json)
+        .map_err(|e| GeminiError::Api(format!("невалідний JSON від Gemini: {e}")))?;
+    // Блокування на рівні запиту (promptFeedback) — кандидатів може не бути.
+    let block_reason = v
+        .pointer("/promptFeedback/blockReason")
+        .and_then(|b| b.as_str())
+        .unwrap_or("");
+    if !block_reason.is_empty() {
+        return Err(GeminiError::Blocked(block_reason.to_string()));
+    }
+    let Some(candidates) = v.get("candidates").and_then(|c| c.as_array()) else {
+        return Err(GeminiError::NoCandidates);
+    };
+    if candidates.is_empty() {
+        return Err(GeminiError::NoCandidates);
+    }
+    let candidate = &candidates[0];
+    // finishReason != STOP → змістовна помилка замість "не вдалося знайти JSON".
+    if let Some(reason) = candidate.get("finishReason").and_then(|f| f.as_str()) {
+        if reason != "STOP" {
+            let safety = safety_ratings_summary(candidate);
+            return Err(match reason {
+                "SAFETY" | "PROHIBITED_CONTENT" => {
+                    let mut detail = reason.to_string();
+                    if !block_reason.is_empty() {
+                        detail.push_str(&format!(" (blockReason: {block_reason})"));
+                    }
+                    if !safety.is_empty() {
+                        detail.push_str(&format!(" (safety: {safety})"));
+                    }
+                    GeminiError::Blocked(detail)
+                }
+                "MAX_TOKENS" => GeminiError::Truncated,
+                "RECITATION" => {
+                    GeminiError::Api("Відповідь Gemini відхилена (recitation)".to_string())
+                }
+                other => GeminiError::FinishReason(other.to_string()),
+            });
+        }
+    }
+    let parts = candidate
+        .get("content")
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array());
+    let mut response_text = String::new();
+    if let Some(parts) = parts {
+        for part in parts {
+            if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+                response_text.push_str(t);
+            }
+        }
+    }
+    if response_text.is_empty() {
+        return Err(GeminiError::EmptyText);
+    }
+    Ok(response_text)
 }
 
 /// HTTP-клієнт Gemini — 1:1 `google.genai` (один запит generateContent).
@@ -227,19 +345,18 @@ impl GeminiClient {
 
     /// Один запит generateContent — повертає текст відповіді (response.text).
     /// 1:1 Python: `client.models.generate_content(model, contents=[prompt, part])`.
-    pub async fn generate_content(&self, image_data: &[u8]) -> Result<String, GeminiError> {
+    ///
+    /// `content_type` — реальний MIME-тип файлу (image/jpeg, image/png, ...),
+    /// передається в `inline_data.mime_type` замість хардкоду image/jpeg.
+    pub async fn generate_content(
+        &self,
+        content_type: &str,
+        image_data: &[u8],
+    ) -> Result<String, GeminiError> {
         let api_key = self
             .current_key()
             .ok_or_else(|| GeminiError::Api("немає жодного ключа Gemini API".to_string()))?;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(image_data);
-        let body = json!({
-            "contents": [{
-                "parts": [
-                    {"text": INVOICE_PROMPT},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64}}
-                ]
-            }]
-        });
+        let body = build_request_body(content_type, image_data);
         let url = format!(
             "{}{}/models/{}:generateContent?key={}",
             self.base_url, self.api_version, self.model, api_key
@@ -263,32 +380,8 @@ impl GeminiClient {
             let truncated: String = text.chars().take(500).collect();
             return Err(GeminiError::Http(status.as_u16(), truncated));
         }
-        // Парсинг candidates[0].content.parts[].text — 1:1 Python response.text.
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| GeminiError::Api(format!("невалідний JSON від Gemini: {e}")))?;
-        let candidates = v.get("candidates").and_then(|c| c.as_array());
-        let Some(candidates) = candidates else {
-            return Err(GeminiError::NoCandidates);
-        };
-        if candidates.is_empty() {
-            return Err(GeminiError::NoCandidates);
-        }
-        let parts = candidates[0]
-            .get("content")
-            .and_then(|c| c.get("parts"))
-            .and_then(|p| p.as_array());
-        let mut response_text = String::new();
-        if let Some(parts) = parts {
-            for part in parts {
-                if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                    response_text.push_str(t);
-                }
-            }
-        }
-        if response_text.is_empty() {
-            return Err(GeminiError::EmptyText);
-        }
-        Ok(response_text)
+        // Парсинг candidates[0].content.parts[].text + finishReason/blockReason.
+        extract_response_text(&text)
     }
 }
 
@@ -333,5 +426,141 @@ mod tests {
     fn classify_other() {
         assert_eq!(classify_error("400 InvalidArgument"), RetryKind::Other);
         assert_eq!(classify_error("permission denied"), RetryKind::Other);
+    }
+
+    // ─── mime_type у тілі запиту ──────────────────────────────────────────
+
+    #[test]
+    fn build_body_uses_real_content_type_png() {
+        let body = build_request_body("image/png", b"\x89PNG\r\n\x1a\n");
+        let mime = body["contents"][0]["parts"][1]["inline_data"]["mime_type"]
+            .as_str()
+            .unwrap();
+        assert_eq!(mime, "image/png");
+    }
+
+    #[test]
+    fn build_body_not_hardcoded_jpeg() {
+        for ct in [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+        ] {
+            let body = build_request_body(ct, b"data");
+            let mime = body["contents"][0]["parts"][1]["inline_data"]["mime_type"]
+                .as_str()
+                .unwrap();
+            assert_eq!(mime, ct, "mime_type має дорівнювати реальному content_type");
+        }
+    }
+
+    #[test]
+    fn build_body_base64_data() {
+        let body = build_request_body("image/jpeg", b"\xff\xd8\xff\xe0");
+        let data = body["contents"][0]["parts"][1]["inline_data"]["data"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            data,
+            base64::engine::general_purpose::STANDARD.encode(b"\xff\xd8\xff\xe0")
+        );
+    }
+
+    #[test]
+    fn build_body_prompt_is_first_part() {
+        let body = build_request_body("image/png", b"x");
+        let text = body["contents"][0]["parts"][0]["text"].as_str().unwrap();
+        assert!(text.contains("прибуткових накладних"));
+    }
+
+    // ─── finishReason / blockReason ───────────────────────────────────────
+
+    #[test]
+    fn extract_text_ok() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":"{\"a\":1}"}]},"finishReason":"STOP"}]}"#;
+        assert_eq!(extract_response_text(json).unwrap(), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn extract_text_ok_no_finish_reason() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}"#;
+        assert_eq!(extract_response_text(json).unwrap(), "hello");
+    }
+
+    #[test]
+    fn extract_finish_reason_safety() {
+        let json = r#"{"candidates":[{"finishReason":"SAFETY","safetyRatings":[{"category":"HARM_CATEGORY_DANGEROUS_CONTENT","probability":"MEDIUM"},{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]}]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        match err {
+            GeminiError::Blocked(detail) => {
+                assert!(detail.contains("SAFETY"), "detail={detail}");
+                assert!(
+                    detail.contains("HARM_CATEGORY_DANGEROUS_CONTENT=MEDIUM"),
+                    "detail={detail}"
+                );
+            }
+            other => panic!("очікувано Blocked, отримано {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_finish_reason_prohibited_content() {
+        let json = r#"{"candidates":[{"finishReason":"PROHIBITED_CONTENT"}]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        assert!(matches!(err, GeminiError::Blocked(_)));
+        assert!(err.to_string().contains("PROHIBITED_CONTENT"));
+    }
+
+    #[test]
+    fn extract_finish_reason_max_tokens() {
+        let json = r#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"обрізано"}]}}]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        assert!(matches!(err, GeminiError::Truncated));
+        assert!(err.to_string().contains("MAX_TOKENS"));
+    }
+
+    #[test]
+    fn extract_finish_reason_recitation() {
+        let json = r#"{"candidates":[{"finishReason":"RECITATION"}]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        assert!(err.to_string().contains("recitation"));
+    }
+
+    #[test]
+    fn extract_finish_reason_unknown() {
+        let json = r#"{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL"}]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        assert!(matches!(err, GeminiError::FinishReason(_)));
+        assert!(err.to_string().contains("MALFORMED_FUNCTION_CALL"));
+    }
+
+    #[test]
+    fn extract_block_reason_without_candidates() {
+        let json = r#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[]}"#;
+        let err = extract_response_text(json).unwrap_err();
+        match err {
+            GeminiError::Blocked(reason) => assert_eq!(reason, "SAFETY"),
+            other => panic!("очікувано Blocked, отримано {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_no_candidates() {
+        let json = r#"{"candidates":[]}"#;
+        assert!(matches!(
+            extract_response_text(json).unwrap_err(),
+            GeminiError::NoCandidates
+        ));
+    }
+
+    #[test]
+    fn extract_empty_text() {
+        let json = r#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#;
+        assert!(matches!(
+            extract_response_text(json).unwrap_err(),
+            GeminiError::EmptyText
+        ));
     }
 }

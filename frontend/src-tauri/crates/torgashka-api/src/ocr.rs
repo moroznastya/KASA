@@ -87,7 +87,7 @@ pub async fn analyze_invoice(
     let (content_type, image_data) = read_image_field(&mut multipart).await?;
     validate_image(&content_type, &image_data)?;
 
-    match ocr.analyze_invoice_image(&image_data).await {
+    match ocr.analyze_invoice_image(&content_type, &image_data).await {
         Ok(data) => Ok(Json(json!({ "success": true, "data": data }))),
         Err(torgashka_ocr::OcrError::Runtime(msg)) => {
             // 1:1 Python except RuntimeError → {"success": false, "error": str(e)}
@@ -120,7 +120,7 @@ pub async fn analyze_with_matching(
 
     let repo = torgashka_infrastructure::ocr::SqlxOcrRepository::new(pool);
     let service = torgashka_ocr::InvoiceOcrService::new(repo);
-    match service.analyze_and_match(&image_data).await {
+    match service.analyze_and_match(&content_type, &image_data).await {
         Ok(v) => Ok(Json(v)),
         Err(torgashka_ocr::OcrError::Runtime(msg)) => {
             Ok(Json(json!({ "success": false, "error": msg })))
