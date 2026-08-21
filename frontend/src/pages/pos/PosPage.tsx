@@ -9,6 +9,7 @@ import { prroService } from '@/services/prroService';
 import { productService } from '@/services/productService';
 import { createReceiptWithOfflineFallback } from '@/services/tauri/offlineReceiptService';
 import { isTauri, cacheProducts } from '@/hooks/useTauri';
+import { useStoreStore } from '@/store/storeStore';
 import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';
 import { useAuthStore } from '@/store/authStore';
 import { useDevicesStore } from '@/store/devicesStore';
@@ -138,6 +139,11 @@ const PosPage: React.FC = () => {
   // Стан передачі суми на термінал (card / mixed)
   const [terminalState, setTerminalState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [terminalError, setTerminalError] = useState('');
+  // Примусове підтвердження оплати карткою: коли TCP-з'єднання з терміналом
+  // обірвалось ПІСЛЯ списання коштів (таймаут) — terminalState='error',
+  // terminalResult=null, а чек без rrn не створювався. Касир підтверджує,
+  // що клієнт оплатив — чек створюється без terminal_* полів.
+  const [forceCardConfirmed, setForceCardConfirmed] = useState(false);
   // Результат успішної транзакції терміналу (оплата: card / mixed)
   const [terminalResult, setTerminalResult] = useState<TerminalPaymentResult | null>(null);
   // Результат повернення на картку (повернення: card / mixed)
@@ -171,6 +177,7 @@ const PosPage: React.FC = () => {
     // Скидаємо стан терміналу (оплата / повернення) при закритті модалки
     setTerminalState('idle');
     setTerminalError('');
+    setForceCardConfirmed(false);
     terminalResultRef.current = null;
     setTerminalResult(null);
     refundResultRef.current = null;
@@ -236,6 +243,9 @@ const PosPage: React.FC = () => {
   const loadPrroStatus = usePrroStore((s) => s.loadStatus);
   const prroFiscalizing = usePrroStore((s) => s.fiscalizing);
   const { devices, statuses, loadDevices } = useDevicesStore();
+  // Окремий селектор для initListeners: функція стабільна, тому підписка
+  // не ре-рендерить PosPage на кожну подію пристрою (weight-updated тощо)
+  const initListeners = useDevicesStore((s) => s.initListeners);
 
   // Авто-оновлення статусу ПРРО (кожні 30 секунд)
   useEffect(() => {
@@ -250,6 +260,14 @@ const PosPage: React.FC = () => {
       loadDevices();
     }
   }, [showPayment, devices.length, loadDevices]);
+
+  // Підписка на події пристроїв (weight-updated, device-status-changed) —
+  // ваги оновлюються на POS без відкриття Налаштувань → Пристрої.
+  // initListeners повертає cleanup-функцію (unlisten) для розмонтування.
+  useEffect(() => {
+    if (!isTauri()) return;
+    return initListeners();
+  }, [initListeners]);
 
   // Save cart to sessionStorage on change
   useEffect(() => {
@@ -416,7 +434,9 @@ const PosPage: React.FC = () => {
         const CHUNK_SIZE = 300;
         for (let i = 0; i < allProducts.length; i += CHUNK_SIZE) {
           const chunk = allProducts.slice(i, i + CHUNK_SIZE);
-          const count = await cacheProducts(chunk);
+          // Мультиточковість (Етап 5): кеш позначається поточною точкою —
+          // офлайн-довідник фільтрує товари магазину, в якому працює каса.
+          const count = await cacheProducts(chunk, useStoreStore.getState().activeStoreId);
           // Літерал CHUNK_SIZE у лозі: рядок не мініфікується і лишається в бандлі
           // (мініфікатор скорочує саму змінну, тому grep по бандлу шукає літерал)
           console.log(`[Offline] CHUNK_SIZE=${CHUNK_SIZE} Кешовано чанк ${i / CHUNK_SIZE + 1}: ${count}`);
@@ -890,8 +910,10 @@ const PosPage: React.FC = () => {
             toast.error('Повернення на картку не підтверджено терміналом');
             return;
           }
-        } else {
-          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+        } else if (!forceCardConfirmed) {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась.
+          // Якщо forceCardConfirmed=true (касир підтвердив оплату примусово) —
+          // автопередачу пропускаємо, чек створюється без terminalResult.
           if (
             !terminalResult ||
             terminalResult.success !== true ||
@@ -1007,6 +1029,7 @@ const PosPage: React.FC = () => {
       // Скидаємо стан терміналу та RRN після успішної оплати/повернення
       setTerminalState('idle');
       setTerminalError('');
+      setForceCardConfirmed(false);
       terminalResultRef.current = null;
       setTerminalResult(null);
       refundResultRef.current = null;
@@ -1075,8 +1098,10 @@ const PosPage: React.FC = () => {
             toast.error('Повернення на картку не підтверджено терміналом');
             return;
           }
-        } else {
-          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+        } else if (!forceCardConfirmed) {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась.
+          // Якщо forceCardConfirmed=true (касир підтвердив оплату примусово) —
+          // автопередачу пропускаємо, чек створюється без terminalResult.
           if (
             !terminalResult ||
             terminalResult.success !== true ||
@@ -1188,6 +1213,7 @@ const PosPage: React.FC = () => {
       // Скидаємо стан терміналу та RRN після успішної оплати/повернення
       setTerminalState('idle');
       setTerminalError('');
+      setForceCardConfirmed(false);
       terminalResultRef.current = null;
       setTerminalResult(null);
       refundResultRef.current = null;
@@ -1441,6 +1467,27 @@ const PosPage: React.FC = () => {
       setTerminalState('error');
       setTerminalError(String(e));
       toast.error('Не вдалося виконати повернення на терміналі');
+    }
+  };
+
+  /**
+   * Примусове підтвердження оплати карткою.
+   * Використовується, коли TCP-з'єднання з терміналом обірвалось ПІСЛЯ
+   * списання коштів (таймаут): terminalState='error', terminalResult=null,
+   * і handlePayment блокує створення чека. Касир підтверджує, що клієнт
+   * оплатив — чек створюється без terminal_* полів (RRN не збережено).
+   * Для returnMode (повернення на картку) НЕ показується: повернення
+   * коштів без підтвердження терміналу неможливе.
+   */
+  const handleForceCardConfirm = () => {
+    const ok = window.confirm(
+      'Оплата пройшла на терміналі? Підтвердіть, що клієнт оплатив карткою. Дані транзакції (RRN, код авторизації) не будуть збережені в чеку.'
+    );
+    if (ok) {
+      setForceCardConfirmed(true);
+      setTerminalState('idle');
+      setTerminalError('');
+      toast.success('Оплату підтверджено примусово — чек буде створено без даних транзакції');
     }
   };
 
@@ -2068,6 +2115,7 @@ const PosPage: React.FC = () => {
                     // Скидаємо результат терміналу при зміні способу оплати
                     setTerminalState('idle');
                     setTerminalError('');
+                    setForceCardConfirmed(false);
                     terminalResultRef.current = null;
                     setTerminalResult(null);
                     refundResultRef.current = null;
@@ -2182,6 +2230,19 @@ const PosPage: React.FC = () => {
                         {terminalError}
                       </p>
                     </div>
+                  )}
+                  {/* Примусова оплата: термінал списав кошти, але TCP обірвався (таймаут).
+                      Касир підтверджує оплату — чек створюється без RRN. Для returnMode
+                      НЕ показуємо: повернення коштів без підтвердження терміналу неможливе. */}
+                  {terminalState === 'error' && !returnMode && (paymentMethod === 'card' || paymentMethod === 'mixed') && (
+                    <button
+                      type="button"
+                      onClick={handleForceCardConfirm}
+                      className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold transition-colors"
+                    >
+                      <AlertTriangle className="w-4 h-4" />
+                      Сплатити примусово
+                    </button>
                   )}
                 </>
               ) : (

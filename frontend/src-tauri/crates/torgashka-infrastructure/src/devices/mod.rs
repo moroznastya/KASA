@@ -190,8 +190,66 @@ fn emit_status(app: &AppHandle, id: &str, status: &Arc<Mutex<DeviceStatus>>) {
 // Без regex: збираємо байти в рядок, витягуємо перше число з плаваючою
 // крапкою у правдоподібному діапазоні ваги (0.001..=10000).
 
+/// Толерантність стабільності ваги, кг (±2 г): зміни в межах цього значення
+/// вважаються шумом і НЕ надсилаються фронтенду.
+const WEIGHT_TOLERANCE: f64 = 0.002;
+
+/// Нормалізація сирого буфера COM-ваги:
+/// - 0x08 (backspace) — стирає попередній символ (CAS "виправляє" передачу);
+/// - 0x02/0x03 (STX/ETX), 0x0D/0x0A (CR/LF) — службові, ігноруються;
+/// - решта символів (цифри, крапка/кома, пробіли, літери "kg") — зберігаються.
+fn clean_scale_buffer(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c as u32 {
+            0x08 => {
+                out.pop();
+            }
+            0x02 | 0x03 | 0x0D | 0x0A => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Фільтр стабільності ваги: подія емітиться лише коли значення
+/// (а) підтверджене двома послідовними читаннями в межах tolerance і
+/// (б) відрізняється від останнього відправленого більш ніж на tolerance.
+/// Повертає true, якщо поточне читання треба відправити фронтенду.
+fn should_emit_weight(
+    last_emitted: &mut Option<f64>,
+    pending: &mut Option<f64>,
+    weight: f64,
+) -> bool {
+    if let Some(p) = *pending {
+        if (weight - p).abs() <= WEIGHT_TOLERANCE {
+            // підтверджено двома послідовними читаннями
+            *pending = None;
+            let changed = last_emitted
+                .map(|le| (weight - le).abs() > WEIGHT_TOLERANCE)
+                .unwrap_or(true);
+            if changed {
+                *last_emitted = Some(weight);
+            }
+            return changed;
+        }
+    }
+    *pending = Some(weight);
+    false
+}
+
 fn parse_weight(s: &str) -> Option<f64> {
-    let chars: Vec<char> = s.chars().collect();
+    // 1) backspace + викидання службових символів (STX/ETX/CR/LF)
+    let cleaned = clean_scale_buffer(s);
+    // 2) CAS-подібний протокол: цифри приходять окремими токенами через
+    //    пробіли ("1 2 3 . 4 5" = 123.45) — склеюємо пробіли/таби.
+    //    Суфікс "kg" при цьому лишається природним розділювачем числа.
+    let compact: String = cleaned
+        .chars()
+        .filter(|c| *c != ' ' && *c != '\t')
+        .collect();
+    // 3) витягуємо перше число з плаваючою крапкою
+    let chars: Vec<char> = compact.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         if chars[i].is_ascii_digit() || chars[i] == '-' {
@@ -258,6 +316,9 @@ fn spawn_scale(
 
         let mut buf = [0u8; 256];
         let mut acc = String::new();
+        // фільтр стабільності: останнє відправлене значення + кандидат на підтвердження
+        let mut last_emitted: Option<f64> = None;
+        let mut pending: Option<f64> = None;
         while !stop.load(Ordering::Relaxed) {
             match serial.read(&mut buf) {
                 Ok(n) if n > 0 => {
@@ -278,10 +339,12 @@ fn spawn_scale(
                         if let Ok(mut st) = status.lock() {
                             st.last_weight = Some(weight);
                         }
-                        let _ = app.emit(
-                            "weight-updated",
-                            json!({ "deviceId": id.clone(), "value": weight }),
-                        );
+                        if should_emit_weight(&mut last_emitted, &mut pending, weight) {
+                            let _ = app.emit(
+                                "weight-updated",
+                                json!({ "deviceId": id.clone(), "value": weight }),
+                            );
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -847,7 +910,7 @@ pub fn get_scanners() -> Result<Vec<ScannerInfo>, String> {
 /// Перелік USB-пристроїв (для налагодження та автовиявлення).
 /// Перенесено з commands/system.rs::get_usb_devices (етап 0, без зміни поведінки).
 pub fn list_usb_devices() -> Vec<serde_json::Value> {
-    let mut devices = Vec::new();
+    let mut devices: Vec<serde_json::Value> = Vec::new();
 
     #[cfg(unix)]
     {
@@ -1032,4 +1095,119 @@ pub fn terminal_ping(app: AppHandle) -> Result<terminal::TerminalPingResult, Str
     let (_, ip, port) = find_terminal(&app)?;
     let _guard = terminal_op_guard();
     terminal::ping(&ip, port)
+}
+
+
+// ── Юніт-тести ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_weight: CAS-подібний формат ─────────────────────────────────
+
+    #[test]
+    fn cas_spaced_digits() {
+        // "1 2 3 . 4 5" = 123.45 кг
+        assert_eq!(parse_weight("1 2 3 . 4 5"), Some(123.45));
+    }
+
+    #[test]
+    fn cas_with_suffix() {
+        assert_eq!(parse_weight("12.34kg"), Some(12.34));
+        assert_eq!(parse_weight("  1 2 . 3 4  kg  "), Some(12.34));
+    }
+
+    #[test]
+    fn comma_decimal_separator() {
+        assert_eq!(parse_weight("12,5"), Some(12.5));
+        assert_eq!(parse_weight("1 2 , 5"), Some(12.5));
+    }
+
+    #[test]
+    fn backspace_erases_previous_char() {
+        // "12" + backspace (стирає '2') + "4.5" → "14.5"
+        assert_eq!(parse_weight("12\x084.5"), Some(14.5));
+        // CAS: backspace після кількох цифр
+        assert_eq!(parse_weight("123\x084.5"), Some(124.5));
+        // backspace на порожньому буфері — безпечно
+        assert_eq!(parse_weight("\x0812.34"), Some(12.34));
+    }
+
+    #[test]
+    fn service_chars_ignored() {
+        assert_eq!(parse_weight("\x0212.34\x03"), Some(12.34));
+        assert_eq!(parse_weight("12.34\r\n"), Some(12.34));
+        assert_eq!(parse_weight("\x021 2 . 3 4\x03\r\n"), Some(12.34));
+    }
+
+    #[test]
+    fn noise_around_value() {
+        assert_eq!(parse_weight("prefix 45.6kg suffix"), Some(45.6));
+    }
+
+    #[test]
+    fn range_kept() {
+        assert_eq!(parse_weight("0.001"), Some(0.001));
+        assert_eq!(parse_weight("10000.0"), Some(10000.0));
+        assert_eq!(parse_weight("0.0005"), None);
+        assert_eq!(parse_weight("10000.1"), None);
+    }
+
+    #[test]
+    fn integer_without_separator_rejected() {
+        // без крапки/коми — не число ваги
+        assert_eq!(parse_weight("12345"), None);
+    }
+
+    // ── should_emit_weight: фільтр стабільності ───────────────────────────
+
+    #[test]
+    fn emits_only_after_two_readings() {
+        let mut last = None;
+        let mut pending = None;
+        // перше читання — лише кандидат, не емітимо
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.0));
+        // друге в межах tolerance — підтверджено, емітимо
+        assert!(should_emit_weight(&mut last, &mut pending, 100.001));
+        assert_eq!(last, Some(100.001));
+    }
+
+    #[test]
+    fn small_noise_not_emitted() {
+        // підтверджене значення, але зміна ≤ 0.002 кг — шум, не емітимо
+        let mut last = Some(100.0);
+        let mut pending = None;
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.0));
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.001));
+        assert_eq!(last, Some(100.0)); // last не змінився
+
+        // дрейф у межах tolerance двома читаннями
+        let mut last = Some(100.0);
+        let mut pending = None;
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.002));
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.001));
+        assert_eq!(last, Some(100.0));
+    }
+
+    #[test]
+    fn real_change_emitted() {
+        let mut last = Some(100.0);
+        let mut pending = None;
+        assert!(!should_emit_weight(&mut last, &mut pending, 500.0));
+        assert!(should_emit_weight(&mut last, &mut pending, 500.001));
+        assert_eq!(last, Some(500.001));
+    }
+
+    #[test]
+    fn unstable_reading_never_emitted() {
+        // вага "гойдається" — жодне значення не підтверджується двома читаннями
+        let mut last = None;
+        let mut pending = None;
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.0));
+        assert!(!should_emit_weight(&mut last, &mut pending, 500.0));
+        assert!(!should_emit_weight(&mut last, &mut pending, 100.0));
+        assert!(!should_emit_weight(&mut last, &mut pending, 500.0));
+        assert_eq!(last, None);
+    }
 }

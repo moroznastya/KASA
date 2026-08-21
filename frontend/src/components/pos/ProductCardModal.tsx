@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Plus, ImageOff, ShoppingCart, Scale } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
+import { useDevicesStore } from '@/store/devicesStore';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, formatUnit } from '@/utils/format';
@@ -32,6 +33,9 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
   const [imageError, setImageError] = useState(false);
   const [isReadingWeight, setIsReadingWeight] = useState(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
+  // Реальна вага з підключених пристроїв (оновлюється через подію "weight-updated",
+  // на яку PosPage підписується через useDevicesStore.initListeners)
+  const weights = useDevicesStore((s) => s.weights);
 
   // Скидаємо стан при відкритті
   useEffect(() => {
@@ -208,16 +212,18 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
               onClick={async () => {
                 setIsReadingWeight(true);
                 try {
-                  // TODO: Інтеграція з вагами через Tauri API
-                  // Наразі — імітація зчитування
-                  await new Promise((resolve) => setTimeout(resolve, 500));
-                  const mockWeight = (Math.random() * 2 + 0.1).toFixed(3);
-                  setQuantity(mockWeight);
-                  setQuantityError(null);
-                } catch (err) {
-                  setQuantityError('Помилка зчитування ваги');
+                  // Реальна вага: перше значення з weights (перший scale-пристрій)
+                  const weightValues = Object.values(weights);
+                  const weight = weightValues.length > 0 ? weightValues[0] : undefined;
+                  if (weight !== undefined && weight > 0) {
+                    setQuantity(String(weight));
+                    setQuantityError(null);
+                  } else {
+                    setQuantityError('Ваги не підключені або не передають дані. Перевірте Налаштування → Пристрої.');
+                  }
                 } finally {
-                  setIsReadingWeight(false);
+                  // Коротка затримка для UX (індикатор «Зчитування...»)
+                  setTimeout(() => setIsReadingWeight(false), 300);
                 }
               }}
               disabled={isReadingWeight}
