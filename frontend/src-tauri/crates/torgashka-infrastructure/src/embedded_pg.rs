@@ -7,13 +7,23 @@
 //!
 //! Шляхи пошуку бінарників (у порядку пріоритету):
 //!   1. env `TORGASHKA_PG_DIR` (шлях до bin/);
-//!   2. відносно exe: `../resources/postgres/bin` (Tauri-ресурси Windows);
+//!   2. відносно exe: `resources/postgres/bin` (Tauri-ресурси Windows;
+//!      ФІКС 2026-08-21: на Windows Tauri v2 resource_dir() = exe_dir, тож
+//!      `../resources` давало `C:\Program Files\resources\...` — промах повз
+//!      папку застосунку, PG не знаходився → auth-роути не монтувались (410));
 //!   3. відносно `CARGO_MANIFEST_DIR`: `<ancestor>/.cache/pg/*/pgsql/bin`
 //!      (дев-режим: завантажений postgresql-17.6-*-binaries.zip);
 //!   4. Linux: `pg_config --bindir` (системний PG);
 //!   5. Linux: `/usr/lib/postgresql/<ver>/bin` (17, 16, 15, ...).
 //!
-//! Логування — через `eprintln!` (як прийнято в крейті), логи сервера —
+//! ФІКС 2026-08-21 (не-ASCII шлях): initdb на Windows падає, якщо data_dir
+//! містить не-ASCII (кириличне ім'я користувача -> C:\Users\Вася\...).
+//! [`data_dir_default`] приймає лише ASCII-кандидати: APPDATA -> LOCALAPPDATA
+//! -> temp_dir -> C:\ProgramData\Torgashka\pgdata.//!
+//! Логування: `eprintln!` (консоль/dev) + файл поряд з data_dir
+//! (`%APPDATA%/Torgashka/torgashka.log`, ФІКС 2026-08-21 — на Windows
+//! `windows_subsystem=windows` приховує stderr, тож файл — єдиний видимий
+//! канал діагностики старту/помилок embedded PG). Логи сервера —
 //! у `<data_dir>/postgres.log`.
 
 use std::path::{Path, PathBuf};
@@ -40,6 +50,8 @@ pub enum Error {
     },
     #[error("{cmd} завершився з кодом {code}")]
     Exit { cmd: String, code: i32 },
+    #[error("{cmd} завершився з кодом {code}: {stderr}")]
+    ExitWithOutput { cmd: String, code: i32, stderr: String },
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
     #[error("сервер не став готовим за {0:?} (порт {1})")]
@@ -48,6 +60,79 @@ pub enum Error {
     CreateDb { db: String, why: String },
     #[error("пропущено: {0}")]
     Skipped(String),
+}
+
+// ── Файлове логування ───────────────────────────────────────────────────────
+
+/// Шлях до файлу діагностичного логу: поряд з data_dir
+/// (`%APPDATA%/Torgashka/torgashka.log` або еквівалент за платформою).
+/// На Windows консоль прихована (`windows_subsystem=windows`) — цей файл
+/// єдиний видимий канал діагностики embedded PG.
+pub fn log_file_path() -> PathBuf {
+    let base = data_dir_default();
+    if let Some(parent) = base.parent() {
+        if !parent.as_os_str().is_empty() {
+            return parent.join("torgashka.log");
+        }
+    }
+    std::env::temp_dir().join("torgashka.log")
+}
+
+/// Поточний час (UTC) у форматі `YYYY-MM-DD HH:MM:SS` (без зовнішніх крейтів).
+fn timestamp_str() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    // civil_from_days (H. Hinnant): epoch-days -> (y,m,d)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Запис діагностичного повідомлення: дублює в stderr (консоль/dev) і дописує
+/// у файл [`log_file_path`]. Використовується для критичних подій embedded PG.
+pub fn pg_log(level: &str, msg: &str) {
+    eprintln!("[{level}] {msg}");
+    let path = log_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(f, "[{}] [{level}] {msg}", timestamp_str());
+    }
+}
+
+/// Останні `n` рядків файлу (для діагностики postgres.log при таймауті старту).
+fn read_log_tail(path: &Path, n: usize) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(content) => content
+            .lines()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Err(e) => format!("(не вдалося прочитати {}: {e})", path.display()),
+    }
 }
 
 // ── Імена бінарників ────────────────────────────────────────────────────────
@@ -104,21 +189,45 @@ fn find_pg_under(root: &Path) -> Option<PathBuf> {
 
 /// Типовий data_dir: `%APPDATA%/Torgashka/pgdata` (Windows) або
 /// `$XDG_DATA_HOME/Torgashka/pgdata` (Linux, fallback `~/.local/share`).
+///
+/// ФІКС 2026-08-21 (Windows): initdb падає, якщо шлях data_dir містить
+/// не-ASCII символи (кириличне ім'я користувача -> `C:\Users\Вася\AppData\...`).
+/// Кандидати приймаються лише ASCII, інакше — fallback: LOCALAPPDATA ->
+/// temp_dir -> `C:\ProgramData\Torgashka\pgdata` (системний шлях завжди
+/// латиниця, пишеться звичайним користувачем).
 pub fn data_dir_default() -> PathBuf {
     #[cfg(windows)]
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        if !appdata.trim().is_empty() {
-            return PathBuf::from(appdata).join("Torgashka").join("pgdata");
+    {
+        for cand in [std::env::var("APPDATA"), std::env::var("LOCALAPPDATA")] {
+            if let Ok(dir) = cand {
+                let t = dir.trim();
+                if !t.is_empty() && t.is_ascii() {
+                    return PathBuf::from(t).join("Torgashka").join("pgdata");
+                }
+            }
         }
-    }
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.trim().is_empty() {
-            return PathBuf::from(xdg).join("Torgashka").join("pgdata");
+        let tmp = std::env::temp_dir();
+        if tmp.as_os_str().is_ascii() {
+            return tmp.join("Torgashka").join("pgdata");
         }
+        // Останній ASCII-кандидат. eprintln! замість pg_log — щоб уникнути
+        // рекурсії (pg_log -> log_file_path -> data_dir_default).
+        eprintln!(
+            "[WARN] APPDATA/LOCALAPPDATA/temp містять не-ASCII — data_dir: C:\\ProgramData\\Torgashka\\pgdata"
+        );
+        return PathBuf::from(r"C:\ProgramData").join("Torgashka").join("pgdata");
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            return PathBuf::from(home).join(".local/share/Torgashka/pgdata");
+    #[cfg(not(windows))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            if !xdg.trim().is_empty() {
+                return PathBuf::from(xdg).join("Torgashka").join("pgdata");
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.trim().is_empty() {
+                return PathBuf::from(home).join(".local/share/Torgashka/pgdata");
+            }
         }
     }
     PathBuf::from("pgdata")
@@ -178,12 +287,22 @@ impl EmbeddedPostgres {
                 return Some(bin);
             }
         }
-        // 2. відносно exe: ../resources/postgres/bin (Tauri-ресурси Windows)
+        // 2. відносно exe: resources/postgres/bin (Tauri-ресурси Windows).
+        //    ФІКС 2026-08-21: Tauri v2 на Windows resource_dir() = exe_dir, тому
+        //    бандлер кладе ресурси в <exe_dir>/resources/... . Шлях `../resources`
+        //    давав C:\Program Files\resources\... (промах) → BinariesNotFound →
+        //    embedded PG не стартував → auth=None → users-list не монтувався (410).
         if let Ok(exe) = std::env::current_exe() {
             if let Some(parent) = exe.parent() {
-                let cand = parent.join("../resources/postgres/bin");
+                // Основний (правильний) шлях: <exe_dir>/resources/postgres/bin
+                let cand = parent.join("resources/postgres/bin");
                 if cand.join(initdb_name()).exists() {
                     return Some(cand);
+                }
+                // Fallback для нестандартних layout (старий інсталятор тощо)
+                let legacy = parent.join("../resources/postgres/bin");
+                if legacy.join(initdb_name()).exists() {
+                    return Some(legacy);
                 }
             }
         }
@@ -245,7 +364,7 @@ impl EmbeddedPostgres {
         }
         std::fs::create_dir_all(&self.data_dir)?;
         let cmd = "initdb";
-        let status = Command::new(&initdb)
+        let out = Command::new(&initdb)
             .arg("-D")
             .arg(&self.data_dir)
             .arg("-U")
@@ -253,14 +372,28 @@ impl EmbeddedPostgres {
             .arg("-A")
             .arg("trust")
             .arg("--encoding=UTF8")
-            .status()
+            .output()
             .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
-        if !status.success() {
-            return Err(Error::Exit { cmd: cmd.to_string(), code: status.code().unwrap_or(-1) });
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            pg_log(
+                "ERROR",
+                &format!(
+                    "initdb завершився з кодом {:?}; data_dir: {}; stderr: {}",
+                    out.status.code(),
+                    self.data_dir.display(),
+                    stderr
+                ),
+            );
+            return Err(Error::ExitWithOutput {
+                cmd: cmd.to_string(),
+                code: out.status.code().unwrap_or(-1),
+                stderr,
+            });
         }
-        eprintln!(
-            "[torgashka-infrastructure] embedded PG: initdb завершено (data_dir: {})",
-            self.data_dir.display()
+        pg_log(
+            "INFO",
+            &format!("initdb завершено (data_dir: {})", self.data_dir.display()),
         );
         Ok(())
     }
@@ -270,8 +403,9 @@ impl EmbeddedPostgres {
     /// Після старту — poll готовності (TCP-конект, таймаут 30с).
     pub fn start(&mut self) -> Result<(), Error> {
         if port_is_open() {
-            eprintln!(
-                "[torgashka-infrastructure] embedded PG вже слухає 127.0.0.1:{EMBEDDED_PG_PORT} — старт пропущено"
+            pg_log(
+                "INFO",
+                &format!("embedded PG вже слухає 127.0.0.1:{EMBEDDED_PG_PORT} — старт пропущено"),
             );
             return Ok(());
         }
@@ -282,7 +416,7 @@ impl EmbeddedPostgres {
         std::fs::create_dir_all(&self.data_dir)?;
         let log = self.data_dir.join("postgres.log");
         let cmd = "pg_ctl start";
-        let status = Command::new(&pg_ctl)
+        let out = Command::new(&pg_ctl)
             .arg("-D")
             .arg(&self.data_dir)
             .arg("-l")
@@ -291,24 +425,49 @@ impl EmbeddedPostgres {
             .arg(format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1"))
             .arg("-w")
             .arg("start")
-            .status()
+            .output()
             .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
-        if !status.success() {
-            return Err(Error::Exit { cmd: cmd.to_string(), code: status.code().unwrap_or(-1) });
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            pg_log(
+                "ERROR",
+                &format!(
+                    "pg_ctl start: код {:?}; stderr: {}",
+                    out.status.code(),
+                    stderr
+                ),
+            );
+            return Err(Error::ExitWithOutput {
+                cmd: cmd.to_string(),
+                code: out.status.code().unwrap_or(-1),
+                stderr,
+            });
         }
         self.started_by_us = true;
         // Poll готовності (страховка поверх pg_ctl -w): TCP до 127.0.0.1:5433.
         let deadline = Instant::now() + START_TIMEOUT;
         while Instant::now() < deadline {
             if port_is_open() {
-                eprintln!(
-                    "[torgashka-infrastructure] embedded PG запущено на 127.0.0.1:{EMBEDDED_PG_PORT} (log: {})",
-                    log.display()
+                pg_log(
+                    "INFO",
+                    &format!(
+                        "embedded PG запущено на 127.0.0.1:{EMBEDDED_PG_PORT} (log: {})",
+                        log.display()
+                    ),
                 );
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(250));
         }
+        // Таймаут: найцінніша діагностика — хвіст postgres.log (чому сервер
+        // не піднявся: локаль, права, порт, конфіг).
+        let tail = read_log_tail(&log, 40);
+        pg_log(
+            "ERROR",
+            &format!(
+                "сервер не став готовим за {START_TIMEOUT:?} (порт {EMBEDDED_PG_PORT}); postgres.log (хвіст):\n{tail}"
+            ),
+        );
         Err(Error::StartTimeout(START_TIMEOUT, EMBEDDED_PG_PORT))
     }
 
@@ -331,9 +490,11 @@ impl EmbeddedPostgres {
             .status()
             .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
         if !status.success() {
-            return Err(Error::Exit { cmd: cmd.to_string(), code: status.code().unwrap_or(-1) });
+            let e = Error::Exit { cmd: cmd.to_string(), code: status.code().unwrap_or(-1) };
+            pg_log("ERROR", &format!("pg_ctl stop: {e}"));
+            return Err(e);
         }
-        eprintln!("[torgashka-infrastructure] embedded PG зупинено");
+        pg_log("INFO", "embedded PG зупинено");
         Ok(())
     }
 
@@ -365,15 +526,14 @@ impl EmbeddedPostgres {
             .status()
             .map_err(|e| Error::Command { cmd: "createdb".to_string(), e })?;
         if !status.success() {
+            let why = format!("createdb exit {:?}", status.code());
+            pg_log("ERROR", &format!("створення БД '{}' не вдалося: {why}", self.db));
             return Err(Error::CreateDb {
                 db: self.db.clone(),
-                why: format!("createdb exit {:?}", status.code()),
+                why,
             });
         }
-        eprintln!(
-            "[torgashka-infrastructure] embedded PG: БД '{}' створено",
-            self.db
-        );
+        pg_log("INFO", &format!("БД '{}' створено", self.db));
         Ok(())
     }
 
@@ -390,15 +550,41 @@ impl EmbeddedPostgres {
                 ));
             }
         }
-        let bin_dir = Self::locate().ok_or(Error::BinariesNotFound)?;
+        pg_log(
+            "INFO",
+            "bootstrap: DATABASE_URL не задано — запускаємо вбудований PostgreSQL",
+        );
+        let bin_dir = match Self::locate() {
+            Some(b) => {
+                pg_log("INFO", &format!("бінарники PG знайдено: {}", b.display()));
+                b
+            }
+            None => {
+                pg_log(
+                    "ERROR",
+                    "бінарники PG НЕ знайдено (TORGASHKA_PG_DIR, resources/postgres, .cache/pg, pg_config)",
+                );
+                return Err(Error::BinariesNotFound);
+            }
+        };
         let mut pg = Self::new(bin_dir);
-        pg.ensure_initialized()?;
-        pg.start()?;
-        pg.ensure_database()?;
+        pg_log("INFO", &format!("data_dir: {}", pg.data_dir().display()));
+        if let Err(e) = pg.ensure_initialized() {
+            pg_log("ERROR", &format!("initdb не виконано: {e}"));
+            return Err(e);
+        }
+        if let Err(e) = pg.start() {
+            pg_log("ERROR", &format!("pg_ctl start не виконано: {e}"));
+            return Err(e);
+        }
+        if let Err(e) = pg.ensure_database() {
+            pg_log("ERROR", &format!("створення БД не виконано: {e}"));
+            return Err(e);
+        }
         std::env::set_var("DATABASE_URL", pg.database_url());
-        eprintln!(
-            "[torgashka-infrastructure] embedded PG: DATABASE_URL встановлено ({})",
-            pg.database_url()
+        pg_log(
+            "INFO",
+            &format!("DATABASE_URL встановлено ({})", pg.database_url()),
         );
         Ok(pg)
     }
@@ -415,9 +601,7 @@ impl Drop for EmbeddedPostgres {
         if self.started_by_us {
             match self.stop() {
                 Ok(()) => {}
-                Err(e) => eprintln!(
-                    "[torgashka-infrastructure] попередження: embedded PG stop: {e}"
-                ),
+                Err(e) => pg_log("ERROR", &format!("embedded PG stop: {e}")),
             }
         }
     }
@@ -474,6 +658,44 @@ mod tests {
         // Завжди дає якийсь шлях (APPDATA/XDG/HOME/CWD)
         let dir = data_dir_default();
         assert!(!dir.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn data_dir_default_rejects_non_ascii() {
+        // ФІКС 2026-08-21: не-ASCII кандидати (кириличне ім'я користувача
+        // Windows) відкидаються. Імітуємо ланцюг: не-ASCII APPDATA →
+        // LOCALAPPDATA (ASCII) має перемогти; якщо всі не-ASCII — ProgramData.
+        #[cfg(windows)]
+        {
+            std::env::set_var("APPDATA", "C:\\Users\\Вася\\AppData\\Roaming");
+            std::env::set_var("LOCALAPPDATA", "C:\\Users\\Admin\\AppData\\Local");
+            let dir = data_dir_default();
+            let s = dir.to_string_lossy().to_string();
+            assert!(s.is_ascii(), "data_dir має бути ASCII: {s}");
+            assert!(s.contains("Admin"), "має обрати ASCII LOCALAPPDATA: {s}");
+        }
+        // На Linux просто перевіряємо, що резолв не падає.
+        #[cfg(not(windows))]
+        {
+            let _ = data_dir_default();
+        }
+    }
+
+    #[test]
+    fn pg_log_writes_to_file() {
+        // Файлове логування: після виклику pg_log файл поряд з data_dir
+        // існує і містить маркер. (Windows: stderr приховано — це єдиний
+        // видимий канал діагностики embedded PG.)
+        let marker = format!("pg_log_test_{}", std::process::id());
+        pg_log("TEST", &marker);
+        let path = log_file_path();
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("лог має читатись {}: {e}", path.display()));
+        assert!(
+            content.contains(&marker),
+            "лог {} має містити маркер {marker}",
+            path.display()
+        );
     }
 
     #[test]

@@ -534,16 +534,21 @@ pub async fn serve_listener(
     let _embedded_pg = if torgashka_infrastructure::db::resolve_database_url().is_err() {
         match torgashka_infrastructure::embedded_pg::bootstrap_if_needed() {
             Ok(pg) => {
-                eprintln!(
-                    "[torgashka-api] вбудований PostgreSQL: {} (data_dir: {})",
-                    pg.database_url(),
-                    pg.data_dir().display()
+                // Файлове логування (torgashka.log) — stderr на Windows приховано
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "INFO",
+                    &format!(
+                        "вбудований PostgreSQL: {} (data_dir: {})",
+                        pg.database_url(),
+                        pg.data_dir().display()
+                    ),
                 );
                 Some(pg)
             }
             Err(e) => {
-                eprintln!(
-                    "[torgashka-api] попередження: вбудований PostgreSQL недоступний ({e}); працюємо без БД"
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("вбудований PostgreSQL недоступний ({e}); працюємо без БД"),
                 );
                 None
             }
