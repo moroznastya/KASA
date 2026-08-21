@@ -1,18 +1,18 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import React, { useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Trash2, Search, ArrowLeft, Save, CheckCircle, Plus, Loader2 } from 'lucide-react';
+import { Trash2, Search, ArrowLeft, Save, CheckCircle, Loader2, Package, DollarSign, Percent } from 'lucide-react';
 import api from '@/services/api';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
-import { useSearchProducts } from '@/hooks/useProducts';
+import { useCreateProduct, useSearchProducts } from '@/hooks/useProducts';
 import { productService } from '@/services/productService';
 import { Button } from '@/components/ui/Button';
-import { EmptyState } from '@/components/ui/EmptyState';
-import { Modal } from '@/components/ui/Modal';
-import { SearchInput } from '@/components/ui/SearchInput';
 import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
+import { VatRate, UnitOfMeasure } from '@/types/product';
 import { formatCurrency } from '@/utils/format';
+import { normalizeDecimalInput } from '@/utils/decimal';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
@@ -45,6 +45,33 @@ interface CartItem {
 /** Заокруглення до 2 знаків після коми */
 const round2 = (val: number): number => Math.round(val * 100) / 100;
 
+/** Стан форми створення нового товару (патерн InvoiceFormPage) */
+interface NewProductFormState {
+  title: string;
+  barcode: string;
+  sku: string;
+  price: string;
+  cost_price: string;
+  markup: string;
+  stock: string;
+  tax_rate: VatRate;
+  unit: string;
+  is_weight: boolean;
+}
+
+const EMPTY_NEW_PRODUCT: NewProductFormState = {
+  title: '',
+  barcode: '',
+  sku: '',
+  price: '',
+  cost_price: '',
+  markup: '',
+  stock: '0',
+  tax_rate: 20 as VatRate,
+  unit: 'pcs',
+  is_weight: false,
+};
+
 const InventoryFormPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -53,6 +80,7 @@ const InventoryFormPage: React.FC = () => {
   const { goBack } = useBackNavigation();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
+  const createProductMutation = useCreateProduct();
 
   // ─── Основні стани ───────────────────────────────────────────────
   const [location, setLocation] = useState('');
@@ -64,9 +92,9 @@ const InventoryFormPage: React.FC = () => {
   const [showSearch, setShowSearch] = useState(false);
   // Сканування штрих-коду (Enter у полі пошуку)
   const [isScanningBarcode, setIsScanningBarcode] = useState(false);
-  // Модалка вибору товару (кнопка «Додати товар»)
-  const [isProductPickerOpen, setIsProductPickerOpen] = useState(false);
-  const [pickerQuery, setPickerQuery] = useState('');
+  // Модалка створення нового товару (кнопка «Створити товар»)
+  const [showNewProductModal, setShowNewProductModal] = useState(false);
+  const [newProduct, setNewProduct] = useState<NewProductFormState>({ ...EMPTY_NEW_PRODUCT });
 
   // ─── Стани модалки ───────────────────────────────────────────────
   const [modalProduct, setModalProduct] = useState<any>(null);
@@ -131,18 +159,6 @@ const InventoryFormPage: React.FC = () => {
 
   const { data: searchData } = useSearchProducts(searchQuery);
 
-  // Список товарів для модалки «Додати товар»: повний список (pickerQuery порожній)
-  // або відфільтрований (pickerQuery >= 2 символи)
-  const { data: pickerData, isLoading: pickerLoading } = useQuery({
-    queryKey: ['inventory-product-picker', pickerQuery],
-    queryFn: () =>
-      pickerQuery.trim().length >= 2
-        ? productService.searchProducts(pickerQuery.trim())
-        : productService.getProducts({ page: 1, size: 200 }),
-    enabled: isProductPickerOpen,
-  });
-  const pickerItems = pickerData?.items || [];
-
   const handleSearch = useCallback(
     (query: string) => {
       setSearchQuery(query);
@@ -175,8 +191,48 @@ const InventoryFormPage: React.FC = () => {
       openAddModal(product);
     } catch {
       toast.error(`Товар зі штрих-кодом ${q} не знайдено`);
+      // Одразу пропонуємо створити товар з цим штрих-кодом
+      setNewProduct((p) => ({ ...p, barcode: q }));
+      setShowNewProductModal(true);
     } finally {
       setIsScanningBarcode(false);
+    }
+  };
+
+  // ─── Створення нового товару (патерн InvoiceFormPage) ─────────────
+  const handleCreateProduct = async () => {
+    if (!newProduct.title.trim()) {
+      toast.error('Введіть назву товару');
+      return;
+    }
+
+    const costPrice = parseFloat(newProduct.cost_price) || 0;
+    const markup = parseFloat(newProduct.markup) || 0;
+    // Розрахувати ціну з собівартості та націнки, якщо ціна не вказана
+    let price = parseFloat(newProduct.price) || 0;
+    if (price <= 0 && costPrice > 0 && markup > 0) {
+      price = Math.round(costPrice * (1 + markup / 100));
+    }
+
+    try {
+      const product = await createProductMutation.mutateAsync({
+        title: newProduct.title.trim(),
+        barcode: newProduct.barcode.trim() || undefined,
+        sku: newProduct.sku.trim() || undefined,
+        price: price || 0,
+        cost_price: costPrice || 0,
+        markup: markup || undefined,
+        stock: parseInt(newProduct.stock) || 0,
+        tax_rate: newProduct.tax_rate as VatRate,
+        unit: (newProduct.unit || 'pcs') as UnitOfMeasure,
+        is_weight: newProduct.is_weight,
+      });
+      // Одразу додаємо створений товар у кошик інвентаризації
+      setShowNewProductModal(false);
+      setNewProduct({ ...EMPTY_NEW_PRODUCT });
+      openAddModal(product);
+    } catch {
+      // Error handled (toast у useCreateProduct)
     }
   };
 
@@ -376,7 +432,7 @@ const InventoryFormPage: React.FC = () => {
             />
           </div>
 
-          {/* ─── Пошук товару + кнопка «Додати товар» ───────────── */}
+          {/* ─── Пошук товару + кнопка «Створити товар» ───────────── */}
           <div className="flex items-end gap-3">
             <div className="relative flex-1">
               <Input
@@ -420,11 +476,11 @@ const InventoryFormPage: React.FC = () => {
               )}
             </div>
             <Button
-              onClick={() => setIsProductPickerOpen(true)}
-              icon={<Plus className="w-4 h-4" />}
+              onClick={() => setShowNewProductModal(true)}
+              icon={<Package className="w-4 h-4" />}
               className="shrink-0"
             >
-              Додати товар
+              Створити товар
             </Button>
           </div>
 
@@ -614,66 +670,188 @@ const InventoryFormPage: React.FC = () => {
       </div>
 
       {/* ═══════════════════════════════════════════════════════════ */}
-      {/* ═══ МОДАЛКА ВИБОРУ ТОВАРУ («Додати товар») ═════════════ */}
+      {/* ═══ МОДАЛКА СТВОРЕННЯ НОВОГО ТОВАРУ ════════════════════ */}
       {/* ═══════════════════════════════════════════════════════════ */}
-      <Modal
-        isOpen={isProductPickerOpen}
-        onClose={() => {
-          setIsProductPickerOpen(false);
-          setPickerQuery('');
-        }}
-        title="Додати товар"
-        size="2xl"
-      >
-        <div className="space-y-4">
-          <SearchInput
-            value={pickerQuery}
-            onChange={setPickerQuery}
-            placeholder="Пошук за назвою або штрих-кодом..."
-            label="Пошук товару"
-          />
-          {pickerLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
+      {showNewProductModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setShowNewProductModal(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-2xl mx-4 p-6 space-y-5 overflow-y-auto max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Створити товар
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 -mt-3">
+              Новий товар буде одразу додано до інвентаризації
+            </p>
+
+            {/* Основна інформація */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input
+                label="Назва товару *"
+                value={newProduct.title}
+                onChange={(e) => setNewProduct((p) => ({ ...p, title: e.target.value }))}
+                placeholder="Введіть назву"
+                autoFocus
+              />
+              <Input
+                label="Штрих-код"
+                value={newProduct.barcode}
+                onChange={(e) => setNewProduct((p) => ({ ...p, barcode: e.target.value }))}
+                placeholder="13 цифр"
+              />
+              <Input
+                label="Артикул"
+                value={newProduct.sku}
+                onChange={(e) => setNewProduct((p) => ({ ...p, sku: e.target.value }))}
+                placeholder="Артикул товару"
+              />
+              <Input
+                label="Облікова кількість"
+                type="text"
+                inputMode="decimal"
+                value={newProduct.stock}
+                onChange={(e) => {
+                  const raw = normalizeDecimalInput(e.target.value);
+                  if (raw === null) return;
+                  setNewProduct((p) => ({ ...p, stock: raw }));
+                }}
+                helperText="Поточний залишок (заповниться в інвентаризації)"
+              />
             </div>
-          ) : pickerItems.length === 0 ? (
-            <EmptyState
-              message="Товари не знайдені"
-              description={
-                pickerQuery.trim().length >= 2
-                  ? 'Спробуйте змінити пошуковий запит'
-                  : 'Додайте товари у розділі Товари, щоб провести інвентаризацію'
-              }
-            />
-          ) : (
-            <div className="max-h-96 overflow-y-auto divide-y divide-gray-200 dark:divide-slate-700 rounded-xl border border-gray-200 dark:border-slate-700">
-              {pickerItems.map((product) => (
-                <button
-                  key={product.id}
-                  onClick={() => {
-                    setIsProductPickerOpen(false);
-                    setPickerQuery('');
-                    openAddModal(product);
+
+            {/* Ціни та фінанси */}
+            <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
+              <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
+                Ціни та фінанси
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Input
+                  label="Собівартість"
+                  type="text"
+                  inputMode="decimal"
+                  value={newProduct.cost_price}
+                  onChange={(e) => {
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    setNewProduct((p) => {
+                      const markup = parseFloat(p.markup) || 0;
+                      const costNum = parseFloat(raw) || 0;
+                      const calculatedPrice = costNum > 0 && markup > 0 ? Math.round(costNum * (1 + markup / 100)) : Number(p.price);
+                      return { ...p, cost_price: raw, price: calculatedPrice > 0 ? String(calculatedPrice) : p.price };
+                    });
                   }}
-                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-slate-700 text-left transition-colors"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                      {product.title}
-                    </p>
-                    {product.barcode && (
-                      <p className="text-xs text-gray-400">ШК: {product.barcode}</p>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400 shrink-0 ml-3">
-                    Залишок: {product.stock}
-                  </p>
-                </button>
-              ))}
+                  icon={<DollarSign className="w-4 h-4 text-gray-400" />}
+                />
+                <Input
+                  label="Націнка (%)"
+                  type="text"
+                  inputMode="decimal"
+                  value={newProduct.markup}
+                  onChange={(e) => {
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    setNewProduct((p) => {
+                      const costPrice = parseFloat(p.cost_price) || 0;
+                      const markNum = parseFloat(raw) || 0;
+                      const calculatedPrice = costPrice > 0 && markNum > 0 ? Math.round(costPrice * (1 + markNum / 100)) : Number(p.price);
+                      return { ...p, markup: raw, price: calculatedPrice > 0 ? String(calculatedPrice) : p.price };
+                    });
+                  }}
+                  icon={<Percent className="w-4 h-4 text-gray-400" />}
+                />
+                <Input
+                  label="Ціна продажу"
+                  type="text"
+                  inputMode="decimal"
+                  value={newProduct.price}
+                  onChange={(e) => {
+                    const raw = normalizeDecimalInput(e.target.value);
+                    if (raw === null) return;
+                    setNewProduct((p) => {
+                      const costPrice = parseFloat(p.cost_price) || 0;
+                      const priceNum = parseFloat(raw) || 0;
+                      const calculatedMarkup = costPrice > 0 && priceNum > 0 ? Math.round(((priceNum - costPrice) / costPrice) * 100) : Number(p.markup);
+                      return { ...p, price: raw, markup: calculatedMarkup > 0 ? String(calculatedMarkup) : p.markup };
+                    });
+                  }}
+                />
+              </div>
             </div>
-          )}
+
+            {/* Податки та одиниці виміру */}
+            <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
+              <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
+                Податки та одиниці виміру
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Select
+                  label="Ставка податків"
+                  options={[
+                    { value: 0, label: '0%' },
+                    { value: 5, label: '5%' },
+                    { value: 7, label: '7%' },
+                    { value: 20, label: '20%' },
+                  ]}
+                  value={newProduct.tax_rate}
+                  onChange={(e) => setNewProduct((p) => ({ ...p, tax_rate: Number(e.target.value) as VatRate }))}
+                />
+                <Select
+                  label="Одиниця виміру"
+                  options={[
+                    { value: 'pcs', label: 'шт' },
+                    { value: 'kg', label: 'кг' },
+                    { value: 'l', label: 'л' },
+                    { value: 'm', label: 'м' },
+                    { value: 'box', label: 'кор' },
+                    { value: 'pack', label: 'уп' },
+                  ]}
+                  value={newProduct.unit}
+                  onChange={(e) => setNewProduct((p) => ({ ...p, unit: e.target.value }))}
+                />
+              </div>
+              <div className="mt-4">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newProduct.is_weight}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setNewProduct((p) => ({
+                        ...p,
+                        is_weight: checked,
+                        unit: checked ? 'kg' : 'pcs',
+                      }));
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    Ваговий товар (продаж за вагою)
+                  </span>
+                  {newProduct.is_weight ? (
+                    <span className="text-xs text-amber-500">→ одиницю виміру змінено на кг</span>
+                  ) : (
+                    <span className="text-xs text-gray-400">→ одиниця виміру: шт</span>
+                  )}
+                </label>
+              </div>
+            </div>
+
+            {/* Кнопки */}
+            <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
+              <Button variant="secondary" onClick={() => setShowNewProductModal(false)}>
+                Скасувати
+              </Button>
+              <Button onClick={handleCreateProduct} isLoading={createProductMutation.isPending}>
+                Створити товар
+              </Button>
+            </div>
+          </div>
         </div>
-      </Modal>
+      )}
 
       {/* ═══════════════════════════════════════════════════════════ */}
       {/* ═══ МОДАЛКА ДОДАВАННЯ ТОВАРУ ════════════════════════════ */}
