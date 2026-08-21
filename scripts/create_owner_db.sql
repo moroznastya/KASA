@@ -1,0 +1,37 @@
+-- ============================================================================
+-- create_owner_db.sql — ручне створення персональної БД власника (Частина 2)
+-- ============================================================================
+-- Призначення: «Для кожного власника створюється окрема чиста база даних
+-- за шаблоном наявної». Цей скрипт — залізничний шлях (ручне використання),
+-- якщо авто-механізм POST /api/v1/setup недоступний або стався збій.
+--
+-- Авто-шлях (рекомендований): фасад сам створює шаблонну БД при першому
+-- /api/v1/setup (crates/torgashka-infrastructure/src/repositories/setup.rs):
+--   torgashka_template  — шаблон з повною схемою (34 таблиці)
+--   torgashka_owner_<8> — персональна БД власника (CREATE DATABASE ... TEMPLATE)
+--
+-- Використання (від імені суперкористувача/власника БД):
+--   psql -h localhost -U postgres -d pos_system -f scripts/create_owner_db.sql
+--
+-- КРОК 1. Створити шаблонну БД (ОДИН раз, якщо ще не існує):
+--   CREATE DATABASE torgashka_template TEMPLATE template0;
+--   -- потім застосувати схему: psql -U postgres -d torgashka_template -f <schema.sql>
+--   -- (схема: frontend/src-tauri/crates/torgashka-infrastructure/src/schema.sql —
+--   --  джерело істини backend/alembic/versions/0001..0005)
+--
+-- КРОК 2. Для КОЖНОГО нового власника (замініть <OWNER_ID> на реальний UUID
+--         з таблиці users мета-БД pos_system):
+--   -- 2.1 Ім'я персональної БД: torgashka_owner_<перші 8 символів uuid>
+--   CREATE DATABASE torgashka_owner_XXXXXXXX TEMPLATE torgashka_template;
+--
+--   -- 2.2 Дозволи поточному користувачу БД (напр. postgres):
+--   GRANT ALL ON DATABASE torgashka_owner_XXXXXXXX TO postgres;
+--
+--   -- 2.3 Зареєструвати в мета-БД (owners_db):
+--   INSERT INTO owners_db (owner_id, db_name, created_at)
+--   VALUES ('<OWNER_ID>'::uuid, 'torgashka_owner_XXXXXXXX', now());
+--
+-- Перевірка:
+--   SELECT * FROM owners_db;
+--   \l   -- список БД: torgashka_template + torgashka_owner_*
+-- ============================================================================

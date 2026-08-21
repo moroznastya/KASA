@@ -21,7 +21,7 @@ use tower_http::cors::CorsLayer;
 use crate::{
     auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
     print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
-    suppliers, AppState,
+    setup, store_context, stores, suppliers, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -51,6 +51,7 @@ pub fn build_router(state: AppState) -> Router {
             header::ACCEPT,
             header::ORIGIN,
             HeaderName::from_static("x-requested-with"),
+            HeaderName::from_static("x-store-id"),
         ])
         .allow_credentials(true);
 
@@ -247,6 +248,11 @@ pub fn build_router(state: AppState) -> Router {
                     .delete(pos::delete_transfer),
             )
             .route("/api/v1/transfers/:id/confirm", post(pos::confirm_transfer))
+            // Готівкові операції (внесення/інкасація)
+            .route(
+                "/api/v1/cash-operations",
+                get(pos::list_cash_operations).post(pos::create_cash_operation),
+            )
             // Зміни ПРРО (X/Z) — локальні (етап 3)
             .route("/api/v2/prro/shifts", get(pos::list_shifts))
             .route("/api/v2/prro/shift/open", post(pos::open_shift))
@@ -304,6 +310,14 @@ pub fn build_router(state: AppState) -> Router {
             );
     }
 
+    // Setup (Частина 1+2): перший власник + персональна БД — ПУБЛІЧНІ шляхи
+    // (без JWT; у auth.rs/store_context.rs is_public_path додано /api/v1/setup).
+    if state.setup.is_some() {
+        router = router
+            .route("/api/v1/setup/status", get(setup::status))
+            .route("/api/v1/setup", post(setup::setup));
+    }
+
     // Rust-гілка auth/users/settings/RBAC (етап 6) — під TORGASHKA_RUST_AUTH=1.
     // Порядок: статичні сегменти (users-list, users/me, permissions/list)
     // ПЕРЕД :user_id — як FastAPI.
@@ -316,6 +330,11 @@ pub fn build_router(state: AppState) -> Router {
             .route("/api/v1/auth/logout", post(auth_routes::logout))
             .route("/api/v1/auth/verify", get(auth_routes::verify))
             .route("/api/v1/auth/users-list", get(auth_routes::users_list))
+            // /auth/me + /auth/users/me (JWT) — поточний користувач.
+            // Статичні сегменти ПЕРЕД :user_id; /auth/me — фронтенд (useAuth),
+            // users/me — сумісність із коментарем і Python-еталоном.
+            .route("/api/v1/auth/me", get(auth_routes::me))
+            .route("/api/v1/auth/users/me", get(auth_routes::me))
             // Users (всі require_admin).
             .route(
                 "/api/v1/users/permissions/list",
@@ -573,9 +592,31 @@ pub fn build_router(state: AppState) -> Router {
             );
     }
 
+    // Rust-гілка торговельних точок (Етап 3) — під тим самим feature-flag.
+    // /api/v1/inventory/availability — статичний сегмент, пріоритет над :id.
+    if state.stores.is_some() {
+        router = router
+            .route(
+                "/api/v1/stores",
+                get(stores::list_stores).post(stores::create_store),
+            )
+            .route("/api/v1/user-stores", post(stores::assign_user_store))
+            .route(
+                "/api/v1/inventory/availability",
+                get(stores::availability),
+            );
+    }
+
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).
+    // Порядок шарів: cors → auth (JWT) → store (X-Store-Id + RLS-контекст) → handler.
+    // StoreContext ПІСЛЯ auth: Claims доступні в extensions; контекст точки
+    // проставляється в task-local для всіх запитів хендлера (RLS set_config).
     router
         .fallback(proxy::proxy_handler)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            store_context::store_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -587,4 +628,168 @@ pub fn build_router(state: AppState) -> Router {
 /// GET /api/v1/health → 200 {"status":"ok"} (без JWT — відкритий).
 pub async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(crate::health_payload())
+}
+
+// ─── Тести: /api/v1/auth/me та /api/v1/auth/users/me (регресія 410 Gone) ────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use std::sync::Arc;
+    use torgashka_domain::{AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto,
+        SettingsBatchInput, UserCreateInput, UserDto, UserListDto, UserUpdateInput};
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    /// Мок auth-сервісу: живий тільки get_user_by_id (шлях /auth/me).
+    struct MockAuth;
+
+    #[async_trait::async_trait]
+    impl AuthService for MockAuth {
+        async fn login(&self, _input: &LoginRequest) -> Result<torgashka_domain::LoginResult, AuthError> {
+            unimplemented!()
+        }
+        async fn login_pin(&self, _input: &LoginPinRequest) -> Result<torgashka_domain::LoginResult, AuthError> {
+            unimplemented!()
+        }
+        async fn refresh(&self, _user_id: Uuid) -> Result<torgashka_domain::LoginResult, AuthError> {
+            unimplemented!()
+        }
+        async fn logout(&self, _user_id: Uuid) -> Result<(), AuthError> {
+            unimplemented!()
+        }
+        async fn get_user_by_id(&self, user_id: Uuid) -> Result<UserDto, AuthError> {
+            Ok(UserDto {
+                id: user_id,
+                name: "Тест".into(),
+                login: "test".into(),
+                role: "admin".into(),
+                is_active: true,
+                onboarding_completed: true,
+                permissions: Some(vec!["admin".into()]),
+                created_at: chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+                updated_at: chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+            })
+        }
+        async fn users_list_public(&self) -> Result<Vec<torgashka_domain::PublicUserDto>, AuthError> {
+            unimplemented!()
+        }
+        async fn list_users(&self, _page: i64, _size: i64) -> Result<UserListDto, AuthError> {
+            unimplemented!()
+        }
+        async fn create_user(&self, _input: &UserCreateInput) -> Result<UserDto, AuthError> {
+            unimplemented!()
+        }
+        async fn update_user(&self, _user_id: Uuid, _input: &UserUpdateInput) -> Result<UserDto, AuthError> {
+            unimplemented!()
+        }
+        async fn update_permissions(&self, _user_id: Uuid, _permissions: &[String]) -> Result<UserDto, AuthError> {
+            unimplemented!()
+        }
+        async fn update_hourly_rate(&self, _user_id: Uuid, _hourly_rate: f64) -> Result<serde_json::Value, AuthError> {
+            unimplemented!()
+        }
+        async fn delete_user(&self, _user_id: Uuid, _current_user_id: Uuid) -> Result<(), AuthError> {
+            unimplemented!()
+        }
+        async fn settings_all(&self) -> Result<torgashka_domain::SettingsModulesDto, AuthError> {
+            unimplemented!()
+        }
+        async fn settings_by_module(&self, _module: &str) -> Result<Vec<SettingDto>, AuthError> {
+            unimplemented!()
+        }
+        async fn settings_batch_update(&self, _settings: &[(String, Option<String>)]) -> Result<torgashka_domain::SettingsModulesDto, AuthError> {
+            unimplemented!()
+        }
+        async fn settings_update_key(&self, _key: &str, _value: Option<String>) -> Result<SettingDto, AuthError> {
+            unimplemented!()
+        }
+    }
+
+    fn test_state() -> AppState {
+        let mut state = crate::AppState {
+            jwt_secret: Arc::new("test-secret-для-юніт-тесту".to_string()),
+            readdirs: None,
+            write: None,
+            write_pool: None,
+            pos: None,
+            ledger: None,
+            auth: None,
+            prro: None,
+            debtors: None,
+            documents: None,
+            documents_pool: None,
+            invoices_v1: None,
+            invoices_v2: None,
+            invoices_pool: None,
+            return_invoices: None,
+            return_invoices_pool: None,
+            purchase_orders: None,
+            purchase_orders_pool: None,
+            print_templates: None,
+            print_pool: None,
+            products_v2: None,
+            products_v2_pool: None,
+            ocr: None,
+            ocr_pool: None,
+            uploads_dir: std::path::PathBuf::from("uploads"),
+            store_pool: None,
+            stores: None,
+            setup: None,
+        };
+        state.auth = Some(Arc::new(MockAuth) as Arc<dyn AuthService + Send + Sync>);
+        state
+    }
+
+    fn valid_token() -> String {
+        crate::auth::create_access_token(
+            "11111111-1111-1111-1111-111111111111",
+            "admin",
+            &["admin".to_string()],
+            "test-secret-для-юніт-тесту",
+        )
+        .expect("токен має створитись")
+    }
+
+    async fn get(path: &str, token: Option<&str>) -> StatusCode {
+        let app = build_router(test_state());
+        let mut builder = Request::builder().method("GET").uri(path);
+        if let Some(t) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let resp = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        resp.status()
+    }
+
+    #[tokio::test]
+    async fn auth_me_with_valid_token_not_gone_and_200() {
+        let status = get("/api/v1/auth/me", Some(&valid_token())).await;
+        assert_ne!(status, StatusCode::GONE, "/api/v1/auth/me не має падати в fallback (410)");
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_users_me_with_valid_token_not_gone_and_200() {
+        let status = get("/api/v1/auth/users/me", Some(&valid_token())).await;
+        assert_ne!(status, StatusCode::GONE, "/api/v1/auth/users/me не має падати в fallback (410)");
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_me_without_token_is_401_not_410() {
+        let status = get("/api/v1/auth/me", None).await;
+        assert_ne!(status, StatusCode::GONE);
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
 }

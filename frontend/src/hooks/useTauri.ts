@@ -19,6 +19,7 @@ import { useCallback, useState } from 'react';
 import * as tauriOffline from '@/services/tauri/offline';
 import * as tauriPrint from '@/services/tauri/print';
 import { receiptService } from '@/services/receiptService';
+import { useStoreStore } from '@/store/storeStore';
 
 /**
  * Перевіряє, чи запущено в Tauri
@@ -49,9 +50,9 @@ export async function getPrinters(): Promise<string[]> {
  *
  * ✅ Делегує в services/tauri/offline.ts → invoke('cache_products', { productsJson })
  */
-export async function cacheProducts(products: unknown[]): Promise<number> {
+export async function cacheProducts(products: unknown[], storeId?: string | null): Promise<number> {
   try {
-    return await tauriOffline.cacheProducts(products);
+    return await tauriOffline.cacheProducts(products, storeId);
   } catch {
     return 0;
   }
@@ -65,9 +66,13 @@ export async function cacheProducts(products: unknown[]): Promise<number> {
  *
  * ✅ Делегує в services/tauri/offline.ts → invoke('get_cached_products', { search, limit })
  */
-export async function getCachedProducts(query?: string, limit?: number): Promise<unknown[]> {
+export async function getCachedProducts(
+  query?: string,
+  limit?: number,
+  storeId?: string | null,
+): Promise<unknown[]> {
   try {
-    return await tauriOffline.getCachedProducts(query, limit);
+    return await tauriOffline.getCachedProducts(query, limit, storeId);
   } catch {
     return [];
   }
@@ -76,6 +81,7 @@ export async function getCachedProducts(query?: string, limit?: number): Promise
 export interface OfflineReceipt {
   id: number;
   data: string;
+  store_id: string | null;
 }
 
 /**
@@ -86,9 +92,12 @@ export interface OfflineReceipt {
  *
  * ✅ Делегує в services/tauri/offline.ts → invoke('save_receipt_offline', { receiptJson })
  */
-export async function saveReceiptOffline(receipt: unknown): Promise<number | null> {
+export async function saveReceiptOffline(
+  receipt: unknown,
+  storeId?: string | null,
+): Promise<number | null> {
   try {
-    return await tauriOffline.saveReceiptOffline(receipt);
+    return await tauriOffline.saveReceiptOffline(receipt, storeId);
   } catch {
     return null;
   }
@@ -230,7 +239,11 @@ export function useTauri(): TauriState & TauriActions {
   const saveOffline = useCallback(
     async (receipt: unknown): Promise<number | null> => {
       if (!state.isTauri) return null;
-      return saveReceiptOffline(receipt);
+      // Мультиточковість (Етап 5): store_id поточної точки зберігається в
+      // SQLite-черзі разом з чеком — при синхронізації чек потрапить
+      // у ТОЧКУ, де був створений (навіть якщо касир перемкнув точку).
+      const storeId = useStoreStore.getState().activeStoreId;
+      return saveReceiptOffline(receipt, storeId);
     },
     [state.isTauri],
   );
@@ -245,8 +258,12 @@ export function useTauri(): TauriState & TauriActions {
         //   1) axios-інтерцептор додає Bearer-токен (раніше fetch ходив без auth)
         //   2) маршрутизація v1/v2: звичайні чеки → v2 POST /receipts/sale|return,
         //      боргові / з original_receipt_id → v1 POST /receipts.
+        // Мультиточковість (Етап 5): кожен чек іде зі СВОЇМ store_id з черги
+        // (X-Store-Id на рівні запиту перекриває поточну точку) — legacy-чеки
+        // без store_id падають на поточну активну точку.
         const data = JSON.parse(receipt.data) as Parameters<typeof receiptService.createReceipt>[0];
-        await receiptService.createReceipt(data);
+        const storeId = receipt.store_id ?? useStoreStore.getState().activeStoreId;
+        await receiptService.createReceipt(data, storeId ?? undefined);
         await markReceiptSynced(receipt.id);
         synced++;
       } catch {

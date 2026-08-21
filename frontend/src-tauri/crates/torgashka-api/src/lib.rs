@@ -33,6 +33,9 @@ pub mod purchase_orders;
 pub mod readdirs;
 pub mod return_invoices;
 pub mod router_v1;
+pub mod setup;
+pub mod store_context;
+pub mod stores;
 pub mod suppliers;
 
 use std::sync::Arc;
@@ -41,8 +44,9 @@ use sqlx::PgPool;
 use torgashka_domain::{
     AuthService, DebtorService, DocumentsService, InvoicesV1Service, InvoicesV2Service,
     LedgerService, PosService, PrintTemplatesService, ProductsV2Service, PurchaseOrdersService,
-    ReadDirectories, ReturnInvoicesService, WriteDirectories,
+    ReadDirectories, ReturnInvoicesService, SetupService, StoreService, WriteDirectories,
 };
+use torgashka_infrastructure::store_ctx::StorePool;
 
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
 pub const DEFAULT_FACADE_ADDR: &str = "127.0.0.1:8000";
@@ -150,6 +154,12 @@ pub struct AppState {
     /// Директорія завантажених файлів (uploads/) — serve та збереження.
     /// Env TORGASHKA_UPLOADS_DIR (абсолютний або відносний шлях), default "uploads".
     pub uploads_dir: std::path::PathBuf,
+    /// StorePool для StoreContext middleware (перевірка user_stores + RLS).
+    pub store_pool: Option<StorePool>,
+    /// Rust-сервіс торговельних точок (Етап 3) — /api/v1/stores, availability.
+    pub stores: Option<std::sync::Arc<dyn StoreService + Send + Sync>>,
+    /// Rust-сервіс setup (Частина 1+2) — /api/v1/setup, перший власник + персональна БД.
+    pub setup: Option<std::sync::Arc<dyn SetupService + Send + Sync>>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -189,24 +199,25 @@ async fn init_readdirs() -> Option<(
             eprintln!(
                 "[torgashka-api] {RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
             );
+            let store_pool = StorePool::new(pool.clone());
             let read = Arc::new(
                 torgashka_infrastructure::repositories::directories::SqlxDirectories::new(
-                    pool.clone(),
+                    store_pool.clone(),
                 ),
             ) as Arc<dyn ReadDirectories + Send + Sync>;
             let write = Arc::new(
                 torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
-                    pool.clone(),
+                    store_pool.clone(),
                 ),
             ) as Arc<dyn WriteDirectories + Send + Sync>;
             let pos = Arc::new(torgashka_infrastructure::repositories::pos::SqlxPos::new(
-                pool.clone(),
+                store_pool.clone(),
             )) as Arc<dyn PosService + Send + Sync>;
             let ledger = Arc::new(
-                torgashka_infrastructure::repositories::ledger::SqlxLedger::new(pool.clone()),
+                torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
             ) as Arc<dyn LedgerService + Send + Sync>;
             let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
-                pool.clone(),
+                store_pool.clone(),
             )) as Arc<dyn AuthService + Send + Sync>;
             Some((pool, read, write, pos, ledger, auth))
         }
@@ -256,7 +267,7 @@ async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
         return None;
     }
     match torgashka_infrastructure::db::connect_readonly_pool(5).await {
-        Ok(pool) => match torgashka_infrastructure::prro::SqlxPrroRepository::connect(pool).await {
+        Ok(pool) => match torgashka_infrastructure::prro::SqlxPrroRepository::connect(StorePool::new(pool)).await {
             Ok(repo) => {
                 let shadow = mode.trim().to_lowercase() == "shadow";
                 eprintln!(
@@ -294,7 +305,7 @@ async fn init_documents() -> (
                 "[torgashka-api] {RUST_DOCUMENTS_ENV}=1 — Rust-гілка документів увімкнена (PostgreSQL)"
             );
             let svc: Arc<dyn DocumentsService + Send + Sync> = Arc::new(
-                torgashka_infrastructure::repositories::documents::SqlxDocuments::new(pool.clone()),
+                torgashka_infrastructure::repositories::documents::SqlxDocuments::new(StorePool::new(pool.clone())),
             );
             (Some(svc), Some(pool))
         }
@@ -322,7 +333,7 @@ async fn init_print_templates() -> (
             );
             let repo =
                 torgashka_infrastructure::repositories::print_templates::SqlxPrintTemplates::new(
-                    pool.clone(),
+                    StorePool::new(pool.clone()),
                 );
             let svc: Arc<dyn PrintTemplatesService + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
@@ -350,7 +361,7 @@ async fn init_products_v2() -> (
                 "[torgashka-api] {RUST_PRODUCTS_V2_ENV}=1 — Rust-гілка товарів v2 увімкнена (PostgreSQL)"
             );
             let repo = torgashka_infrastructure::repositories::products_v2::SqlxProductsV2::new(
-                pool.clone(),
+                StorePool::new(pool.clone()),
             );
             let svc: Arc<dyn ProductsV2Service + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
@@ -380,7 +391,7 @@ async fn init_return_invoices() -> (
             );
             let repo =
                 torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
-                    pool.clone(),
+                    StorePool::new(pool.clone()),
                 );
             let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
@@ -409,7 +420,7 @@ async fn init_purchase_orders() -> (
             );
             let repo =
                 torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
-                    pool.clone(),
+                    StorePool::new(pool.clone()),
                 );
             let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
@@ -437,10 +448,10 @@ async fn init_invoices() -> (
                 "[torgashka-api] {RUST_INVOICES_ENV}=1 — Rust-гілка інвойсів увімкнена (PostgreSQL)"
             );
             let repo =
-                torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(pool.clone());
+                torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(StorePool::new(pool.clone()));
             let v1: Arc<dyn InvoicesV1Service + Send + Sync> = Arc::new(repo);
             let repo2 =
-                torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(pool.clone());
+                torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(StorePool::new(pool.clone()));
             let v2: Arc<dyn InvoicesV2Service + Send + Sync> = Arc::new(repo2);
             (Some(v1), Some(v2), Some(pool))
         }
@@ -464,7 +475,7 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
                 "[torgashka-api] {RUST_DEBTORS_ENV}=1 — Rust-гілка боржників увімкнена (PostgreSQL)"
             );
             Some(
-                Arc::new(torgashka_infrastructure::repositories::debtors::SqlxDebtors::new(pool))
+                Arc::new(torgashka_infrastructure::repositories::debtors::SqlxDebtors::new(StorePool::new(pool)))
                     as Arc<dyn DebtorService + Send + Sync>,
             )
         }
@@ -575,7 +586,7 @@ pub async fn serve_listener(
                 );
                 Some(
                     Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
-                        pool,
+                        StorePool::new(pool),
                     )) as Arc<dyn AuthService + Send + Sync>,
                 )
             }
@@ -601,6 +612,19 @@ pub async fn serve_listener(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("uploads"));
     let (ocr, ocr_pool) = init_ocr().await;
+    // StoreContext (Етап 3): пул для middleware + сервіс точок.
+    let store_pool = write_pool.clone().map(StorePool::new);
+    let stores = store_pool.as_ref().map(|sp| {
+        Arc::new(torgashka_infrastructure::repositories::stores::SqlxStoreService::new(
+            sp.clone(),
+        )) as Arc<dyn StoreService + Send + Sync>
+    });
+    // Setup (Частина 1+2): той самий пул мета-БД, що й stores.
+    let setup = write_pool.clone().map(|p| {
+        Arc::new(
+            torgashka_infrastructure::repositories::setup::SqlxSetupService::new(StorePool::new(p)),
+        ) as Arc<dyn SetupService + Send + Sync>
+    });
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         readdirs,
@@ -627,6 +651,9 @@ pub async fn serve_listener(
         ocr,
         ocr_pool,
         uploads_dir,
+        store_pool,
+        stores,
+        setup,
     };
     let app = router_v1::build_router(state);
     eprintln!(

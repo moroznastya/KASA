@@ -13,7 +13,8 @@
 //! `"142.7"` ≠ `"142.70"`. GET/confirm читають scale колонки (`::text`).
 
 use chrono::NaiveDateTime;
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::{
@@ -38,11 +39,11 @@ impl<T> SqlxResultExt<T> for Result<T, sqlx::Error> {
 /// SQL-реалізація write-операцій.
 #[derive(Clone)]
 pub struct SqlxWriteDirectories {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxWriteDirectories {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -201,6 +202,27 @@ impl WriteDirectories for SqlxWriteDirectories {
         let created_at: NaiveDateTime = row.get(1);
         let updated_at: NaiveDateTime = row.get(2);
 
+        // Синхронізація stock-таблиці (Етап 3): per-store залишок і ціна поточної точки.
+        // price = input.price або 0 (0 = «без перевизначення» → глобальна
+        // products.price через NULLIF(st.price,0) у SELECT).
+        if let Some(store_id) = current_store_ctx().map(|c| c.store_id) {
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, $4::numeric, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = EXCLUDED.quantity,
+                        price = EXCLUDED.price,
+                        updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(id)
+            .bind(input.stock.as_deref().unwrap_or("0"))
+            .bind(opt_str(&input.price).unwrap_or("0.00"))
+            .execute(&mut *tx)
+            .await
+            .wr()?;
+        }
+
         tx.commit().await.wr()?;
 
         // Відповідь POST: ВХІДНА scale Decimal (Python identity map) + дефолти.
@@ -239,10 +261,16 @@ impl WriteDirectories for SqlxWriteDirectories {
 
         // Блокуємо рядок продукту (FOR UPDATE) — унікальність + поточні значення.
         let row = sqlx::query(
-            "SELECT id, barcode, sku, title, description, price::text, cost_price::text, \
-             markup::text, stock::text, recommended_qty::text, uktzed, scan_excise, \
-             tax_rate::text, tax_group, is_weight, unit, category_id, supplier_id, \
-             created_at, updated_at FROM products WHERE id = $1 FOR UPDATE",
+            "SELECT products.id, products.barcode, products.sku, products.title, \
+             products.description, products.price::text, products.cost_price::text, \
+             products.markup::text, COALESCE(st.quantity, 0)::text AS stock, \
+             products.recommended_qty::text, products.uktzed, products.scan_excise, \
+             products.tax_rate::text, products.tax_group, products.is_weight, products.unit, \
+             products.category_id, products.supplier_id, products.created_at, \
+             products.updated_at FROM products \
+             LEFT JOIN stock st ON st.product_id = products.id \
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+             WHERE products.id = $1 FOR UPDATE OF products",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -338,12 +366,12 @@ impl WriteDirectories for SqlxWriteDirectories {
             "UPDATE products SET \
              barcode = COALESCE($2, barcode), sku = COALESCE($3, sku), \
              title = COALESCE($4, title), description = $5, \
-             price = COALESCE($6::numeric, price), cost_price = COALESCE($7::numeric, cost_price), \
-             markup = COALESCE($8::numeric, markup), stock = COALESCE($9::numeric, stock), \
-             recommended_qty = COALESCE($10::numeric, recommended_qty), uktzed = COALESCE($11, uktzed), \
-             scan_excise = COALESCE($12, scan_excise), tax_rate = COALESCE($13::numeric, tax_rate), \
-             tax_group = COALESCE($14, tax_group), is_weight = COALESCE($15, is_weight), \
-             unit = COALESCE($16, unit), category_id = $17, supplier_id = $18, \
+             cost_price = COALESCE($6::numeric, cost_price), \
+             markup = COALESCE($7::numeric, markup), stock = COALESCE($8::numeric, stock), \
+             recommended_qty = COALESCE($9::numeric, recommended_qty), uktzed = COALESCE($10, uktzed), \
+             scan_excise = COALESCE($11, scan_excise), tax_rate = COALESCE($12::numeric, tax_rate), \
+             tax_group = COALESCE($13, tax_group), is_weight = COALESCE($14, is_weight), \
+             unit = COALESCE($15, unit), category_id = $16, supplier_id = $17, \
              updated_at = (now() AT TIME ZONE 'UTC')::timestamp \
              WHERE id = $1",
         )
@@ -352,7 +380,6 @@ impl WriteDirectories for SqlxWriteDirectories {
         .bind(input.sku.clone().flatten().as_deref())
         .bind(input.title.as_deref())
         .bind(input.description.clone().flatten().as_deref())
-        .bind(input.price.clone().flatten().as_deref())
         .bind(input.cost_price.clone().flatten().as_deref())
         .bind(new_markup.as_deref())
         .bind(input.stock.clone().flatten().as_deref())
@@ -367,6 +394,47 @@ impl WriteDirectories for SqlxWriteDirectories {
         .bind(input.supplier_id.flatten())
         .execute(&mut *tx)
         .await.wr()?;
+
+        // Синхронізація stock-таблиці (Етап 3): per-store залишок і ціна.
+        // Ціна більше НЕ глобальна: зміна ціни пишеться в stock активної точки,
+        // products.price залишається глобальним дефолтом. Upsert зберігає
+        // інше поле (quantity при зміні лише ціни і навпаки); stock.price = 0
+        // означає «без перевизначення» (читається NULLIF(st.price,0) → глобальна).
+        if let Some(store_id) = current_store_ctx().map(|c| c.store_id) {
+            let new_stock = input.stock.clone().flatten();
+            let new_price = input.price.clone().flatten();
+            if new_stock.is_some() || new_price.is_some() {
+                // Поточні quantity/price точки — зберігаємо незмінене поле.
+                let cur: Option<(String, String)> = sqlx::query_as(
+                    "SELECT quantity::text, price::text FROM stock \
+                     WHERE store_id = $1 AND product_id = $2",
+                )
+                .bind(store_id)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .wr()?;
+                let (cur_qty, cur_price) =
+                    cur.unwrap_or_else(|| ("0".to_string(), "0".to_string()));
+                let qty = new_stock.unwrap_or(cur_qty);
+                let price = new_price.unwrap_or(cur_price);
+                sqlx::query(
+                    "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                     VALUES ($1, $2, $3::numeric, $4::numeric, now())
+                     ON CONFLICT (store_id, product_id) DO UPDATE
+                        SET quantity = EXCLUDED.quantity,
+                            price = EXCLUDED.price,
+                            updated_at = now()",
+                )
+                .bind(store_id)
+                .bind(id)
+                .bind(qty)
+                .bind(price)
+                .execute(&mut *tx)
+                .await
+                .wr()?;
+            }
+        }
 
         tx.commit().await.wr()?;
 
@@ -425,11 +493,16 @@ impl WriteDirectories for SqlxWriteDirectories {
 
     async fn delete_product(&self, id: Uuid) -> Result<(), WriteError> {
         let mut tx = self.pool.begin().await.wr()?;
-        let row = sqlx::query("SELECT title, stock::text FROM products WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .wr()?;
+        let row = sqlx::query(
+            "SELECT p.title, COALESCE(st.quantity, 0)::text AS stock FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
+             WHERE p.id = $1 FOR UPDATE OF p",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .wr()?;
         let Some(row) = row else {
             return Err(WriteError::NotFound(format!(
                 "Товар з ID '{id}' не знайдено"
@@ -922,17 +995,23 @@ impl WriteDirectories for SqlxWriteDirectories {
             }
         };
 
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| WriteError::BadRequest(
+                "Відсутній контекст точки (X-Store-Id)".to_string(),
+            ))?;
         let id = Uuid::new_v4();
         let row = sqlx::query(
-            "INSERT INTO inventories (id, number, location, inventory_date, status, notes, \
+            "INSERT INTO inventories (id, number, location, store_id, inventory_date, status, notes, \
              created_at, updated_at, created_by_id) \
-             VALUES ($1, $2, $3, $4, 'draft', $5, (now() AT TIME ZONE 'UTC')::timestamp, \
-                     (now() AT TIME ZONE 'UTC')::timestamp, $6) \
+             VALUES ($1, $2, $3, $4, $5, 'draft', $6, (now() AT TIME ZONE 'UTC')::timestamp, \
+                     (now() AT TIME ZONE 'UTC')::timestamp, $7) \
              RETURNING created_at, updated_at",
         )
         .bind(id)
         .bind(&number)
         .bind(input.location.as_deref().unwrap_or(""))
+        .bind(store_id)
         .bind(input.inventory_date)
         .bind(input.notes.as_deref())
         .bind(input.created_by)
@@ -1071,9 +1150,10 @@ impl WriteDirectories for SqlxWriteDirectories {
             for item in new_items {
                 sqlx::query(
                     "INSERT INTO inventory_items (id, inventory_id, product_id, actual_quantity, \
-                     accounting_quantity, difference, cost_price, price, created_at) \
+                     accounting_quantity, difference, cost_price, price, store_id, created_at) \
                      VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, \
-                             $8::numeric, (now() AT TIME ZONE 'UTC')::timestamp)",
+                             $8::numeric, COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), \
+                             (now() AT TIME ZONE 'UTC')::timestamp)",
                 )
                 .bind(Uuid::new_v4())
                 .bind(id)
@@ -1259,6 +1339,19 @@ impl SqlxWriteDirectories {
         inventory_id: Uuid,
         sign: i32,
     ) -> Result<(), WriteError> {
+        let store_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT store_id FROM inventories WHERE id = $1",
+        )
+        .bind(inventory_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .wr()?
+        .flatten();
+        let store_id = store_id.ok_or_else(|| {
+            WriteError::BadRequest(format!(
+                "Інвентаризацію '{inventory_id}' не прив'язано до точки"
+            ))
+        })?;
         let items = sqlx::query(
             "SELECT product_id, difference::text FROM inventory_items \
              WHERE inventory_id = $1",
@@ -1275,13 +1368,18 @@ impl SqlxWriteDirectories {
                 Err(_) => sqlx::types::Decimal::ZERO,
             };
 
-            // Блокуємо товар і перевіряємо достатність (як Python update_stock).
-            let prow =
-                sqlx::query("SELECT title, stock::text FROM products WHERE id = $1 FOR UPDATE")
-                    .bind(product_id)
-                    .fetch_optional(&mut **tx)
-                    .await
-                    .wr()?;
+            // Блокуємо рядок stock поточної точки і перевіряємо достатність.
+            let prow = sqlx::query(
+                "SELECT p.title, COALESCE(st.quantity, 0)::text AS stock
+                 FROM products p
+                 LEFT JOIN stock st ON st.product_id = p.id AND st.store_id = $2
+                 WHERE p.id = $1 FOR UPDATE OF p",
+            )
+            .bind(product_id)
+            .bind(store_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .wr()?;
             let Some(prow) = prow else {
                 continue; // товар видалено — пропускаємо (Python: get_product_by_id → 404, але тут edge)
             };
@@ -1304,9 +1402,12 @@ impl SqlxWriteDirectories {
             }
 
             sqlx::query(
-                "UPDATE products SET stock = stock + $2::numeric, \
-                 updated_at = (now() AT TIME ZONE 'UTC')::timestamp WHERE id = $1",
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, 0, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = stock.quantity + EXCLUDED.quantity, updated_at = now()",
             )
+            .bind(store_id)
             .bind(product_id)
             .bind(delta.to_string())
             .execute(&mut **tx)
@@ -1441,7 +1542,7 @@ impl SqlxWriteDirectories {
 ///
 /// Повертає 403 `"Доступ заборонено: потрібна роль адміністратора"`,
 /// якщо користувач не існує, деактивований або роль != admin.
-pub async fn require_admin_role(pool: &PgPool, user_id: Uuid) -> Result<(), WriteError> {
+pub async fn require_admin_role(pool: &sqlx::PgPool, user_id: Uuid) -> Result<(), WriteError> {
     let row = sqlx::query("SELECT role::text, is_active FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(pool)
@@ -1459,7 +1560,7 @@ pub async fn require_admin_role(pool: &PgPool, user_id: Uuid) -> Result<(), Writ
             "Користувач деактивований".to_string(),
         ));
     }
-    if role != "admin" {
+    if !matches!(role.as_str(), "admin" | "owner") {
         return Err(WriteError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
         ));

@@ -11,6 +11,7 @@ import {
   BookOpen,
   Receipt,
   Users,
+  Banknote,
   ChevronLeft,
   ChevronRight,
   UserCog,
@@ -18,16 +19,20 @@ import {
   Clock,
   Printer,
   FileCheck2,
+  PackageSearch,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
+import logo from '@/assets/logo.png';
 
 interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
   module: string;
-  roles?: ('admin' | 'cashier')[];
+  roles?: ('admin' | 'cashier' | 'owner')[];
+  /** Пермішен (якщо вказаний) — пункт видимий лише з ним або для admin/owner. */
+  permission?: string;
 }
 
 const navItems: NavItem[] = [
@@ -44,6 +49,13 @@ const navItems: NavItem[] = [
     icon: <ShoppingCart className="w-5 h-5" />,
     module: 'pos',
     roles: ['admin', 'cashier'],
+  },
+  {
+    path: '/cash',
+    label: 'Каса',
+    icon: <Banknote className="w-5 h-5" />,
+    module: 'cash',
+    roles: ['admin', 'owner'],
   },
   {
     path: '/debtors',
@@ -72,6 +84,14 @@ const navItems: NavItem[] = [
     icon: <Printer className="w-5 h-5" />,
     module: 'products',
     roles: ['admin', 'cashier'],
+  },
+  {
+    path: '/inventory/availability',
+    label: 'Наявність в точках',
+    icon: <PackageSearch className="w-5 h-5" />,
+    module: 'products',
+    roles: ['admin', 'cashier'],
+    permission: 'inventory.view_other_stores',
   },
   {
     path: '/categories',
@@ -142,9 +162,21 @@ export const Sidebar: React.FC = () => {
   const { sidebarOpen, toggleSidebar, setActiveModule } = useUIStore();
   const user = useAuthStore((state) => state.user);
 
-  const visibleItems = navItems.filter(
-    (item) => !item.roles || item.roles.includes(user?.role as 'admin' | 'cashier')
-  );
+  // Пермішен-перевірка: admin/owner мають усі права; решта — за списком прав.
+  const canViewOtherStores =
+    user?.role === 'admin' ||
+    user?.role === 'owner' ||
+    !!user?.permissions?.includes('inventory.view_other_stores');
+
+  const visibleItems = navItems.filter((item) => {
+    if (item.permission && !canViewOtherStores) return false;
+    if (!item.roles) return true;
+    if (!user) return false;
+    // owner/manager прирівнюються до admin (адмін-пункти).
+    const privileged = user.role === 'owner' || user.role === 'manager';
+    if (privileged) return item.roles.includes('admin');
+    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner');
+  });
 
   return (
     <aside
@@ -160,9 +192,7 @@ export const Sidebar: React.FC = () => {
       {/* Logo */}
       <div className="flex items-center h-16 px-4 border-b border-gray-200 dark:border-slate-700">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center flex-shrink-0">
-            <span className="text-white font-bold text-sm">K</span>
-          </div>
+          <img src={logo} alt="Torgashka" className="w-8 h-8 object-contain rounded-lg flex-shrink-0" />
           {sidebarOpen && (
             <span className="font-bold text-lg text-gray-900 dark:text-gray-100 whitespace-nowrap">
               Torgashka

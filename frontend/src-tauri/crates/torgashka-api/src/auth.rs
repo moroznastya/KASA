@@ -71,6 +71,8 @@ fn secret_file_candidates() -> Vec<std::path::PathBuf> {
     vec![
         std::path::PathBuf::from("backend/.env"),
         std::path::PathBuf::from("../../backend/.env"),
+        // Від кореня пакета (CWD cargo test): crates/torgashka-api → kasa (4 рівні вгору).
+        manifest.join("../../../../backend/.env"),
         manifest.join("../../../backend/.env"),
     ]
 }
@@ -165,6 +167,8 @@ fn is_public_path(path: &str) -> bool {
         return true;
     }
     const PUBLIC: &[&str] = &[
+        "/api/v1/setup/status",
+        "/api/v1/setup",
         "/api/v1/print/printers",
         "/api/v1/auth/login",
         "/api/v1/auth/login-pin",

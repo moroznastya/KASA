@@ -25,6 +25,7 @@ const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoice
 const InventoryFormPage = lazy(() => import('@/pages/documents/InventoryFormPage'));
 const DocumentViewPage = lazy(() => import('@/pages/documents/DocumentViewPage'));
 const PosPage = lazy(() => import('@/pages/pos/PosPage'));
+const CashPage = lazy(() => import('@/pages/cash/CashPage'));
 const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'));
 const LedgerPage = lazy(() => import('@/pages/ledger/LedgerPage'));
 const ReceiptListPage = lazy(() => import('@/pages/receipts/ReceiptListPage'));
@@ -37,7 +38,11 @@ const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
 const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
 const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
 const DevicesPage = lazy(() => import('@/pages/settings/DevicesPage'));
+const StoresPage = lazy(() => import('@/pages/settings/StoresPage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
+const OnboardingPage = lazy(() => import('@/pages/onboarding/OnboardingPage'));
+const SetupPage = lazy(() => import('@/pages/setup/SetupPage'));
+const AvailabilityPage = lazy(() => import('@/pages/inventory/AvailabilityPage'));
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -81,6 +86,17 @@ const App: React.FC = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/* Майстер першого встановлення — САМОДОСТАТНІЙ (без ProtectedRoute):
+              на fresh-БД авторизації ще немає, сторінка створює першого власника. */}
+          <Route path="/setup" element={<SetupPage />} />
+          <Route
+            path="/onboarding"
+            element={
+              <ProtectedRoute>
+                <OnboardingPage />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/"
             element={
@@ -96,6 +112,12 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
             <Route path="pos" element={<PosPage />} />
+            <Route path="cash" element={
+              <RoleRoute roles={['admin', 'owner']}>
+                <CashPage />
+              </RoleRoute>
+            } />
+            <Route path="inventory/availability" element={<AvailabilityPage />} />
             <Route path="debtors" element={<DebtorsPage />} />
             <Route path="products" element={<ProductListPage />} />
             <Route path="products/new" element={
@@ -263,6 +285,11 @@ const App: React.FC = () => {
             <Route path="settings/devices" element={
               <RoleRoute roles={['admin']}>
                 <DevicesPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/stores" element={
+              <RoleRoute roles={['admin']}>
+                <StoresPage />
               </RoleRoute>
             } />
             <Route path="prro" element={

@@ -9,7 +9,8 @@
 //! (Decimal-рядок), v2 → f64.
 
 use chrono::NaiveDateTime;
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::invoices::{
@@ -55,16 +56,16 @@ const ITEM_COLS: &str = "ii.id, ii.invoice_id, ii.product_id, ii.quantity::text,
 
 /// Репозиторій інвойсів (v1+v2).
 pub struct SqlxInvoices {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxInvoices {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 
     /// Доступ до пулу для суміжних модулів (price_tag).
-    pub(crate) fn pg_pool(&self) -> &PgPool {
+    pub(crate) fn pg_pool(&self) -> &StorePool {
         &self.pool
     }
 
@@ -179,6 +180,9 @@ impl SqlxInvoices {
         invoice_id: Uuid,
         items: &[torgashka_domain::invoices::InvoiceItemV1Input],
     ) -> Result<(), InvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         for it in items {
             let prev: Option<String> =
                 sqlx::query("SELECT price::text AS p FROM products WHERE id = $1")
@@ -191,8 +195,9 @@ impl SqlxInvoices {
             let markup = it.markup_percent.clone().unwrap_or_else(|| "0".to_string());
             sqlx::query(
                 "INSERT INTO invoice_items \
-                 (invoice_id, product_id, quantity, price, total, cost_price, markup_percent, previous_price, created_at) \
-                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8::numeric, now())",
+                 (invoice_id, product_id, quantity, price, total, cost_price, markup_percent, \
+                  previous_price, store_id, created_at) \
+                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8::numeric,$9, now())",
             )
             .bind(invoice_id)
             .bind(it.product_id)
@@ -202,6 +207,7 @@ impl SqlxInvoices {
             .bind(&cost)
             .bind(&markup)
             .bind(prev.as_deref())
+            .bind(store_id)
             .execute(&self.pool)
             .await
             .map_err(|e| de(e.to_string()))?;
@@ -250,13 +256,20 @@ impl SqlxInvoices {
         Ok(())
     }
 
-    /// Python product_service.update_stock (stock += quantity_change).
+    /// Python product_service.update_stock (stock += quantity_change) → stock table.
     async fn update_stock(&self, product_id: Uuid, qty: &str) -> Result<(), InvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         sqlx::query(
-            "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now() WHERE id = $2",
+            "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+             VALUES ($1, $2, $3::numeric, 0, now())
+             ON CONFLICT (store_id, product_id) DO UPDATE
+                SET quantity = stock.quantity + EXCLUDED.quantity, updated_at = now()",
         )
-        .bind(qty)
+        .bind(store_id)
         .bind(product_id)
+        .bind(qty)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;
@@ -464,6 +477,9 @@ impl InvoicesV1Service for SqlxInvoices {
         input: &InvoiceCreateV1Input,
         user_id: Uuid,
     ) -> Result<InvoiceV1Dto, InvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let mut total_amount = input.total_amount.clone();
         if total_amount.is_none() && !input.items.is_empty() {
             // Python: sum(item.total for item in data.items) — Decimal.
@@ -481,8 +497,8 @@ impl InvoicesV1Service for SqlxInvoices {
         sqlx::query(
             "INSERT INTO invoices \
              (id, number, supplier_id, invoice_date, payment_method, is_fiscal, notes, total_amount, \
-              status, created_by_id, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5::payment_method,$6,$7,$8::numeric,'draft',$9, now(), now())",
+              status, created_by_id, store_id, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5::payment_method,$6,$7,$8::numeric,'draft',$9,$10, now(), now())",
         )
         .bind(new_id)
         .bind(&number)
@@ -493,6 +509,7 @@ impl InvoicesV1Service for SqlxInvoices {
         .bind(input.notes.as_deref())
         .bind(total_amount.as_deref())
         .bind(user_id)
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;
@@ -942,6 +959,9 @@ impl InvoicesV2Service for SqlxInvoices {
 
     /// Python InvoiceUseCases.create_invoice (задумана семантика; Python 500).
     async fn create_v2(&self, input: &InvoiceCreateV2Input) -> Result<InvoiceV2Dto, InvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         // Перевіряємо існування постачальника.
         let sup: Option<Uuid> = sqlx::query("SELECT id FROM suppliers WHERE id = $1")
             .bind(input.supplier_id)
@@ -974,15 +994,16 @@ impl InvoicesV2Service for SqlxInvoices {
         sqlx::query(
             "INSERT INTO invoices \
              (id, number, supplier_id, invoice_date, status, notes, total_amount, is_fiscal, \
-              created_by_id, created_at, updated_at) \
+              created_by_id, store_id, created_at, updated_at) \
              VALUES ($1,$2,$3, now(), 'draft', $4, $5::numeric, false, \
-              (SELECT id FROM users ORDER BY created_at LIMIT 1), now(), now())",
+              (SELECT id FROM users ORDER BY created_at LIMIT 1), $6, now(), now())",
         )
         .bind(new_id)
         .bind(&input.number)
         .bind(input.supplier_id)
         .bind(&input.notes)
         .bind(total.to_string())
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;
@@ -990,14 +1011,15 @@ impl InvoicesV2Service for SqlxInvoices {
             sqlx::query(
                 "INSERT INTO invoice_items \
                  (invoice_id, product_id, quantity, price, total, cost_price, markup_percent, \
-                  previous_price, created_at) \
-                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$5::numeric,'0', NULL, now())",
+                  previous_price, store_id, created_at) \
+                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$5::numeric,'0', NULL, $6, now())",
             )
             .bind(new_id)
             .bind(it.product_id)
             .bind(it.quantity.to_string())
             .bind(it.price.to_string())
             .bind((it.quantity * it.price).to_string())
+            .bind(store_id)
             .execute(&self.pool)
             .await
             .map_err(|e| de(e.to_string()))?;
@@ -1014,7 +1036,7 @@ impl InvoicesV2Service for SqlxInvoices {
     async fn confirm_v2(&self, id: Uuid) -> Result<InvoiceV2Dto, InvoicesError> {
         let row = sqlx::query(
             "SELECT i.status::text AS st, i.is_fiscal, i.supplier_id, i.number, \
-             i.total_amount::text AS total, i.invoice_date, i.created_at \
+             i.total_amount::text AS total, i.invoice_date, i.created_at, i.store_id \
              FROM invoices i WHERE i.id = $1",
         )
         .bind(id)
@@ -1038,6 +1060,10 @@ impl InvoicesV2Service for SqlxInvoices {
         let total: String = r
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
+        let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
+        let _store_id = store_id.ok_or_else(|| {
+            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
+        })?;
         let op_date: NaiveDateTime = r
             .get::<Option<NaiveDateTime>, _>("invoice_date")
             .unwrap_or_else(|| r.get("created_at"));
@@ -1088,6 +1114,9 @@ impl InvoicesV2Service for SqlxInvoices {
         id: Uuid,
         input: &InvoiceUpdateV2Input,
     ) -> Result<InvoiceV2Dto, InvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let row = sqlx::query("SELECT status::text AS st FROM invoices WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -1154,14 +1183,15 @@ impl InvoicesV2Service for SqlxInvoices {
                 sqlx::query(
                     "INSERT INTO invoice_items \
                      (invoice_id, product_id, quantity, price, total, cost_price, markup_percent, \
-                      previous_price, created_at) \
-                     VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$5::numeric,'0', NULL, now())",
+                      previous_price, store_id, created_at) \
+                     VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$5::numeric,'0', NULL, $6, now())",
                 )
                 .bind(id)
                 .bind(it.product_id)
                 .bind(it.quantity.to_string())
                 .bind(it.price.to_string())
                 .bind((it.quantity * it.price).to_string())
+                .bind(store_id)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| de(e.to_string()))?;
@@ -1259,7 +1289,7 @@ impl InvoicesV2Service for SqlxInvoices {
     async fn cancel_v2(&self, id: Uuid) -> Result<InvoiceV2Dto, InvoicesError> {
         let row = sqlx::query(
             "SELECT i.status::text AS st, i.is_fiscal, i.supplier_id, i.number, \
-             i.total_amount::text AS total, i.invoice_date, i.created_at \
+             i.total_amount::text AS total, i.invoice_date, i.created_at, i.store_id \
              FROM invoices i WHERE i.id = $1",
         )
         .bind(id)
@@ -1284,6 +1314,10 @@ impl InvoicesV2Service for SqlxInvoices {
             .as_deref()
             .map(f64n)
             .unwrap_or(0.0);
+        let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
+        })?;
         // Відкат залишків: stock−; fiscal max(0, ...).
         let items = sqlx::query(
             "SELECT product_id, quantity::text AS q FROM invoice_items WHERE invoice_id = $1",
@@ -1297,9 +1331,11 @@ impl InvoicesV2Service for SqlxInvoices {
             let q = it.get::<String, _>("q");
             // Python v2: product.stock = stock - qty (Quantity не допускає від'ємних).
             sqlx::query(
-                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now() WHERE id = $2",
+                "UPDATE stock SET quantity = GREATEST(0, quantity - $1::numeric), updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
             )
             .bind(&q)
+            .bind(store_id)
             .bind(pid)
             .execute(&self.pool)
             .await
@@ -1332,7 +1368,7 @@ impl SqlxInvoices {
         let row = sqlx::query(
             "SELECT i.status::text AS st, i.is_fiscal, i.supplier_id, i.number, \
              i.total_amount::text AS total, i.payment_method::text AS pm, \
-             i.invoice_date, i.created_at \
+             i.invoice_date, i.created_at, i.store_id \
              FROM invoices i WHERE i.id = $1",
         )
         .bind(id)
@@ -1356,6 +1392,10 @@ impl SqlxInvoices {
         let total: String = r
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
+        let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
+        let _store_id = store_id.ok_or_else(|| {
+            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
+        })?;
         let pm: Option<String> = r.get("pm");
         let op_date: NaiveDateTime = r
             .get::<Option<NaiveDateTime>, _>("invoice_date")
@@ -1435,8 +1475,8 @@ impl SqlxInvoices {
     /// Python DocumentService.cancel_invoice.
     async fn cancel_invoice_v1(&self, id: Uuid) -> Result<(), InvoicesError> {
         let row = sqlx::query(
-            "SELECT status::text AS st, is_fiscal, supplier_id, number, total_amount::text AS total \
-             FROM invoices WHERE id = $1",
+            "SELECT status::text AS st, is_fiscal, supplier_id, number, total_amount::text AS total, \
+             store_id FROM invoices WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1459,6 +1499,10 @@ impl SqlxInvoices {
         let total: String = r
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
+        let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
+        })?;
         let items = sqlx::query(
             "SELECT product_id, quantity::text AS q FROM invoice_items WHERE invoice_id = $1",
         )
@@ -1469,11 +1513,13 @@ impl SqlxInvoices {
         for it in items {
             let pid: Uuid = it.get("product_id");
             let q = it.get::<String, _>("q");
-            // Python product_service.update_stock(quantity_change=-qty).
+            // Python product_service.update_stock(quantity_change=-qty) → stock table.
             sqlx::query(
-                "UPDATE products SET stock = COALESCE(stock, 0) - $1::numeric, updated_at = now() WHERE id = $2",
+                "UPDATE stock SET quantity = GREATEST(0, quantity - $1::numeric), updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
             )
             .bind(&q)
+            .bind(store_id)
             .bind(pid)
             .execute(&self.pool)
             .await

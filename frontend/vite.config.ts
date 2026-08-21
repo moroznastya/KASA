@@ -18,6 +18,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    // Не стежити за src-tauri/target (сотні тисяч файлів Rust-білду) —
+    // інакше ENOSPC (file watchers) і vite падає.
+    watch: {
+      ignored: ['**/src-tauri/target/**', '**/node_modules/**'],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

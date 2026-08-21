@@ -34,7 +34,8 @@ const WorkTimePage: React.FC = () => {
   // Користувач, чиї сесії відкриті в модалці (адмін)
   const [selectedUser, setSelectedUser] = useState<{ userId: string; userName: string } | null>(null);
 
-  const isAdmin = user?.role === 'admin';
+  // Admin|owner можуть керувати робочим часом усіх працівників; касир бачить лише свій.
+  const canManage = user?.role === 'admin' || user?.role === 'owner';
 
   // Live-оновлення тривалості активних сесій (каса + модалка адміна)
   useEffect(() => {
@@ -65,7 +66,7 @@ const WorkTimePage: React.FC = () => {
   } = useQuery<WorkSessionReport>({
     queryKey: ['work-sessions', 'report', selectedMonth, selectedYear],
     queryFn: () => workSessionService.getReport(selectedMonth, selectedYear),
-    enabled: isAdmin,
+    enabled: canManage,
   });
 
   // --- Мої сесії для касира ---
@@ -76,7 +77,7 @@ const WorkTimePage: React.FC = () => {
   } = useQuery<MySessionsResponse>({
     queryKey: ['work-sessions', 'my', selectedMonth, selectedYear],
     queryFn: () => workSessionService.getMySessions(selectedMonth, selectedYear),
-    enabled: !isAdmin,
+    enabled: !canManage,
   });
 
   // --- Сесії вибраного користувача для модалки адміна ---
@@ -445,14 +446,14 @@ const WorkTimePage: React.FC = () => {
         <div className="flex items-center gap-3">
           <Clock className="w-6 h-6 text-primary-600" />
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            {isAdmin ? 'Облік робочого часу' : 'Мій робочий час'}
+            {canManage ? 'Облік робочого часу' : 'Мій робочий час'}
           </h1>
         </div>
         {renderMonthYearSelector()}
       </div>
 
       {/* Контент */}
-      {isAdmin ? renderAdminView() : renderCashierView()}
+      {canManage ? renderAdminView() : renderCashierView()}
 
       {/* Модалка: сесії користувача (адмін) */}
       <Modal

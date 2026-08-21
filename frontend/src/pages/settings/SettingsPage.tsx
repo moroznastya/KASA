@@ -26,6 +26,7 @@ import {
   Eye,
   Loader2,
   Monitor,
+  Store,
   Rocket,
   RefreshCw,
   Download,
@@ -638,6 +639,19 @@ const ModuleSection: React.FC<{
           >
             <FileText className="w-4 h-4" />
             Шаблони
+          </button>
+        )}
+        {moduleKey === 'general' && (
+          <button
+            type="button"
+            onClick={() => onNavigate('/settings/stores')}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+              bg-primary-50 text-primary-700 hover:bg-primary-100
+              dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/30
+              transition-colors"
+          >
+            <Store className="w-4 h-4" />
+            Торгові точки
           </button>
         )}
       </div>

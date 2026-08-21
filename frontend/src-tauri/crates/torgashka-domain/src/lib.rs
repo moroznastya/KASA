@@ -22,7 +22,9 @@ pub mod products_v2;
 pub mod purchase_orders;
 pub mod repos;
 pub mod return_invoices;
+pub mod setup;
 pub mod settings;
+pub mod stores;
 pub mod suppliers;
 pub mod write;
 
@@ -60,7 +62,10 @@ pub use ledger::{
     SupplierBalanceV2Dto,
 };
 pub use pos::{
-    iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total, DebtPaymentInput,
+    iso_naive, iso_utc_z, parse_scaled2, parse_scaled3, receipt_total,
+    CashBalances, CashOperationCreateInput, CashOperationDto, CashOperationsListDto,
+    CashOperationType, CashType,
+    DebtPaymentInput,
     DocItemInput, MySessionsDto, PosError, PosService, ProductBriefInfoDto, ProductRecentSalesDto,
     PrroShiftDto, ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto,
     ReceiptItemInput, ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto,
@@ -79,7 +84,12 @@ pub use products_v2::{
 };
 pub use purchase_orders::*;
 pub use repos::{DirectoryError, ProductFilters, ReadDirectories};
+pub use stores::{
+    AvailabilityItemDto, StoreAvailabilityDto, StoreCreateInput, StoreDto, StoreError,
+    StoreService, UserStoreAssignInput,
+};
 pub use return_invoices::{ReturnInvoicesError, ReturnInvoicesService};
+pub use setup::{owner_permissions, owner_user_dto, SetupError, SetupRequest, SetupService, SetupStatusDto};
 pub use settings::{
     determine_module, determine_value_type, humanize_key, validate_and_normalize_setting_value,
 };

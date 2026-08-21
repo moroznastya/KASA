@@ -96,7 +96,7 @@ async fn require_admin_ret(state: &AppState, claims: &Claims) -> Result<Uuid, Re
         )));
     }
     let role: String = row.get("role");
-    if role != "admin" {
+    if !matches!(role.as_str(), "admin" | "owner") {
         return Err(RetErr::Auth(AuthRouteError::Plain(
             torgashka_domain::AuthError::Forbidden(
                 "Доступ заборонено: потрібна роль адміністратора".to_string(),

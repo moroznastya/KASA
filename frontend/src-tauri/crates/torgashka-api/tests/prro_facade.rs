@@ -22,7 +22,7 @@ async fn facade(shadow: bool) -> Arc<PrroFacade> {
         .execute(&p)
         .await
         .unwrap();
-    let repo = SqlxPrroRepository::connect(p).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p)).await.expect("repo");
     Arc::new(PrroFacade::new(repo, shadow))
 }
 

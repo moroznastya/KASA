@@ -12,6 +12,7 @@
 use chrono::NaiveDateTime;
 use rust_decimal::Decimal;
 use sqlx::Row;
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::purchase_orders::{
@@ -36,11 +37,11 @@ const ITEM_COLS: &str = "poi.id, poi.purchase_order_id, poi.product_id, \
 
 /// Репозиторій замовлень постачальнику.
 pub struct SqlxPurchaseOrders {
-    pool: sqlx::PgPool,
+    pool: StorePool,
 }
 
 impl SqlxPurchaseOrders {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 
@@ -157,11 +158,16 @@ impl SqlxPurchaseOrders {
         order_id: Uuid,
         items: &[PurchaseOrderItemInput],
     ) -> Result<(), PurchaseOrdersError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PurchaseOrdersError::BadRequest(
+                "Відсутній контекст точки (X-Store-Id)".to_string(),
+            ))?;
         for it in items {
             sqlx::query(
                 "INSERT INTO purchase_order_items \
-                 (id, purchase_order_id, product_id, quantity, price, total, created_at) \
-                 VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric, now())",
+                 (id, purchase_order_id, product_id, quantity, price, total, store_id, created_at) \
+                 VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7, now())",
             )
             .bind(Uuid::new_v4())
             .bind(order_id)
@@ -169,6 +175,7 @@ impl SqlxPurchaseOrders {
             .bind(&it.quantity)
             .bind(&it.price)
             .bind(&it.total)
+            .bind(store_id)
             .execute(&self.pool)
             .await
             .map_err(|e| PurchaseOrdersError::Infrastructure(e.to_string()))?;
@@ -277,12 +284,17 @@ impl torgashka_domain::purchase_orders::PurchaseOrdersService for SqlxPurchaseOr
             }
             None => None,
         };
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PurchaseOrdersError::BadRequest(
+                "Відсутній контекст точки (X-Store-Id)".to_string(),
+            ))?;
         let new_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO purchase_orders \
              (id, number, supplier_id, order_date, expected_date, is_fiscal, notes, \
-              total_amount, status, created_by_id, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,'draft',$9, now(), now())",
+              total_amount, status, created_by_id, store_id, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,'draft',$9,$10, now(), now())",
         )
         .bind(new_id)
         .bind(&number)
@@ -293,6 +305,7 @@ impl torgashka_domain::purchase_orders::PurchaseOrdersService for SqlxPurchaseOr
         .bind(input.notes.as_deref())
         .bind(total_amount.as_deref())
         .bind(user_id)
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(|e| PurchaseOrdersError::Infrastructure(e.to_string()))?;

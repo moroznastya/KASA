@@ -19,6 +19,7 @@
 import { AxiosError } from 'axios';
 import { isTauri, checkOnlineStatus, saveReceiptOffline } from '@/hooks/useTauri';
 import { receiptService } from '@/services/receiptService';
+import { useStoreStore } from '@/store/storeStore';
 import type { Receipt, ReceiptCreate } from '@/types/receipt';
 
 export interface CreateReceiptResult {
@@ -72,7 +73,10 @@ async function saveToQueue(
   data: ReceiptCreate,
   localReceiptFn?: () => Receipt,
 ): Promise<CreateReceiptResult> {
-  const offlineId = await saveReceiptOffline(data);
+  // Мультиточковість (Етап 5): store_id поточної точки зберігається в черзі —
+  // при синхронізації чек потрапить у правильну точку продажу.
+  const storeId = useStoreStore.getState().activeStoreId;
+  const offlineId = await saveReceiptOffline(data, storeId);
   if (offlineId === null) {
     throw new Error('Не вдалося зберегти чек в офлайн-черзі Tauri');
   }

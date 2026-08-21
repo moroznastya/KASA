@@ -8,7 +8,8 @@
 
 use chrono::NaiveDateTime;
 use serde_json::{json, Value};
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use torgashka_domain::documents::{
@@ -71,11 +72,11 @@ fn search_match(search: &Option<String>, number: &Option<String>) -> bool {
 
 /// Структура репозиторію.
 pub struct SqlxDocuments {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxDocuments {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 
@@ -1576,7 +1577,7 @@ impl SqlxDocuments {
         let mut tx = self.pool.begin().await.map_err(|e| de(e.to_string()))?;
         let row = sqlx::query(
             r#"SELECT i.id, i.status::text, i.is_fiscal, i.supplier_id, i.total_amount::text,
-                      i.number, i.invoice_date, i.created_at, i.payment_method::text
+                      i.number, i.invoice_date, i.created_at, i.payment_method::text, i.store_id
                FROM invoices i WHERE i.id = $1 FOR UPDATE"#,
         )
         .bind(id)
@@ -1592,6 +1593,10 @@ impl SqlxDocuments {
             )));
         }
         let is_fiscal: bool = row.get("is_fiscal");
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            DocumentsError::BadRequest(format!("Накладну з ID '{id}' не прив'язано до точки"))
+        })?;
         let items = sqlx::query(
             r#"SELECT product_id, quantity::text, cost_price::text, price::text,
                       previous_price::text FROM invoice_items WHERE invoice_id = $1"#,
@@ -1603,13 +1608,22 @@ impl SqlxDocuments {
         for it in &items {
             let pid: Uuid = it.get("product_id");
             let qty = it.get::<String, _>("quantity");
-            // update_stock: stock += quantity
-            sqlx::query("UPDATE products SET stock = stock + $1::numeric WHERE id = $2")
-                .bind(&qty)
-                .bind(pid)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| de(e.to_string()))?;
+            // update_stock: stock += quantity (надходження → stock table, per store)
+            let price: String = it.get("price");
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, $4::numeric, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = stock.quantity + EXCLUDED.quantity,
+                        price = EXCLUDED.price, updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(pid)
+            .bind(&qty)
+            .bind(&price)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
             if is_fiscal {
                 // _increase_fiscal_stock: is_fiscal=true, fiscal_stock += qty
                 sqlx::query(
@@ -1710,7 +1724,7 @@ impl SqlxDocuments {
         let mut tx = self.pool.begin().await.map_err(|e| de(e.to_string()))?;
         let row = sqlx::query(
             r#"SELECT r.id, r.status::text, r.is_fiscal, r.supplier_id, r.total_amount::text,
-                      r.number, r.return_date, r.return_action::text, r.source_invoice_id
+                      r.number, r.return_date, r.return_action::text, r.source_invoice_id, r.store_id
                FROM return_invoices r WHERE r.id = $1 FOR UPDATE"#,
         )
         .bind(id)
@@ -1727,6 +1741,10 @@ impl SqlxDocuments {
             )));
         }
         let is_fiscal: bool = row.get("is_fiscal");
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            DocumentsError::BadRequest(format!("Повернення з ID '{id}' не прив'язано до точки"))
+        })?;
         let items = sqlx::query(
             r#"SELECT product_id, quantity::text FROM return_invoice_items WHERE return_invoice_id = $1"#,
         )
@@ -1737,12 +1755,16 @@ impl SqlxDocuments {
         for it in &items {
             let pid: Uuid = it.get("product_id");
             let qty = it.get::<String, _>("quantity");
-            sqlx::query("UPDATE products SET stock = stock - $1::numeric WHERE id = $2")
-                .bind(&qty)
-                .bind(pid)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| de(e.to_string()))?;
+            sqlx::query(
+                "UPDATE stock SET quantity = GREATEST(0, quantity - $1::numeric), updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
+            )
+            .bind(&qty)
+            .bind(store_id)
+            .bind(pid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
             if is_fiscal {
                 sqlx::query(
                     r#"UPDATE products SET fiscal_stock = GREATEST(0, COALESCE(fiscal_stock,0) - $1::numeric)
@@ -1925,17 +1947,20 @@ impl SqlxDocuments {
     /// Rust pos.rs confirm_transfer (вже реалізовано в етапі 3).
     async fn confirm_transfer(&self, id: Uuid) -> Result<(), DocumentsError> {
         let mut tx = self.pool.begin().await.map_err(|e| de(e.to_string()))?;
-        let exists = sqlx::query("SELECT 1 FROM transfers WHERE id = $1")
+        let row = sqlx::query("SELECT store_id FROM transfers WHERE id = $1")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| de(e.to_string()))?
-            .is_some();
-        if !exists {
+            .map_err(|e| de(e.to_string()))?;
+        let Some(row) = row else {
             return Err(DocumentsError::NotFound(format!(
                 "Переміщення з ID '{id}' не знайдено"
             )));
-        }
+        };
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            DocumentsError::BadRequest(format!("Переміщення з ID '{id}' не прив'язано до точки"))
+        })?;
         let st: String = sqlx::query_scalar("SELECT status::text FROM transfers WHERE id = $1")
             .bind(id)
             .fetch_one(&mut *tx)
@@ -1955,12 +1980,16 @@ impl SqlxDocuments {
         .map_err(|e| de(e.to_string()))?;
         for it in &items {
             let qty = it.get::<String, _>("quantity");
-            sqlx::query("UPDATE products SET stock = stock - $1::numeric WHERE id = $2")
-                .bind(&qty)
-                .bind(it.get::<Uuid, _>("product_id"))
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| de(e.to_string()))?;
+            sqlx::query(
+                "UPDATE stock SET quantity = GREATEST(0, quantity - $1::numeric), updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
+            )
+            .bind(&qty)
+            .bind(store_id)
+            .bind(it.get::<Uuid, _>("product_id"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
         }
         sqlx::query("UPDATE transfers SET status = 'confirmed', updated_at = now() WHERE id = $1")
             .bind(id)
@@ -1974,17 +2003,20 @@ impl SqlxDocuments {
     /// Rust pos.rs confirm_write_off (вже реалізовано в етапі 3).
     async fn confirm_write_off(&self, id: Uuid) -> Result<(), DocumentsError> {
         let mut tx = self.pool.begin().await.map_err(|e| de(e.to_string()))?;
-        let exists = sqlx::query("SELECT 1 FROM write_offs WHERE id = $1")
+        let row = sqlx::query("SELECT store_id FROM write_offs WHERE id = $1")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| de(e.to_string()))?
-            .is_some();
-        if !exists {
+            .map_err(|e| de(e.to_string()))?;
+        let Some(row) = row else {
             return Err(DocumentsError::NotFound(format!(
                 "Списання з ID '{id}' не знайдено"
             )));
-        }
+        };
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            DocumentsError::BadRequest(format!("Списання з ID '{id}' не прив'язано до точки"))
+        })?;
         // Python confirm_write_off: БЕЗ перевірки статусу, БЕЗ зміни статусу —
         // тільки зменшує залишки.
         let items = sqlx::query(
@@ -1996,12 +2028,16 @@ impl SqlxDocuments {
         .map_err(|e| de(e.to_string()))?;
         for it in &items {
             let qty = it.get::<String, _>("quantity");
-            sqlx::query("UPDATE products SET stock = stock - $1::numeric WHERE id = $2")
-                .bind(&qty)
-                .bind(it.get::<Uuid, _>("product_id"))
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| de(e.to_string()))?;
+            sqlx::query(
+                "UPDATE stock SET quantity = GREATEST(0, quantity - $1::numeric), updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
+            )
+            .bind(&qty)
+            .bind(store_id)
+            .bind(it.get::<Uuid, _>("product_id"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
         }
         tx.commit().await.map_err(|e| de(e.to_string()))?;
         Ok(())
@@ -2680,7 +2716,7 @@ impl SqlxDocuments {
 
 /// Виконує SQL з `id = ANY($1)` або без параметра (ids порожні).
 async fn fetch_docs_ids(
-    pool: &PgPool,
+    pool: &StorePool,
     sql: &str,
     ids: &[Uuid],
 ) -> Result<Vec<sqlx::postgres::PgRow>, String> {

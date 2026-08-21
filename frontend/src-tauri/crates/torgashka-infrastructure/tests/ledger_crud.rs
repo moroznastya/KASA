@@ -15,13 +15,13 @@ use torgashka_infrastructure::{db, repositories::ledger::SqlxLedger};
 use uuid::Uuid;
 
 async fn pool() -> sqlx::PgPool {
-    db::connect_readonly_pool(5)
+    db::connect_test_pool(5)
         .await
         .expect("БД недоступна: задайте DATABASE_URL або DB_* у backend/.env")
 }
 
 fn repo(p: &sqlx::PgPool) -> SqlxLedger {
-    SqlxLedger::new(p.clone())
+    SqlxLedger::new(torgashka_infrastructure::store_ctx::StorePool::new(p.clone()))
 }
 
 fn uniq() -> String {

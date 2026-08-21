@@ -22,16 +22,20 @@ use axum::{
 };
 use chrono::{Datelike, NaiveDateTime};
 use serde::Deserialize;
+use bigdecimal::BigDecimal;
 use serde_json::Value;
 use uuid::Uuid;
 
 use torgashka_application::PosServiceFacade;
 use torgashka_domain::{
-    DebtPaymentInput, DocItemInput, PosError, ReceiptCreateInput, ReceiptItemInput,
+    CashOperationCreateInput, CashOperationDto, CashOperationsListDto, CashOperationType,
+    CashType,
+    DebtPaymentInput, DocItemInput, PosError, WriteError, ReceiptCreateInput, ReceiptItemInput,
     ReceiptListQuery, ReceiptSearchQuery, ReceiptV1CreateInput, ReceiptV1ItemInput,
     TransferCreateInput, TransferUpdateInput, WriteOffCreateInput, WriteOffReasonItem,
     WriteOffReasonsListDto, WriteOffUpdateInput,
 };
+use torgashka_infrastructure::store_ctx::current_store_ctx;
 
 use crate::auth::Claims;
 use crate::AppState;
@@ -147,7 +151,11 @@ async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), PosErr> 
     })?;
     torgashka_infrastructure::repositories::write::require_admin_role(&pool, user_id)
         .await
-        .map_err(|e| PosErr::Service(PosError::Infrastructure(e.to_string())))
+        .map_err(|e| match e {
+            // 403 — роль не admin|owner (Python: require_admin → 403).
+            WriteError::Forbidden(msg) => PosErr::Forbidden(msg),
+            other => PosErr::Service(PosError::Infrastructure(other.to_string())),
+        })
 }
 
 fn sub_uuid(claims: &Claims) -> Result<Uuid, PosErr> {
@@ -1337,6 +1345,129 @@ pub async fn close_shift(
     Ok(Json(svc.close_shift(comment).await?))
 }
 
+
+// ─── Готівкові операції (внесення/інкасація) ───────────────────────────────
+
+/// store_id з поточного StoreCtx (проставляється middleware з X-Store-Id).
+fn current_store_id() -> Result<Uuid, PosErr> {
+    current_store_ctx()
+        .map(|c| c.store_id)
+        .ok_or_else(|| {
+            PosErr::Service(PosError::BadRequest(
+                "Відсутній контекст точки (X-Store-Id)".to_string(),
+            ))
+        })
+}
+
+/// POST /api/v1/cash-operations → 201 (внесення/інкасація; admin|owner).
+pub async fn create_cash_operation(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<CashOperationDto>), PosErr> {
+    require_admin(&state, &claims).await?;
+    let user_id = sub_uuid(&claims)?;
+    let store_id = current_store_id()?;
+    let input = parse_cash_operation_create(&body)?;
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    Ok((
+        StatusCode::CREATED,
+        Json(svc.create_cash_operation(store_id, user_id, &input).await?),
+    ))
+}
+
+/// GET /api/v1/cash-operations → 200 (список операцій + баланс; admin|owner).
+pub async fn list_cash_operations(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<CashOperationsListDto>, PosErr> {
+    require_admin(&state, &claims).await?;
+    let store_id = current_store_id()?;
+    let repo = pos_repo(&state)?;
+    let svc = PosServiceFacade::new(repo);
+    Ok(Json(svc.list_cash_operations(store_id).await?))
+}
+
+/// Розбір тіла POST /api/v1/cash-operations (1:1 Python Pydantic).
+fn parse_cash_operation_create(v: &Value) -> Result<CashOperationCreateInput, PosErr> {
+    let operation_type = v
+        .get("operation_type")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| v422("missing", &["body", "operation_type"], "Field required", ""))
+        .and_then(|s| {
+            CashOperationType::parse(s).ok_or_else(|| {
+                v422(
+                    "enum",
+                    &["body", "operation_type"],
+                    "Input should be 'deposit' or 'collection'",
+                    s,
+                )
+            })
+        })?;
+    let cash_type = v
+        .get("cash_type")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| v422("missing", &["body", "cash_type"], "Field required", ""))
+        .and_then(|s| {
+            CashType::parse(s).ok_or_else(|| {
+                v422(
+                    "enum",
+                    &["body", "cash_type"],
+                    "Input should be 'cash' or 'card'",
+                    s,
+                )
+            })
+        })?;
+    let amount = parse_cash_amount(v)?;
+    let comment = field_str(v, "comment").flatten();
+    Ok(CashOperationCreateInput {
+        operation_type,
+        cash_type,
+        amount,
+        comment,
+    })
+}
+
+/// amount > 0 (число або рядок у JSON; інакше 422).
+fn parse_cash_amount(v: &Value) -> Result<BigDecimal, PosErr> {
+    let Some(f) = v.get("amount") else {
+        return Err(v422("missing", &["body", "amount"], "Field required", ""));
+    };
+    if f.is_null() {
+        return Err(v422("missing", &["body", "amount"], "Field required", "null"));
+    }
+    let raw = match f {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        _ => {
+            return Err(v422(
+                "decimal_type",
+                &["body", "amount"],
+                "Input should be a valid decimal",
+                &f.to_string(),
+            ))
+        }
+    };
+    let amount = raw.parse::<BigDecimal>().map_err(|_| {
+        v422(
+            "decimal_parsing",
+            &["body", "amount"],
+            "Input should be a valid decimal",
+            &raw,
+        )
+    })?;
+    if amount <= BigDecimal::from(0) {
+        return Err(v422(
+            "greater_than",
+            &["body", "amount"],
+            "Input should be greater than 0",
+            &raw,
+        ));
+    }
+    Ok(amount)
+}
+
 // ─── Тести валідації ────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1388,6 +1519,72 @@ mod tests {
         assert!(matches!(
             name_err(json!({"name": "   "})),
             PosErr::Service(PosError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn cash_operation_amount_must_be_positive() {
+        // 0, від'ємне, "0.00" — 422; додатне число і рядок — ок.
+        assert!(matches!(
+            parse_cash_amount(&json!({"amount": 0})),
+            Err(PosErr::Validation(_))
+        ));
+        assert!(matches!(
+            parse_cash_amount(&json!({"amount": -100})),
+            Err(PosErr::Validation(_))
+        ));
+        assert!(matches!(
+            parse_cash_amount(&json!({"amount": "0.00"})),
+            Err(PosErr::Validation(_))
+        ));
+        assert!(matches!(
+            parse_cash_amount(&json!({"amount": 500.50})),
+            Ok(_)
+        ));
+        assert!(matches!(
+            parse_cash_amount(&json!({"amount": "500.50"})),
+            Ok(_)
+        ));
+        // Відсутній amount → 422.
+        assert!(matches!(
+            parse_cash_amount(&json!({})),
+            Err(PosErr::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn cash_operation_type_must_be_deposit_or_collection() {
+        // Невірний тип / відсутній тип → 422.
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"operation_type": "transfer", "cash_type": "cash", "amount": 100})),
+            Err(PosErr::Validation(_))
+        ));
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"cash_type": "cash", "amount": 100})),
+            Err(PosErr::Validation(_))
+        ));
+        // Коректні значення — проходять.
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})),
+            Ok(_)
+        ));
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"operation_type": "collection", "cash_type": "card", "amount": "42.00", "comment": "Розмін"})),
+            Ok(_)
+        ));
+    }
+
+    #[test]
+    fn cash_type_must_be_cash_or_card() {
+        // Відсутній cash_type → 422.
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"operation_type": "deposit", "amount": 100})),
+            Err(PosErr::Validation(_))
+        ));
+        // Невірний cash_type → 422.
+        assert!(matches!(
+            parse_cash_operation_create(&json!({"operation_type": "deposit", "cash_type": "crypto", "amount": 100})),
+            Err(PosErr::Validation(_))
         ));
     }
 

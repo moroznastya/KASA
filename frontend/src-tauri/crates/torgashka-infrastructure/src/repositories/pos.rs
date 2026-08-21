@@ -15,8 +15,10 @@
 //! Scale Decimal: create-відповіді зберігають ВХІДНУ scale (identity map
 //! Python), GET/confirm — scale колонки (`::text`).
 
-use chrono::{NaiveDateTime, Utc};
-use sqlx::{PgPool, Row};
+use bigdecimal::BigDecimal;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sqlx::Row;
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::{
@@ -26,6 +28,8 @@ use torgashka_domain::{
     ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
     ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, ReceiptV1ListDto,
     ReceiptV1ListQuery, ReceiptV1SearchDto, ReceiptV1SearchItemDto, RecentSaleDto,
+    CashBalances, CashOperationCreateInput, CashOperationDto, CashOperationsListDto,
+    CashOperationType, CashType,
     ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferItemDto,
     TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto, WorkReportDto,
     WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto, WriteOffListDto,
@@ -46,11 +50,11 @@ impl<T> SqlxResultExt<T> for Result<T, sqlx::Error> {
 /// SQL-реалізація POS-операцій.
 #[derive(Clone)]
 pub struct SqlxPos {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxPos {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -133,8 +137,16 @@ async fn resolve_item_prices(
             item.price.clone().unwrap_or_else(|| "0".to_string()),
         ));
     }
-    let row = sqlx::query("SELECT cost_price::text, price::text FROM products WHERE id = $1")
-        .bind(item.product_id)
+    // Per-store ціна: stock активної точки (COALESCE(NULLIF(st.price,0), p.price) —
+    // 0 у stock = «без перевизначення» → глобальна products.price).
+    let row = sqlx::query(
+        "SELECT p.cost_price::text, COALESCE(NULLIF(st.price, 0), p.price)::text AS price \
+         FROM products p \
+         LEFT JOIN stock st ON st.product_id = p.id \
+             AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+         WHERE p.id = $1",
+    )
+    .bind(item.product_id)
         .fetch_optional(&mut **tx)
         .await
         .pe()?;
@@ -285,6 +297,9 @@ async fn insert_receipt(
     payment_method: Option<&str>,
     input: &ReceiptCreateInput,
 ) -> Result<(NaiveDateTime,), PosError> {
+    let store_id = current_store_ctx()
+        .map(|c| c.store_id)
+        .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
     let row = sqlx::query(
         r#"
         INSERT INTO receipts (
@@ -294,12 +309,12 @@ async fn insert_receipt(
             terminal_transaction_id, terminal_response_code, terminal_status,
             terminal_receipt, terminal_card_pan, terminal_payment_system,
             terminal_merchant, terminal_created_at, is_fiscal, fiscal_status,
-            split_group_id, created_at
+            split_group_id, store_id, created_at
         ) VALUES (
             $1, $2, $3::receipt_type, $4, $5, NULL, $6, $7, $8, $9, $10,
             $11::receipt_payment_method,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-            $24::fiscal_status, $25,
+            $24::fiscal_status, $25, $26,
             (now() AT TIME ZONE 'UTC')::timestamp
         )
         RETURNING created_at::text
@@ -330,6 +345,7 @@ async fn insert_receipt(
     .bind(input.is_fiscal)
     .bind(if input.is_fiscal { "pending" } else { "none" })
     .bind(input.split_group_id)
+    .bind(store_id)
     .fetch_one(&mut **tx)
     .await
     .pe()?;
@@ -341,7 +357,7 @@ async fn insert_receipt(
 
 /// Читає чек (після commit) і будує ReceiptDto.
 async fn fetch_receipt_dto(
-    pool: &PgPool,
+    pool: &StorePool,
     id: Uuid,
     cash_amount: Option<f64>,
     card_amount: Option<f64>,
@@ -406,7 +422,7 @@ async fn fetch_receipt_dto(
 
 /// Позиції чеку (v2: name="", tax_rate=20 — ORM-шлях Python).
 async fn fetch_receipt_items_short(
-    pool: &PgPool,
+    pool: &StorePool,
     receipt_id: Uuid,
 ) -> Result<Vec<ReceiptItemDto>, PosError> {
     let rows = sqlx::query(
@@ -436,7 +452,7 @@ async fn fetch_receipt_items_short(
 
 /// Загальний шлях створення чеку sale/return.
 async fn create_receipt_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     input: &ReceiptCreateInput,
     receipt_type: &str,
 ) -> Result<ReceiptDto, PosError> {
@@ -497,52 +513,74 @@ async fn create_receipt_impl(
     };
 
     let mut tx = pool.begin().await.pe()?;
+    let store_id = current_store_ctx()
+        .map(|c| c.store_id)
+        .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
 
-    // Перевірка товарів + оновлення залишків (FOR UPDATE — конкурентність).
+    // Перевірка товарів + оновлення залишків stock (Етап 3: per store, атомарно).
     for item in &input.items {
-        let row = sqlx::query("SELECT stock::text, title FROM products WHERE id = $1 FOR UPDATE")
+        let title: Option<String> = sqlx::query_scalar("SELECT title FROM products WHERE id = $1")
             .bind(item.product_id)
             .fetch_optional(&mut *tx)
             .await
             .pe()?;
-        let (stock, title): (Option<String>, String) = match row {
-            Some(r) => (
-                r.try_get("stock").ok(),
-                r.try_get("title").unwrap_or_default(),
-            ),
-            None => {
-                return Err(PosError::BadRequest(format!(
-                    "Товар з ID '{}' не знайдено",
-                    item.product_id
-                )))
-            }
-        };
-        let qty = parse_scaled3(&item.quantity).ok_or_else(|| {
+        let title = title.ok_or_else(|| {
+            PosError::BadRequest(format!(
+                "Товар з ID '{}' не знайдено",
+                item.product_id
+            ))
+        })?;
+        // Валідація формату quantity (як Python Decimal).
+        let _qty = parse_scaled3(&item.quantity).ok_or_else(|| {
             PosError::Validation(format!(
                 "quantity: невалідне десяткове число: {}",
                 item.quantity
             ))
         })?;
-        let stock_scaled = stock.as_deref().and_then(parse_scaled3);
-        if let Some(s) = stock_scaled {
-            if s < qty {
-                // Python: stock float (str(0.0)="0.0"), quantity Decimal з float-джерела.
-                return Err(PosError::BadRequest(format!(
-                    "Недостатньо залишку товару '{}': доступно {}, потрібно {}",
-                    title,
-                    fmt_py_float(s as f64 / 1000.0),
-                    fmt_py_float(qty as f64 / 1000.0)
-                )));
-            }
-        }
-        let delta: i64 = if receipt_type == "sale" { -qty } else { qty };
-        let new_stock = stock_scaled.map(|s| s + delta);
-        sqlx::query("UPDATE products SET stock = $1::numeric WHERE id = $2")
-            .bind(new_stock.map(dec3))
+        if receipt_type == "sale" {
+            // Атомарний продаж: зменшуємо ЛИШЕ якщо залишку достатньо
+            // (UPDATE ... WHERE quantity >= qty; 0 рядків → «недостатньо»).
+            let res = sqlx::query(
+                "UPDATE stock SET quantity = quantity - $1::numeric, updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3 AND quantity >= $1::numeric",
+            )
+            .bind(&item.quantity)
+            .bind(store_id)
             .bind(item.product_id)
             .execute(&mut *tx)
             .await
             .pe()?;
+            if res.rows_affected() == 0 {
+                let avail: Option<String> = sqlx::query_scalar(
+                    "SELECT quantity::text FROM stock WHERE store_id = $1 AND product_id = $2",
+                )
+                .bind(store_id)
+                .bind(item.product_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .pe()?
+                .flatten();
+                let avail = avail.unwrap_or_else(|| "0".to_string());
+                return Err(PosError::BadRequest(format!(
+                    "Недостатньо залишку товару '{}': доступно {}, потрібно {}",
+                    title, avail, item.quantity
+                )));
+            }
+        } else {
+            // Повернення: додаємо залишок (upsert, якщо рядка ще немає).
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, 0, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = stock.quantity + EXCLUDED.quantity, updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(item.product_id)
+            .bind(&item.quantity)
+            .execute(&mut *tx)
+            .await
+            .pe()?;
+        }
     }
 
     let (created,) = insert_receipt(
@@ -578,8 +616,8 @@ async fn create_receipt_impl(
         sqlx::query(
             r#"
             INSERT INTO receipt_items (id, receipt_id, product_id, quantity, price, total,
-                purchase_price, fiscal_quantity, created_at)
-            VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7, 0,
+                purchase_price, fiscal_quantity, store_id, created_at)
+            VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7, 0, $8,
                 (now() AT TIME ZONE 'UTC')::timestamp)
             "#,
         )
@@ -590,6 +628,7 @@ async fn create_receipt_impl(
         .bind(dec2(parse_scaled2(&item.price).unwrap_or(0)))
         .bind(dec2((item_total * 100.0).round() as i64))
         .bind(cost)
+        .bind(store_id)
         .execute(&mut *tx)
         .await
         .pe()?;
@@ -601,15 +640,6 @@ async fn create_receipt_impl(
     fetch_receipt_dto(pool, id, cash_amount, card_amount, change_amount, total).await
 }
 
-/// Python-формат float: str(0.0)="0.0", str(12.5)="12.5", str(12.25)="12.25".
-fn fmt_py_float(v: f64) -> String {
-    if v == v.trunc() {
-        format!("{v:.1}")
-    } else {
-        format!("{v}")
-    }
-}
-
 fn dec3(v: i64) -> String {
     let (sign, v) = if v < 0 { ("-", -v) } else { ("", v) };
     format!("{sign}{}.{:03}", v / 1000, v % 1000)
@@ -619,7 +649,7 @@ fn dec3(v: i64) -> String {
 
 /// Позиції чеку з товарами (GET /{id}/items — v2 ReceiptItemsResponse).
 async fn fetch_receipt_items_detail(
-    pool: &PgPool,
+    pool: &StorePool,
     receipt_id: Uuid,
 ) -> Result<Vec<ReceiptItemDetailDto>, PosError> {
     let rows = sqlx::query(
@@ -661,7 +691,7 @@ async fn fetch_receipt_items_detail(
 }
 
 /// Повний чек з БД (GET /{id} — scale колонок).
-async fn read_receipt_dto(pool: &PgPool, id: Uuid) -> Result<Option<ReceiptDto>, PosError> {
+async fn read_receipt_dto(pool: &StorePool, id: Uuid) -> Result<Option<ReceiptDto>, PosError> {
     let row = sqlx::query(
         r#"
         SELECT r.receipt_number, r.receipt_type::text, r.total_amount::text, r.payment_method::text,
@@ -726,7 +756,7 @@ async fn read_receipt_dto(pool: &PgPool, id: Uuid) -> Result<Option<ReceiptDto>,
 
 /// Список чеків (GET "" — v2 list_receipts).
 async fn list_receipts_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     q: &ReceiptListQuery,
 ) -> Result<ReceiptListDto, PosError> {
     let mut sql = String::from(
@@ -858,7 +888,7 @@ fn calc_vat_scaled12(price_scaled2: i64, qty_scaled3: i64, tax_rate: i64) -> i12
 }
 
 /// GET /api/v2/receipts/stats/today.
-async fn today_stats_impl(pool: &PgPool) -> Result<ReceiptStatsDto, PosError> {
+async fn today_stats_impl(pool: &StorePool) -> Result<ReceiptStatsDto, PosError> {
     let now = Utc::now().naive_utc();
     let day = now.date();
     let start = day.and_hms_opt(0, 0, 0).unwrap();
@@ -957,7 +987,7 @@ async fn today_stats_impl(pool: &PgPool) -> Result<ReceiptStatsDto, PosError> {
 
 /// Пошук чеків для повернень (GET /search).
 async fn search_receipts_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     q: &ReceiptSearchQuery,
 ) -> Result<ReceiptSearchDto, PosError> {
     let rtype = q.receipt_type.as_deref().unwrap_or("sale");
@@ -1069,7 +1099,7 @@ async fn search_receipts_impl(
 
 /// Останні продажі товару (GET /by-product/{query}/recent-sales).
 async fn recent_sales_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     query: &str,
     limit: i64,
 ) -> Result<Vec<ProductRecentSalesDto>, PosError> {
@@ -1137,7 +1167,7 @@ async fn recent_sales_impl(
 }
 
 /// (продано, повернуто) у float.
-async fn sold_returned_totals(pool: &PgPool, product_id: Uuid) -> Result<(f64, f64), PosError> {
+async fn sold_returned_totals(pool: &StorePool, product_id: Uuid) -> Result<(f64, f64), PosError> {
     let row = sqlx::query(
         r#"
         SELECT
@@ -1178,7 +1208,7 @@ fn effective_duration(
 }
 
 async fn read_session_dto(
-    pool: &PgPool,
+    pool: &StorePool,
     id: Uuid,
     user_id: Uuid,
     now: NaiveDateTime,
@@ -1209,7 +1239,7 @@ async fn read_session_dto(
 }
 
 async fn my_sessions_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     user_id: Uuid,
     month: i64,
     year: i64,
@@ -1268,7 +1298,7 @@ fn month_bounds(month: i64, year: i64) -> (chrono::NaiveDateTime, chrono::NaiveD
     (start, end)
 }
 
-async fn work_report_impl(pool: &PgPool, month: i64, year: i64) -> Result<WorkReportDto, PosError> {
+async fn work_report_impl(pool: &StorePool, month: i64, year: i64) -> Result<WorkReportDto, PosError> {
     let (start, end) = month_bounds(month, year);
     let now = Utc::now().naive_utc();
     let users = sqlx::query("SELECT id, name, hourly_rate::text FROM users ORDER BY name")
@@ -1317,7 +1347,7 @@ async fn work_report_impl(pool: &PgPool, month: i64, year: i64) -> Result<WorkRe
 }
 
 async fn user_sessions_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     user_id: Uuid,
     month: i64,
     year: i64,
@@ -1365,7 +1395,7 @@ async fn user_sessions_impl(
 /// Читає документ (write_off/transfer) з позиціями — scale БД.
 #[allow(clippy::too_many_arguments)]
 async fn read_write_off_dto(
-    pool: &PgPool,
+    pool: &StorePool,
     id: Uuid,
     number: String,
     reason: String,
@@ -1420,7 +1450,7 @@ async fn read_write_off_dto(
 }
 
 /// Повний read write-off з БД (GET/confirm).
-async fn read_write_off(pool: &PgPool, id: Uuid) -> Result<WriteOffDto, PosError> {
+async fn read_write_off(pool: &StorePool, id: Uuid) -> Result<WriteOffDto, PosError> {
     let row = sqlx::query(
         "SELECT number, reason::text, write_off_date::text, notes, status, total_amount::text, \
          created_at::text, updated_at::text FROM write_offs WHERE id = $1",
@@ -1461,7 +1491,7 @@ async fn read_write_off(pool: &PgPool, id: Uuid) -> Result<WriteOffDto, PosError
 /// Відповідь create write-off: вхідні scale позицій, total_amount "0.0".
 #[allow(clippy::too_many_arguments)]
 async fn build_write_off_create(
-    pool: &PgPool,
+    pool: &StorePool,
     id: Uuid,
     number: String,
     reason: String,
@@ -1520,7 +1550,7 @@ async fn build_write_off_create(
 /// Відповідь create transfer: вхідні scale позицій, статус "draft".
 #[allow(clippy::too_many_arguments)]
 async fn build_transfer_create(
-    pool: &PgPool,
+    pool: &StorePool,
     id: Uuid,
     number: String,
     from_location: String,
@@ -1569,7 +1599,7 @@ async fn build_transfer_create(
 }
 
 /// Повний read transfer з БД.
-async fn read_transfer(pool: &PgPool, id: Uuid) -> Result<TransferDto, PosError> {
+async fn read_transfer(pool: &StorePool, id: Uuid) -> Result<TransferDto, PosError> {
     let row = sqlx::query(
         "SELECT number, from_location, to_location, transfer_date::text, status::text, notes, \
          created_at::text, updated_at::text FROM transfers WHERE id = $1",
@@ -1666,7 +1696,7 @@ fn py_float_str(v: f64) -> String {
 }
 
 /// SELECT value FROM system_settings WHERE key=$1 AND is_active=true.
-async fn get_setting_v1(pool: &PgPool, key: &str) -> Result<Option<String>, PosError> {
+async fn get_setting_v1(pool: &StorePool, key: &str) -> Result<Option<String>, PosError> {
     let row = sqlx::query("SELECT value FROM system_settings WHERE key = $1 AND is_active = true")
         .bind(key)
         .fetch_optional(pool)
@@ -1738,7 +1768,7 @@ fn calc_vat_v1(price: &str, quantity: &str, tax_rate: &str) -> String {
 /// POST /api/v1/receipts — 1:1 `create_receipt` (app/api/v1/receipts.py:663).
 #[allow(clippy::too_many_lines)]
 async fn create_receipt_v1_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     input: &ReceiptV1CreateInput,
 ) -> Result<ReceiptV1Dto, PosError> {
     use rust_decimal::prelude::*;
@@ -1921,15 +1951,18 @@ async fn create_receipt_v1_impl(
             .unwrap_or(false)
     });
     let mut tx = pool.begin().await.pe()?;
+    let store_id = current_store_ctx()
+        .map(|c| c.store_id)
+        .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
     sqlx::query(
         r#"
         INSERT INTO receipts (
             id, receipt_number, receipt_type, cashier_id, total_amount, paid_amount,
             change_amount, debtor_id, is_return, notes, payment_method,
-            original_receipt_id, created_at
+            original_receipt_id, store_id, created_at
         ) VALUES (
             $1, $2, $3::receipt_type, $4, $5::numeric, $6::numeric, $7::numeric,
-            $8, $9, $10, $11::receipt_payment_method, $12,
+            $8, $9, $10, $11::receipt_payment_method, $12, $13,
             (now() AT TIME ZONE 'UTC')::timestamp
         )
         "#,
@@ -1946,6 +1979,7 @@ async fn create_receipt_v1_impl(
     .bind(input.notes.as_deref())
     .bind(input.payment_method.as_deref())
     .bind(input.original_receipt_id)
+    .bind(store_id)
     .execute(&mut *tx)
     .await
     .pe()?;
@@ -1990,9 +2024,9 @@ async fn create_receipt_v1_impl(
             r#"
             INSERT INTO receipt_items (
                 id, receipt_id, product_id, quantity, price, total, purchase_price,
-                fiscal_quantity, created_at
+                fiscal_quantity, store_id, created_at
             ) VALUES (
-                $1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, 0,
+                $1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, 0, $8,
                 (now() AT TIME ZONE 'UTC')::timestamp
             )
             "#,
@@ -2004,55 +2038,78 @@ async fn create_receipt_v1_impl(
         .bind(&item.price)
         .bind(&item_total)
         .bind(cost_price.as_deref())
+        .bind(store_id)
         .execute(&mut *tx)
         .await
         .pe()?;
 
-        // Оновлення залишку (крім товару "Борг").
+        // Оновлення залишку stock (Етап 3: per store, крім товару "Борг").
         if !is_debt_item {
             if input.receipt_type == "sale" {
                 let qty = Decimal::from_str(&item.quantity).unwrap_or_default();
                 // Python update_stock: if stock + (-qty) < 0 → 400.
-                let stock: Option<String> =
-                    sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
-                        .bind(item.product_id)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .pe()?;
-                let insufficient = match &stock {
-                    Some(s) => {
-                        let st = Decimal::from_str(s).unwrap_or_default();
-                        st < qty
-                    }
-                    None => false,
-                };
-                if insufficient {
-                    let allow = get_setting_v1(pool, "allow_negative_stock")
-                        .await?
-                        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
-                        .unwrap_or(false);
-                    if !allow {
-                        let stock_txt = stock.unwrap_or_default();
-                        return Err(PosError::BadRequest(format!(
-                            "Недостатньо товару '{}' на складі. Доступно: {}, потрібно: {}",
-                            title, stock_txt, item.quantity
-                        )));
-                    }
-                }
-                sqlx::query(
-                    "UPDATE products SET stock = COALESCE(stock, 0) - $1::numeric WHERE id = $2",
+                let res = sqlx::query(
+                    "UPDATE stock SET quantity = quantity - $1::numeric, updated_at = now()
+                     WHERE store_id = $2 AND product_id = $3 AND quantity >= $1::numeric",
                 )
                 .bind(&item.quantity)
+                .bind(store_id)
                 .bind(item.product_id)
                 .execute(&mut *tx)
                 .await
                 .pe()?;
+                if res.rows_affected() == 0 {
+                    let stock: Option<String> = sqlx::query_scalar(
+                        "SELECT quantity::text FROM stock WHERE store_id = $1 AND product_id = $2",
+                    )
+                    .bind(store_id)
+                    .bind(item.product_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .pe()?
+                    .flatten();
+                    let insufficient = match &stock {
+                        Some(st_txt) => {
+                            let st = Decimal::from_str(st_txt).unwrap_or_default();
+                            st < qty
+                        }
+                        None => true,
+                    };
+                    if insufficient {
+                        let allow = get_setting_v1(pool, "allow_negative_stock")
+                            .await?
+                            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+                            .unwrap_or(false);
+                        if !allow {
+                            let stock_txt = stock.unwrap_or_else(|| "0".to_string());
+                            return Err(PosError::BadRequest(format!(
+                                "Недостатньо товару '{}' на складі. Доступно: {}, потрібно: {}",
+                                title, stock_txt, item.quantity
+                            )));
+                        }
+                        // allow_negative_stock=true → дозволяємо від'ємний залишок.
+                        sqlx::query(
+                            "UPDATE stock SET quantity = quantity - $1::numeric, updated_at = now()
+                             WHERE store_id = $2 AND product_id = $3",
+                        )
+                        .bind(&item.quantity)
+                        .bind(store_id)
+                        .bind(item.product_id)
+                        .execute(&mut *tx)
+                        .await
+                        .pe()?;
+                    }
+                }
             } else {
                 sqlx::query(
-                    "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric WHERE id = $2",
+                    "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                     VALUES ($1, $2, $3::numeric, 0, now())
+                     ON CONFLICT (store_id, product_id) DO UPDATE
+                        SET quantity = stock.quantity + EXCLUDED.quantity, updated_at = now()",
                 )
-                .bind(&item.quantity)
+                .bind(store_id)
                 .bind(item.product_id)
+                .bind(&item.quantity)
                 .execute(&mut *tx)
                 .await
                 .pe()?;
@@ -2066,8 +2123,10 @@ async fn create_receipt_v1_impl(
         // DebtorPayment (payment_method='cash' — оплата через касу).
         sqlx::query(
             r#"
-            INSERT INTO debtor_payments (id, debtor_id, amount, payment_method, created_at)
-            VALUES ($1, $2, $3::numeric, 'cash', (now() AT TIME ZONE 'UTC')::timestamp)
+            INSERT INTO debtor_payments (id, debtor_id, amount, payment_method, store_id, created_at)
+            VALUES ($1, $2, $3::numeric, 'cash',
+                    COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL),
+                    (now() AT TIME ZONE 'UTC')::timestamp)
             "#,
         )
         .bind(Uuid::new_v4())
@@ -2401,7 +2460,7 @@ const V1_ITEMS_SELECT: &str = r#"
 "#;
 
 /// GET /api/v1/receipts/{id} — 1:1 Python get_receipt.
-async fn get_receipt_v1_impl(pool: &PgPool, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
+async fn get_receipt_v1_impl(pool: &StorePool, id: Uuid) -> Result<ReceiptV1Dto, PosError> {
     let row = sqlx::query(
         r#"
         SELECT r.id, r.receipt_number, r.receipt_type::text, r.cashier_id,
@@ -2430,7 +2489,7 @@ async fn get_receipt_v1_impl(pool: &PgPool, id: Uuid) -> Result<ReceiptV1Dto, Po
 
 /// GET /api/v1/receipts — 1:1 Python list_receipts (фільтри + пагінація).
 async fn list_receipts_v1_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     q: &ReceiptV1ListQuery,
 ) -> Result<ReceiptV1ListDto, PosError> {
     // Значення фільтрів валідовані парсерами (Uuid/enum/NaiveDateTime) — format! безпечний.
@@ -2533,7 +2592,7 @@ async fn list_receipts_v1_impl(
 }
 
 /// GET /api/v1/receipts/{id}/items — 1:1 Python get_receipt_items.
-async fn receipt_items_v1_impl(pool: &PgPool, id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+async fn receipt_items_v1_impl(pool: &StorePool, id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM receipts WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
@@ -2559,7 +2618,7 @@ async fn receipt_items_v1_impl(pool: &PgPool, id: Uuid) -> Result<Vec<ReceiptV1I
 /// Відмінності від v2: total = count БЕЗ DISTINCT (Python count(r.id) з JOIN —
 /// дублікати позицій), total_amount — Decimal-рядок ("120.00").
 async fn search_receipts_v1_impl(
-    pool: &PgPool,
+    pool: &StorePool,
     q: &ReceiptSearchQuery,
 ) -> Result<ReceiptV1SearchDto, PosError> {
     let rtype = q.receipt_type.as_deref().unwrap_or("sale");
@@ -2855,11 +2914,14 @@ impl PosService for SqlxPos {
             let prc = parse_scaled2(&price).unwrap_or(0) as i128;
             total_cents += qty * prc / 1000;
         }
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let row = sqlx::query(
             r#"
             INSERT INTO write_offs (id, number, reason, write_off_date, notes, created_by_id,
-                status, total_amount, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7::numeric,
+                status, total_amount, store_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, 'draft', $7::numeric, $8,
                 (now() AT TIME ZONE 'UTC')::timestamp, (now() AT TIME ZONE 'UTC')::timestamp)
             RETURNING created_at::text, updated_at::text
             "#,
@@ -2871,6 +2933,7 @@ impl PosService for SqlxPos {
         .bind(input.notes.as_deref())
         .bind(input.created_by)
         .bind(dec2(total_cents as i64))
+        .bind(store_id)
         .fetch_one(&mut *tx)
         .await
         .pe()?;
@@ -2888,8 +2951,8 @@ impl PosService for SqlxPos {
             sqlx::query(
                 r#"
                 INSERT INTO write_off_items (id, write_off_id, product_id, quantity, cost_price,
-                    price, created_at)
-                VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric,
+                    price, store_id, created_at)
+                VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7,
                     (now() AT TIME ZONE 'UTC')::timestamp)
                 "#,
             )
@@ -2899,6 +2962,7 @@ impl PosService for SqlxPos {
             .bind(dec3(qty))
             .bind(dec2(parse_scaled2(&cost).unwrap_or(0)))
             .bind(dec2(parse_scaled2(&price).unwrap_or(0)))
+            .bind(store_id)
             .execute(&mut *tx)
             .await
             .pe()?;
@@ -2926,6 +2990,9 @@ impl PosService for SqlxPos {
         input: &WriteOffUpdateInput,
     ) -> Result<WriteOffDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let row = sqlx::query("SELECT id FROM write_offs WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -2967,8 +3034,8 @@ impl PosService for SqlxPos {
                 sqlx::query(
                     r#"
                     INSERT INTO write_off_items (id, write_off_id, product_id, quantity, cost_price,
-                        price, created_at)
-                    VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric,
+                        price, store_id, created_at)
+                    VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7,
                         (now() AT TIME ZONE 'UTC')::timestamp)
                     "#,
                 )
@@ -2978,6 +3045,7 @@ impl PosService for SqlxPos {
                 .bind(dec3(qty))
                 .bind(dec2(parse_scaled2(&cost).unwrap_or(0)))
                 .bind(dec2(parse_scaled2(&price).unwrap_or(0)))
+                .bind(store_id)
                 .execute(&mut *tx)
                 .await
                 .pe()?;
@@ -3017,7 +3085,7 @@ impl PosService for SqlxPos {
 
     async fn confirm_write_off(&self, id: Uuid) -> Result<WriteOffDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let row = sqlx::query("SELECT status FROM write_offs WHERE id = $1 FOR UPDATE")
+        let row = sqlx::query("SELECT status, store_id FROM write_offs WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
@@ -3027,6 +3095,10 @@ impl PosService for SqlxPos {
                 "Списання з ID '{id}' не знайдено"
             )));
         };
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            PosError::BadRequest(format!("Списання '{id}' не прив'язане до точки"))
+        })?;
         // Ідемпотентність: вже проведений документ не зменшує залишки повторно.
         if row.get::<String, _>("status") == "confirmed" {
             tx.commit().await.pe()?;
@@ -3041,12 +3113,16 @@ impl PosService for SqlxPos {
         .pe()?;
         for it in items {
             let qty = parse_scaled3(&it.get::<String, _>("quantity")).unwrap_or(0);
-            sqlx::query("UPDATE products SET stock = stock - $1::numeric WHERE id = $2")
-                .bind(dec3(qty))
-                .bind(it.get::<Uuid, _>("product_id"))
-                .execute(&mut *tx)
-                .await
-                .pe()?;
+            sqlx::query(
+                "UPDATE stock SET quantity = quantity - $1::numeric, updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3",
+            )
+            .bind(dec3(qty))
+            .bind(store_id)
+            .bind(it.get::<Uuid, _>("product_id"))
+            .execute(&mut *tx)
+            .await
+            .pe()?;
         }
         sqlx::query("UPDATE write_offs SET status = 'confirmed', updated_at = (now() AT TIME ZONE 'UTC')::timestamp WHERE id = $1")
             .bind(id)
@@ -3150,6 +3226,9 @@ impl PosService for SqlxPos {
 
     async fn create_transfer(&self, input: &TransferCreateInput) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let number = match &input.number {
             Some(n) if !n.is_empty() => n.clone(),
             _ => next_doc_number(&mut tx, "transfers", "ПМ").await?,
@@ -3158,8 +3237,8 @@ impl PosService for SqlxPos {
         let row = sqlx::query(
             r#"
             INSERT INTO transfers (id, number, from_location, to_location, transfer_date, status,
-                notes, created_by_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7,
+                notes, created_by_id, store_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8,
                 (now() AT TIME ZONE 'UTC')::timestamp, (now() AT TIME ZONE 'UTC')::timestamp)
             RETURNING created_at::text, updated_at::text
             "#,
@@ -3171,6 +3250,7 @@ impl PosService for SqlxPos {
         .bind(input.transfer_date)
         .bind(input.notes.as_deref())
         .bind(input.created_by)
+        .bind(store_id)
         .fetch_one(&mut *tx)
         .await
         .pe()?;
@@ -3186,13 +3266,14 @@ impl PosService for SqlxPos {
             let qty = parse_scaled3(&item.quantity).unwrap_or(0);
             sqlx::query(
                 r#"
-                INSERT INTO transfer_items (id, transfer_id, product_id, quantity, cost_price, price, created_at)
-                VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric,
+                INSERT INTO transfer_items (id, transfer_id, product_id, quantity, cost_price, price, store_id, created_at)
+                VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7,
                     (now() AT TIME ZONE 'UTC')::timestamp)
                 "#,
             )
             .bind(Uuid::new_v4()).bind(id).bind(item.product_id).bind(dec3(qty))
             .bind(dec2(parse_scaled2(&cost).unwrap_or(0))).bind(dec2(parse_scaled2(&price).unwrap_or(0)))
+            .bind(store_id)
             .execute(&mut *tx).await.pe()?;
             resolved.push((item.clone(), cost, price));
         }
@@ -3218,6 +3299,9 @@ impl PosService for SqlxPos {
         input: &TransferUpdateInput,
     ) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let row = sqlx::query("SELECT status::text FROM transfers WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -3265,13 +3349,14 @@ impl PosService for SqlxPos {
                 let qty = parse_scaled3(&item.quantity).unwrap_or(0);
                 sqlx::query(
                     r#"
-                    INSERT INTO transfer_items (id, transfer_id, product_id, quantity, cost_price, price, created_at)
-                    VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric,
+                    INSERT INTO transfer_items (id, transfer_id, product_id, quantity, cost_price, price, store_id, created_at)
+                    VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7,
                         (now() AT TIME ZONE 'UTC')::timestamp)
                     "#,
                 )
                 .bind(Uuid::new_v4()).bind(id).bind(item.product_id).bind(dec3(qty))
                 .bind(dec2(parse_scaled2(&cost).unwrap_or(0))).bind(dec2(parse_scaled2(&price).unwrap_or(0)))
+                .bind(store_id)
                 .execute(&mut *tx).await.pe()?;
             }
         }
@@ -3308,7 +3393,7 @@ impl PosService for SqlxPos {
 
     async fn confirm_transfer(&self, id: Uuid, status: &str) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let row = sqlx::query("SELECT status::text FROM transfers WHERE id = $1 FOR UPDATE")
+        let row = sqlx::query("SELECT status::text, store_id FROM transfers WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
@@ -3318,6 +3403,10 @@ impl PosService for SqlxPos {
                 "Переміщення з ID '{id}' не знайдено"
             )));
         };
+        let store_id: Option<Uuid> = row.try_get("store_id").ok().flatten();
+        let store_id = store_id.ok_or_else(|| {
+            PosError::BadRequest(format!("Переміщення '{id}' не прив'язане до точки"))
+        })?;
         let cur: String = row.get("status");
         match status {
             "confirmed" => {
@@ -3335,12 +3424,16 @@ impl PosService for SqlxPos {
                 .pe()?;
                 for it in items {
                     let qty = parse_scaled3(&it.get::<String, _>("quantity")).unwrap_or(0);
-                    sqlx::query("UPDATE products SET stock = stock - $1::numeric WHERE id = $2")
-                        .bind(dec3(qty))
-                        .bind(it.get::<Uuid, _>("product_id"))
-                        .execute(&mut *tx)
-                        .await
-                        .pe()?;
+                    sqlx::query(
+                        "UPDATE stock SET quantity = quantity - $1::numeric, updated_at = now()
+                         WHERE store_id = $2 AND product_id = $3",
+                    )
+                    .bind(dec3(qty))
+                    .bind(store_id)
+                    .bind(it.get::<Uuid, _>("product_id"))
+                    .execute(&mut *tx)
+                    .await
+                    .pe()?;
                 }
                 sqlx::query("UPDATE transfers SET status = 'confirmed', updated_at = (now() AT TIME ZONE 'UTC')::timestamp WHERE id = $1")
                     .bind(id).execute(&mut *tx).await.pe()?;
@@ -3360,12 +3453,16 @@ impl PosService for SqlxPos {
                 .pe()?;
                 for it in items {
                     let qty = parse_scaled3(&it.get::<String, _>("quantity")).unwrap_or(0);
-                    sqlx::query("UPDATE products SET stock = stock + $1::numeric WHERE id = $2")
-                        .bind(dec3(qty))
-                        .bind(it.get::<Uuid, _>("product_id"))
-                        .execute(&mut *tx)
-                        .await
-                        .pe()?;
+                    sqlx::query(
+                        "UPDATE stock SET quantity = quantity + $1::numeric, updated_at = now()
+                         WHERE store_id = $2 AND product_id = $3",
+                    )
+                    .bind(dec3(qty))
+                    .bind(store_id)
+                    .bind(it.get::<Uuid, _>("product_id"))
+                    .execute(&mut *tx)
+                    .await
+                    .pe()?;
                 }
                 sqlx::query("UPDATE transfers SET status = 'cancelled', updated_at = (now() AT TIME ZONE 'UTC')::timestamp WHERE id = $1")
                     .bind(id).execute(&mut *tx).await.pe()?;
@@ -3446,5 +3543,125 @@ impl PosService for SqlxPos {
                 "Не вдалося закрити зміну: status=-13".to_string(),
             )),
         }
+    }
+
+    // ─── Готівкові операції (внесення/інкасація) ───────────────────────────
+
+    async fn create_cash_operation(
+        &self,
+        store_id: Uuid,
+        user_id: Uuid,
+        input: &CashOperationCreateInput,
+    ) -> Result<CashOperationDto, PosError> {
+        // INSERT ... RETURNING + JOIN users (user_name) — один запит (CTE).
+        let row = sqlx::query(
+            r#"
+            WITH ins AS (
+                INSERT INTO cash_operations (id, store_id, user_id, operation_type, cash_type, amount, comment, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+                RETURNING id, store_id, user_id, operation_type, cash_type, amount, comment, created_at
+            )
+            SELECT ins.id, ins.store_id, ins.user_id, ins.operation_type, ins.cash_type,
+                   ins.amount::text, ins.comment, ins.created_at, u.name AS user_name
+            FROM ins JOIN users u ON u.id = ins.user_id
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(store_id)
+        .bind(user_id)
+        .bind(input.operation_type.as_str())
+        .bind(input.cash_type.as_str())
+        .bind(&input.amount)
+        .bind(input.comment.as_deref())
+        .fetch_one(&self.pool)
+        .await
+        .pe()?;
+        let amount: BigDecimal = row
+            .get::<String, _>("amount")
+            .parse()
+            .map_err(|e| PosError::Infrastructure(format!("некоректна сума в БД: {e}")))?;
+        Ok(CashOperationDto {
+            id: row.get("id"),
+            store_id: row.get("store_id"),
+            user_id: row.get("user_id"),
+            user_name: row.get("user_name"),
+            operation_type: input.operation_type,
+            cash_type: input.cash_type,
+            amount,
+            comment: row.get("comment"),
+            created_at: row.get::<DateTime<Utc>, _>("created_at").naive_utc(),
+        })
+    }
+
+    async fn list_cash_operations(
+        &self,
+        store_id: Uuid,
+    ) -> Result<CashOperationsListDto, PosError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT co.id, co.store_id, co.user_id, co.operation_type, co.cash_type, co.amount::text,
+                   co.comment, co.created_at, u.name AS user_name
+            FROM cash_operations co
+            JOIN users u ON u.id = co.user_id
+            WHERE co.store_id = $1
+            ORDER BY co.created_at DESC
+            "#,
+        )
+        .bind(store_id)
+        .fetch_all(&self.pool)
+        .await
+        .pe()?;
+        let mut operations = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let amount: BigDecimal = r
+                .get::<String, _>("amount")
+                .parse()
+                .map_err(|e| PosError::Infrastructure(format!("некоректна сума в БД: {e}")))?;
+            let operation_type =
+                CashOperationType::parse(r.get("operation_type")).unwrap_or(CashOperationType::Deposit);
+            let cash_type = CashType::parse(r.get("cash_type")).unwrap_or(CashType::Cash);
+            operations.push(CashOperationDto {
+                id: r.get("id"),
+                store_id: r.get("store_id"),
+                user_id: r.get("user_id"),
+                user_name: r.get("user_name"),
+                operation_type,
+                cash_type,
+                amount,
+                comment: r.get("comment"),
+                created_at: r.get::<DateTime<Utc>, _>("created_at").naive_utc(),
+            });
+        }
+        // Баланси кас точки: внесення − інкасація, окремо cash і card.
+        // ::text — sqlx binary-декод numeric втрачає scale (300.00 → 300);
+        // рядок зберігає scale колонки, як і в інших Decimal-полях проєкту.
+        let (cash_raw, card_raw): (String, String) = sqlx::query_as(
+            r#"
+            SELECT COALESCE(
+                       SUM(CASE WHEN operation_type = 'deposit' THEN amount ELSE -amount END)
+                           FILTER (WHERE cash_type = 'cash'),
+                       0
+                   )::numeric(12,2)::text,
+                   COALESCE(
+                       SUM(CASE WHEN operation_type = 'deposit' THEN amount ELSE -amount END)
+                           FILTER (WHERE cash_type = 'card'),
+                       0
+                   )::numeric(12,2)::text
+            FROM cash_operations WHERE store_id = $1
+            "#,
+        )
+        .bind(store_id)
+        .fetch_one(&self.pool)
+        .await
+        .pe()?;
+        let parse_balance = |raw: String| -> Result<BigDecimal, PosError> {
+            raw.parse()
+                .map_err(|e| PosError::Infrastructure(format!("некоректний баланс у БД: {e}")))
+        };
+        let balances = CashBalances {
+            cash: parse_balance(cash_raw)?,
+            card: parse_balance(card_raw)?,
+        };
+        Ok(CashOperationsListDto { operations, balances })
     }
 }

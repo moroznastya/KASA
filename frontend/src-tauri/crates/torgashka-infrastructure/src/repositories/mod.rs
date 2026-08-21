@@ -10,4 +10,6 @@ pub mod print_templates;
 pub mod products_v2;
 pub mod purchase_orders;
 pub mod return_invoices;
+pub mod setup;
+pub mod stores;
 pub mod write;

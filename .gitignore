@@ -124,3 +124,12 @@ keys.txt
 
 # PostgreSQL binaries download cache
 .cache/
+
+# Артефакти збірки та беккапи — не для git
+*.flatpak
+*.tar.gz
+Temp/
+*.bak
+agents/
+flatpak-build/
+flatpak/

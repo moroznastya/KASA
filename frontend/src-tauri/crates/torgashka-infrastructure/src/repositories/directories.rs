@@ -9,7 +9,8 @@
 //!   balance через підзапит SUM(supplier_ledger.amount).
 
 use chrono::NaiveDateTime;
-use sqlx::{PgPool, QueryBuilder, Row};
+use sqlx::{QueryBuilder, Row};
+use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use rust_decimal::Decimal as RDecimal;
@@ -23,11 +24,11 @@ use torgashka_domain::{
 /// sqlx-реалізація [`ReadDirectories`] (тільки читання).
 #[derive(Clone)]
 pub struct SqlxDirectories {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxDirectories {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -393,8 +394,7 @@ impl ReadDirectories for SqlxDirectories {
             .bind(barcode)
             .fetch_optional(&self.pool)
             .await
-            .map_err(db_err)?
-            .map(|r: (Uuid,)| r.0);
+            .map_err(db_err)?;
         let product_id = match id {
             Some(v) => v,
             None => {

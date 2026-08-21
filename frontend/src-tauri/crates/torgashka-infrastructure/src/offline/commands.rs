@@ -35,11 +35,14 @@ pub fn get_unsynced_count() -> Result<usize, String> {
     db.count_unsynced_receipts()
 }
 
-/// Кешувати товари (масив JSON-рядків)
+/// Кешувати товари (масив JSON-рядків) для поточної точки продажу.
+///
+/// `store_id` (опціонально) — UUID точки; кеш позначається точкою, щоб
+/// офлайн-довідник фільтрував товари поточного магазину.
 #[tauri::command]
-pub fn cache_products(products_json: String) -> Result<usize, String> {
+pub fn cache_products(products_json: String, store_id: Option<String>) -> Result<usize, String> {
     let db = get_db()?;
-    db.cache_products(&products_json)
+    db.cache_products_for_store(&products_json, store_id.as_deref())
 }
 
 /// Логувати помилку фронтенду у /tmp/torgashka-frontend.log
@@ -61,18 +64,25 @@ pub fn log_frontend_error(message: String) {
     }
 }
 
-/// Отримати кешовані товари (JSON-рядок)
+/// Отримати кешовані товари поточної точки (JSON-рядок)
 #[tauri::command]
-pub fn get_cached_products(search: Option<String>, limit: Option<usize>) -> Result<String, String> {
+pub fn get_cached_products(
+    search: Option<String>,
+    limit: Option<usize>,
+    store_id: Option<String>,
+) -> Result<String, String> {
     let db = get_db()?;
-    db.get_cached_products(search.as_deref(), limit.unwrap_or(100))
+    db.get_cached_products_for_store(search.as_deref(), limit.unwrap_or(100), store_id.as_deref())
 }
 
-/// Зберегти чек локально (для офлайн-режиму)
+/// Зберегти чек локально (для офлайн-режиму) з точкою продажу.
+///
+/// `store_id` зберігається в черзі синхронізації — при відправці на сервер
+/// чек потрапляє в точку, де був створений (навіть якщо зараз активна інша).
 #[tauri::command]
-pub fn save_receipt_offline(receipt_json: String) -> Result<i64, String> {
+pub fn save_receipt_offline(receipt_json: String, store_id: Option<String>) -> Result<i64, String> {
     let db = get_db()?;
-    db.save_receipt_offline(&receipt_json)
+    db.save_receipt_offline_for_store(&receipt_json, store_id.as_deref())
 }
 
 /// Отримати несинхронізовані чеки
@@ -103,18 +113,24 @@ pub fn set_setting(key: String, value: String) -> Result<(), String> {
     db.set_setting(&key, &value)
 }
 
-/// Очистити кеш товарів
+/// Очистити кеш товарів (поточної точки, якщо store_id передано)
 #[tauri::command]
-pub fn clear_product_cache() -> Result<usize, String> {
+pub fn clear_product_cache(store_id: Option<String>) -> Result<usize, String> {
     let db = get_db()?;
-    db.clear_product_cache()
+    match store_id {
+        Some(sid) => db.clear_product_cache_for_store(&sid),
+        None => db.clear_product_cache(),
+    }
 }
 
-/// Отримати статистику офлайн-бази
+/// Отримати статистику офлайн-бази (кількість товарів — поточної точки)
 #[tauri::command]
-pub fn get_offline_stats() -> Result<serde_json::Value, String> {
+pub fn get_offline_stats(store_id: Option<String>) -> Result<serde_json::Value, String> {
     let db = get_db()?;
-    let product_count = db.get_product_count().unwrap_or(0);
+    let product_count = match store_id {
+        Some(ref sid) => db.get_product_count_for_store(sid).unwrap_or(0),
+        None => db.get_product_count().unwrap_or(0),
+    };
     let unsynced_count = db.count_unsynced_receipts().unwrap_or(0);
     let db_size = db.get_db_size().unwrap_or(0);
 

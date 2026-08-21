@@ -13,8 +13,10 @@
 //! GET/confirm — scale колонки (::text): `"1.000"`, `"0.00"`.
 
 use chrono::NaiveDateTime;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use bigdecimal::BigDecimal;
 
 /// Помилки POS-шару → HTTP 1:1 з Python.
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +131,17 @@ pub trait PosService: Send + Sync {
     async fn list_shifts(&self, page: i64, size: i64) -> Result<ShiftListDto, PosError>;
     async fn open_shift(&self, comment: Option<String>) -> Result<PrroShiftDto, PosError>;
     async fn close_shift(&self, comment: Option<String>) -> Result<PrroShiftDto, PosError>;
+
+    // ─── Готівкові операції (внесення/інкасація) ───────────────────────────
+    /// Створює готівкову операцію (deposit/collection) для точки.
+    async fn create_cash_operation(
+        &self,
+        store_id: Uuid,
+        user_id: Uuid,
+        input: &CashOperationCreateInput,
+    ) -> Result<CashOperationDto, PosError>;
+    /// Список операцій точки + баланс готівки (deposit − collection).
+    async fn list_cash_operations(&self, store_id: Uuid) -> Result<CashOperationsListDto, PosError>;
 }
 
 /// Blanket: `Arc<T>` делегує [`PosService`].
@@ -274,6 +287,17 @@ impl<T: PosService + ?Sized> PosService for std::sync::Arc<T> {
     }
     async fn close_shift(&self, comment: Option<String>) -> Result<PrroShiftDto, PosError> {
         (**self).close_shift(comment).await
+    }
+    async fn create_cash_operation(
+        &self,
+        store_id: Uuid,
+        user_id: Uuid,
+        input: &CashOperationCreateInput,
+    ) -> Result<CashOperationDto, PosError> {
+        (**self).create_cash_operation(store_id, user_id, input).await
+    }
+    async fn list_cash_operations(&self, store_id: Uuid) -> Result<CashOperationsListDto, PosError> {
+        (**self).list_cash_operations(store_id).await
     }
 }
 
@@ -828,6 +852,93 @@ pub struct ShiftListDto {
     pub page: i64,
     pub size: i64,
 }
+// ─── Готівкові операції (внесення/інкасація) ───────────────────────────────
+
+/// Тип готівкової операції: deposit — внесення, collection — інкасація.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CashOperationType {
+    Deposit,
+    Collection,
+}
+
+impl CashOperationType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CashOperationType::Deposit => "deposit",
+            CashOperationType::Collection => "collection",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "deposit" => Some(CashOperationType::Deposit),
+            "collection" => Some(CashOperationType::Collection),
+            _ => None,
+        }
+    }
+}
+
+/// Тип каси: cash — готівкова, card — безготівкова (термінал/картка).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CashType {
+    Cash,
+    Card,
+}
+
+impl CashType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CashType::Cash => "cash",
+            CashType::Card => "card",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "cash" => Some(CashType::Cash),
+            "card" => Some(CashType::Card),
+            _ => None,
+        }
+    }
+}
+
+/// DTO готівкової операції (внесення/інкасація).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CashOperationDto {
+    pub id: Uuid,
+    pub store_id: Uuid,
+    pub user_id: Uuid,
+    pub user_name: String,
+    pub operation_type: CashOperationType,
+    pub cash_type: CashType,
+    pub amount: BigDecimal,
+    pub comment: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+/// Вхідні дані створення готівкової операції (POST /api/v1/cash-operations).
+#[derive(Debug, Clone)]
+pub struct CashOperationCreateInput {
+    pub operation_type: CashOperationType,
+    pub cash_type: CashType,
+    pub amount: BigDecimal,
+    pub comment: Option<String>,
+}
+
+/// Окремий баланс каси (готівка / безготівка).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CashBalances {
+    pub cash: BigDecimal,
+    pub card: BigDecimal,
+}
+
+/// Список готівкових операцій точки + поточні баланси кас (готівка/безготівка).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CashOperationsListDto {
+    pub operations: Vec<CashOperationDto>,
+    pub balances: CashBalances,
+}
+
 
 // ─── Утиліти Decimal (scale-обізнані, як Python Decimal) ──────────────────
 

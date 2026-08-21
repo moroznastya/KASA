@@ -4,9 +4,13 @@
 //! Потребують доступної PostgreSQL (як Python-еталон): `DATABASE_URL` або
 //! `DB_*` у backend/.env.
 //!
+//! Етап 3 мультиточковості: всі операції виконуються В МЕЖАХ StoreCtx
+//! (task-local) — репозиторії через StorePool проставляють app.user_id/
+//! app.store_id (RLS + stock per store). Без контексту POS-операції → 400.
+//!
 //! Конкурентність: два паралельні `create_sale_receipt` на одному товарі —
-//! `SELECT ... FOR UPDATE` серіалізує продажі, кінцевий залишок = стартовий
-//! мінус сума кількостей, нуль втрат.
+//! атомарний `UPDATE stock ... WHERE quantity >= qty` серіалізує продажі,
+//! кінцевий залишок = стартовий мінус сума кількостей, нуль втрат.
 //!
 //! Транзакційність: sale з двома позиціями, де друга має недостатній залишок
 //! → 400, перший товар НЕ змінюється, чек не створюється.
@@ -14,17 +18,21 @@
 use torgashka_domain::{
     PosService, ReceiptCreateInput, ReceiptItemInput, TransferCreateInput, WriteOffCreateInput,
 };
-use torgashka_infrastructure::{db, repositories::pos::SqlxPos};
+use torgashka_infrastructure::{
+    db,
+    repositories::pos::SqlxPos,
+    store_ctx::{with_store_ctx, StoreCtx, StorePool},
+};
 use uuid::Uuid;
 
 async fn pool() -> sqlx::PgPool {
-    db::connect_readonly_pool(5)
+    db::connect_test_pool(5)
         .await
         .expect("БД недоступна: задайте DATABASE_URL або DB_* у backend/.env")
 }
 
 fn repo(p: &sqlx::PgPool) -> SqlxPos {
-    SqlxPos::new(p.clone())
+    SqlxPos::new(StorePool::new(p.clone()))
 }
 
 fn uniq() -> String {
@@ -38,7 +46,21 @@ async fn any_user_id(p: &sqlx::PgPool) -> Uuid {
         .expect("у БД має бути хоча б один користувач")
 }
 
-async fn make_product(p: &sqlx::PgPool, barcode: &str, stock: i64) -> Uuid {
+/// StoreCtx для тестів: перша точка + перший користувач.
+async fn any_store_ctx(p: &sqlx::PgPool) -> StoreCtx {
+    let store_id: Uuid = sqlx::query_scalar("SELECT id FROM stores ORDER BY created_at LIMIT 1")
+        .fetch_one(p)
+        .await
+        .expect("у БД має бути хоча б одна точка");
+    let user_id = any_user_id(p).await;
+    StoreCtx {
+        user_id,
+        store_id,
+        role: "owner".to_string(),
+    }
+}
+
+async fn make_product(p: &sqlx::PgPool, barcode: &str, stock: i64, store_id: Uuid) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO products (id, barcode, title, price, cost_price, stock, tax_rate, tax_group, unit, is_weight, scan_excise, is_fiscal, fiscal_stock, created_at, updated_at) \
@@ -51,15 +73,27 @@ async fn make_product(p: &sqlx::PgPool, barcode: &str, stock: i64) -> Uuid {
     .execute(p)
     .await
     .expect("create product");
+    sqlx::query(
+        "INSERT INTO stock (store_id, product_id, quantity, price) VALUES ($1, $2, $3::numeric, 100.00)",
+    )
+    .bind(store_id)
+    .bind(id)
+    .bind(stock)
+    .execute(p)
+    .await
+    .expect("create stock row");
     id
 }
 
-async fn stock_of(p: &sqlx::PgPool, id: Uuid) -> i64 {
-    let s: String = sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
-        .bind(id)
-        .fetch_one(p)
-        .await
-        .unwrap();
+async fn stock_of(p: &sqlx::PgPool, id: Uuid, store_id: Uuid) -> i64 {
+    let s: String = sqlx::query_scalar(
+        "SELECT COALESCE(quantity, 0)::text FROM stock WHERE store_id = $1 AND product_id = $2",
+    )
+    .bind(store_id)
+    .bind(id)
+    .fetch_one(p)
+    .await
+    .unwrap();
     s.trim_end_matches('0')
         .trim_end_matches('.')
         .parse::<f64>()
@@ -103,6 +137,10 @@ fn sale_input_cash(product: Uuid, qty: &str, cash: &str) -> ReceiptCreateInput {
 }
 
 async fn cleanup_product(p: &sqlx::PgPool, id: Uuid) {
+    let _ = sqlx::query("DELETE FROM stock WHERE product_id = $1")
+        .bind(id)
+        .execute(p)
+        .await;
     let _ = sqlx::query("DELETE FROM products WHERE id = $1")
         .bind(id)
         .execute(p)
@@ -113,37 +151,42 @@ async fn cleanup_product(p: &sqlx::PgPool, id: Uuid) {
 async fn sale_receipt_flow_stock_and_change() {
     let p = pool().await;
     let r = repo(&p);
+    let ctx = any_store_ctx(&p).await;
     let ts = uniq();
-    let pid = make_product(&p, &format!("{ts}S"), 100).await;
-    let cashier = any_user_id(&p).await;
+    let pid = make_product(&p, &format!("{ts}S"), 100, ctx.store_id).await;
+    let cashier = ctx.user_id;
 
     let mut input = sale_input(pid, "2");
     input.cashier_id = Some(cashier);
-    let receipt = r.create_sale_receipt(&input).await.expect("sale ok");
+    let receipt = with_store_ctx(ctx.clone(), r.create_sale_receipt(&input))
+        .await
+        .expect("sale ok");
     assert_eq!(receipt.number.len(), 20); // RCPT-YYYYMMDD-XXXXXX
     assert!(receipt.number.starts_with("RCPT-"));
     assert_eq!(receipt.items[0].quantity, 2.0);
     assert_eq!(receipt.total.unwrap(), 200.0);
     assert_eq!(receipt.change_amount, Some(50.0));
     assert_eq!(receipt.fiscal_status, "none");
-    assert_eq!(stock_of(&p, pid).await, 98000); // 100.000 - 2.000
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 98000); // 100.000 - 2.000
 
     // Недостатньо залишку → 400.
     let mut big = sale_input_cash(pid, "100", "10000");
     big.cashier_id = Some(cashier);
-    let err = r.create_sale_receipt(&big).await;
+    let err = with_store_ctx(ctx.clone(), r.create_sale_receipt(&big)).await;
     let err = err.expect_err("sale має впасти");
     assert!(
         matches!(&err, torgashka_domain::PosError::BadRequest(msg) if msg.contains("Недостатньо залишку")),
         "{err:?}"
     );
-    assert_eq!(stock_of(&p, pid).await, 98000);
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 98000);
 
     // Return → stock збільшується.
     let mut ret = sale_input(pid, "1");
     ret.cashier_id = Some(cashier);
-    r.create_return_receipt(&ret).await.expect("return ok");
-    assert_eq!(stock_of(&p, pid).await, 99000);
+    with_store_ctx(ctx.clone(), r.create_return_receipt(&ret))
+        .await
+        .expect("return ok");
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 99000);
 
     cleanup_product(&p, pid).await;
 }
@@ -152,19 +195,25 @@ async fn sale_receipt_flow_stock_and_change() {
 async fn concurrent_sales_no_data_loss() {
     let p = pool().await;
     let r = repo(&p);
+    let ctx = any_store_ctx(&p).await;
     let ts = uniq();
-    let pid = make_product(&p, &format!("{ts}C"), 100).await;
-    let cashier = any_user_id(&p).await;
+    let pid = make_product(&p, &format!("{ts}C"), 100, ctx.store_id).await;
+    let cashier = ctx.user_id;
 
     let mut a = sale_input_cash(pid, "7", "700");
     a.cashier_id = Some(cashier);
     let mut b = sale_input_cash(pid, "3", "300");
     b.cashier_id = Some(cashier);
 
-    let (ra, rb) = tokio::join!(r.create_sale_receipt(&a), r.create_sale_receipt(&b));
+    let ctx_a = ctx.clone();
+    let ctx_b = ctx.clone();
+    let (ra, rb) = tokio::join!(
+        with_store_ctx(ctx_a, r.create_sale_receipt(&a)),
+        with_store_ctx(ctx_b, r.create_sale_receipt(&b))
+    );
     ra.expect("sale A");
     rb.expect("sale B");
-    assert_eq!(stock_of(&p, pid).await, 90000); // 100 - 7 - 3
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 90000); // 100 - 7 - 3
 
     cleanup_product(&p, pid).await;
 }
@@ -173,10 +222,11 @@ async fn concurrent_sales_no_data_loss() {
 async fn sale_transaction_rolls_back_on_second_item() {
     let p = pool().await;
     let r = repo(&p);
+    let ctx = any_store_ctx(&p).await;
     let ts = uniq();
-    let ok_pid = make_product(&p, &format!("{ts}T1"), 100).await;
-    let low_pid = make_product(&p, &format!("{ts}T2"), 0).await;
-    let cashier = any_user_id(&p).await;
+    let ok_pid = make_product(&p, &format!("{ts}T1"), 100, ctx.store_id).await;
+    let low_pid = make_product(&p, &format!("{ts}T2"), 0, ctx.store_id).await;
+    let cashier = ctx.user_id;
 
     let mut input = sale_input(ok_pid, "5");
     input.cashier_id = Some(cashier);
@@ -187,7 +237,7 @@ async fn sale_transaction_rolls_back_on_second_item() {
         price: "100".to_string(),
         tax_rate: 20,
     });
-    let before = stock_of(&p, ok_pid).await;
+    let before = stock_of(&p, ok_pid, ctx.store_id).await;
     // Спільна жива БД: глобальний count(*) змінює nastya (продажі в реальному
     // часі) — перевіряємо лише записи, що стосуються НАШОГО товару.
     let count_before: i64 =
@@ -197,14 +247,13 @@ async fn sale_transaction_rolls_back_on_second_item() {
             .await
             .unwrap();
 
-    let err = r
-        .create_sale_receipt(&input)
+    let err = with_store_ctx(ctx.clone(), r.create_sale_receipt(&input))
         .await
         .expect_err("sale має впасти");
     assert!(matches!(err, torgashka_domain::PosError::BadRequest(_)));
 
     // Нічого не записано: stock першого не змінився, чек не створено.
-    assert_eq!(stock_of(&p, ok_pid).await, before);
+    assert_eq!(stock_of(&p, ok_pid, ctx.store_id).await, before);
     let count_after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM receipt_items WHERE product_id = $1")
             .bind(ok_pid)
@@ -221,9 +270,10 @@ async fn sale_transaction_rolls_back_on_second_item() {
 async fn write_off_and_transfer_flow() {
     let p = pool().await;
     let r = repo(&p);
+    let ctx = any_store_ctx(&p).await;
     let ts = uniq();
-    let pid = make_product(&p, &format!("{ts}W"), 100).await;
-    let user = any_user_id(&p).await;
+    let pid = make_product(&p, &format!("{ts}W"), 100, ctx.store_id).await;
+    let user = ctx.user_id;
 
     // Write-off: create авто-confirm → stock зменшується.
     let wo = WriteOffCreateInput {
@@ -239,22 +289,28 @@ async fn write_off_and_transfer_flow() {
             price: None,
         }],
     };
-    let wo = r.create_write_off(&wo).await.expect("write-off");
+    let wo = with_store_ctx(ctx.clone(), r.create_write_off(&wo))
+        .await
+        .expect("write-off");
     // Python-еталон (api/v1/write_offs.py:166-169): create → draft,
     // проведення — через confirm_write_off. Draft НЕ змінює залишки.
     assert_eq!(wo.status, "draft");
     assert!(wo.number.starts_with("СП-"));
     assert_eq!(wo.items[0].quantity, "2"); // вхідна scale
     assert_eq!(wo.total_amount.as_deref(), Some("200.00")); // 2 шт × 100.00
-    assert_eq!(stock_of(&p, pid).await, 100000);
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 100000);
 
     // Проведення: confirm → status confirmed, stock зменшується на 2.
-    let wo = r.confirm_write_off(wo.id).await.expect("confirm write-off");
+    let wo = with_store_ctx(ctx.clone(), r.confirm_write_off(wo.id))
+        .await
+        .expect("confirm write-off");
     assert_eq!(wo.status, "confirmed");
-    assert_eq!(stock_of(&p, pid).await, 98000);
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 98000);
 
     // GET → scale БД.
-    let got = r.get_write_off(wo.id).await.expect("get");
+    let got = with_store_ctx(ctx.clone(), r.get_write_off(wo.id))
+        .await
+        .expect("get");
     assert_eq!(got.items[0].quantity, "2.000");
     assert_eq!(got.total_amount.as_deref(), Some("200.00"));
 
@@ -273,17 +329,19 @@ async fn write_off_and_transfer_flow() {
             price: None,
         }],
     };
-    let tr = r.create_transfer(&tr).await.expect("transfer");
+    let tr = with_store_ctx(ctx.clone(), r.create_transfer(&tr))
+        .await
+        .expect("transfer");
     assert_eq!(tr.status, "draft");
-    assert_eq!(stock_of(&p, pid).await, 98000); // draft не змінює stock
-    r.confirm_transfer(tr.id, "confirmed")
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 98000); // draft не змінює stock
+    with_store_ctx(ctx.clone(), r.confirm_transfer(tr.id, "confirmed"))
         .await
         .expect("confirm");
-    assert_eq!(stock_of(&p, pid).await, 95000);
-    r.confirm_transfer(tr.id, "cancelled")
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 95000);
+    with_store_ctx(ctx.clone(), r.confirm_transfer(tr.id, "cancelled"))
         .await
         .expect("cancel");
-    assert_eq!(stock_of(&p, pid).await, 98000);
+    assert_eq!(stock_of(&p, pid, ctx.store_id).await, 98000);
 
     let _ = sqlx::query("DELETE FROM write_offs WHERE id = $1")
         .bind(wo.id)
@@ -298,17 +356,24 @@ async fn today_stats_delta_matches_python_formula() {
     // має змінити агрегати на детерміновану дельту.
     let p = pool().await;
     let r = repo(&p);
+    let ctx = any_store_ctx(&p).await;
     let ts = uniq();
-    let pid = make_product(&p, &format!("{ts}ST"), 100).await;
-    let cashier = any_user_id(&p).await;
+    let pid = make_product(&p, &format!("{ts}ST"), 100, ctx.store_id).await;
+    let cashier = ctx.user_id;
 
-    let before = r.today_stats().await.expect("stats before");
+    let before = with_store_ctx(ctx.clone(), r.today_stats())
+        .await
+        .expect("stats before");
 
     let mut input = sale_input_cash(pid, "2", "200");
     input.cashier_id = Some(cashier);
-    r.create_sale_receipt(&input).await.expect("sale");
+    with_store_ctx(ctx.clone(), r.create_sale_receipt(&input))
+        .await
+        .expect("sale");
 
-    let after = r.today_stats().await.expect("stats after");
+    let after = with_store_ctx(ctx.clone(), r.today_stats())
+        .await
+        .expect("stats after");
     // Спільна жива БД (активна копія nastya продає в реальному часі):
     // перевіряємо МІНІМАЛЬНУ дельту (наші 2 шт), паралельні продажі лише
     // збільшують різницю.

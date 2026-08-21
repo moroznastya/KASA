@@ -14,7 +14,8 @@
 //! (Python також не відкатує ledger при скасуванні).
 
 use chrono::NaiveDateTime;
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::return_invoices::{
@@ -78,11 +79,11 @@ const RET_COLS: &str = "r.id, r.number, r.supplier_id, r.return_date, r.status::
 
 /// Репозиторій повернень постачальнику.
 pub struct SqlxReturnInvoices {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxReturnInvoices {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 
@@ -127,6 +128,9 @@ impl SqlxReturnInvoices {
         return_id: Uuid,
         items: &[ReturnInvoiceItemCreateInput],
     ) -> Result<(), ReturnInvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         for it in items {
             let cost = match &it.cost_price {
                 Some(c) => Some(c.clone()),
@@ -135,8 +139,9 @@ impl SqlxReturnInvoices {
             let markup = calc_markup(&it.price, cost.as_deref());
             sqlx::query(
                 "INSERT INTO return_invoice_items \
-                 (return_invoice_id, product_id, quantity, price, total, cost_price, markup_percent, created_at) \
-                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$6::numeric,$7::numeric, now())",
+                 (return_invoice_id, product_id, quantity, price, total, cost_price, markup_percent, \
+                  store_id, created_at) \
+                 VALUES ($1,$2,$3::numeric,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8, now())",
             )
             .bind(return_id)
             .bind(it.product_id)
@@ -145,6 +150,7 @@ impl SqlxReturnInvoices {
             .bind(&it.total)
             .bind(cost.as_deref())
             .bind(markup.as_deref())
+            .bind(store_id)
             .execute(&self.pool)
             .await
             .map_err(|e| de(e.to_string()))?;
@@ -281,37 +287,56 @@ impl SqlxReturnInvoices {
         }))
     }
 
-    /// Python product_service.update_stock (stock += qty) 1:1: при від'ємній
-    /// зміні перевіряє достатність (stock NOT NULL) → 400 Python-стилю.
+    /// Python product_service.update_stock (stock += qty) → stock table (per store).
+    /// Від'ємна зміна (повернення постачальнику): атомарний UPDATE з перевіркою
+    /// достатності (quantity >= need); 0 рядків → 400 Python-стилю.
     async fn update_stock(&self, product_id: Uuid, qty: &str) -> Result<(), ReturnInvoicesError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         if qty.starts_with('-') {
-            let row = sqlx::query("SELECT title, stock::text FROM products WHERE id = $1")
+            let need = qty.trim_start_matches('-');
+            let res = sqlx::query(
+                "UPDATE stock SET quantity = quantity + $1::numeric, updated_at = now()
+                 WHERE store_id = $2 AND product_id = $3 AND quantity >= $4::numeric",
+            )
+            .bind(qty)
+            .bind(store_id)
+            .bind(product_id)
+            .bind(need)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+            if res.rows_affected() == 0 {
+                let avail: Option<String> = sqlx::query_scalar(
+                    "SELECT quantity::text FROM stock WHERE store_id = $1 AND product_id = $2",
+                )
+                .bind(store_id)
                 .bind(product_id)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| de(e.to_string()))?;
-            if let Some(r) = row {
-                let stock: Option<String> = r.get("stock");
-                if let Some(st) = stock {
-                    let need = qty.trim_start_matches('-');
-                    if rdec(&st) + rdec(need) < rust_decimal::Decimal::ZERO {
-                        let title: String = r.get("title");
-                        return Err(ReturnInvoicesError::BadRequest(format!(
-                            "Недостатньо товару '{}' на складі. Доступно: {}, потрібно: {}",
-                            title, st, need
-                        )));
-                    }
-                }
+                .map_err(|e| de(e.to_string()))?
+                .flatten();
+                let avail = avail.unwrap_or_else(|| "0".to_string());
+                return Err(ReturnInvoicesError::BadRequest(format!(
+                    "Недостатньо товару на складі. Доступно: {}, потрібно: {}",
+                    avail, need
+                )));
             }
+        } else {
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, 0, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = stock.quantity + EXCLUDED.quantity, updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(product_id)
+            .bind(qty)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
         }
-        sqlx::query(
-            "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now() WHERE id = $2",
-        )
-        .bind(qty)
-        .bind(product_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| de(e.to_string()))?;
         Ok(())
     }
 
@@ -516,12 +541,15 @@ impl ReturnInvoicesService for SqlxReturnInvoices {
                     .to_string(),
             ));
         }
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO return_invoices \
              (id, number, supplier_id, return_date, status, return_action, is_fiscal, notes, \
-              total_amount, source_invoice_id, created_by_id, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,'draft'::return_invoice_status,$5::return_action_type,$6,$7,$8::numeric,$9,$10, now(), now())",
+              total_amount, source_invoice_id, created_by_id, store_id, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,'draft'::return_invoice_status,$5::return_action_type,$6,$7,$8::numeric,$9,$10,$11, now(), now())",
         )
         .bind(id)
         .bind(&number)
@@ -533,6 +561,7 @@ impl ReturnInvoicesService for SqlxReturnInvoices {
         .bind(total_amount.as_deref())
         .bind(input.source_invoice_id)
         .bind(user_id)
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;

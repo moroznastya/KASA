@@ -185,15 +185,19 @@ export const receiptService = {
    * ⚠️ Боргові чеки (debtor_id/is_debt/debt_payment) та повернення за
    *    оригінальним чеком (original_receipt_id) → v1 (v2 не підтримує).
    */
-  async createReceipt(data: ReceiptCreate): Promise<Receipt> {
+  async createReceipt(data: ReceiptCreate, storeId?: string): Promise<Receipt> {
     const needsV1 =
       data.is_debt ||
       Boolean(data.debtor_id) ||
       Boolean(data.debt_payment) ||
       Boolean(data.original_receipt_id);
 
+    // Мультиточковість (Етап 5): storeId з офлайн-черги — чек іде у свою точку
+    // (X-Store-Id per-request перекриває поточну активну точку в інтерцепторі).
+    const storeHeaders = storeId ? { 'X-Store-Id': storeId } : undefined;
+
     if (needsV1) {
-      const response = await api.post<Receipt>('/receipts', data);
+      const response = await api.post<Receipt>('/receipts', data, { headers: storeHeaders });
       return response.data;
     }
 
@@ -239,7 +243,7 @@ export const receiptService = {
     const response = await api.post<Parameters<typeof mapCreatedReceipt>[0]>(
       endpoint,
       payload,
-      V2,
+      storeHeaders ? { ...V2, headers: storeHeaders } : V2,
     );
     return mapCreatedReceipt(response.data, data);
   },

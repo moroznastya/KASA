@@ -140,7 +140,7 @@ pub(crate) async fn require_admin(
     // НЕ з БД. Це дозволяє токену з role=admin працювати незалежно від БД.
     let _ = state;
     let user_id = sub_uuid(claims)?;
-    if claims.role != "admin" {
+    if !matches!(claims.role.as_str(), "admin" | "owner") {
         return Err(AuthError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
         )
@@ -149,12 +149,12 @@ pub(crate) async fn require_admin(
     Ok(user_id)
 }
 
-/// Перевірка ролі admin для settings (Python: `current_user.role != "admin"` → 403).
+/// Перевірка ролі admin для settings (Python: `current_user.!matches!(role.as_str(), "admin" | "owner")` → 403).
 async fn ensure_settings_admin(state: &AppState, claims: &Claims) -> Result<Uuid, AuthRouteError> {
     let repo = auth_repo(state)?;
     let user_id = sub_uuid(claims)?;
     let user = repo.get_user_by_id(user_id).await?;
-    if user.role != "admin" {
+    if !matches!(user.role.as_str(), "admin" | "owner") {
         return Err(AuthError::Forbidden(
             "Тільки адміністратор може змінювати налаштування".to_string(),
         )
@@ -164,7 +164,7 @@ async fn ensure_settings_admin(state: &AppState, claims: &Claims) -> Result<Uuid
 }
 
 /// Генерує access+refresh токени (1:1 Python login: access з правами, refresh без прав).
-async fn issue_tokens(
+pub(crate) async fn issue_tokens(
     state: &AppState,
     user: &UserDto,
 ) -> Result<(String, String), AuthRouteError> {
@@ -472,6 +472,23 @@ fn parse_update_user(body: &Value) -> Result<UserUpdateInput, AuthRouteError> {
         },
     };
     errs.append(&mut e);
+    let (onboarding_completed, mut e) = match obj.get("onboarding_completed") {
+        None | Some(Value::Null) => (None, vec![]),
+        Some(v) => match v.as_bool() {
+            Some(b) => (Some(b), vec![]),
+            None => (
+                None,
+                vec![v422_err(
+                    "bool_parsing",
+                    &["body", "onboarding_completed"],
+                    "Input should be a valid boolean, unable to interpret input",
+                    v.clone(),
+                    None,
+                )],
+            ),
+        },
+    };
+    errs.append(&mut e);
     let (permissions, mut e) = parse_permissions_field(obj, "permissions");
     errs.append(&mut e);
     finish422(errs)?;
@@ -482,6 +499,7 @@ fn parse_update_user(body: &Value) -> Result<UserUpdateInput, AuthRouteError> {
         pin_code,
         role,
         is_active,
+        onboarding_completed,
         permissions,
     })
 }
@@ -979,5 +997,5 @@ pub async fn settings_update_key(
 /// Пул для бенчмарк/тестів: пряме створення репозиторію (не використовується в роутах).
 #[allow(dead_code)]
 fn _sqlx_auth(pool: sqlx::PgPool) -> SqlxAuth {
-    SqlxAuth::new(pool)
+    SqlxAuth::new(torgashka_infrastructure::store_ctx::StorePool::new(pool))
 }

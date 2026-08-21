@@ -19,7 +19,8 @@
 
 use chrono::NaiveDateTime;
 use serde_json::{json, Value};
-use sqlx::{PgPool, Row};
+use sqlx::Row;
+use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use super::price_tag::{
@@ -59,7 +60,7 @@ fn row_to_dto(r: &sqlx::postgres::PgRow) -> Result<PrintTemplateDto, PrintError>
     })
 }
 
-async fn fetch_one(pool: &PgPool, id: Uuid) -> Result<Option<PrintTemplateDto>, PrintError> {
+async fn fetch_one(pool: &StorePool, id: Uuid) -> Result<Option<PrintTemplateDto>, PrintError> {
     let row = sqlx::query(&format!(
         "SELECT {DT_SELECT} FROM print_templates WHERE id = $1"
     ))
@@ -73,7 +74,7 @@ async fn fetch_one(pool: &PgPool, id: Uuid) -> Result<Option<PrintTemplateDto>, 
 /// Python PrintTemplateService.get_default_for_type: is_default+active →
 /// перший активний (ORDER created_at DESC).
 async fn default_for_type(
-    pool: &PgPool,
+    pool: &StorePool,
     type_: &str,
 ) -> Result<Option<PrintTemplateDto>, PrintError> {
     let row = sqlx::query(&format!(
@@ -125,7 +126,7 @@ fn format_price(price: &str) -> String {
 }
 
 /// Python SettingsService.get_string (кешований) — читає system_settings.
-async fn get_setting(pool: &PgPool, key: &str) -> Result<Option<String>, PrintError> {
+async fn get_setting(pool: &StorePool, key: &str) -> Result<Option<String>, PrintError> {
     let row = sqlx::query("SELECT value FROM system_settings WHERE key = $1 AND is_active = true")
         .bind(key)
         .fetch_optional(pool)
@@ -136,7 +137,7 @@ async fn get_setting(pool: &PgPool, key: &str) -> Result<Option<String>, PrintEr
 
 /// Python PrintFontService.get_font_family: print_font_family або default;
 /// 'custom'/порожній → default.
-async fn font_family(pool: &PgPool) -> Result<String, PrintError> {
+async fn font_family(pool: &StorePool) -> Result<String, PrintError> {
     let font = get_setting(pool, "print_font_family")
         .await?
         .unwrap_or_default();
@@ -258,11 +259,11 @@ fn test_receipt_data() -> Value {
 // ─── Репозиторій ────────────────────────────────────────────────────────────
 
 pub struct SqlxPrintTemplates {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxPrintTemplates {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }

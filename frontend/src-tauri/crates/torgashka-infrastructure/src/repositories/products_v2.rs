@@ -11,7 +11,8 @@
 //!   - delete_product: stock != 0 → 400 «Неможливо видалити товар ...»
 //!     (Python float-формат: "5.0", БЕЗ суфікса «Спочатку списати» v1).
 
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::{
@@ -21,11 +22,11 @@ use torgashka_domain::{
 
 /// SQL-репозиторій товарів v2.
 pub struct SqlxProductsV2 {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxProductsV2 {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -54,9 +55,13 @@ impl SqlxProductsV2 {
     async fn row_by_id(&self, id: Uuid) -> Result<Option<ProductV2Dto>, ProductsV2Error> {
         let row = sqlx::query(
             "SELECT p.id, p.barcode, p.sku, p.title, p.description,
-                    p.price::text, p.cost_price::text, p.stock::text,
+                    COALESCE(NULLIF(st.price, 0), p.price)::text AS price, p.cost_price::text,
+                    COALESCE(st.quantity, 0)::text AS stock,
                     COALESCE(p.unit, 'шт') AS unit, p.category_id, p.supplier_id
-             FROM products p WHERE p.id = $1",
+             FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
+             WHERE p.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -107,9 +112,12 @@ impl ProductsV2Service for SqlxProductsV2 {
         let offset = (page - 1) * size;
         let mut ib = sqlx::QueryBuilder::new(
             "SELECT p.id, p.barcode, p.sku, p.title, p.description,
-                    p.price::text, p.cost_price::text, p.stock::text,
+                    COALESCE(NULLIF(st.price, 0), p.price)::text AS price, p.cost_price::text,
+                    COALESCE(st.quantity, 0)::text AS stock,
                     COALESCE(p.unit, 'шт') AS unit, p.category_id, p.supplier_id
-             FROM products p",
+             FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
         );
         let mut first = true;
         if let Some(q) = search {
@@ -145,9 +153,13 @@ impl ProductsV2Service for SqlxProductsV2 {
         // Спочатку основний штрих-код (products.barcode), потім додаткові.
         let row = sqlx::query(
             "SELECT p.id, p.barcode, p.sku, p.title, p.description,
-                    p.price::text, p.cost_price::text, p.stock::text,
+                    COALESCE(NULLIF(st.price, 0), p.price)::text AS price, p.cost_price::text,
+                    COALESCE(st.quantity, 0)::text AS stock,
                     COALESCE(p.unit, 'шт') AS unit, p.category_id, p.supplier_id
-             FROM products p WHERE p.barcode = $1",
+             FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
+             WHERE p.barcode = $1",
         )
         .bind(barcode)
         .fetch_optional(&self.pool)
@@ -157,9 +169,12 @@ impl ProductsV2Service for SqlxProductsV2 {
             Some(r) => r,
             None => sqlx::query(
                 "SELECT p.id, p.barcode, p.sku, p.title, p.description,
-                        p.price::text, p.cost_price::text, p.stock::text,
+                        COALESCE(NULLIF(st.price, 0), p.price)::text AS price, p.cost_price::text,
+                        COALESCE(st.quantity, 0)::text AS stock,
                         COALESCE(p.unit, 'шт') AS unit, p.category_id, p.supplier_id
                  FROM products p JOIN barcodes b ON b.product_id = p.id
+                 LEFT JOIN stock st ON st.product_id = p.id
+                     AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
                  WHERE b.barcode = $1",
             )
             .bind(barcode)
@@ -254,6 +269,25 @@ impl ProductsV2Service for SqlxProductsV2 {
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
+
+        // Per-store stock-рядок: початкові quantity/price поточної точки.
+        if let Some(store_id) = current_store_ctx().map(|c| c.store_id) {
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, $4::numeric, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET quantity = EXCLUDED.quantity,
+                        price = EXCLUDED.price,
+                        updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(id)
+            .bind(&stock)
+            .bind(&price)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        }
         tx.commit().await.map_err(db_err)?;
 
         let dto = self
@@ -334,13 +368,6 @@ impl ProductsV2Service for SqlxProductsV2 {
             q.push("barcode = ").push_bind(bc.as_str());
             first = false;
         }
-        if let Some(p) = input.price {
-            if !first {
-                q.push(", ");
-            }
-            q.push("price = ").push_bind(py_decimal(p));
-            first = false;
-        }
         if let Some(cp) = input.cost_price {
             if !first {
                 q.push(", ");
@@ -375,6 +402,34 @@ impl ProductsV2Service for SqlxProductsV2 {
             q.push(", updated_at = now() WHERE id = ").push_bind(id);
             q.build().execute(&mut *tx).await.map_err(db_err)?;
         }
+
+        // Per-store ціна: пишемо в stock активної точки (products.price —
+        // глобальний дефолт). При зміні лише ціни quantity точки зберігається.
+        if let (Some(p), Some(store_id)) = (input.price, current_store_ctx().map(|c| c.store_id)) {
+            let cur_qty: Option<String> = sqlx::query_scalar(
+                "SELECT quantity::text FROM stock WHERE store_id = $1 AND product_id = $2",
+            )
+            .bind(store_id)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .flatten();
+            let qty = cur_qty.unwrap_or_else(|| "0".to_string());
+            sqlx::query(
+                "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
+                 VALUES ($1, $2, $3::numeric, $4::numeric, now())
+                 ON CONFLICT (store_id, product_id) DO UPDATE
+                    SET price = EXCLUDED.price, updated_at = now()",
+            )
+            .bind(store_id)
+            .bind(id)
+            .bind(qty)
+            .bind(py_decimal(p).to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        }
         tx.commit().await.map_err(db_err)?;
 
         self.row_by_id(id)
@@ -384,11 +439,16 @@ impl ProductsV2Service for SqlxProductsV2 {
 
     async fn delete(&self, id: Uuid) -> Result<(), ProductsV2Error> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let row = sqlx::query("SELECT title, stock::text FROM products WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?;
+        let row = sqlx::query(
+            "SELECT p.title, COALESCE(st.quantity, 0)::text AS stock FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
+             WHERE p.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
         let Some(row) = row else {
             return Err(ProductsV2Error::NotFound(format!(
                 "Товар з ID '{id}' не знайдено"
@@ -464,8 +524,9 @@ impl ProductsV2Service for SqlxProductsV2 {
         let id = Uuid::new_v4();
         let row = sqlx::query(
             "INSERT INTO product_images \
-             (id, product_id, url, is_main, sort_order, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, now(), now()) \
+             (id, product_id, url, is_main, sort_order, store_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5,
+                     COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), now(), now()) \
              RETURNING id, product_id, url, is_main, sort_order, created_at",
         )
         .bind(id)
@@ -556,8 +617,9 @@ impl ProductsV2Service for SqlxProductsV2 {
         let id = Uuid::new_v4();
         let row = sqlx::query(
             "INSERT INTO barcodes \
-             (id, product_id, barcode, is_primary, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, now(), now()) \
+             (id, product_id, barcode, is_primary, store_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4,
+                     COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), now(), now()) \
              RETURNING id, product_id, barcode, is_primary",
         )
         .bind(id)

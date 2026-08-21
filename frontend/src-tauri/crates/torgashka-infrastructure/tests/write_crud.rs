@@ -12,17 +12,18 @@ use torgashka_domain::{
     CategoryCreateInput, InventoryCreateInput, InventoryItemInput, ProductCreateInput,
     ProductUpdateInput, SupplierCreateInput, WriteDirectories, WriteError,
 };
+use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
 use torgashka_infrastructure::{db, repositories::write::SqlxWriteDirectories};
 use uuid::Uuid;
 
 async fn pool() -> sqlx::PgPool {
-    db::connect_readonly_pool(5)
+    db::connect_test_pool(5)
         .await
         .expect("БД недоступна: задайте DATABASE_URL або DB_* у backend/.env")
 }
 
 fn repo(p: &sqlx::PgPool) -> SqlxWriteDirectories {
-    SqlxWriteDirectories::new(p.clone())
+    SqlxWriteDirectories::new(torgashka_infrastructure::store_ctx::StorePool::new(p.clone()))
 }
 
 fn uniq() -> String {
@@ -37,6 +38,10 @@ async fn any_user_id(p: &sqlx::PgPool) -> Uuid {
         .expect("у БД має бути хоча б один користувач")
 }
 
+/// «Білий магазин» + власник (ФОП Мельничук) — контекст точки для write-операцій.
+const STORE_ID: &str = "65d5db51-672f-4a38-9c1e-f36c5feb5374";
+const OWNER_ID: &str = "e30d480c-ef3b-4d0e-8808-0c745196d3d8";
+
 /// Пряме видалення (cleanup) — обходить бізнес-правила.
 async fn cleanup_product(p: &sqlx::PgPool, id: Uuid) {
     let _ = sqlx::query("DELETE FROM products WHERE id = $1")
@@ -50,6 +55,12 @@ async fn product_crud_flow() {
     let p = pool().await;
     let r = repo(&p);
     let ts = uniq();
+    let store_id = Uuid::parse_str(STORE_ID).unwrap();
+    let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
+    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    with_store_ctx(ctx, async {
+        let r = repo(&p);
+        let ts = uniq();
 
     // Create → 201-еквівалент: вхідні значення збережено.
     let input = ProductCreateInput {
@@ -134,6 +145,8 @@ async fn product_crud_flow() {
     assert!(matches!(&err, WriteError::NotFound(_)));
 
     cleanup_product(&p, created.id).await;
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -208,6 +221,13 @@ async fn inventory_confirm_cancel_flow() {
     let r = repo(&p);
     let ts = uniq();
     let user = any_user_id(&p).await;
+    let store_id = Uuid::parse_str(STORE_ID).unwrap();
+    let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
+    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    with_store_ctx(ctx, async {
+        let r = repo(&p);
+        let ts = uniq();
+        let user = any_user_id(&p).await;
 
     // Створюємо товар зі stock 10.000.
     let prod = r
@@ -268,11 +288,14 @@ async fn inventory_confirm_cancel_flow() {
     // Confirm → stock 10 + 2.5 = 12.500.
     let confirmed = r.confirm_inventory(inv.id).await.expect("confirm");
     assert_eq!(confirmed.status, "confirmed");
-    let stock: String = sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
-        .bind(prod.id)
-        .fetch_one(&p)
-        .await
-        .expect("stock");
+    let stock: String = sqlx::query_scalar(
+        "SELECT quantity::text FROM stock WHERE product_id = $1 AND store_id = $2",
+    )
+    .bind(prod.id)
+    .bind(store_id)
+    .fetch_one(&p)
+    .await
+    .expect("stock");
     assert_eq!(stock, "12.500");
 
     // Повторний confirm → 400 (статус вже confirmed).
@@ -285,11 +308,14 @@ async fn inventory_confirm_cancel_flow() {
     // Cancel → відкат 12.5 - 2.5 = 10.000.
     let cancelled = r.cancel_inventory(inv.id).await.expect("cancel");
     assert_eq!(cancelled.status, "cancelled");
-    let stock: String = sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
-        .bind(prod.id)
-        .fetch_one(&p)
-        .await
-        .expect("stock");
+    let stock: String = sqlx::query_scalar(
+        "SELECT quantity::text FROM stock WHERE product_id = $1 AND store_id = $2",
+    )
+    .bind(prod.id)
+    .bind(store_id)
+    .fetch_one(&p)
+    .await
+    .expect("stock");
     assert_eq!(stock, "10.000");
 
     // Недостатньо товару: інвентаризація з difference -100 → 400.
@@ -323,6 +349,8 @@ async fn inventory_confirm_cancel_flow() {
         .execute(&p)
         .await;
     cleanup_product(&p, prod.id).await;
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -331,6 +359,13 @@ async fn concurrent_inventory_confirms_no_data_loss() {
     let r = repo(&p);
     let ts = uniq();
     let user = any_user_id(&p).await;
+    let store_id = Uuid::parse_str(STORE_ID).unwrap();
+    let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
+    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    with_store_ctx(ctx, async {
+        let r = repo(&p);
+        let ts = uniq();
+        let user = any_user_id(&p).await;
 
     // Товар зі stock 100.000.
     let prod = r
@@ -385,11 +420,14 @@ async fn concurrent_inventory_confirms_no_data_loss() {
     res_b.expect("confirm B");
 
     // Кінцевий залишок: 100 + 7 - 3 = 104.000 — нуль втрат.
-    let stock: String = sqlx::query_scalar("SELECT stock::text FROM products WHERE id = $1")
-        .bind(prod.id)
-        .fetch_one(&p)
-        .await
-        .expect("stock");
+    let stock: String = sqlx::query_scalar(
+        "SELECT quantity::text FROM stock WHERE product_id = $1 AND store_id = $2",
+    )
+    .bind(prod.id)
+    .bind(store_id)
+    .fetch_one(&p)
+    .await
+    .expect("stock");
     assert_eq!(stock, "104.000", "паралельні проведення втратили дані");
 
     // Cleanup.
@@ -398,4 +436,6 @@ async fn concurrent_inventory_confirms_no_data_loss() {
         .execute(&p)
         .await;
     cleanup_product(&p, prod.id).await;
+    })
+    .await;
 }

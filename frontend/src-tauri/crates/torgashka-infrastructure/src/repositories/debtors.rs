@@ -14,7 +14,8 @@
 //! Decimal-поля: `::text` → рядок зі scale колонки (Python Pydantic Decimal).
 
 use chrono::{NaiveDateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use torgashka_domain::{
@@ -36,11 +37,11 @@ impl<T> De<T> for Result<T, sqlx::Error> {
 /// SQL-реалізація боржників.
 #[derive(Clone)]
 pub struct SqlxDebtors {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxDebtors {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -117,8 +118,9 @@ impl DebtorService for SqlxDebtors {
     async fn create(&self, input: &DebtorCreateInput) -> Result<DebtorDto, DebtorError> {
         let now = utc_now();
         let row = sqlx::query(
-            r#"INSERT INTO debtors (id, name, phone, notes, total_debt, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, 0, $5, $5)
+            r#"INSERT INTO debtors (id, name, phone, notes, total_debt, store_id, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, 0,
+                       COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), $5, $5)
                RETURNING id, name, phone, notes, total_debt::text AS total_debt,
                          created_at, updated_at"#,
         )
@@ -289,8 +291,9 @@ impl DebtorService for SqlxDebtors {
             .await
             .de()?;
             sqlx::query(
-                r#"INSERT INTO debtor_payments (id, debtor_id, amount, payment_method, created_at)
-                   VALUES ($1, $2, $3::numeric, $4, $5)"#,
+                r#"INSERT INTO debtor_payments (id, debtor_id, amount, payment_method, store_id, created_at)
+                   VALUES ($1, $2, $3::numeric, $4,
+                           COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), $5)"#,
             )
             .bind(Uuid::new_v4())
             .bind(id)

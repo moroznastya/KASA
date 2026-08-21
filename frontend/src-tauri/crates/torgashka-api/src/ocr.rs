@@ -118,7 +118,9 @@ pub async fn analyze_with_matching(
     let (content_type, image_data) = read_image_field(&mut multipart).await?;
     validate_image(&content_type, &image_data)?;
 
-    let repo = torgashka_infrastructure::ocr::SqlxOcrRepository::new(pool);
+    let repo = torgashka_infrastructure::ocr::SqlxOcrRepository::new(
+        torgashka_infrastructure::store_ctx::StorePool::new(pool),
+    );
     let service = torgashka_ocr::InvoiceOcrService::new(repo);
     match service.analyze_and_match(&content_type, &image_data).await {
         Ok(v) => Ok(Json(v)),

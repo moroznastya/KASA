@@ -47,13 +47,15 @@ export async function getUnsyncedCount(): Promise<number> {
 // ─── Товари (кеш) ───────────────────────────────────────────────────────────
 
 /**
- * Кешувати товари локально.
+ * Кешувати товари локально (для поточної точки продажу).
  *
  * @param products - Масив товарів для кешування
+ * @param storeId  - UUID точки продажу (мультиточковість, Етап 5)
  */
-export async function cacheProducts(products: unknown[]): Promise<number> {
+export async function cacheProducts(products: unknown[], storeId?: string | null): Promise<number> {
   return invoke<number>('cache_products', {
     productsJson: JSON.stringify(products),
+    storeId: storeId ?? null,
   });
 }
 
@@ -70,15 +72,21 @@ export async function logFrontendError(message: string): Promise<void> {
 }
 
 /**
- * Отримати кешовані товари.
+ * Отримати кешовані товари поточної точки.
  *
- * @param search - Пошуковий запит (опціонально)
- * @param limit - Максимальна кількість (опціонально, за замовчуванням 100)
+ * @param search  - Пошуковий запит (опціонально)
+ * @param limit   - Максимальна кількість (опціонально, за замовчуванням 100)
+ * @param storeId - UUID точки продажу (фільтр кешу, мультиточковість)
  */
-export async function getCachedProducts(search?: string, limit?: number): Promise<unknown[]> {
+export async function getCachedProducts(
+  search?: string,
+  limit?: number,
+  storeId?: string | null,
+): Promise<unknown[]> {
   const result = await invoke<string>('get_cached_products', {
     search: search ?? null,
     limit: limit ?? 100,
+    storeId: storeId ?? null,
   });
   return JSON.parse(result);
 }
@@ -93,22 +101,30 @@ export async function clearProductCache(): Promise<number> {
 // ─── Чеки (офлайн) ──────────────────────────────────────────────────────────
 
 /**
- * Зберегти чек локально.
+ * Зберегти чек локально (з точкою продажу).
  *
  * @param receipt - Дані чека
+ * @param storeId - UUID точки продажу — зберігається в черзі, щоб при
+ *                  синхронізації чек потрапив у правильну точку (Етап 5)
  * @returns ID збереженого чека
  */
-export async function saveReceiptOffline(receipt: unknown): Promise<number> {
+export async function saveReceiptOffline(receipt: unknown, storeId?: string | null): Promise<number> {
   return invoke<number>('save_receipt_offline', {
     receiptJson: JSON.stringify(receipt),
+    storeId: storeId ?? null,
   });
 }
 
 /**
- * Отримати несинхронізовані чеки.
+ * Отримати несинхронізовані чеки (з store_id для коректної синхронізації).
  */
-export async function getUnsyncedReceipts(): Promise<Array<{ id: number; data: string }>> {
-  return invoke<Array<{ id: number; data: string }>>('get_unsynced_receipts');
+export interface UnsyncedReceipt {
+  id: number;
+  data: string;
+  store_id: string | null;
+}
+export async function getUnsyncedReceipts(): Promise<UnsyncedReceipt[]> {
+  return invoke<UnsyncedReceipt[]>('get_unsynced_receipts');
 }
 
 /**
@@ -144,8 +160,8 @@ export async function setSetting(key: string, value: string): Promise<void> {
 // ─── Статистика ─────────────────────────────────────────────────────────────
 
 /**
- * Отримати статистику офлайн-бази.
+ * Отримати статистику офлайн-бази (кількість товарів — поточної точки).
  */
-export async function getOfflineStats(): Promise<OfflineStats> {
-  return invoke<OfflineStats>('get_offline_stats');
+export async function getOfflineStats(storeId?: string | null): Promise<OfflineStats> {
+  return invoke<OfflineStats>('get_offline_stats', { storeId: storeId ?? null });
 }

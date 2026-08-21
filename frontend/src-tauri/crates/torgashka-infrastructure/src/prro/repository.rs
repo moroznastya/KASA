@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use crate::store_ctx::StorePool;
 use torgashka_prro::prro::{
     PrroQueueItem, PrroQueueStatus, PrroRepoError, PrroRepository, PrroSetting, PrroShift,
     PrroShiftStatus,
@@ -97,16 +97,16 @@ impl From<QueueRow> for PrroQueueItem {
 /// Репозиторій ПРРО на PostgreSQL.
 #[derive(Clone)]
 pub struct SqlxPrroRepository {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxPrroRepository {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 
     /// Створює репозиторій і гарантує наявність схеми (ідемпотентно).
-    pub async fn connect(pool: PgPool) -> Result<Self, sqlx::Error> {
+    pub async fn connect(pool: StorePool) -> Result<Self, sqlx::Error> {
         super::schema::ensure_prro_schema(&pool).await?;
         Ok(Self { pool })
     }

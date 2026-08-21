@@ -19,7 +19,8 @@
 
 use chrono::NaiveDateTime;
 use rust_decimal::Decimal;
-use sqlx::{PgPool, Row};
+use sqlx::{Row};
+use crate::store_ctx::StorePool;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -43,11 +44,11 @@ impl<T> SqlxResultExt<T> for Result<T, sqlx::Error> {
 /// SQL-реалізація ledger-операцій.
 #[derive(Clone)]
 pub struct SqlxLedger {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxLedger {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }

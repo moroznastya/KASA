@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use crate::store_ctx::StorePool;
 use torgashka_ocr::{OcrRepoError, OcrRepository, ProductLookup};
 use uuid::Uuid;
 
@@ -33,11 +33,11 @@ impl From<ProductRow> for ProductLookup {
 /// PostgreSQL-реалізація пошуку товарів для OCR-зіставлення.
 #[derive(Debug, Clone)]
 pub struct SqlxOcrRepository {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxOcrRepository {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }

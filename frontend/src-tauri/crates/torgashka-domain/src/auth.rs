@@ -407,6 +407,7 @@ pub struct UserDto {
     pub login: String,
     pub role: String,
     pub is_active: bool,
+    pub onboarding_completed: bool,
     pub permissions: Option<Vec<String>>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -452,6 +453,7 @@ pub struct UserUpdateInput {
     pub pin_code: Option<String>,
     pub role: Option<UserRole>,
     pub is_active: Option<bool>,
+    pub onboarding_completed: Option<bool>,
     pub permissions: Option<Vec<String>>,
 }
 
@@ -463,6 +465,7 @@ impl UserUpdateInput {
             && self.pin_code.is_none()
             && self.role.is_none()
             && self.is_active.is_none()
+            && self.onboarding_completed.is_none()
             && self.permissions.is_none()
     }
 }

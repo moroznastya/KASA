@@ -27,10 +27,10 @@ fn python_snapshot(name: &str) -> serde_json::Value {
 
 /// Створює пул і репозиторій (БД має бути доступна — як у Python-еталону).
 async fn repo() -> SqlxDirectories {
-    let pool = db::connect_readonly_pool(3)
+    let pool = db::connect_test_pool(3)
         .await
         .expect("БД недоступна для snapshot-тесту: задайте DATABASE_URL або DB_* у backend/.env");
-    SqlxDirectories::new(pool)
+    SqlxDirectories::new(torgashka_infrastructure::store_ctx::StorePool::new(pool))
 }
 
 /// Спільна жива БД (активна копія nastya продає в реальному часі) робить
@@ -166,7 +166,7 @@ async fn empty_query_returns_nothing_weird() {
     let page = repo.list_products(&filters).await.expect("list_products");
     // Реальний count у БД (спільна БД з активною копією — не хардкодимо).
     let db_total: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
-        .fetch_one(&db::connect_readonly_pool(5).await.expect("pool"))
+        .fetch_one(&db::connect_test_pool(5).await.expect("pool"))
         .await
         .expect("count");
     assert_eq!(page.total, db_total, "порожній query не має фільтрувати");

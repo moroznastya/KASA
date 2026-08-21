@@ -19,6 +19,7 @@ export interface UserUpdate {
   pin_code?: string;
   role?: 'admin' | 'cashier';
   is_active?: boolean;
+  onboarding_completed?: boolean;
   permissions?: string[];
 }
 

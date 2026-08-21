@@ -13,7 +13,8 @@
 //! створює токени тим самим форматом/секретом, що Python.
 
 use chrono::{DateTime, NaiveDateTime, Utc};
-use sqlx::PgPool;
+
+use crate::store_ctx::StorePool;
 use torgashka_domain::{
     generate_login_from_name, AuthError, AuthService, LoginPinRequest, LoginRequest, LoginResult,
     PublicUserDto, SettingDto, SettingsModulesDto, UserCreateInput, UserDto, UserListDto,
@@ -24,11 +25,11 @@ use uuid::Uuid;
 /// SQL-репозиторій auth поверх спільного пулу PostgreSQL.
 #[derive(Clone)]
 pub struct SqlxAuth {
-    pool: PgPool,
+    pool: StorePool,
 }
 
 impl SqlxAuth {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: StorePool) -> Self {
         Self { pool }
     }
 }
@@ -40,6 +41,7 @@ struct UserRow {
     login: String,
     role: String,
     is_active: bool,
+    onboarding_completed: bool,
     permissions: Option<serde_json::Value>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
@@ -53,6 +55,7 @@ impl UserRow {
             login: self.login.clone(),
             role: self.role.clone(),
             is_active: self.is_active,
+            onboarding_completed: self.onboarding_completed,
             permissions: self.permissions_vec(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -70,9 +73,9 @@ impl UserRow {
     }
 }
 
-async fn fetch_user(pool: &PgPool, user_id: Uuid) -> Result<Option<UserRow>, AuthError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, Option<serde_json::Value>, NaiveDateTime, NaiveDateTime)>(
-        "SELECT id, name, login, role::text, is_active, permissions, created_at, updated_at FROM users WHERE id = $1",
+async fn fetch_user(pool: &StorePool, user_id: Uuid) -> Result<Option<UserRow>, AuthError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, Option<serde_json::Value>, NaiveDateTime, NaiveDateTime)>(
+        "SELECT id, name, login, role::text, is_active, onboarding_completed, permissions, created_at, updated_at FROM users WHERE id = $1",
     )
     .bind(user_id)
     .fetch_optional(pool)
@@ -84,14 +87,15 @@ async fn fetch_user(pool: &PgPool, user_id: Uuid) -> Result<Option<UserRow>, Aut
         login: r.2,
         role: r.3,
         is_active: r.4,
-        permissions: r.5,
-        created_at: r.6,
-        updated_at: r.7,
+        onboarding_completed: r.5,
+        permissions: r.6,
+        created_at: r.7,
+        updated_at: r.8,
     }))
 }
 
 /// Закриває всі активні сесії користувача (Python _close_active_work_sessions).
-async fn close_active_work_sessions(pool: &PgPool, user_id: Uuid) -> Result<(), AuthError> {
+async fn close_active_work_sessions(pool: &StorePool, user_id: Uuid) -> Result<(), AuthError> {
     let now = Utc::now().naive_utc();
     let rows: Vec<(NaiveDateTime,)> = sqlx::query_as(
         "SELECT login_time FROM work_sessions WHERE user_id = $1 AND logout_time IS NULL",
@@ -117,9 +121,12 @@ async fn close_active_work_sessions(pool: &PgPool, user_id: Uuid) -> Result<(), 
 }
 
 /// Створює нову робочу сесію (Python WorkSession(login_time=utcnow())).
-async fn create_work_session(pool: &PgPool, user_id: Uuid) -> Result<(), AuthError> {
+async fn create_work_session(pool: &StorePool, user_id: Uuid) -> Result<(), AuthError> {
     sqlx::query(
-        "INSERT INTO work_sessions (id, user_id, login_time, created_at) VALUES (uuid_generate_v4(), $1, $2, $2)",
+        "INSERT INTO work_sessions (id, user_id, login_time, store_id, created_at)
+         VALUES (uuid_generate_v4(), $1, $2,
+                 COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL),
+                 $2)",
     )
     .bind(user_id)
     .bind(Utc::now().naive_utc())
@@ -131,13 +138,13 @@ async fn create_work_session(pool: &PgPool, user_id: Uuid) -> Result<(), AuthErr
 
 /// Логін: спільна логіка для password/pin.
 async fn login_common(
-    pool: &PgPool,
+    pool: &StorePool,
     login: &str,
     password: &str,
     pin: bool,
 ) -> Result<LoginResult, AuthError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, Option<serde_json::Value>, Option<String>, NaiveDateTime, NaiveDateTime)>(
-        "SELECT id, name, login, role::text, is_active, permissions, password_hash, created_at, updated_at FROM users WHERE login = $1",
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, Option<serde_json::Value>, Option<String>, NaiveDateTime, NaiveDateTime)>(
+        "SELECT id, name, login, role::text, is_active, onboarding_completed, permissions, password_hash, created_at, updated_at FROM users WHERE login = $1",
     )
     .bind(login)
     .fetch_optional(pool)
@@ -150,6 +157,7 @@ async fn login_common(
         login,
         role,
         is_active,
+        onboarding_completed,
         permissions,
         password_hash,
         created_at,
@@ -169,6 +177,7 @@ async fn login_common(
         login,
         role,
         is_active,
+        onboarding_completed,
         permissions,
         created_at,
         updated_at,
@@ -303,8 +312,8 @@ impl AuthService for SqlxAuth {
             .await
             .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
         let offset = (page - 1) * size;
-        let rows = sqlx::query_as::<_, (Uuid, String, String, String, bool, Option<serde_json::Value>, NaiveDateTime, NaiveDateTime)>(
-            "SELECT id, name, login, role::text, is_active, permissions, created_at, updated_at FROM users ORDER BY name LIMIT $1 OFFSET $2",
+        let rows = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, Option<serde_json::Value>, NaiveDateTime, NaiveDateTime)>(
+            "SELECT id, name, login, role::text, is_active, onboarding_completed, permissions, created_at, updated_at FROM users ORDER BY name LIMIT $1 OFFSET $2",
         )
         .bind(size)
         .bind(offset)
@@ -320,9 +329,10 @@ impl AuthService for SqlxAuth {
                     login: r.2,
                     role: r.3,
                     is_active: r.4,
-                    permissions: r.5,
-                    created_at: r.6,
-                    updated_at: r.7,
+                    onboarding_completed: r.5,
+                    permissions: r.6,
+                    created_at: r.7,
+                    updated_at: r.8,
                 }
                 .to_dto()
             })
@@ -415,6 +425,7 @@ impl AuthService for SqlxAuth {
             login,
             role: role_str.to_string(),
             is_active: input.is_active,
+            onboarding_completed: true,
             permissions: input.permissions.clone(),
             created_at: now,
             updated_at: now,
@@ -454,6 +465,7 @@ impl AuthService for SqlxAuth {
             .map(|r| r.as_str().to_string())
             .unwrap_or(user.role.clone());
         let is_active = input.is_active.unwrap_or(user.is_active);
+        let onboarding_completed = input.onboarding_completed.unwrap_or(user.onboarding_completed);
 
         // password: Some(непорожній) → hash; Some(порожній) → ігнорується (як Python).
         let mut password_hash = user_password_hash(&self.pool, user_id).await?;
@@ -482,7 +494,7 @@ impl AuthService for SqlxAuth {
 
         let now = Utc::now().naive_utc();
         sqlx::query(
-            "UPDATE users SET name=$1, login=$2, password_hash=$3, pin_code=$4, role=$5::user_role, is_active=$6, permissions=$7, updated_at=$8 WHERE id=$9",
+            "UPDATE users SET name=$1, login=$2, password_hash=$3, pin_code=$4, role=$5::user_role, is_active=$6, onboarding_completed=$7, permissions=$8, updated_at=$9 WHERE id=$10",
         )
         .bind(name.clone())
         .bind(login.clone())
@@ -490,6 +502,7 @@ impl AuthService for SqlxAuth {
         .bind(pin_code)
         .bind(role.clone())
         .bind(is_active)
+        .bind(onboarding_completed)
         .bind(&permissions_json)
         .bind(now)
         .bind(user_id)
@@ -503,6 +516,7 @@ impl AuthService for SqlxAuth {
             login,
             role,
             is_active,
+            onboarding_completed,
             permissions: permissions_json.as_ref().and_then(|v| {
                 v.as_array().map(|a| {
                     a.iter()
@@ -538,6 +552,7 @@ impl AuthService for SqlxAuth {
             login: user.login,
             role: user.role,
             is_active: user.is_active,
+            onboarding_completed: user.onboarding_completed,
             permissions: Some(permissions.to_vec()),
             created_at: user.created_at,
             updated_at: now,
@@ -624,7 +639,7 @@ impl AuthService for SqlxAuth {
         let mut updated: Vec<String> = Vec::new();
         for (key, value) in settings {
             let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1)")
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid)")
                     .bind(key)
                     .fetch_one(&self.pool)
                     .await
@@ -632,7 +647,7 @@ impl AuthService for SqlxAuth {
             if exists {
                 // updated_at = now() — Python: SQLAlchemy onupdate.
                 sqlx::query(
-                    "UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2",
+                    "UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
                 )
                 .bind(value)
                 .bind(key)
@@ -654,14 +669,14 @@ impl AuthService for SqlxAuth {
     ) -> Result<SettingDto, AuthError> {
         use torgashka_domain::{determine_module, determine_value_type, humanize_key};
         let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid)")
                 .bind(key)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
 
         if exists {
-            sqlx::query("UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2")
+            sqlx::query("UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid")
                 .bind(&value)
                 .bind(key)
                 .execute(&self.pool)
@@ -673,7 +688,9 @@ impl AuthService for SqlxAuth {
             let value_type = determine_value_type(value.as_deref());
             let label = humanize_key(key);
             sqlx::query(
-                "INSERT INTO system_settings (id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,true,now(),now())",
+                "INSERT INTO system_settings (id, module, key, value, value_type, label, description, options, is_active, store_id, created_at, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,NULL,NULL,true,
+                         COALESCE(NULLIF(current_setting('app.store_id', true), '')::uuid, NULL), now(), now())",
             )
             .bind(id)
             .bind(&module)
@@ -686,7 +703,7 @@ impl AuthService for SqlxAuth {
             .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
         }
         let row = sqlx::query_as::<_, (Uuid, String, String, Option<String>, String, String, Option<String>, Option<String>, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE key = $1",
+            "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE key = $1 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
         )
         .bind(key)
         .fetch_one(&self.pool)
@@ -710,7 +727,7 @@ impl AuthService for SqlxAuth {
 
 // ─── Допоміжні функції ──────────────────────────────────────────────────────
 
-async fn user_password_hash(pool: &PgPool, user_id: Uuid) -> Result<Option<String>, AuthError> {
+async fn user_password_hash(pool: &StorePool, user_id: Uuid) -> Result<Option<String>, AuthError> {
     sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(pool)
@@ -718,7 +735,7 @@ async fn user_password_hash(pool: &PgPool, user_id: Uuid) -> Result<Option<Strin
         .map_err(|e| AuthError::Infrastructure(e.to_string()))
 }
 
-async fn user_pin_code(pool: &PgPool, user_id: Uuid) -> Result<Option<String>, AuthError> {
+async fn user_pin_code(pool: &StorePool, user_id: Uuid) -> Result<Option<String>, AuthError> {
     sqlx::query_scalar("SELECT pin_code FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(pool)
@@ -740,11 +757,11 @@ type SettingRow = (
     DateTime<Utc>,
 );
 
-async fn fetch_settings(pool: &PgPool, module: Option<&str>) -> Result<Vec<SettingDto>, AuthError> {
+async fn fetch_settings(pool: &StorePool, module: Option<&str>) -> Result<Vec<SettingDto>, AuthError> {
     let rows: Vec<SettingRow> = match module {
         Some(m) => {
             sqlx::query_as(
-                "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE module = $1 AND is_active = true ORDER BY key",
+                "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE module = $1 AND is_active = true AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid ORDER BY key",
             )
             .bind(m)
             .fetch_all(pool)
@@ -753,7 +770,7 @@ async fn fetch_settings(pool: &PgPool, module: Option<&str>) -> Result<Vec<Setti
         }
         None => {
             sqlx::query_as(
-                "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE is_active = true ORDER BY module, key",
+                "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE is_active = true AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid ORDER BY module, key",
             )
             .fetch_all(pool)
             .await
