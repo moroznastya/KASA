@@ -9,7 +9,7 @@ on:
   workflow_dispatch:        # ручний запуск
   push:
     tags: ['v*.*.*']        # автоматично при пуші тегу релізу
-    branches: ['feat/rust-migration']   # ТИМЧАСОВО: для валідації збірки з гілки
+    branches: ['main', 'feat/rust-migration']   # main — основний; feat/rust-migration — тимчасово для валідації
 
 permissions:
   contents: write           # потрібно для upload до GitHub Release

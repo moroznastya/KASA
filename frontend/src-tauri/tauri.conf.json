@@ -35,7 +35,7 @@
       }
     },
     "resources": [
-      "resources/postgres/**"
+      "resources/postgres/"
     ]
   },
   "plugins": {
