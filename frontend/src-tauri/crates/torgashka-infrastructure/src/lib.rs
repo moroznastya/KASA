@@ -14,10 +14,12 @@
 
 pub mod cash_drawer;
 pub mod db;
+pub mod embedded_pg;
 pub mod devices;
 pub mod ocr;
 pub mod offline;
 pub mod print;
 pub mod prro;
+pub mod store_ctx;
 pub mod repositories;
 pub mod terminal;

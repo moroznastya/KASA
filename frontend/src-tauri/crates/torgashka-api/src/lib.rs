@@ -514,6 +514,46 @@ pub async fn serve_listener(
             std::env::set_var(flag, val);
         }
     }
+    // Embedded PostgreSQL (Windows-збірка без системного PG): якщо звичайний
+    // резолв DATABASE_URL (env → backend/.env) не дав результату — шукаємо
+    // локальні бінарники PG (TORGASHKA_PG_DIR, resources/postgres, .cache/pg,
+    // системний PG на Linux), ініціалізуємо data_dir, піднімаємо сервер на
+    // 127.0.0.1:5433 і встановлюємо DATABASE_URL для решти процесу. При
+    // завершенні serve_listener (Drop) сервер зупиняється pg_ctl stop.
+    let _embedded_pg = if torgashka_infrastructure::db::resolve_database_url().is_err() {
+        match torgashka_infrastructure::embedded_pg::bootstrap_if_needed() {
+            Ok(pg) => {
+                eprintln!(
+                    "[torgashka-api] вбудований PostgreSQL: {} (data_dir: {})",
+                    pg.database_url(),
+                    pg.data_dir().display()
+                );
+                Some(pg)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[torgashka-api] попередження: вбудований PostgreSQL недоступний ({e}); працюємо без БД"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Авто-міграції (Частина 1.2): застосувати схему на fresh-БД ПЕРЕД
+    // підняттям listener. Ідемпотентно: повна схема лише якщо users немає;
+    // owners_db створюється завжди (CREATE TABLE IF NOT EXISTS).
+    match torgashka_infrastructure::db::connect_readonly_pool(5).await {
+        Ok(pool) => {
+            if let Err(e) = torgashka_infrastructure::db::ensure_schema(&pool).await {
+                eprintln!("[torgashka-api] попередження: авто-міграція схеми не виконана: {e}");
+            }
+            pool.close().await;
+        }
+        Err(e) => {
+            eprintln!("[torgashka-api] попередження: БД недоступна для авто-міграції ({e})");
+        }
+    }
     let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
         Some((pool, read, write, pos, ledger, auth)) => (
             Some(read),
