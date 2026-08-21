@@ -518,6 +518,19 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
 pub async fn serve_listener(
     listener: tokio::net::TcpListener,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // ── Діагностичний лог: безумовно — torgashka.log має з'являтися завжди ──
+    // (stderr на Windows приховано windows_subsystem=windows — це єдиний канал)
+    torgashka_infrastructure::embedded_pg::pg_log("INFO", "serve_listener: старт");
+    match torgashka_infrastructure::db::resolve_database_url() {
+        Ok(url) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!("resolve_database_url: Ok ({url}) — embedded PG пропускаємо"),
+        ),
+        Err(_) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            "resolve_database_url: Err — запускаємо embedded PostgreSQL",
+        ),
+    }
     // Етап 8 — повна дезактивація Python sidecar: Rust-ядро за замовчуванням.
     // Env-флаги можна явно перевизначити (напр. TORGASHKA_RUST_PRRO=0) для тестів.
     for (flag, val) in DEFAULT_RUST_FLAGS {
