@@ -9,7 +9,6 @@ import { prroService } from '@/services/prroService';
 import { productService } from '@/services/productService';
 import { createReceiptWithOfflineFallback } from '@/services/tauri/offlineReceiptService';
 import { isTauri, cacheProducts } from '@/hooks/useTauri';
-import { useStoreStore } from '@/store/storeStore';
 import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';
 import { useAuthStore } from '@/store/authStore';
 import { useDevicesStore } from '@/store/devicesStore';
@@ -436,7 +435,7 @@ const PosPage: React.FC = () => {
           const chunk = allProducts.slice(i, i + CHUNK_SIZE);
           // Мультиточковість (Етап 5): кеш позначається поточною точкою —
           // офлайн-довідник фільтрує товари магазину, в якому працює каса.
-          const count = await cacheProducts(chunk, useStoreStore.getState().activeStoreId);
+          const count = await cacheProducts(chunk);
           // Літерал CHUNK_SIZE у лозі: рядок не мініфікується і лишається в бандлі
           // (мініфікатор скорочує саму змінну, тому grep по бандлу шукає літерал)
           console.log(`[Offline] CHUNK_SIZE=${CHUNK_SIZE} Кешовано чанк ${i / CHUNK_SIZE + 1}: ${count}`);
