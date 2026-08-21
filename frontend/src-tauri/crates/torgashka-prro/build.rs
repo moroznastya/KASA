@@ -8,12 +8,18 @@ use std::path::PathBuf;
 fn main() {
     // C-обгортки для багнутого SDK EUSignCP (rbx=0 перед викликом):
     // ffi/euscp_wrappers.c — див. коментарі там (SIGSEGV-фікс етапу 7.3+).
+    // Це GNU x86-64 asm (AT&T) — ТІЛЬКИ unix/Linux. На Windows SDK — DLL,
+    // хак не потрібен (викликаємо EUReadPrivateKeyBinary напряму), а MSVC
+    // цей C-файл не компілює (error C2143). Тому збираємо його лише не-windows.
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    cc::Build::new()
-        .file(format!("{manifest_dir}/ffi/euscp_wrappers.c"))
-        .warnings(false)
-        .compile("euscp_wrappers");
-    println!("cargo:rerun-if-changed={manifest_dir}/ffi/euscp_wrappers.c");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "windows" {
+        cc::Build::new()
+            .file(format!("{manifest_dir}/ffi/euscp_wrappers.c"))
+            .warnings(false)
+            .compile("euscp_wrappers");
+        println!("cargo:rerun-if-changed={manifest_dir}/ffi/euscp_wrappers.c");
+    }
 
     // protoc: vendored-бінарник (без залежності від системного protobuf-compiler)
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");

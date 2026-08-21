@@ -69,6 +69,10 @@ type FnEuGetErrorDesc = unsafe extern "C" fn(c_int) -> *const c_char;
 
 // C-обгортка EUReadPrivateKeyBinary з %rbx=0/%rcx=0 (SDK-баг,
 // див. ffi/euscp_wrappers.c). Перший аргумент — вказівник на функцію SDK.
+// ТІЛЬКИ unix: обгортка — GNU x86-64 asm (AT&T), яку MSVC не компілює.
+// На Windows SDK — DLL (не .so), хак не потрібен: EUReadPrivateKeyBinary
+// викликається напряму (див. #[cfg(windows)] гілки нижче).
+#[cfg(unix)]
 extern "C" {
     fn eu_read_private_key_binary_rbx0(
         fn_ptr: unsafe extern "C" fn(*const u8, i32, *const u8) -> i32,
@@ -342,12 +346,18 @@ impl IitSdk {
         type FnReadDirect = unsafe extern "C" fn(*const u8, i32, *const u8) -> i32;
         let rc = unsafe {
             let f: libloading::Symbol<FnReadDirect> = self.lib.get(b"EUReadPrivateKeyBinary\0")?;
-            eu_read_private_key_binary_rbx0(
+            // unix: C-обгортка з %rbx=0 (SIGSEGV-фікс для euscp.so).
+            // windows: SDK — DLL, хак не потрібен — викликаємо функцію напряму.
+            #[cfg(unix)]
+            let rc = eu_read_private_key_binary_rbx0(
                 *f,
                 key.as_ptr(),
                 key.len() as i32,
                 pw.as_ptr() as *const u8,
-            )
+            );
+            #[cfg(windows)]
+            let rc = f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8);
+            rc
         };
         if rc != 0 {
             return Err(IitSdkError::KeyLoad(format!(
@@ -556,12 +566,18 @@ impl IitSdk {
         let pw = cstr(password);
         let rc = unsafe {
             let f: libloading::Symbol<FnRead> = self.lib.get(b"EUReadPrivateKeyBinary\0")?;
-            eu_read_private_key_binary_rbx0(
+            // unix: C-обгортка з %rbx=0 (SIGSEGV-фікс для euscp.so).
+            // windows: SDK — DLL, хак не потрібен — викликаємо функцію напряму.
+            #[cfg(unix)]
+            let rc = eu_read_private_key_binary_rbx0(
                 *f,
                 key.as_ptr(),
                 key.len() as i32,
                 pw.as_ptr() as *const u8,
-            )
+            );
+            #[cfg(windows)]
+            let rc = f(key.as_ptr(), key.len() as i32, pw.as_ptr() as *const u8);
+            rc
         };
         if rc != 0 {
             return Err(IitSdkError::KeyLoad(format!(
