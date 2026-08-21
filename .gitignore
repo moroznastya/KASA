@@ -133,3 +133,6 @@ Temp/
 agents/
 flatpak-build/
 flatpak/
+
+# Junk: Windows Downloads torgashka dir
+%USERPROFILE%\\Downloads\\torgashka/

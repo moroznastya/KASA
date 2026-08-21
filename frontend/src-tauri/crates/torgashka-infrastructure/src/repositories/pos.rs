@@ -566,6 +566,16 @@ async fn create_receipt_impl(
                     title, avail, item.quantity
                 )));
             }
+            // ФІКС 2026-08-21: products.stock (сумарний, Python-еталон) -= qty.
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&item.quantity)
+            .bind(item.product_id)
+            .execute(&mut *tx)
+            .await
+            .pe()?;
         } else {
             // Повернення: додаємо залишок (upsert, якщо рядка ще немає).
             sqlx::query(
@@ -577,6 +587,16 @@ async fn create_receipt_impl(
             .bind(store_id)
             .bind(item.product_id)
             .bind(&item.quantity)
+            .execute(&mut *tx)
+            .await
+            .pe()?;
+            // ФІКС 2026-08-21: products.stock (сумарний, Python-еталон) += qty.
+            sqlx::query(
+                "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&item.quantity)
+            .bind(item.product_id)
             .execute(&mut *tx)
             .await
             .pe()?;

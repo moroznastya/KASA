@@ -33,7 +33,16 @@ use std::time::{Duration, Instant};
 /// Порт вбудованого PostgreSQL (фіксований; уникає конфлікту з системним 5432).
 pub const EMBEDDED_PG_PORT: u16 = 5433;
 /// Таймаут очікування готовності сервера після `pg_ctl start`.
-const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// ФІКС 2026-08-21 (0xC000013A): Windows — 60s. Після Ctrl+C postgres.exe
+/// потребує crash recovery; на повільних дисках він перевищує 30s
+/// (checkpoint write 4.6s у логах користувача) → StartTimeout.
+fn start_timeout() -> Duration {
+    if cfg!(windows) {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(30)
+    }
+}
 
 /// Помилки модуля вбудованого PostgreSQL.
 #[derive(Debug, thiserror::Error)]
@@ -407,6 +416,13 @@ impl EmbeddedPostgres {
     /// Старт сервера: `pg_ctl -D <dir> -l <log> -o "-p 5433 -h 127.0.0.1" -w start`.
     /// Ідемпотентно: якщо 127.0.0.1:5433 вже слухає — не стартує другий.
     /// Після старту — poll готовності (TCP-конект, таймаут 30с).
+    /// ФІКС 2026-08-21 (Windows 0xC000013A): postgres.exe стартує в НОВІЙ
+    /// process group (CREATE_NEW_PROCESS_GROUP) — Ctrl+C у консолі застосунку
+    /// більше не розсилається дочірньому postgres.exe (раніше: CTRL_C_EVENT
+    /// → аварійне завершення → crash recovery при наступному старті).
+    /// Після crash прибираємо залишок postmaster.pid мертвого процесу і
+    /// повторюємо старт (до 2 спроб; recovery на повільних дисках може
+    /// перевищити перший таймаут).
     pub fn start(&mut self) -> Result<(), Error> {
         if port_is_open() {
             pg_log(
@@ -415,6 +431,32 @@ impl EmbeddedPostgres {
             );
             return Ok(());
         }
+        // Після crash у data_dir лишається postmaster.pid мертвого процесу —
+        // без його прибирання pg_ctl start не підніме сервер
+        // ("another server might be running").
+        self.cleanup_stale_pid();
+        let mut last_err = None;
+        for attempt in 1..=2 {
+            match self.start_once() {
+                Ok(()) => return Ok(()),
+                Err(e @ Error::StartTimeout(..)) => {
+                    pg_log(
+                        "WARN",
+                        &format!("спроба {attempt}: сервер не готовий ({e}); повторюю..."),
+                    );
+                    last_err = Some(e);
+                    self.cleanup_stale_pid();
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT)
+        }))
+    }
+
+    /// Одна спроба `pg_ctl start` + poll готовності.
+    fn start_once(&mut self) -> Result<(), Error> {
         let pg_ctl = self.bin_dir.join(pg_ctl_name());
         if !pg_ctl.exists() {
             return Err(Error::Missing(pg_ctl.display().to_string()));
@@ -422,7 +464,15 @@ impl EmbeddedPostgres {
         std::fs::create_dir_all(&self.data_dir)?;
         let log = self.data_dir.join("postgres.log");
         let cmd = "pg_ctl start";
-        let out = Command::new(&pg_ctl)
+        let mut c = Command::new(&pg_ctl);
+        #[cfg(windows)]
+        {
+            // CREATE_NEW_PROCESS_GROUP (0x200): postgres.exe НЕ отримує
+            // CTRL_C_EVENT разом із консоллю застосунку (0xC000013A).
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0000_0200);
+        }
+        let out = c
             .arg("-D")
             .arg(&self.data_dir)
             .arg("-l")
@@ -451,7 +501,7 @@ impl EmbeddedPostgres {
         }
         self.started_by_us = true;
         // Poll готовності (страховка поверх pg_ctl -w): TCP до 127.0.0.1:5433.
-        let deadline = Instant::now() + START_TIMEOUT;
+        let deadline = Instant::now() + start_timeout();
         while Instant::now() < deadline {
             if port_is_open() {
                 pg_log(
@@ -471,13 +521,35 @@ impl EmbeddedPostgres {
         pg_log(
             "ERROR",
             &format!(
-                "сервер не став готовим за {START_TIMEOUT:?} (порт {EMBEDDED_PG_PORT}); postgres.log (хвіст):\n{tail}"
+                "сервер не став готовим за {:?} (порт {EMBEDDED_PG_PORT}); postgres.log (хвіст):\n{tail}",
+                start_timeout()
             ),
         );
-        Err(Error::StartTimeout(START_TIMEOUT, EMBEDDED_PG_PORT))
+        Err(Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT))
     }
 
-    /// Зупинка сервера: `pg_ctl -D <dir> -m fast stop`. Ідемпотентно.
+    /// Прибирає залишки crash: postmaster.pid мертвого процесу блокує старт.
+    /// Живий процес (напр. crash recovery) НЕ чіпаємо — це безпечно.
+    fn cleanup_stale_pid(&self) {
+        let pid_file = self.data_dir.join("postmaster.pid");
+        let Ok(content) = std::fs::read_to_string(&pid_file) else {
+            return;
+        };
+        let Ok(pid) = content.lines().next().unwrap_or("").trim().parse::<u32>() else {
+            return;
+        };
+        if process_alive(pid) {
+            return; // процес живий — не втручаємось
+        }
+        let _ = std::fs::remove_file(&pid_file);
+        let _ = std::fs::remove_file(self.data_dir.join("postmaster.opts"));
+        pg_log(
+            "INFO",
+            &format!("прибрано залишок postmaster.pid (процес {pid} мертвий — crash)"),
+        );
+    }
+
+/// Зупинка сервера: `pg_ctl -D <dir> -m fast stop`. Ідемпотентно.
     pub fn stop(&self) -> Result<(), Error> {
         if !port_is_open() {
             return Ok(());
@@ -487,7 +559,14 @@ impl EmbeddedPostgres {
             return Err(Error::Missing(pg_ctl.display().to_string()));
         }
         let cmd = "pg_ctl stop";
-        let status = Command::new(&pg_ctl)
+        let mut c = Command::new(&pg_ctl);
+        #[cfg(windows)]
+        {
+            // CREATE_NEW_PROCESS_GROUP: pg_ctl stop не вбивається Ctrl+C.
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0000_0200);
+        }
+        let status = c
             .arg("-D")
             .arg(&self.data_dir)
             .arg("-m")
@@ -611,6 +690,25 @@ impl Drop for EmbeddedPostgres {
             }
         }
     }
+}
+
+/// Перевірка, чи процес з PID живий (без додаткових крейтів).
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    // tasklist — стандартна утиліта Windows.
+    match std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()),
+        Err(_) => true, // не можемо перевірити — не чіпаємо pid
+    }
+}
+
+#[cfg(not(windows))]
+fn process_alive(pid: u32) -> bool {
+    // Linux: /proc/<pid> існує для живого процесу.
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 // ── Тести ───────────────────────────────────────────────────────────────────

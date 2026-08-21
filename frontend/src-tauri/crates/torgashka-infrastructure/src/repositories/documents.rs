@@ -1624,6 +1624,16 @@ impl SqlxDocuments {
             .execute(&mut *tx)
             .await
             .map_err(|e| de(e.to_string()))?;
+            // ФІКС 2026-08-21: products.stock (сумарний, Python-еталон) += qty.
+            sqlx::query(
+                "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&qty)
+            .bind(pid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
             if is_fiscal {
                 // _increase_fiscal_stock: is_fiscal=true, fiscal_stock += qty
                 sqlx::query(
@@ -1761,6 +1771,16 @@ impl SqlxDocuments {
             )
             .bind(&qty)
             .bind(store_id)
+            .bind(pid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+            // ФІКС 2026-08-21: products.stock (сумарний, Python-еталон) -= qty.
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&qty)
             .bind(pid)
             .execute(&mut *tx)
             .await
@@ -2034,6 +2054,16 @@ impl SqlxDocuments {
             )
             .bind(&qty)
             .bind(store_id)
+            .bind(it.get::<Uuid, _>("product_id"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+            // ФІКС 2026-08-21: products.stock (сумарний, Python-еталон) -= qty.
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&qty)
             .bind(it.get::<Uuid, _>("product_id"))
             .execute(&mut *tx)
             .await

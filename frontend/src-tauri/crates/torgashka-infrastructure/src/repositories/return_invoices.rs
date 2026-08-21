@@ -294,6 +294,8 @@ impl SqlxReturnInvoices {
         let store_id = current_store_ctx()
             .map(|c| c.store_id)
             .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        // ФІКС 2026-08-21: products.stock (сумарний залишок, Python-еталон
+        // product.update_stock) оновлюється ТИМ САМИМ знаком, що й stock table.
         if qty.starts_with('-') {
             let need = qty.trim_start_matches('-');
             let res = sqlx::query(
@@ -323,6 +325,15 @@ impl SqlxReturnInvoices {
                     avail, need
                 )));
             }
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(need)
+            .bind(product_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
         } else {
             sqlx::query(
                 "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
@@ -333,6 +344,15 @@ impl SqlxReturnInvoices {
             .bind(store_id)
             .bind(product_id)
             .bind(qty)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+            sqlx::query(
+                "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(qty)
+            .bind(product_id)
             .execute(&self.pool)
             .await
             .map_err(|e| de(e.to_string()))?;

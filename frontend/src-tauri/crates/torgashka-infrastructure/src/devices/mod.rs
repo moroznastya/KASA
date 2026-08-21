@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -286,6 +286,13 @@ fn parse_weight(s: &str) -> Option<f64> {
 
 /// Драйвер COM-ваги: відкриває порт, циклічно читає, парсить вагу та емітить
 /// подію "weight-updated". Статус оновлюється через "device-status-changed".
+///
+/// АДАПТИВНИЙ ЗАПИТ (ФІКС 2026-08-21, ваги «Пром Прилад»): більшість
+/// українських торгових ваг працюють у режимі ЗАПИТ-ВІДПОВІДЬ, а не
+/// постійної передачі. Якщо дані не надходили останні 1.5с — драйвер
+/// надсилає запит (по черзі ENQ 0x05 → 'W' 0x57 → 'P' 0x50, пауза 300мс),
+/// поки не прийде відповідь. Щойно дані прийшли — запити припиняються
+/// (continuous mode ваг не ламається).
 fn spawn_scale(
     app: AppHandle,
     id: String,
@@ -299,8 +306,18 @@ fn spawn_scale(
             .timeout(Duration::from_millis(500))
             .open()
         {
-            Ok(p) => p,
+            Ok(p) => {
+                crate::embedded_pg::pg_log(
+                    "INFO",
+                    &format!("scale {id}: порт {port} відкрито ({baud_rate} бод)"),
+                );
+                p
+            }
             Err(e) => {
+                crate::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("scale {id}: помилка відкриття порту {port}: {e}"),
+                );
                 set_status(
                     &status,
                     "error",
@@ -319,9 +336,57 @@ fn spawn_scale(
         // фільтр стабільності: останнє відправлене значення + кандидат на підтвердження
         let mut last_emitted: Option<f64> = None;
         let mut pending: Option<f64> = None;
+        // ── адаптивний запит ──
+        let mut last_data = std::time::Instant::now();
+        let mut request_index: usize = 0; // ENQ → 'W' → 'P' по колу
+        let mut last_request_at: Option<std::time::Instant> = None;
+        let mut silence_logged = false; // перша спроба запиту після тиші → в лог
+        let mut write_error_logged = false; // перша помилка запису підряд → в лог
+        const SILENCE: Duration = Duration::from_millis(1500);
+        const REQUEST_GAP: Duration = Duration::from_millis(300);
+        const PROBES: [u8; 3] = [0x05, b'W', b'P'];
+
         while !stop.load(Ordering::Relaxed) {
+            // Тиша > 1.5с → ваги в режимі запит-відповідь: надсилаємо наступний
+            // запит (не частіше ніж раз на 300мс — не спамимо).
+            if last_data.elapsed() > SILENCE {
+                let gap_ok = match last_request_at {
+                    Some(t) => t.elapsed() >= REQUEST_GAP,
+                    None => true,
+                };
+                if gap_ok {
+                    let b = PROBES[request_index % PROBES.len()];
+                    request_index += 1;
+                    let ok = serial.write(&[b]).is_ok() && serial.flush().is_ok();
+                    if ok {
+                        if !silence_logged {
+                            crate::embedded_pg::pg_log(
+                                "INFO",
+                                &format!("scale {id}: тиша >1.5с — запит ваги 0x{b:02X}"),
+                            );
+                            silence_logged = true;
+                        }
+                        write_error_logged = false;
+                    } else if !write_error_logged {
+                        crate::embedded_pg::pg_log(
+                            "ERROR",
+                            &format!("scale {id}: помилка запису запиту 0x{b:02X} — продовжую"),
+                        );
+                        write_error_logged = true;
+                    }
+                    last_request_at = Some(std::time::Instant::now());
+                }
+            } else {
+                // Дані приходять постійно — запити припинено.
+                silence_logged = false;
+                write_error_logged = false;
+            }
+
             match serial.read(&mut buf) {
                 Ok(n) if n > 0 => {
+                    last_data = std::time::Instant::now();
+                    silence_logged = false;
+                    write_error_logged = false;
                     acc.push_str(&String::from_utf8_lossy(&buf[..n]));
                     // обмежуємо буфер, щоб не розрісся
                     if acc.len() > 1024 {
@@ -352,6 +417,10 @@ fn spawn_scale(
                     // таймаут читання — просто продовжуємо цикл
                 }
                 Err(e) => {
+                    crate::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("scale {id}: втрата порту {port}: {e}"),
+                    );
                     set_status(
                         &status,
                         "error",

@@ -257,10 +257,14 @@ impl SqlxInvoices {
     }
 
     /// Python product_service.update_stock (stock += quantity_change) → stock table.
+    /// ФІКС 2026-08-21: оновлює І `stock` (по точках), І `products.stock`
+    /// (сумарний залишок — Python-еталон product.update_stock зберігає в products).
+    /// Атомарно: одна транзакція на обидві таблиці.
     async fn update_stock(&self, product_id: Uuid, qty: &str) -> Result<(), InvoicesError> {
         let store_id = current_store_ctx()
             .map(|c| c.store_id)
             .ok_or_else(|| de("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(|e| de(e.to_string()))?;
         sqlx::query(
             "INSERT INTO stock (store_id, product_id, quantity, price, updated_at)
              VALUES ($1, $2, $3::numeric, 0, now())
@@ -270,9 +274,19 @@ impl SqlxInvoices {
         .bind(store_id)
         .bind(product_id)
         .bind(qty)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| de(e.to_string()))?;
+        sqlx::query(
+            "UPDATE products SET stock = COALESCE(stock, 0) + $1::numeric, updated_at = now()
+             WHERE id = $2",
+        )
+        .bind(qty)
+        .bind(product_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| de(e.to_string()))?;
+        tx.commit().await.map_err(|e| de(e.to_string()))?;
         Ok(())
     }
 
@@ -1340,6 +1354,17 @@ impl InvoicesV2Service for SqlxInvoices {
             .execute(&self.pool)
             .await
             .map_err(|e| de(e.to_string()))?;
+            // ФІКС 2026-08-21: products.stock (сумарний) — Python-еталон
+            // product_service.update_stock(quantity_change=-qty).
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&q)
+            .bind(pid)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
             if is_fiscal {
                 self.fiscal_stock(pid, &q, false).await?;
             }
@@ -1520,6 +1545,16 @@ impl SqlxInvoices {
             )
             .bind(&q)
             .bind(store_id)
+            .bind(pid)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| de(e.to_string()))?;
+            // ФІКС 2026-08-21: products.stock (сумарний) — Python-еталон.
+            sqlx::query(
+                "UPDATE products SET stock = GREATEST(0, COALESCE(stock, 0) - $1::numeric), updated_at = now()
+                 WHERE id = $2",
+            )
+            .bind(&q)
             .bind(pid)
             .execute(&self.pool)
             .await
