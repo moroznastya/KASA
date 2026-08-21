@@ -1,11 +1,15 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
+import { Trash2, Search, ArrowLeft, Save, CheckCircle, Plus, Loader2 } from 'lucide-react';
 import api from '@/services/api';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
+import { productService } from '@/services/productService';
 import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Modal } from '@/components/ui/Modal';
+import { SearchInput } from '@/components/ui/SearchInput';
 import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
 import { formatCurrency } from '@/utils/format';
@@ -58,6 +62,11 @@ const InventoryFormPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
+  // Сканування штрих-коду (Enter у полі пошуку)
+  const [isScanningBarcode, setIsScanningBarcode] = useState(false);
+  // Модалка вибору товару (кнопка «Додати товар»)
+  const [isProductPickerOpen, setIsProductPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState('');
 
   // ─── Стани модалки ───────────────────────────────────────────────
   const [modalProduct, setModalProduct] = useState<any>(null);
@@ -122,6 +131,18 @@ const InventoryFormPage: React.FC = () => {
 
   const { data: searchData } = useSearchProducts(searchQuery);
 
+  // Список товарів для модалки «Додати товар»: повний список (pickerQuery порожній)
+  // або відфільтрований (pickerQuery >= 2 символи)
+  const { data: pickerData, isLoading: pickerLoading } = useQuery({
+    queryKey: ['inventory-product-picker', pickerQuery],
+    queryFn: () =>
+      pickerQuery.trim().length >= 2
+        ? productService.searchProducts(pickerQuery.trim())
+        : productService.getProducts({ page: 1, size: 200 }),
+    enabled: isProductPickerOpen,
+  });
+  const pickerItems = pickerData?.items || [];
+
   const handleSearch = useCallback(
     (query: string) => {
       setSearchQuery(query);
@@ -135,6 +156,29 @@ const InventoryFormPage: React.FC = () => {
     },
     [searchData]
   );
+
+  // Enter у полі пошуку: якщо запит — штрих-код (чисто цифри, >= 6 символів),
+  // одразу шукаємо товар за barcode і відкриваємо модалку кількості БЕЗ кліку
+  // по результату. Якщо запит містить літери — стандартна поведінка
+  // (випадаючий список результатів).
+  const handleSearchKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return;
+    const q = searchQuery.trim();
+    if (!q) return;
+    if (!/^\d{6,}$/.test(q)) return; // не штрих-код — залишаємо список результатів
+    e.preventDefault();
+    setIsScanningBarcode(true);
+    try {
+      const product = await productService.searchByBarcode(q);
+      setSearchQuery('');
+      setShowSearch(false);
+      openAddModal(product);
+    } catch {
+      toast.error(`Товар зі штрих-кодом ${q} не знайдено`);
+    } finally {
+      setIsScanningBarcode(false);
+    }
+  };
 
   // ─── Відкриття модалки при виборі товару ─────────────────────────
   const openAddModal = (product: any) => {
@@ -332,16 +376,24 @@ const InventoryFormPage: React.FC = () => {
             />
           </div>
 
-          {/* ─── Пошук товару ───────────────────────────────────── */}
-          <div className="relative">
-            <Input
-              label="Додати товар"
-              value={searchQuery}
-              onChange={(e) => handleSearch(e.target.value)}
-              placeholder="Пошук за назвою або штрих-кодом..."
-              icon={<Search className="w-4 h-4" />}
-            />
-            {showSearch && searchResults.length > 0 && (
+          {/* ─── Пошук товару + кнопка «Додати товар» ───────────── */}
+          <div className="flex items-end gap-3">
+            <div className="relative flex-1">
+              <Input
+                label="Додати товар"
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Пошук за назвою або штрих-кодом..."
+                icon={
+                  isScanningBarcode ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Search className="w-4 h-4" />
+                  )
+                }
+              />
+              {showSearch && searchResults.length > 0 && (
               <div className="absolute z-10 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg max-h-60 overflow-y-auto">
                 {searchResults.map((product) => (
                   <button
@@ -365,7 +417,15 @@ const InventoryFormPage: React.FC = () => {
                   </button>
                 ))}
               </div>
-            )}
+              )}
+            </div>
+            <Button
+              onClick={() => setIsProductPickerOpen(true)}
+              icon={<Plus className="w-4 h-4" />}
+              className="shrink-0"
+            >
+              Додати товар
+            </Button>
           </div>
 
           {/* ─── Таблиця товарів ────────────────────────────────── */}
@@ -552,6 +612,68 @@ const InventoryFormPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* ═══ МОДАЛКА ВИБОРУ ТОВАРУ («Додати товар») ═════════════ */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      <Modal
+        isOpen={isProductPickerOpen}
+        onClose={() => {
+          setIsProductPickerOpen(false);
+          setPickerQuery('');
+        }}
+        title="Додати товар"
+        size="2xl"
+      >
+        <div className="space-y-4">
+          <SearchInput
+            value={pickerQuery}
+            onChange={setPickerQuery}
+            placeholder="Пошук за назвою або штрих-кодом..."
+            label="Пошук товару"
+          />
+          {pickerLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 text-primary-500 animate-spin" />
+            </div>
+          ) : pickerItems.length === 0 ? (
+            <EmptyState
+              message="Товари не знайдені"
+              description={
+                pickerQuery.trim().length >= 2
+                  ? 'Спробуйте змінити пошуковий запит'
+                  : 'Додайте товари у розділі Товари, щоб провести інвентаризацію'
+              }
+            />
+          ) : (
+            <div className="max-h-96 overflow-y-auto divide-y divide-gray-200 dark:divide-slate-700 rounded-xl border border-gray-200 dark:border-slate-700">
+              {pickerItems.map((product) => (
+                <button
+                  key={product.id}
+                  onClick={() => {
+                    setIsProductPickerOpen(false);
+                    setPickerQuery('');
+                    openAddModal(product);
+                  }}
+                  className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-slate-700 text-left transition-colors"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                      {product.title}
+                    </p>
+                    {product.barcode && (
+                      <p className="text-xs text-gray-400">ШК: {product.barcode}</p>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 shrink-0 ml-3">
+                    Залишок: {product.stock}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
 
       {/* ═══════════════════════════════════════════════════════════ */}
       {/* ═══ МОДАЛКА ДОДАВАННЯ ТОВАРУ ════════════════════════════ */}
