@@ -36,6 +36,8 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
   // Реальна вага з підключених пристроїв (оновлюється через подію "weight-updated",
   // на яку PosPage підписується через useDevicesStore.initListeners)
   const weights = useDevicesStore((s) => s.weights);
+  const devices = useDevicesStore((s) => s.devices);
+  const statuses = useDevicesStore((s) => s.statuses);
 
   // Скидаємо стан при відкритті
   useEffect(() => {
@@ -219,7 +221,20 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
                     setQuantity(String(weight));
                     setQuantityError(null);
                   } else {
-                    setQuantityError('Ваги не підключені або не передають дані. Перевірте Налаштування → Пристрої.');
+                    // Діагностика: конкретна причина замість generic-повідомлення
+                    const scale = devices.find((d) => d.deviceType === 'scale' && d.enabled);
+                    if (!scale) {
+                      setQuantityError('Ваги не налаштовані. Додайте пристрій: Налаштування → Пристрої');
+                    } else {
+                      const st = statuses[scale.id];
+                      if (st?.status === 'disconnected') {
+                        setQuantityError('Ваги не підключені. Перевірте кабель USB та Налаштування → Пристрої');
+                      } else if (st?.status === 'error') {
+                        setQuantityError(`Помилка ваг: ${st.error ?? 'невідома'}`);
+                      } else {
+                        setQuantityError('Ваги підключені, але не передають дані. Перевірте, що ваги увімкнені, на платформі є вантаж, а в налаштуваннях ваг вибрано режим передачі даних (RS-232)');
+                      }
+                    }
                   }
                 } finally {
                   // Коротка затримка для UX (індикатор «Зчитування...»)
