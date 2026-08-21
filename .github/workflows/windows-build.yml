@@ -49,6 +49,12 @@ jobs:
       - name: 🧱 Build frontend
         run: npm run build
 
+      - name: 🔐 Install OpenSSL (vcpkg, для torgashka-prro PKCS#12)
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows-static-md
+          "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" | Out-File -Append -FilePath $env:GITHUB_ENV
+
       - name: 🏗️ Tauri build (NSIS + MSI + updater)
         run: npm run tauri:build -- --bundles nsis,msi
         env:
