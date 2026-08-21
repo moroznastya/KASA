@@ -45,7 +45,7 @@ pub fn check_online() -> bool {
 #[tauri::command]
 pub fn get_barcode_scanner_info() -> Result<serde_json::Value, String> {
     // На Linux: перевіряємо /dev/input/ та /dev/hidraw*
-    let mut scanners = Vec::new();
+    let mut scanners: Vec<serde_json::Value> = Vec::new();
 
     #[cfg(unix)]
     {
