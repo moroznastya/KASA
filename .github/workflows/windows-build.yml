@@ -25,6 +25,8 @@ jobs:
   build-windows:
     name: Build NSIS + MSI
     runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     defaults:
       run:
         working-directory: frontend          # всі npm/tauri команди — з frontend/
