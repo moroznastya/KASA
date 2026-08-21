@@ -33,7 +33,10 @@
         ],
         "displayLanguageSelector": true
       }
-    }
+    },
+    "resources": [
+      "resources/postgres/**"
+    ]
   },
   "plugins": {
     "updater": {

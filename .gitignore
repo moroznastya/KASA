@@ -121,3 +121,6 @@ keys.txt
 *.pem
 *.p12
 *.pfx
+
+# PostgreSQL binaries download cache
+.cache/
