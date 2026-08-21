@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri/tauri.conf.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Torgashka",
   "version": "1.0.0",
   "identifier": "com.torgashka.pos",
@@ -37,9 +37,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFN0RBMkE3OEVGMkY3RApSV1I5TCs5NEt0cm5DOTJqU0k5dTFNZ0FOZkZBNmc2Z2F5UGxFRGRONGRKZExmWmRNcHk0MTVaUwo=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCMjk3MTE5MEU5MUY4REUKUldUZStKRU9HWEVwYTVGUWlBOFRta1c0UHlOSkdzc0pnZlB2cE13Tmd4djI4OE9tZktQNUY0eHAK",
       "endpoints": [
-        "https://github.com/torgashka/torgashka/releases/latest/download/latest.json"
+        "https://github.com/moroznastya/KASA/releases/latest/download/latest.json"
       ]
     }
   }
