@@ -327,6 +327,37 @@ fn force_rst_close(stream: &std::net::TcpStream) {
     }
 }
 
+/// Windows: та сама логіка через Winsock2. Сигнатура setsockopt тут інша —
+/// (SOCKET, c_int, c_int, *const c_char, c_int) замість (fd, ..., socklen_t).
+///
+/// ⚠️ УВАГА: crate libc на Windows визначає ТІЛЬКИ setsockopt — тип `linger`,
+/// константи SOL_SOCKET/SO_LINGER існують лише в unix-модулях libc. Тому все
+/// необхідне описано тут напряму за Winsock2 (WS2DEF.H): linger = {u16,u16},
+/// SOL_SOCKET = 0xffff, SO_LINGER = 0x0080.
+#[cfg(windows)]
+fn force_rst_close(stream: &std::net::TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    // Winsock2 WS2DEF.H: typedef struct linger { u_short l_onoff; u_short l_linger; } LINGER;
+    #[repr(C)]
+    struct Linger {
+        l_onoff: u16,
+        l_linger: u16,
+    }
+    const SOL_SOCKET: libc::c_int = 0xffff; // Winsock2 winsock.h
+    const SO_LINGER: libc::c_int = 0x0080;  // Winsock2 winsock.h
+    let linger = Linger { l_onoff: 1, l_linger: 0 };
+    // Безпечно: SOCKET належить stream, linger — стекова змінна на час виклику
+    unsafe {
+        libc::setsockopt(
+            stream.as_raw_socket() as libc::SOCKET,
+            SOL_SOCKET,
+            SO_LINGER,
+            &linger as *const Linger as *const libc::c_char,
+            std::mem::size_of::<Linger>() as libc::c_int,
+        );
+    }
+}
+
 /// Драйвер TCP-термінала: періодичний моніторинг доступності (БЕЗ постійного
 /// з'єднання). Термінал Newland N950 приймає лише ОДНЕ TCP-з'єднання — тому
 /// утримувати постійне з'єднання заборонено: воно монополізує порт і блокує
