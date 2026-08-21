@@ -9,6 +9,7 @@ on:
   workflow_dispatch:        # ручний запуск
   push:
     tags: ['v*.*.*']        # автоматично при пуші тегу релізу
+    branches: ['feat/rust-migration']   # ТИМЧАСОВО: для валідації збірки з гілки
 
 permissions:
   contents: write           # потрібно для upload до GitHub Release
