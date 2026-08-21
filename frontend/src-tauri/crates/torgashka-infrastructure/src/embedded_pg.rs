@@ -371,6 +371,12 @@ impl EmbeddedPostgres {
             .arg(&self.user)
             .arg("-A")
             .arg("trust")
+            // ФІКС 2026-08-21 (Windows): без --locale initdb падає на українській
+            // локалі ("could not find suitable text search configuration for
+            // locale Ukrainian_Ukraine.1251", код 1). --locale=C сумісний з
+            // --encoding=UTF8 — це валідна комбінація (C locale, UTF-8 кодування).
+            .arg("--locale")
+            .arg("C")
             .arg("--encoding=UTF8")
             .output()
             .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
