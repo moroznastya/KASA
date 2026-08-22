@@ -158,10 +158,6 @@ fn psql_name() -> &'static str {
     if cfg!(windows) { "psql.exe" } else { "psql" }
 }
 
-fn createdb_name() -> &'static str {
-    if cfg!(windows) { "createdb.exe" } else { "createdb" }
-}
-
 /// Чи слухає щось 127.0.0.1:EMBEDDED_PG_PORT (TCP) — перевірка зайнятості
 /// порту та готовності сервера.
 fn port_is_open() -> bool {
@@ -260,7 +256,7 @@ pub struct EmbeddedPostgres {
 }
 
 impl EmbeddedPostgres {
-    /// Створює менеджер зі стандартним data_dir та env-перевизначенням
+    /// Створює менеджера зі стандартним data_dir та env-перевизначенням
     /// креденшалів: `TORGASHKA_PG_USER` (дефолт `postgres`),
     /// `TORGASHKA_PG_DB` (дефолт `torgashka`), `TORGASHKA_PG_PASSWORD`
     /// (дефолт порожній — локальний trust auth).
@@ -583,10 +579,18 @@ impl EmbeddedPostgres {
         Ok(())
     }
 
-    /// Створення БД `db`, якщо її немає (`psql SELECT 1` → `createdb`).
+    /// Створення БД `db`, якщо її немає (`psql SELECT 1` → `psql CREATE DATABASE`).
+    ///
+    /// ФІКС 2026-08-22 (Windows, корінь бага "немає зв'язку з БД"):
+    /// slim-бандл `resources/postgres/bin` НЕ містить `createdb.exe` (лише
+    /// initdb/pg_ctl/psql/postgres + DLL) — попередній код падав з
+    /// `Error::Missing(createdb.exe)`, bootstrap обривався, `DATABASE_URL` не
+    /// встановлювався → auth=None → `/api/v1/auth/users-list` не монтувався →
+    /// фронтенд отримував 410/404 замість списку користувачів.
+    /// Створення БД виконуємо через `psql -c "CREATE DATABASE ..."` — psql
+    /// гарантовано присутній у бандлі (використовується і для перевірки).
     pub fn ensure_database(&self) -> Result<(), Error> {
         let psql = self.bin_dir.join(psql_name());
-        let createdb = self.bin_dir.join(createdb_name());
         if !psql.exists() {
             return Err(Error::Missing(psql.display().to_string()));
         }
@@ -601,17 +605,16 @@ impl EmbeddedPostgres {
         if exists {
             return Ok(());
         }
-        if !createdb.exists() {
-            return Err(Error::Missing(createdb.display().to_string()));
-        }
-        let status = Command::new(&createdb)
+        // CREATE DATABASE через psql (createdb.exe відсутній у slim-бандлі).
+        let create_sql = format!("CREATE DATABASE \"{}\"", self.db);
+        let status = Command::new(&psql)
             .args(["-h", "127.0.0.1", "-p", &EMBEDDED_PG_PORT.to_string()])
-            .args(["-U", &self.user])
-            .arg(&self.db)
+            .args(["-U", &self.user, "-d", "postgres", "-c"])
+            .arg(&create_sql)
             .status()
-            .map_err(|e| Error::Command { cmd: "createdb".to_string(), e })?;
+            .map_err(|e| Error::Command { cmd: "psql CREATE DATABASE".to_string(), e })?;
         if !status.success() {
-            let why = format!("createdb exit {:?}", status.code());
+            let why = format!("psql CREATE DATABASE exit {:?}", status.code());
             pg_log("ERROR", &format!("створення БД '{}' не вдалося: {why}", self.db));
             return Err(Error::CreateDb {
                 db: self.db.clone(),
@@ -832,7 +835,7 @@ mod tests {
         pg.ensure_initialized().expect("initdb");
         pg.start().expect("pg_ctl start має підняти сервер");
         assert!(port_is_open(), "сервер має слухати 127.0.0.1:5433");
-        pg.ensure_database().expect("БД має створитись");
+        pg.ensure_database().expect("БД має створитись через psql CREATE DATABASE");
         pg.stop().expect("pg_ctl stop має зупинити сервер");
         // fast stop — порт має звільнитись (poll до 4с)
         for _ in 0..40 {
@@ -842,6 +845,38 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert!(!port_is_open(), "порт має звільнитись після stop");
+        let _ = std::fs::remove_dir_all(pg.data_dir());
+    }
+
+    /// ФІКС 2026-08-22 (Windows): БД створюється через psql CREATE DATABASE
+    /// (createdb.exe відсутній у slim-бандлі). Тест перевіряє, що ensure_database
+    /// НЕ залежить від createdb і створює БД на живому сервері.
+    #[test]
+    fn ensure_database_creates_without_createdb_binary() {
+        let Some(pg) = test_pg() else {
+            eprintln!("SKIP: PostgreSQL бінарники не знайдено");
+            return;
+        };
+        if port_is_open() {
+            eprintln!("SKIP: порт 127.0.0.1:{EMBEDDED_PG_PORT} вже зайнятий");
+            return;
+        }
+        let mut pg = pg;
+        // Імітація slim-бандлу Windows: у bin/ НЕМАЄ createdb — ensure_database
+        // має працювати через psql. (На Linux createdb може існувати — тест
+        // валідний у будь-якому разі, бо ensure_database більше не викликає його.)
+        pg.ensure_initialized().expect("initdb");
+        pg.start().expect("pg_ctl start");
+        pg.ensure_database().expect("БД має створитись без createdb");
+        // Повторний виклик — ідемпотентність (БД вже існує).
+        pg.ensure_database().expect("повторний ensure_database не має падати");
+        pg.stop().expect("stop");
+        for _ in 0..40 {
+            if !port_is_open() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let _ = std::fs::remove_dir_all(pg.data_dir());
     }
 }
