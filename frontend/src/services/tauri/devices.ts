@@ -30,6 +30,9 @@ import { UsbDevice } from './system';
 
 export type DeviceType = 'scale' | 'terminal' | 'printer';
 
+/** Протокол касових ваг (scale). Відсутність поля в конфігу = 'cas' (сумісність зі старими конфігами) */
+export type ScaleProtocol = 'cas' | 'vta2' | 'vta3' | 'vta5';
+
 /** Конфігурація пристрою (зберігається в налаштуваннях) */
 export interface DeviceConfig {
   id: string;
@@ -41,6 +44,8 @@ export interface DeviceConfig {
     port?: string;
     /** Швидкість (scale) */
     baudRate?: number;
+    /** Протокол касових ваг (scale): cas | vta2 | vta3 | vta5 (за замовчуванням 'cas') */
+    protocol?: ScaleProtocol;
     /** IP терміналу (terminal) */
     ip?: string;
     /** Порт терміналу (terminal) */

@@ -19,6 +19,7 @@ import {
   DeviceStatus,
   DeviceType,
   PrinterInfo,
+  ScaleProtocol,
 } from '@/services/tauri/devices';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Modal } from '@/components/ui/Modal';
@@ -43,10 +44,25 @@ interface DeviceTypeSchema {
   fields: DeviceFieldSchema[];
 }
 
-const BAUD_RATE_OPTIONS: SelectOption[] = [9600, 19200, 38400, 57600, 115200].map((v) => ({
+const BAUD_RATE_OPTIONS: SelectOption[] = [4800, 9600, 19200, 38400, 57600, 115200].map((v) => ({
   value: v,
   label: String(v),
 }));
+
+/** Протоколи касових ваг та рекомендована швидкість для кожного */
+const SCALE_PROTOCOL_OPTIONS: SelectOption[] = [
+  { value: 'cas', label: 'CAS (сумісний)' },
+  { value: 'vta2', label: 'ВТА протокол 2 (ENQ/ACK/DC1, 9600)' },
+  { value: 'vta3', label: 'ВТА протокол 3 (автопередача, 9600)' },
+  { value: 'vta5', label: 'ВТА протокол 5 (BCD, 4800)' },
+];
+
+const SCALE_PROTOCOL_BAUD_RATES: Record<ScaleProtocol, number> = {
+  cas: 9600,
+  vta2: 9600,
+  vta3: 9600,
+  vta5: 4800,
+};
 
 const DEVICE_SCHEMAS: Record<DeviceType, DeviceTypeSchema> = {
   scale: {
@@ -61,6 +77,12 @@ const DEVICE_SCHEMAS: Record<DeviceType, DeviceTypeSchema> = {
         label: 'Baud Rate',
         type: 'select',
         options: BAUD_RATE_OPTIONS,
+      },
+      {
+        key: 'protocol',
+        label: 'Протокол',
+        type: 'select',
+        options: SCALE_PROTOCOL_OPTIONS,
       },
       { key: 'enabled', label: 'Автопідключення при старті', type: 'checkbox' },
     ],
@@ -293,7 +315,7 @@ const DevicesPage: React.FC = () => {
         name: '',
         deviceType: type,
         enabled: false,
-        config: { port: '', baudRate: 9600 },
+        config: { port: '', baudRate: 9600, protocol: 'vta2' },
       });
     } else if (type === 'terminal') {
       setDraft({
@@ -747,6 +769,33 @@ const DevicesPage: React.FC = () => {
                           onChange={(e) => updateDraft('printerName', e.target.value)}
                           placeholder="Оберіть принтер…"
                         />
+                      ) : field.key === 'protocol' ? (
+                        <div>
+                          <Select
+                            options={SCALE_PROTOCOL_OPTIONS}
+                            value={String(getConfigValue(draft, 'protocol') || 'cas')}
+                            onChange={(e) => {
+                              const value = e.target.value as ScaleProtocol;
+                              // При зміні протоколу — автоматично підставляємо рекомендовану швидкість
+                              setDraft((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      config: {
+                                        ...prev.config,
+                                        protocol: value,
+                                        baudRate: SCALE_PROTOCOL_BAUD_RATES[value],
+                                      },
+                                    }
+                                  : prev
+                              );
+                            }}
+                          />
+                          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                            Протоколи 2/3/5 — для ваг ВТА-60 (KLARUS). На самих вагах
+                            оберіть відповідний протокол кнопками згідно з інструкцією.
+                          </p>
+                        </div>
                       ) : field.type === 'select' ? (
                         <Select
                           options={field.options || []}
