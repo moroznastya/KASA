@@ -8,9 +8,9 @@
 //! Грошові поля numeric читаються як `::text` і парсяться: v1 → String
 //! (Decimal-рядок), v2 → f64.
 
-use chrono::NaiveDateTime;
-use sqlx::{Row};
 use crate::store_ctx::{current_store_ctx, StorePool};
+use chrono::NaiveDateTime;
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_domain::invoices::{
@@ -1075,9 +1075,8 @@ impl InvoicesV2Service for SqlxInvoices {
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
         let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
-        let _store_id = store_id.ok_or_else(|| {
-            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
-        })?;
+        let _store_id =
+            store_id.ok_or_else(|| de(format!("Накладну з ID '{id}' не прив'язано до точки")))?;
         let op_date: NaiveDateTime = r
             .get::<Option<NaiveDateTime>, _>("invoice_date")
             .unwrap_or_else(|| r.get("created_at"));
@@ -1329,9 +1328,8 @@ impl InvoicesV2Service for SqlxInvoices {
             .map(f64n)
             .unwrap_or(0.0);
         let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
-        let store_id = store_id.ok_or_else(|| {
-            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
-        })?;
+        let store_id =
+            store_id.ok_or_else(|| de(format!("Накладну з ID '{id}' не прив'язано до точки")))?;
         // Відкат залишків: stock−; fiscal max(0, ...).
         let items = sqlx::query(
             "SELECT product_id, quantity::text AS q FROM invoice_items WHERE invoice_id = $1",
@@ -1418,9 +1416,8 @@ impl SqlxInvoices {
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
         let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
-        let _store_id = store_id.ok_or_else(|| {
-            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
-        })?;
+        let _store_id =
+            store_id.ok_or_else(|| de(format!("Накладну з ID '{id}' не прив'язано до точки")))?;
         let pm: Option<String> = r.get("pm");
         let op_date: NaiveDateTime = r
             .get::<Option<NaiveDateTime>, _>("invoice_date")
@@ -1525,9 +1522,8 @@ impl SqlxInvoices {
             .get::<Option<String>, _>("total")
             .unwrap_or_else(|| "0".into());
         let store_id: Option<Uuid> = r.try_get("store_id").ok().flatten();
-        let store_id = store_id.ok_or_else(|| {
-            de(format!("Накладну з ID '{id}' не прив'язано до точки"))
-        })?;
+        let store_id =
+            store_id.ok_or_else(|| de(format!("Накладну з ID '{id}' не прив'язано до точки")))?;
         let items = sqlx::query(
             "SELECT product_id, quantity::text AS q FROM invoice_items WHERE invoice_id = $1",
         )

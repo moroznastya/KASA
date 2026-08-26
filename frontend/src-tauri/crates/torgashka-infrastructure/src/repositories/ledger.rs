@@ -17,10 +17,10 @@
 //! ВХІДНУ scale amount (identity map Python), GET — scale БД numeric(12,2).
 //! v2 — float (Pydantic float).
 
+use crate::store_ctx::StorePool;
 use chrono::NaiveDateTime;
 use rust_decimal::Decimal;
-use sqlx::{Row};
-use crate::store_ctx::StorePool;
+use sqlx::Row;
 use std::str::FromStr;
 use uuid::Uuid;
 

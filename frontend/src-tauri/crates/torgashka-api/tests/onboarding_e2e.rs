@@ -113,7 +113,11 @@ async fn put_onboarding_completed_persists_in_db() {
         .send()
         .await
         .expect("PUT restore");
-    assert!(restore.status().is_success(), "restore status: {}", restore.status());
+    assert!(
+        restore.status().is_success(),
+        "restore status: {}",
+        restore.status()
+    );
     let back: bool = sqlx::query_scalar("SELECT onboarding_completed FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(&pool)

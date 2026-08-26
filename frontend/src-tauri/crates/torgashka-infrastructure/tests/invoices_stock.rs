@@ -10,7 +10,10 @@
 //!
 //! Потребує PostgreSQL (DATABASE_URL або DB_* у backend/.env, як Python-еталон).
 
-use torgashka_domain::{invoices::{InvoiceCreateV1Input, InvoiceItemV1Input}, InvoicesV1Service};
+use torgashka_domain::{
+    invoices::{InvoiceCreateV1Input, InvoiceItemV1Input},
+    InvoicesV1Service,
+};
 use torgashka_infrastructure::{
     db,
     repositories::invoices::SqlxInvoices,
@@ -88,11 +91,12 @@ async fn make_supplier(p: &sqlx::PgPool, name: &str) -> Uuid {
 }
 
 async fn product_stock(p: &sqlx::PgPool, id: Uuid) -> rust_decimal::Decimal {
-    let s: String = sqlx::query_scalar("SELECT COALESCE(stock, 0)::text FROM products WHERE id = $1")
-        .bind(id)
-        .fetch_one(p)
-        .await
-        .expect("read products.stock");
+    let s: String =
+        sqlx::query_scalar("SELECT COALESCE(stock, 0)::text FROM products WHERE id = $1")
+            .bind(id)
+            .fetch_one(p)
+            .await
+            .expect("read products.stock");
     s.parse().expect("products.stock decimal")
 }
 
@@ -140,8 +144,14 @@ async fn confirm_invoice_updates_products_stock_and_store_stock() {
     .expect("create invoice");
 
     // До confirm: products.stock = 0, stock.quantity = 0.
-    assert_eq!(product_stock(&p, product_id).await, rust_decimal::Decimal::ZERO);
-    assert_eq!(store_stock(&p, product_id, ctx.store_id).await, rust_decimal::Decimal::ZERO);
+    assert_eq!(
+        product_stock(&p, product_id).await,
+        rust_decimal::Decimal::ZERO
+    );
+    assert_eq!(
+        store_stock(&p, product_id, ctx.store_id).await,
+        rust_decimal::Decimal::ZERO
+    );
 
     // Confirm прибуткової (qty=1).
     with_store_ctx(ctx.clone(), async {
@@ -153,8 +163,16 @@ async fn confirm_invoice_updates_products_stock_and_store_stock() {
     // ФІКС: products.stock збільшився на 1 (Python-еталон), stock.quantity теж.
     let ps = product_stock(&p, product_id).await;
     let ss = store_stock(&p, product_id, ctx.store_id).await;
-    assert_eq!(ps, rust_decimal::Decimal::ONE, "products.stock має бути 1 після прибуткової qty=1, отримано {ps}");
-    assert_eq!(ss, rust_decimal::Decimal::ONE, "stock.quantity має бути 1 після прибуткової qty=1, отримано {ss}");
+    assert_eq!(
+        ps,
+        rust_decimal::Decimal::ONE,
+        "products.stock має бути 1 після прибуткової qty=1, отримано {ps}"
+    );
+    assert_eq!(
+        ss,
+        rust_decimal::Decimal::ONE,
+        "stock.quantity має бути 1 після прибуткової qty=1, отримано {ss}"
+    );
 
     // Cancel: обидва повертаються до 0 (Python cancel_invoice: quantity_change=-qty).
     with_store_ctx(ctx.clone(), async {
@@ -165,8 +183,16 @@ async fn confirm_invoice_updates_products_stock_and_store_stock() {
 
     let ps = product_stock(&p, product_id).await;
     let ss = store_stock(&p, product_id, ctx.store_id).await;
-    assert_eq!(ps, rust_decimal::Decimal::ZERO, "products.stock має бути 0 після cancel, отримано {ps}");
-    assert_eq!(ss, rust_decimal::Decimal::ZERO, "stock.quantity має бути 0 після cancel, отримано {ss}");
+    assert_eq!(
+        ps,
+        rust_decimal::Decimal::ZERO,
+        "products.stock має бути 0 після cancel, отримано {ps}"
+    );
+    assert_eq!(
+        ss,
+        rust_decimal::Decimal::ZERO,
+        "stock.quantity має бути 0 після cancel, отримано {ss}"
+    );
 
     // cleanup
     let _ = sqlx::query("DELETE FROM invoice_items WHERE invoice_id = $1")

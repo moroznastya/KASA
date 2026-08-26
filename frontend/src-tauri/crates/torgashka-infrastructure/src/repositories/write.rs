@@ -12,9 +12,9 @@
 //! Відповіді POST/PUT зберігають ВХІДНУ scale Decimal (Python identity map):
 //! `"142.7"` ≠ `"142.70"`. GET/confirm читають scale колонки (`::text`).
 
-use chrono::NaiveDateTime;
-use sqlx::{Row};
 use crate::store_ctx::{current_store_ctx, StorePool};
+use chrono::NaiveDateTime;
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_domain::{
@@ -995,11 +995,9 @@ impl WriteDirectories for SqlxWriteDirectories {
             }
         };
 
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| WriteError::BadRequest(
-                "Відсутній контекст точки (X-Store-Id)".to_string(),
-            ))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            WriteError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let id = Uuid::new_v4();
         let row = sqlx::query(
             "INSERT INTO inventories (id, number, location, store_id, inventory_date, status, notes, \
@@ -1339,14 +1337,13 @@ impl SqlxWriteDirectories {
         inventory_id: Uuid,
         sign: i32,
     ) -> Result<(), WriteError> {
-        let store_id: Option<Uuid> = sqlx::query_scalar(
-            "SELECT store_id FROM inventories WHERE id = $1",
-        )
-        .bind(inventory_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .wr()?
-        .flatten();
+        let store_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT store_id FROM inventories WHERE id = $1")
+                .bind(inventory_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .wr()?
+                .flatten();
         let store_id = store_id.ok_or_else(|| {
             WriteError::BadRequest(format!(
                 "Інвентаризацію '{inventory_id}' не прив'язано до точки"

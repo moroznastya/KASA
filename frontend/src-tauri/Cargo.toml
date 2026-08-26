@@ -38,6 +38,7 @@ dirs-next = "2"
 # ── Крейт інфраструктури: апаратні інтеграції, друк, офлайн-БД ───────────
 torgashka-infrastructure = { path = "crates/torgashka-infrastructure" }
 torgashka-api = { path = "crates/torgashka-api" }
+torgashka-prro = { path = "crates/torgashka-prro" }
 # ── SIGTERM для graceful shutdown фасаду (Unix) ─────────────────────────
 tokio = { version = "1", features = ["rt", "signal", "net"] }
 

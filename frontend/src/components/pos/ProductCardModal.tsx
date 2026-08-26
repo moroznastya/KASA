@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Plus, ImageOff, ShoppingCart, Scale } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { useDevicesStore } from '@/store/devicesStore';
+import { devicesApi } from '@/services/tauri/devices';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, formatUnit } from '@/utils/format';
@@ -51,6 +52,17 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
         quantityInputRef.current?.focus();
         quantityInputRef.current?.select();
       }, 100);
+    }
+    // Ваговий товар: передати ціну за кг на ваги (протокол 5, Режим 2),
+    // щоб ваги рахували вартість. При закритті — скинути (Режим 3).
+    if (product?.is_weight) {
+      const scale = devices.find((d) => d.deviceType === 'scale' && d.enabled);
+      if (scale) {
+        const price = parseFloat(String(product.price)) || 0;
+        devicesApi
+          .setScalePrice(scale.id, isOpen ? price : null)
+          .catch((err) => console.error('setScalePrice:', err));
+      }
     }
   }, [isOpen, product?.id]);
 

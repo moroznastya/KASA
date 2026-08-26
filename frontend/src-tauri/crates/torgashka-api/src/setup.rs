@@ -54,12 +54,8 @@ impl From<AuthRouteError> for SetupHttpError {
             AuthRouteError::Plain(err) => {
                 use torgashka_domain::AuthError;
                 match err {
-                    AuthError::BadRequest(m) => {
-                        SetupHttpError::Service(SetupError::BadRequest(m))
-                    }
-                    AuthError::Conflict(m) => {
-                        SetupHttpError::Service(SetupError::Conflict(m))
-                    }
+                    AuthError::BadRequest(m) => SetupHttpError::Service(SetupError::BadRequest(m)),
+                    AuthError::Conflict(m) => SetupHttpError::Service(SetupError::Conflict(m)),
                     _ => SetupHttpError::Service(SetupError::Infrastructure(
                         "Помилка генерації токенів".to_string(),
                     )),
@@ -108,9 +104,7 @@ fn setup_svc(state: &AppState) -> Result<Arc<dyn SetupService + Send + Sync>, Se
 }
 
 /// GET /api/v1/setup/status — публічний, без JWT.
-pub async fn status(
-    State(state): State<AppState>,
-) -> Result<Json<SetupStatusDto>, SetupHttpError> {
+pub async fn status(State(state): State<AppState>) -> Result<Json<SetupStatusDto>, SetupHttpError> {
     let svc = setup_svc(&state)?;
     Ok(Json(svc.status().await?))
 }

@@ -18,8 +18,7 @@ use axum::{
 };
 
 use torgashka_domain::{
-    AvailabilityItemDto, StoreCreateInput, StoreDto, StoreError, StoreService,
-    UserStoreAssignInput,
+    AvailabilityItemDto, StoreCreateInput, StoreDto, StoreError, StoreService, UserStoreAssignInput,
 };
 
 use crate::AppState;
@@ -40,22 +39,26 @@ impl IntoResponse for StoreErr {
     fn into_response(self) -> Response {
         match self {
             StoreErr::Service(e) => match e {
-                StoreError::NotFound(msg) => {
-                    (StatusCode::NOT_FOUND, Json(serde_json::json!({"detail": msg})))
-                        .into_response()
-                }
-                StoreError::BadRequest(msg) => {
-                    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"detail": msg})))
-                        .into_response()
-                }
-                StoreError::Forbidden(msg) => {
-                    (StatusCode::FORBIDDEN, Json(serde_json::json!({"detail": msg})))
-                        .into_response()
-                }
-                StoreError::Conflict(msg) => {
-                    (StatusCode::CONFLICT, Json(serde_json::json!({"detail": msg})))
-                        .into_response()
-                }
+                StoreError::NotFound(msg) => (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"detail": msg})),
+                )
+                    .into_response(),
+                StoreError::BadRequest(msg) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"detail": msg})),
+                )
+                    .into_response(),
+                StoreError::Forbidden(msg) => (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"detail": msg})),
+                )
+                    .into_response(),
+                StoreError::Conflict(msg) => (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"detail": msg})),
+                )
+                    .into_response(),
                 StoreError::Infrastructure(msg) => {
                     eprintln!("[torgashka-api] stores: {msg}");
                     (
@@ -70,18 +73,15 @@ impl IntoResponse for StoreErr {
 }
 
 fn store_svc(state: &AppState) -> Result<std::sync::Arc<dyn StoreService + Send + Sync>, StoreErr> {
-    state
-        .stores
-        .clone()
-        .ok_or_else(|| StoreErr::Service(StoreError::BadRequest(
+    state.stores.clone().ok_or_else(|| {
+        StoreErr::Service(StoreError::BadRequest(
             "Rust-гілка точок вимкнена".to_string(),
-        )))
+        ))
+    })
 }
 
 /// GET /api/v1/stores → 200 [StoreDto]
-pub async fn list_stores(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<StoreDto>>, StoreErr> {
+pub async fn list_stores(State(state): State<AppState>) -> Result<Json<Vec<StoreDto>>, StoreErr> {
     let svc = store_svc(&state)?;
     Ok(Json(svc.list_stores().await?))
 }

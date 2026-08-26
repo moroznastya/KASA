@@ -212,9 +212,7 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
             .execute(pool)
             .await
             .map_err(DbError::Sqlx)?;
-        eprintln!(
-            "[torgashka-infrastructure] схема БД застосована (fresh install: 34 таблиці)"
-        );
+        eprintln!("[torgashka-infrastructure] схема БД застосована (fresh install: 34 таблиці)");
     }
     sqlx::raw_sql(OWNERS_DB_DDL)
         .execute(pool)

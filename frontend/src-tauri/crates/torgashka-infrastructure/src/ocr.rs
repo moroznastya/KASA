@@ -2,10 +2,10 @@
 //! 1:1 Python `InvoiceOCRService._find_product_by_barcode` / `_find_product_by_name`
 //! (таблиці `barcodes` + `products`).
 
+use crate::store_ctx::StorePool;
 use async_trait::async_trait;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use crate::store_ctx::StorePool;
 use torgashka_ocr::{OcrRepoError, OcrRepository, ProductLookup};
 use uuid::Uuid;
 

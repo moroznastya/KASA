@@ -1,9 +1,9 @@
 //! SqlxPrroRepository — PostgreSQL-реалізація `torgashka_prro::prro::PrroRepository`.
 
+use crate::store_ctx::StorePool;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rust_decimal::Decimal;
-use crate::store_ctx::StorePool;
 use torgashka_prro::prro::{
     PrroQueueItem, PrroQueueStatus, PrroRepoError, PrroRepository, PrroSetting, PrroShift,
     PrroShiftStatus,

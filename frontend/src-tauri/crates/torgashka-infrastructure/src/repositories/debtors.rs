@@ -13,9 +13,9 @@
 //!
 //! Decimal-поля: `::text` → рядок зі scale колонки (Python Pydantic Decimal).
 
-use chrono::{NaiveDateTime, Utc};
-use sqlx::{Row};
 use crate::store_ctx::StorePool;
+use chrono::{NaiveDateTime, Utc};
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_domain::{

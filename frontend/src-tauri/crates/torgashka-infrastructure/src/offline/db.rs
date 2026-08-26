@@ -63,12 +63,7 @@ impl OfflineDatabase {
     ///
     /// Перевірка через `PRAGMA table_info(<table>)`: якщо колонка вже існує —
     /// ALTER TABLE не виконується. Повторний запуск безпечний.
-    fn ensure_column(
-        &self,
-        table: &str,
-        column: &str,
-        column_ddl: &str,
-    ) -> Result<(), String> {
+    fn ensure_column(&self, table: &str, column: &str, column_ddl: &str) -> Result<(), String> {
         let mut stmt = self
             .conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -85,11 +80,13 @@ impl OfflineDatabase {
         }
 
         self.conn
-            .execute(
-                &format!("ALTER TABLE {table} ADD COLUMN {column_ddl}"),
-                [],
-            )
-            .map_err(|e| format!("Помилка міграції: ALTER TABLE {table} ADD COLUMN {column}: {}", e))?;
+            .execute(&format!("ALTER TABLE {table} ADD COLUMN {column_ddl}"), [])
+            .map_err(|e| {
+                format!(
+                    "Помилка міграції: ALTER TABLE {table} ADD COLUMN {column}: {}",
+                    e
+                )
+            })?;
 
         Ok(())
     }
@@ -191,15 +188,17 @@ impl OfflineDatabase {
                 let data = serde_json::to_string(product)
                     .map_err(|e| format!("Помилка серіалізації: {}", e))?;
 
-                self.conn.execute(
-                    "INSERT INTO products (id, data, store_id, updated_at)
+                self.conn
+                    .execute(
+                        "INSERT INTO products (id, data, store_id, updated_at)
                      VALUES (?1, ?2, ?3, datetime('now'))
                      ON CONFLICT(id) DO UPDATE SET
                          data = ?2,
                          store_id = ?3,
                          updated_at = datetime('now')",
-                    params![id, data, store_id],
-                ).map_err(|e| format!("Помилка вставки товару: {}", e))?;
+                        params![id, data, store_id],
+                    )
+                    .map_err(|e| format!("Помилка вставки товару: {}", e))?;
 
                 count += 1;
             }
@@ -240,12 +239,15 @@ impl OfflineDatabase {
     ) -> Result<String, String> {
         let products: Vec<serde_json::Value> = if let Some(q) = query {
             let pattern = format!("%{}%", q);
-            let mut stmt = self.conn.prepare(
-                "SELECT data FROM products
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT data FROM products
                  WHERE data LIKE ?1
                    AND (?2 IS NULL OR store_id = ?2 OR store_id IS NULL)
-                 ORDER BY updated_at DESC LIMIT ?3"
-            ).map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
+                 ORDER BY updated_at DESC LIMIT ?3",
+                )
+                .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
             let rows = stmt
                 .query_map(params![pattern, store_id, limit as i64], |row| {
@@ -408,7 +410,9 @@ impl OfflineDatabase {
     pub fn get_unsynced_receipts(&self) -> Result<Vec<serde_json::Value>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, data, store_id FROM receipts WHERE synced = 0 ORDER BY created_at ASC")
+            .prepare(
+                "SELECT id, data, store_id FROM receipts WHERE synced = 0 ORDER BY created_at ASC",
+            )
             .map_err(|e| format!("Помилка підготовки запиту: {}", e))?;
 
         let rows = stmt

@@ -8,9 +8,9 @@
 //! - `list_categories` / `list_suppliers` — `ORDER BY name` + LIMIT/OFFSET,
 //!   balance через підзапит SUM(supplier_ledger.amount).
 
+use crate::store_ctx::StorePool;
 use chrono::NaiveDateTime;
 use sqlx::{QueryBuilder, Row};
-use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use rust_decimal::Decimal as RDecimal;

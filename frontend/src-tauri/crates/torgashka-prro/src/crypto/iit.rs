@@ -8,6 +8,7 @@
 //! стабільних функцій C ABI ручні `extern "C"` сигнатури — це точний аналог
 //! ctypes-еталона (перевірено в продукти місяцями).
 
+use base64::Engine as _;
 use libloading::Library;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -643,6 +644,250 @@ fn find_signer_cert(certs: &[Vec<u8>]) -> Option<Vec<u8>> {
 /// С-рядок з Rust-рядка (без NUL у Rust-частині; буфер із завершальним NUL).
 fn cstr(s: &str) -> std::ffi::CString {
     std::ffi::CString::new(s).expect("NUL у C-рядку")
+}
+
+// ─── Ізоляція SDK у субпроцесі (SIGSEGV/#GP-захист) ────────────────────────
+// EUSignCP (cspb.so/euscp.so) — нестабільний C-blob: історія SIGSEGV/#GP
+// (rbx-баг, вирівнювання стека, порядок free, b64_out). Навіть після фіксів
+// обгортки (ffi/euscp_wrappers.c) інший шлях може впасти — #GP вбиває ВЕСЬ
+// процес БЕЗ panic-повідомлення (відтворено: release, cspb.so offset 0x7a925).
+// Тому ВСІ FFI-виклики SDK виконуються у ДОЧІРНЬОМУ процесі: крах SDK вбиває
+// лише хелпер, батько отримує чисту помилку → HTTP 400, Torgashka виживає.
+// Хелпер — той самий бінарник (current_exe) у режимі SDK_HELPER_ENV: перевірка
+// стоїть на самому початку main() (див. src/main.rs Tauri + bin/facade.rs).
+
+/// Env-маркер режиму SDK-хелпера (викликається ДО ініціалізації застосунку).
+pub const SDK_HELPER_ENV: &str = "TORGASHKA_PRRO_SDK_HELPER";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HelperRequest {
+    mode: String, // "sign" | "verify"
+    key_path: String,
+    password: String,
+    #[serde(default)]
+    data_b64: String,
+    #[serde(default)]
+    sig_b64: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HelperResponse {
+    ok: bool,
+    #[serde(default)]
+    sig_b64: String,
+    #[serde(default)]
+    verified: bool,
+    #[serde(default)]
+    error: String,
+}
+
+fn err_resp(msg: &str) -> HelperResponse {
+    HelperResponse {
+        ok: false,
+        sig_b64: String::new(),
+        verified: false,
+        error: msg.to_string(),
+    }
+}
+
+/// Точка входу хелпера (з main() коли SDK_HELPER_ENV встановлено).
+/// Повертає код виходу процесу. Жоден FFI-виклик SDK тут НЕ може
+/// вбити основний процес — він вже ізольований у дочірньому.
+pub fn sdk_helper_main() -> i32 {
+    use std::io::Read as _;
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return 1;
+    }
+    let req: HelperRequest = match serde_json::from_str(&input) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[prro-sdk-helper] JSON-помилка: {e}");
+            return 1;
+        }
+    };
+    let resp = run_helper(&req);
+    let out = serde_json::to_string(&resp)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize"}"#.to_string());
+    println!("{out}");
+    if resp.ok {
+        0
+    } else {
+        1
+    }
+}
+
+fn run_helper(req: &HelperRequest) -> HelperResponse {
+    let so = match crate::crypto::default_iit_sdk_path() {
+        Some(p) => p,
+        None => return err_resp("euscp.so не знайдено (backend/vendor/iit-sdk)"),
+    };
+    let store = match crate::crypto::default_iit_cert_store() {
+        Some(p) => p,
+        None => return err_resp("certs каталог SDK не знайдено"),
+    };
+    let mut sdk = match IitSdk::load(&so) {
+        Ok(s) => s,
+        Err(e) => return err_resp(&e.to_string()),
+    };
+    if let Err(e) = sdk.initialize(None, &store) {
+        return err_resp(&e.to_string());
+    }
+    if let Err(e) = sdk.load_jks_key(Path::new(&req.key_path), &req.password) {
+        return err_resp(&e.to_string());
+    }
+    match req.mode.as_str() {
+        "sign" => {
+            let data = match base64::engine::general_purpose::STANDARD.decode(&req.data_b64) {
+                Ok(d) => d,
+                Err(e) => return err_resp(&format!("base64 даних: {e}")),
+            };
+            match sdk.sign_data_internal(&data) {
+                Ok(sig) => HelperResponse {
+                    ok: true,
+                    sig_b64: base64::engine::general_purpose::STANDARD.encode(sig),
+                    verified: false,
+                    error: String::new(),
+                },
+                Err(e) => err_resp(&e.to_string()),
+            }
+        }
+        "verify" => {
+            let sig = match base64::engine::general_purpose::STANDARD.decode(&req.sig_b64) {
+                Ok(s) => s,
+                Err(e) => return err_resp(&format!("base64 підпису: {e}")),
+            };
+            let expected = if req.data_b64.is_empty() {
+                None
+            } else {
+                match base64::engine::general_purpose::STANDARD.decode(&req.data_b64) {
+                    Ok(d) => Some(d),
+                    Err(e) => return err_resp(&format!("base64 даних: {e}")),
+                }
+            };
+            match sdk.verify_data_internal(&sig, expected.as_deref()) {
+                Ok(v) => HelperResponse {
+                    ok: true,
+                    sig_b64: String::new(),
+                    verified: v,
+                    error: String::new(),
+                },
+                Err(e) => err_resp(&e.to_string()),
+            }
+        }
+        other => err_resp(&format!("невідомий режим хелпера: {other}")),
+    }
+}
+
+/// Запускає субпроцес-хелпер і повертає його відповідь.
+/// Якщо SDK впаде (#GP/SIGSEGV) — хелпер вмирає, батько отримує чисту помилку.
+/// Шлях до бінарника SDK-хелпера:
+/// 1) env TORGASHKA_PRRO_SDK_HELPER_BIN (тести: CARGO_BIN_EXE_prro-sdk-helper;
+///    упаковка: окремий бін поряд із застосунком);
+/// 2) current_exe — основний бінарник (Tauri app / facade) у режимі
+///    SDK_HELPER_ENV (диспетчер стоїть на початку main()).
+fn helper_exe() -> Result<PathBuf, IitSdkError> {
+    if let Ok(p) = std::env::var("TORGASHKA_PRRO_SDK_HELPER_BIN") {
+        let p = p.trim().to_string();
+        if !p.is_empty() {
+            let pb = PathBuf::from(p);
+            if pb.is_file() {
+                return Ok(pb);
+            }
+            return Err(IitSdkError::Generic(format!(
+                "TORGASHKA_PRRO_SDK_HELPER_BIN не існує: {}",
+                pb.display()
+            )));
+        }
+    }
+    std::env::current_exe().map_err(|e| IitSdkError::Generic(format!("current_exe: {e}")))
+}
+
+fn run_subprocess(req: &HelperRequest) -> Result<HelperResponse, IitSdkError> {
+    let exe = helper_exe()?;
+    let mut child = std::process::Command::new(&exe)
+        .env(SDK_HELPER_ENV, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| IitSdkError::Generic(format!("spawn SDK-хелпера: {e}")))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| IitSdkError::Generic("stdin SDK-хелпера недоступний".into()))?;
+        let body = serde_json::to_string(req)
+            .map_err(|e| IitSdkError::Generic(format!("JSON запиту: {e}")))?;
+        stdin
+            .write_all(body.as_bytes())
+            .map_err(|e| IitSdkError::Generic(format!("запис у stdin хелпера: {e}")))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| IitSdkError::Generic(format!("очікування хелпера: {e}")))?;
+    // Субпроцес убитий сигналом (SIGSEGV/SIGBUS/SIGILL/#GP в SDK) —
+    // перетворюємо на ЧИСТУ помилку, процес Torgashka виживає.
+    #[cfg(unix)]
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&out.status) {
+        return Err(IitSdkError::Generic(format!(
+            "крипто-ядро ІІТ (EUSignCP) впало у субпроцесі (сигнал {sig}); операцію перервано — процес Torgashka вцілів"
+        )));
+    }
+    if !out.status.success() {
+        return Err(IitSdkError::Generic(format!(
+            "SDK-хелпер завершився з помилкою: {}",
+            out.status
+        )));
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| IitSdkError::Generic(format!("JSON відповіді хелпера: {e}")))
+}
+
+/// Підписує дані через ізольований субпроцес (SDK-крах не вбиває батька).
+pub fn sign_via_subprocess(
+    key_path: &Path,
+    password: &str,
+    data: &[u8],
+) -> Result<Vec<u8>, IitSdkError> {
+    let req = HelperRequest {
+        mode: "sign".to_string(),
+        key_path: key_path.to_string_lossy().into_owned(),
+        password: password.to_string(),
+        data_b64: base64::engine::general_purpose::STANDARD.encode(data),
+        sig_b64: String::new(),
+    };
+    let resp = run_subprocess(&req)?;
+    if !resp.ok {
+        return Err(IitSdkError::Sign(resp.error));
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(&resp.sig_b64)
+        .map_err(|e| IitSdkError::Sign(format!("base64 підпису: {e}")))
+}
+
+/// Перевіряє підпис через ізольований субпроцес.
+pub fn verify_via_subprocess(
+    key_path: &Path,
+    password: &str,
+    signature: &[u8],
+    expected_data: Option<&[u8]>,
+) -> Result<bool, IitSdkError> {
+    let req = HelperRequest {
+        mode: "verify".to_string(),
+        key_path: key_path.to_string_lossy().into_owned(),
+        password: password.to_string(),
+        data_b64: expected_data
+            .map(|d| base64::engine::general_purpose::STANDARD.encode(d))
+            .unwrap_or_default(),
+        sig_b64: base64::engine::general_purpose::STANDARD.encode(signature),
+    };
+    let resp = run_subprocess(&req)?;
+    if !resp.ok {
+        return Err(IitSdkError::Sign(resp.error));
+    }
+    Ok(resp.verified)
 }
 
 #[cfg(test)]

@@ -28,9 +28,7 @@ use crate::AppState;
 
 /// Шляхи, що НЕ вимагають X-Store-Id (але потребують JWT-контексту).
 fn is_store_management_path(path: &str) -> bool {
-    path == "/api/v1/stores"
-        || path.starts_with("/api/v1/stores/")
-        || path == "/api/v1/user-stores"
+    path == "/api/v1/stores" || path.starts_with("/api/v1/stores/") || path == "/api/v1/user-stores"
 }
 
 /// Публічні шляхи (JWT не обов'язковий → контекст не потрібен).
@@ -64,7 +62,11 @@ async fn check_store_access(pool: &StorePool, ctx: &StoreCtx) -> bool {
 }
 
 /// Middleware StoreContext: валідація X-Store-Id + task-local контекст.
-pub async fn store_middleware(State(state): State<AppState>, req: axum::http::Request<axum::body::Body>, next: Next) -> Response {
+pub async fn store_middleware(
+    State(state): State<AppState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Response {
     let path = req.uri().path().to_string();
     if req.method() == Method::OPTIONS || is_public_path(&path) {
         return next.run(req).await;
@@ -72,12 +74,7 @@ pub async fn store_middleware(State(state): State<AppState>, req: axum::http::Re
     // Claims (JWT) — встановлені auth_middleware для непублічних шляхів.
     let claims = match req.extensions().get::<Claims>().cloned() {
         Some(c) => c,
-        None => {
-            return json_error(
-                StatusCode::UNAUTHORIZED,
-                "Відсутній контекст авторизації",
-            )
-        }
+        None => return json_error(StatusCode::UNAUTHORIZED, "Відсутній контекст авторизації"),
     };
     let user_id = match Uuid::parse_str(&claims.sub) {
         Ok(u) => u,

@@ -117,14 +117,26 @@ async fn cash_operations_http_roundtrip() {
         .send()
         .await
         .expect("POST deposit");
-    assert_eq!(resp.status(), 201, "deposit має бути 201: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status(),
+        201,
+        "deposit має бути 201: {}",
+        resp.text().await.unwrap_or_default()
+    );
     let dto: serde_json::Value = resp.json().await.expect("deposit json");
     assert_eq!(dto["operation_type"], "deposit");
     assert_eq!(dto["cash_type"], "cash", "cash_type з JSON: {dto}");
-    assert_eq!(dto["amount"], "500.00", "amount зберігає scale колонки: {dto}");
+    assert_eq!(
+        dto["amount"], "500.00",
+        "amount зберігає scale колонки: {dto}"
+    );
     assert_eq!(dto["user_name"], "E2E Тест");
     assert_eq!(dto["store_id"], STORE_ID);
-    assert_eq!(dto["user_id"].as_str().map(|s| s.to_lowercase()), Some(admin_id.to_string()), "user_id з JWT: {dto}");
+    assert_eq!(
+        dto["user_id"].as_str().map(|s| s.to_lowercase()),
+        Some(admin_id.to_string()),
+        "user_id з JWT: {dto}"
+    );
 
     // 2. POST collection → 201.
     let resp = client
@@ -166,8 +178,14 @@ async fn cash_operations_http_roundtrip() {
         .expect("GET");
     assert_eq!(resp.status(), 200, "GET має бути 200");
     let list: serde_json::Value = resp.json().await.expect("list json");
-    assert_eq!(list["balances"]["cash"], "500.00", "баланс готівкової каси: {list}");
-    assert_eq!(list["balances"]["card"], "-49.50", "баланс безготівкової каси: {list}");
+    assert_eq!(
+        list["balances"]["cash"], "500.00",
+        "баланс готівкової каси: {list}"
+    );
+    assert_eq!(
+        list["balances"]["card"], "-49.50",
+        "баланс безготівкової каси: {list}"
+    );
     let ops = list["operations"].as_array().expect("operations масив");
     assert!(ops.len() >= 2, "має бути ≥2 операцій: {list}");
     assert!(ops.iter().all(|o| o["user_name"] == "E2E Тест"));
@@ -208,7 +226,9 @@ async fn cash_operations_http_roundtrip() {
     // 6. Касир (role=cashier) → 403 (require_admin: тільки admin|owner).
     let cashier_id = setup_test_user(&pool, CASHIER_LOGIN, "cashier").await;
     let cashier_auth = login(&client, &base, CASHIER_LOGIN).await;
-    let cashier_token = cashier_auth["access_token"].as_str().expect("cashier token");
+    let cashier_token = cashier_auth["access_token"]
+        .as_str()
+        .expect("cashier token");
     let resp = client
         .post(format!("{base}/api/v1/cash-operations"))
         .bearer_auth(cashier_token)
@@ -217,7 +237,12 @@ async fn cash_operations_http_roundtrip() {
         .send()
         .await
         .expect("POST cashier");
-    assert_eq!(resp.status(), 403, "касир має отримати 403: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status(),
+        403,
+        "касир має отримати 403: {}",
+        resp.text().await.unwrap_or_default()
+    );
     let resp = client
         .get(format!("{base}/api/v1/cash-operations"))
         .bearer_auth(cashier_token)

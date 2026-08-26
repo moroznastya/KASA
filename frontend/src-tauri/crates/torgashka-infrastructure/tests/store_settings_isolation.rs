@@ -103,11 +103,9 @@ async fn create_store_copies_settings_and_templates_per_store() {
         phone: None,
     };
     let svc = SqlxStoreService::new(store_pool.clone());
-    let dto = with_store_ctx(source_ctx.clone(), async {
-        svc.create_store(&input).await
-    })
-    .await
-    .expect("create_store виконується");
+    let dto = with_store_ctx(source_ctx.clone(), async { svc.create_store(&input).await })
+        .await
+        .expect("create_store виконується");
     let new_store = dto.id;
 
     // 2) Копіювання: нова точка має СТІЛЬКИ ж налаштувань і шаблонів.
@@ -164,22 +162,20 @@ async fn create_store_copies_settings_and_templates_per_store() {
     .await
     .expect("settings_update_key виконується");
 
-    let new_val: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM system_settings WHERE store_id = $1 AND key = $2",
-    )
-    .bind(new_store)
-    .bind(&first_key)
-    .fetch_one(&pool)
-    .await
-    .expect("значення у новій точці");
-    let src_val: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM system_settings WHERE store_id = $1 AND key = $2",
-    )
-    .bind(source_store)
-    .bind(&first_key)
-    .fetch_one(&pool)
-    .await
-    .expect("значення у донора");
+    let new_val: Option<String> =
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE store_id = $1 AND key = $2")
+            .bind(new_store)
+            .bind(&first_key)
+            .fetch_one(&pool)
+            .await
+            .expect("значення у новій точці");
+    let src_val: Option<String> =
+        sqlx::query_scalar("SELECT value FROM system_settings WHERE store_id = $1 AND key = $2")
+            .bind(source_store)
+            .bind(&first_key)
+            .fetch_one(&pool)
+            .await
+            .expect("значення у донора");
 
     assert_eq!(
         new_val.as_deref(),

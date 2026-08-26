@@ -15,24 +15,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{Extension, Path, Query, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
+use bigdecimal::BigDecimal;
 use chrono::{Datelike, NaiveDateTime};
 use serde::Deserialize;
-use bigdecimal::BigDecimal;
 use serde_json::Value;
 use uuid::Uuid;
 
 use torgashka_application::PosServiceFacade;
 use torgashka_domain::{
-    CashOperationCreateInput, CashOperationDto, CashOperationsListDto, CashOperationType,
-    CashType,
-    DebtPaymentInput, DocItemInput, PosError, WriteError, ReceiptCreateInput, ReceiptItemInput,
+    CashOperationCreateInput, CashOperationDto, CashOperationType, CashOperationsListDto, CashType,
+    DebtPaymentInput, DocItemInput, PosError, ReceiptCreateInput, ReceiptItemInput,
     ReceiptListQuery, ReceiptSearchQuery, ReceiptV1CreateInput, ReceiptV1ItemInput,
-    TransferCreateInput, TransferUpdateInput, WriteOffCreateInput, WriteOffReasonItem,
+    TransferCreateInput, TransferUpdateInput, WriteError, WriteOffCreateInput, WriteOffReasonItem,
     WriteOffReasonsListDto, WriteOffUpdateInput,
 };
 use torgashka_infrastructure::store_ctx::current_store_ctx;
@@ -1316,47 +1315,69 @@ pub async fn list_shifts(
 }
 
 /// POST /api/v2/prro/shift/open
+///
+/// Тіло ОПЦІЙНЕ: {"comment": "..."} (1:1 Python Optional body). Frontend шле
+/// запит БЕЗ тіла і БЕЗ Content-Type, коли коментар не задано (axios
+/// data=undefined) — axum-extractor `Json<Value>` відхиляв це 415
+/// Unsupported Media Type. Тепер тіло читається вручну (як у
+/// prro::fiscalize_receipt): порожнє → comment=None, НЕ 415.
 pub async fn open_shift(
     State(state): State<AppState>,
-    Json(body): Json<Value>,
+    req: Request,
 ) -> Result<Json<torgashka_domain::PrroShiftDto>, PosErr> {
-    let comment = body
-        .get("comment")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
+    let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let comment = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
+            v.get("comment")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        })
+    };
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok(Json(svc.open_shift(comment).await?))
 }
 
 /// POST /api/v2/prro/shift/close
+///
+/// Тіло ОПЦІЙНЕ (як у open_shift): порожнє тіло/відсутній Content-Type →
+/// comment=None, НЕ 415.
 pub async fn close_shift(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
-    Json(body): Json<Value>,
+    req: Request,
 ) -> Result<Json<torgashka_domain::PrroShiftDto>, PosErr> {
     require_admin(&state, &claims).await?;
-    let comment = body
-        .get("comment")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
+    let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let comment = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
+            v.get("comment")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        })
+    };
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok(Json(svc.close_shift(comment).await?))
 }
 
-
 // ─── Готівкові операції (внесення/інкасація) ───────────────────────────────
 
 /// store_id з поточного StoreCtx (проставляється middleware з X-Store-Id).
 fn current_store_id() -> Result<Uuid, PosErr> {
-    current_store_ctx()
-        .map(|c| c.store_id)
-        .ok_or_else(|| {
-            PosErr::Service(PosError::BadRequest(
-                "Відсутній контекст точки (X-Store-Id)".to_string(),
-            ))
-        })
+    current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+        PosErr::Service(PosError::BadRequest(
+            "Відсутній контекст точки (X-Store-Id)".to_string(),
+        ))
+    })
 }
 
 /// POST /api/v1/cash-operations → 201 (внесення/інкасація; admin|owner).
@@ -1435,7 +1456,12 @@ fn parse_cash_amount(v: &Value) -> Result<BigDecimal, PosErr> {
         return Err(v422("missing", &["body", "amount"], "Field required", ""));
     };
     if f.is_null() {
-        return Err(v422("missing", &["body", "amount"], "Field required", "null"));
+        return Err(v422(
+            "missing",
+            &["body", "amount"],
+            "Field required",
+            "null",
+        ));
     }
     let raw = match f {
         Value::Number(n) => n.to_string(),
@@ -1556,7 +1582,9 @@ mod tests {
     fn cash_operation_type_must_be_deposit_or_collection() {
         // Невірний тип / відсутній тип → 422.
         assert!(matches!(
-            parse_cash_operation_create(&json!({"operation_type": "transfer", "cash_type": "cash", "amount": 100})),
+            parse_cash_operation_create(
+                &json!({"operation_type": "transfer", "cash_type": "cash", "amount": 100})
+            ),
             Err(PosErr::Validation(_))
         ));
         assert!(matches!(
@@ -1565,11 +1593,15 @@ mod tests {
         ));
         // Коректні значення — проходять.
         assert!(matches!(
-            parse_cash_operation_create(&json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})),
+            parse_cash_operation_create(
+                &json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})
+            ),
             Ok(_)
         ));
         assert!(matches!(
-            parse_cash_operation_create(&json!({"operation_type": "collection", "cash_type": "card", "amount": "42.00", "comment": "Розмін"})),
+            parse_cash_operation_create(
+                &json!({"operation_type": "collection", "cash_type": "card", "amount": "42.00", "comment": "Розмін"})
+            ),
             Ok(_)
         ));
     }
@@ -1583,7 +1615,9 @@ mod tests {
         ));
         // Невірний cash_type → 422.
         assert!(matches!(
-            parse_cash_operation_create(&json!({"operation_type": "deposit", "cash_type": "crypto", "amount": 100})),
+            parse_cash_operation_create(
+                &json!({"operation_type": "deposit", "cash_type": "crypto", "amount": 100})
+            ),
             Err(PosErr::Validation(_))
         ));
     }

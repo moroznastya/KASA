@@ -31,22 +31,26 @@ const STORE_UUID: &str = "d9be9608-c011-49be-b776-3317ca5e9af6";
 
 /// Симуляція reset_config: точний SQL з store_ctx.rs (set_config NULL ≡ RESET).
 async fn reset_config(conn: &mut sqlx::PgConnection) {
-    sqlx::query("SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)")
-        .bind(Option::<String>::None)
-        .bind(Option::<String>::None)
-        .execute(&mut *conn)
-        .await
-        .expect("reset_config SQL виконується");
+    sqlx::query(
+        "SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)",
+    )
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .execute(&mut *conn)
+    .await
+    .expect("reset_config SQL виконується");
 }
 
 /// Симуляція set_config зі store_ctx.rs (is_local=false — session-level).
 async fn set_config(conn: &mut sqlx::PgConnection, user_id: &str, store_id: &str) {
-    sqlx::query("SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)")
-        .bind(user_id)
-        .bind(store_id)
-        .execute(&mut *conn)
-        .await
-        .expect("set_config SQL виконується");
+    sqlx::query(
+        "SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)",
+    )
+    .bind(user_id)
+    .bind(store_id)
+    .execute(&mut *conn)
+    .await
+    .expect("set_config SQL виконується");
 }
 
 /// Після set+reset current_setting має трактуватись як NULL (не '' і не UUID).
@@ -57,12 +61,16 @@ async fn reset_leaves_nullif_safe_state_not_empty_string() {
     let mut conn = pool.acquire().await.expect("acquire");
 
     // 1. Store-запит: контекст точки проставлено на з'єднанні.
-    set_config(&mut conn, "00000000-0000-0000-0000-000000000001", STORE_UUID).await;
-    let before: String =
-        sqlx::query_scalar("SELECT current_setting('app.store_id', true)")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("store_id встановлено");
+    set_config(
+        &mut conn,
+        "00000000-0000-0000-0000-000000000001",
+        STORE_UUID,
+    )
+    .await;
+    let before: String = sqlx::query_scalar("SELECT current_setting('app.store_id', true)")
+        .fetch_one(&mut *conn)
+        .await
+        .expect("store_id встановлено");
     assert_eq!(before, STORE_UUID, "контекст проставлено до reset");
 
     // 2. reset_config — з'єднання повертається в пул.
@@ -73,7 +81,10 @@ async fn reset_leaves_nullif_safe_state_not_empty_string() {
         .fetch_one(&mut *conn)
         .await
         .expect("current_setting після reset");
-    assert_eq!(after, "", "PostgreSQL-квірк: reset custom-параметра лишає ''");
+    assert_eq!(
+        after, "",
+        "PostgreSQL-квірк: reset custom-параметра лишає ''"
+    );
 
     // 4. СТАРА форма (баг): COALESCE(...)::uuid на '' → помилка касту.
     let old_crash = sqlx::query_scalar::<_, Option<uuid::Uuid>>(
@@ -93,7 +104,10 @@ async fn reset_leaves_nullif_safe_state_not_empty_string() {
     .fetch_one(&mut *conn)
     .await
     .expect("нова форма касту не падає");
-    assert_eq!(store_id, None, "'' трактується як NULL (рівно як свіже з'єднання)");
+    assert_eq!(
+        store_id, None,
+        "'' трактується як NULL (рівно як свіже з'єднання)"
+    );
 
     let user_id: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT COALESCE(NULLIF(current_setting('app.user_id', true), '')::uuid, NULL)",
@@ -114,12 +128,18 @@ async fn login_after_store_request_does_not_crash() {
     let mut conn = pool.acquire().await.expect("acquire");
 
     // Store-запит /products з X-Store-Id: контекст + запит + reset.
-    set_config(&mut conn, "00000000-0000-0000-0000-000000000001", STORE_UUID).await;
-    let _products_ok: i32 =
-        sqlx::query_scalar("SELECT 1 WHERE current_setting('app.store_id', true)::uuid IS NOT NULL")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("store-запит виконується з валідним UUID");
+    set_config(
+        &mut conn,
+        "00000000-0000-0000-0000-000000000001",
+        STORE_UUID,
+    )
+    .await;
+    let _products_ok: i32 = sqlx::query_scalar(
+        "SELECT 1 WHERE current_setting('app.store_id', true)::uuid IS NOT NULL",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("store-запит виконується з валідним UUID");
     reset_config(&mut conn).await;
 
     // Наступний логін на тому ж з'єднанні: INSERT-патерн create_work_session

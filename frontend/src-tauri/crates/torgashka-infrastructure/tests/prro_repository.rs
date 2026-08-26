@@ -51,7 +51,11 @@ async fn shift_crud_open_close() {
     let _guard = PRRO_TEST_LOCK.lock().await;
     let p = pool().await;
     cleanup_prro(&p).await;
-    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p.clone())).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
+    .await
+    .expect("repo");
     let n = uniq();
     let shift_number: i64 = format!("7{n}").parse().unwrap();
 
@@ -103,7 +107,11 @@ async fn queue_full_cycle() {
     let _guard = PRRO_TEST_LOCK.lock().await;
     let p = pool().await;
     cleanup_prro(&p).await;
-    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p.clone())).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
+    .await
+    .expect("repo");
     let n = uniq();
     let shift_number: i64 = format!("8{n}").parse().unwrap();
     let shift = repo
@@ -176,7 +184,11 @@ async fn queue_full_cycle() {
 async fn settings_upsert() {
     let _guard = PRRO_TEST_LOCK.lock().await;
     let p = pool().await;
-    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p.clone())).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
+    .await
+    .expect("repo");
     let key = format!("test_key_{}", uniq());
     repo.set_setting(&key, "42").await.expect("set");
     assert_eq!(repo.get_setting(&key).await.unwrap().as_deref(), Some("42"));
@@ -193,7 +205,11 @@ async fn settings_upsert() {
 async fn next_shift_number_increments() {
     let _guard = PRRO_TEST_LOCK.lock().await;
     let p = pool().await;
-    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p.clone())).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
+    .await
+    .expect("repo");
     let key = format!("last_shift_number_{}", uniq());
     // 1:1 Python next_shift_number: last + 1
     repo.set_setting(&key, "7").await.unwrap();
@@ -227,7 +243,11 @@ async fn get_shift_by_number_and_delete() {
     let _guard = PRRO_TEST_LOCK.lock().await;
     let p = pool().await;
     cleanup_prro(&p).await;
-    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(p.clone())).await.expect("repo");
+    let repo = SqlxPrroRepository::connect(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
+    .await
+    .expect("repo");
     let n = uniq();
     let shift_number: i64 = format!("9{n}").parse().unwrap();
     let shift = repo

@@ -166,6 +166,16 @@ export const devicesApi = {
   disconnectDevice: (id: string): Promise<DeviceStatus> => invoke<DeviceStatus>('disconnect_device', { id }),
 
   /**
+   * Встановити ціну для ваг (протокол 5, Режим 2). Ваги тримають ціну і
+   * рахують вартість = маса × ціна. `null` — повернутись до Режиму 3
+   * (запит без ціни; увага: Режим 3 передає у ваги нульову ціну).
+   * @param deviceId ідентифікатор пристрою-ваг
+   * @param price ціна за кг у гривнях (або null, щоб скинути)
+   */
+  setScalePrice: (deviceId: string, price: number | null): Promise<void> =>
+    invoke<void>('set_scale_price', { deviceId, price }),
+
+  /**
    * Отримати статуси всіх пристроїв.
    */
   getDevicesStatus: (): Promise<DeviceStatus[]> => invoke<DeviceStatus[]>('get_devices_status'),

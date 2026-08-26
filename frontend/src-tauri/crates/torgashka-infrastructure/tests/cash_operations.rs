@@ -11,9 +11,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use torgashka_domain::{
-    CashOperationCreateInput, CashOperationType, CashType, PosService,
-};
+use torgashka_domain::{CashOperationCreateInput, CashOperationType, CashType, PosService};
 use torgashka_infrastructure::repositories::pos::SqlxPos;
 use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
 
@@ -99,8 +97,14 @@ async fn deposit_and_collection_roundtrip_with_balance() {
         assert_eq!(list.balances.cash.to_string(), "500.00");
         assert_eq!(list.balances.card.to_string(), "-200.00");
         // Найновіша операція перша (ORDER BY created_at DESC).
-        assert_eq!(list.operations[0].operation_type, CashOperationType::Collection);
-        assert_eq!(list.operations[1].operation_type, CashOperationType::Deposit);
+        assert_eq!(
+            list.operations[0].operation_type,
+            CashOperationType::Collection
+        );
+        assert_eq!(
+            list.operations[1].operation_type,
+            CashOperationType::Deposit
+        );
         // user_name присутній у кожному рядку списку.
         assert!(list
             .operations

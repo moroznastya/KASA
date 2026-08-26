@@ -95,8 +95,14 @@ fn legacy_db_upgrades_idempotently() {
     // Перший відкритий: міграція додає store_id.
     let db = torgashka_infrastructure::offline::db::OfflineDatabase::new()
         .expect("legacy БД відкрилась без помилок (критерій 3)");
-    assert!(has_column(&db_file, "products", "store_id"), "products.store_id додано");
-    assert!(has_column(&db_file, "receipts", "store_id"), "receipts.store_id додано");
+    assert!(
+        has_column(&db_file, "products", "store_id"),
+        "products.store_id додано"
+    );
+    assert!(
+        has_column(&db_file, "receipts", "store_id"),
+        "receipts.store_id додано"
+    );
     drop(db);
 
     // Повторний запуск — ідемпотентність (не падає, колонки на місці).
@@ -115,11 +121,14 @@ fn legacy_db_upgrades_idempotently() {
     );
     let unsynced = db3.get_unsynced_receipts().expect("get_unsynced");
     assert_eq!(
-        unsynced[0]["store_id"], serde_json::Value::Null,
+        unsynced[0]["store_id"],
+        serde_json::Value::Null,
         "legacy-чек без store_id → NULL у черзі"
     );
 
-    eprintln!("[offline_store_id] ✅ міграція: legacy БД → store_id додано ідемпотентно, дані збережено");
+    eprintln!(
+        "[offline_store_id] ✅ міграція: legacy БД → store_id додано ідемпотентно, дані збережено"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,8 +141,8 @@ fn receipt_queue_preserves_store_id() {
     let tmp = temp_data_home("queue");
     std::env::set_var("XDG_DATA_HOME", &tmp);
 
-    let db = torgashka_infrastructure::offline::db::OfflineDatabase::new()
-        .expect("offline.db створена");
+    let db =
+        torgashka_infrastructure::offline::db::OfflineDatabase::new().expect("offline.db створена");
     let store_a = "d9be9608-c011-49be-b776-3317ca5e9af6";
     let store_b = "22222222-2222-4222-8222-222222222222";
 
@@ -155,10 +164,24 @@ fn receipt_queue_preserves_store_id() {
     // Черга повертає store_id кожного чека — синхронізація знає, куди слати.
     let unsynced = db.get_unsynced_receipts().expect("get_unsynced");
     assert_eq!(unsynced.len(), 2);
-    let a = unsynced.iter().find(|r| r["id"] == serde_json::json!(id_a)).expect("чек A у черзі");
-    let b = unsynced.iter().find(|r| r["id"] == serde_json::json!(id_b)).expect("чек B у черзі");
-    assert_eq!(a["store_id"].as_str(), Some(store_a), "store_id A збережено в черзі");
-    assert_eq!(b["store_id"].as_str(), Some(store_b), "store_id B збережено в черзі");
+    let a = unsynced
+        .iter()
+        .find(|r| r["id"] == serde_json::json!(id_a))
+        .expect("чек A у черзі");
+    let b = unsynced
+        .iter()
+        .find(|r| r["id"] == serde_json::json!(id_b))
+        .expect("чек B у черзі");
+    assert_eq!(
+        a["store_id"].as_str(),
+        Some(store_a),
+        "store_id A збережено в черзі"
+    );
+    assert_eq!(
+        b["store_id"].as_str(),
+        Some(store_b),
+        "store_id B збережено в черзі"
+    );
 
     // Після mark_synced черга порожня.
     db.mark_receipt_synced(id_a).expect("mark A");
@@ -178,8 +201,8 @@ fn receipt_store_id_extracted_from_json_payload() {
     let tmp = temp_data_home("json-extract");
     std::env::set_var("XDG_DATA_HOME", &tmp);
 
-    let db = torgashka_infrastructure::offline::db::OfflineDatabase::new()
-        .expect("offline.db створена");
+    let db =
+        torgashka_infrastructure::offline::db::OfflineDatabase::new().expect("offline.db створена");
     let store = "33333333-3333-4333-8333-333333333333";
 
     // Пейлоад містить store_id — save_receipt (без явного аргументу) має його підхопити.
@@ -193,7 +216,10 @@ fn receipt_store_id_extracted_from_json_payload() {
         .expect("чек збережено");
 
     let unsynced = db.get_unsynced_receipts().expect("get_unsynced");
-    let r = unsynced.iter().find(|r| r["id"] == serde_json::json!(id)).expect("чек у черзі");
+    let r = unsynced
+        .iter()
+        .find(|r| r["id"] == serde_json::json!(id))
+        .expect("чек у черзі");
     assert_eq!(
         r["store_id"].as_str(),
         Some(store),
@@ -213,8 +239,8 @@ fn products_cache_scoped_by_store() {
     let tmp = temp_data_home("cache-scope");
     std::env::set_var("XDG_DATA_HOME", &tmp);
 
-    let db = torgashka_infrastructure::offline::db::OfflineDatabase::new()
-        .expect("offline.db створена");
+    let db =
+        torgashka_infrastructure::offline::db::OfflineDatabase::new().expect("offline.db створена");
     let store_a = "d9be9608-c011-49be-b776-3317ca5e9af6";
     let store_b = "44444444-4444-4444-8444-444444444444";
 
@@ -256,11 +282,14 @@ fn products_cache_scoped_by_store() {
     assert_eq!(search_a.as_array().unwrap().len(), 1, "пошук у A знайшов 1");
 
     // Без фільтра (legacy-виклик) — видно все.
-    let all: serde_json::Value = serde_json::from_str(
-        &db.get_cached_products(None, 100).expect("кеш без фільтра"),
-    )
-    .expect("JSON all");
-    assert_eq!(all.as_array().unwrap().len(), 3, "без фільтра: всі 3 товари");
+    let all: serde_json::Value =
+        serde_json::from_str(&db.get_cached_products(None, 100).expect("кеш без фільтра"))
+            .expect("JSON all");
+    assert_eq!(
+        all.as_array().unwrap().len(),
+        3,
+        "без фільтра: всі 3 товари"
+    );
 
     eprintln!("[offline_store_id] ✅ кеш: товари відфільтровані за store_id (A=2, B=1)");
 }
@@ -278,8 +307,7 @@ fn legacy_products_visible_after_upgrade() {
     create_legacy_db(&db_file);
 
     // Відкриваємо через міграцію — legacy-товар лишився.
-    let db = torgashka_infrastructure::offline::db::OfflineDatabase::new()
-        .expect("БД відкрита");
+    let db = torgashka_infrastructure::offline::db::OfflineDatabase::new().expect("БД відкрита");
     let store = "55555555-5555-4555-8555-555555555555";
     let cached: serde_json::Value = serde_json::from_str(
         &db.get_cached_products_for_store(None, 100, Some(store))

@@ -15,25 +15,24 @@
 //! Scale Decimal: create-відповіді зберігають ВХІДНУ scale (identity map
 //! Python), GET/confirm — scale колонки (`::text`).
 
+use crate::store_ctx::{current_store_ctx, StorePool};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::Row;
-use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::{
-    iso_utc_z, parse_scaled2, parse_scaled3, DocItemInput, MySessionsDto, PosError, PosService,
-    ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput, ReceiptDto,
-    ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput, ReceiptListDto, ReceiptListQuery,
-    ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery, ReceiptStatsDto,
-    ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput, ReceiptV1ListDto,
-    ReceiptV1ListQuery, ReceiptV1SearchDto, ReceiptV1SearchItemDto, RecentSaleDto,
-    CashBalances, CashOperationCreateInput, CashOperationDto, CashOperationsListDto,
-    CashOperationType, CashType,
-    ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto, TransferItemDto,
-    TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto, WorkReportDto,
-    WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto, WriteOffListDto,
-    WriteOffReasonItem, WriteOffReasonsListDto, WriteOffUpdateInput,
+    iso_utc_z, parse_scaled2, parse_scaled3, CashBalances, CashOperationCreateInput,
+    CashOperationDto, CashOperationType, CashOperationsListDto, CashType, DocItemInput,
+    MySessionsDto, PosError, PosService, ProductBriefInfoDto, ProductRecentSalesDto, PrroShiftDto,
+    ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptItemDto, ReceiptItemInput,
+    ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchItemDto, ReceiptSearchQuery,
+    ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ItemInput,
+    ReceiptV1ListDto, ReceiptV1ListQuery, ReceiptV1SearchDto, ReceiptV1SearchItemDto,
+    RecentSaleDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput, TransferDto,
+    TransferItemDto, TransferListDto, TransferUpdateInput, UserHoursSummaryDto, UserSessionsDto,
+    WorkReportDto, WorkSessionDto, WriteOffCreateInput, WriteOffDto, WriteOffItemDto,
+    WriteOffListDto, WriteOffReasonItem, WriteOffReasonsListDto, WriteOffUpdateInput,
 };
 
 /// Локальний екстеншен: sqlx::Error → PosError.
@@ -147,9 +146,9 @@ async fn resolve_item_prices(
          WHERE p.id = $1",
     )
     .bind(item.product_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .pe()?;
+    .fetch_optional(&mut **tx)
+    .await
+    .pe()?;
     let (db_cost, db_price): (Option<String>, Option<String>) = match row {
         Some(r) => (r.try_get("cost_price").ok(), r.try_get("price").ok()),
         None => (None, None),
@@ -525,10 +524,7 @@ async fn create_receipt_impl(
             .await
             .pe()?;
         let title = title.ok_or_else(|| {
-            PosError::BadRequest(format!(
-                "Товар з ID '{}' не знайдено",
-                item.product_id
-            ))
+            PosError::BadRequest(format!("Товар з ID '{}' не знайдено", item.product_id))
         })?;
         // Валідація формату quantity (як Python Decimal).
         let _qty = parse_scaled3(&item.quantity).ok_or_else(|| {
@@ -1318,7 +1314,11 @@ fn month_bounds(month: i64, year: i64) -> (chrono::NaiveDateTime, chrono::NaiveD
     (start, end)
 }
 
-async fn work_report_impl(pool: &StorePool, month: i64, year: i64) -> Result<WorkReportDto, PosError> {
+async fn work_report_impl(
+    pool: &StorePool,
+    month: i64,
+    year: i64,
+) -> Result<WorkReportDto, PosError> {
     let (start, end) = month_bounds(month, year);
     let now = Utc::now().naive_utc();
     let users = sqlx::query("SELECT id, name, hourly_rate::text FROM users ORDER BY name")
@@ -2098,7 +2098,9 @@ async fn create_receipt_v1_impl(
                     if insufficient {
                         let allow = get_setting_v1(pool, "allow_negative_stock")
                             .await?
-                            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+                            .map(|v| {
+                                matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on")
+                            })
                             .unwrap_or(false);
                         if !allow {
                             let stock_txt = stock.unwrap_or_else(|| "0".to_string());
@@ -2612,7 +2614,10 @@ async fn list_receipts_v1_impl(
 }
 
 /// GET /api/v1/receipts/{id}/items — 1:1 Python get_receipt_items.
-async fn receipt_items_v1_impl(pool: &StorePool, id: Uuid) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
+async fn receipt_items_v1_impl(
+    pool: &StorePool,
+    id: Uuid,
+) -> Result<Vec<ReceiptV1ItemDto>, PosError> {
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM receipts WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
@@ -2934,9 +2939,9 @@ impl PosService for SqlxPos {
             let prc = parse_scaled2(&price).unwrap_or(0) as i128;
             total_cents += qty * prc / 1000;
         }
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let row = sqlx::query(
             r#"
             INSERT INTO write_offs (id, number, reason, write_off_date, notes, created_by_id,
@@ -3010,9 +3015,9 @@ impl PosService for SqlxPos {
         input: &WriteOffUpdateInput,
     ) -> Result<WriteOffDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let row = sqlx::query("SELECT id FROM write_offs WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -3246,9 +3251,9 @@ impl PosService for SqlxPos {
 
     async fn create_transfer(&self, input: &TransferCreateInput) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let number = match &input.number {
             Some(n) if !n.is_empty() => n.clone(),
             _ => next_doc_number(&mut tx, "transfers", "ПМ").await?,
@@ -3319,9 +3324,9 @@ impl PosService for SqlxPos {
         input: &TransferUpdateInput,
     ) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string()))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PosError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let row = sqlx::query("SELECT status::text FROM transfers WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -3413,11 +3418,12 @@ impl PosService for SqlxPos {
 
     async fn confirm_transfer(&self, id: Uuid, status: &str) -> Result<TransferDto, PosError> {
         let mut tx = self.pool.begin().await.pe()?;
-        let row = sqlx::query("SELECT status::text, store_id FROM transfers WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .pe()?;
+        let row =
+            sqlx::query("SELECT status::text, store_id FROM transfers WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .pe()?;
         let Some(row) = row else {
             return Err(PosError::NotFound(format!(
                 "Переміщення з ID '{id}' не знайдено"
@@ -3637,8 +3643,8 @@ impl PosService for SqlxPos {
                 .get::<String, _>("amount")
                 .parse()
                 .map_err(|e| PosError::Infrastructure(format!("некоректна сума в БД: {e}")))?;
-            let operation_type =
-                CashOperationType::parse(r.get("operation_type")).unwrap_or(CashOperationType::Deposit);
+            let operation_type = CashOperationType::parse(r.get("operation_type"))
+                .unwrap_or(CashOperationType::Deposit);
             let cash_type = CashType::parse(r.get("cash_type")).unwrap_or(CashType::Cash);
             operations.push(CashOperationDto {
                 id: r.get("id"),
@@ -3682,6 +3688,9 @@ impl PosService for SqlxPos {
             cash: parse_balance(cash_raw)?,
             card: parse_balance(card_raw)?,
         };
-        Ok(CashOperationsListDto { operations, balances })
+        Ok(CashOperationsListDto {
+            operations,
+            balances,
+        })
     }
 }

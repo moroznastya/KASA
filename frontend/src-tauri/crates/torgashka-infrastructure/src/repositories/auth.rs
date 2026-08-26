@@ -465,7 +465,9 @@ impl AuthService for SqlxAuth {
             .map(|r| r.as_str().to_string())
             .unwrap_or(user.role.clone());
         let is_active = input.is_active.unwrap_or(user.is_active);
-        let onboarding_completed = input.onboarding_completed.unwrap_or(user.onboarding_completed);
+        let onboarding_completed = input
+            .onboarding_completed
+            .unwrap_or(user.onboarding_completed);
 
         // password: Some(непорожній) → hash; Some(порожній) → ігнорується (як Python).
         let mut password_hash = user_password_hash(&self.pool, user_id).await?;
@@ -757,7 +759,10 @@ type SettingRow = (
     DateTime<Utc>,
 );
 
-async fn fetch_settings(pool: &StorePool, module: Option<&str>) -> Result<Vec<SettingDto>, AuthError> {
+async fn fetch_settings(
+    pool: &StorePool,
+    module: Option<&str>,
+) -> Result<Vec<SettingDto>, AuthError> {
     let rows: Vec<SettingRow> = match module {
         Some(m) => {
             sqlx::query_as(

@@ -343,6 +343,7 @@ pub fn run() {
             torgashka_infrastructure::devices::delete_device,
             torgashka_infrastructure::devices::connect_device,
             torgashka_infrastructure::devices::disconnect_device,
+            torgashka_infrastructure::devices::set_scale_price,
             get_devices_status,
             torgashka_infrastructure::devices::test_connection,
             get_system_printers,

@@ -20,8 +20,8 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
-    print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
-    setup, store_context, stores, suppliers, AppState,
+    print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, setup,
+    store_context, stores, suppliers, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -601,10 +601,7 @@ pub fn build_router(state: AppState) -> Router {
                 get(stores::list_stores).post(stores::create_store),
             )
             .route("/api/v1/user-stores", post(stores::assign_user_store))
-            .route(
-                "/api/v1/inventory/availability",
-                get(stores::availability),
-            );
+            .route("/api/v1/inventory/availability", get(stores::availability));
     }
 
     // Усе, що не health і не Rust-гілка, — у Python sidecar (метод/шлях/тіло/заголовки).
@@ -638,8 +635,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use std::sync::Arc;
-    use torgashka_domain::{AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto,
-        SettingsBatchInput, UserCreateInput, UserDto, UserListDto, UserUpdateInput};
+    use torgashka_domain::{
+        AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto, SettingsBatchInput,
+        UserCreateInput, UserDto, UserListDto, UserUpdateInput,
+    };
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -648,13 +647,22 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AuthService for MockAuth {
-        async fn login(&self, _input: &LoginRequest) -> Result<torgashka_domain::LoginResult, AuthError> {
+        async fn login(
+            &self,
+            _input: &LoginRequest,
+        ) -> Result<torgashka_domain::LoginResult, AuthError> {
             unimplemented!()
         }
-        async fn login_pin(&self, _input: &LoginPinRequest) -> Result<torgashka_domain::LoginResult, AuthError> {
+        async fn login_pin(
+            &self,
+            _input: &LoginPinRequest,
+        ) -> Result<torgashka_domain::LoginResult, AuthError> {
             unimplemented!()
         }
-        async fn refresh(&self, _user_id: Uuid) -> Result<torgashka_domain::LoginResult, AuthError> {
+        async fn refresh(
+            &self,
+            _user_id: Uuid,
+        ) -> Result<torgashka_domain::LoginResult, AuthError> {
             unimplemented!()
         }
         async fn logout(&self, _user_id: Uuid) -> Result<(), AuthError> {
@@ -679,7 +687,9 @@ mod tests {
                     .unwrap(),
             })
         }
-        async fn users_list_public(&self) -> Result<Vec<torgashka_domain::PublicUserDto>, AuthError> {
+        async fn users_list_public(
+            &self,
+        ) -> Result<Vec<torgashka_domain::PublicUserDto>, AuthError> {
             unimplemented!()
         }
         async fn list_users(&self, _page: i64, _size: i64) -> Result<UserListDto, AuthError> {
@@ -688,16 +698,32 @@ mod tests {
         async fn create_user(&self, _input: &UserCreateInput) -> Result<UserDto, AuthError> {
             unimplemented!()
         }
-        async fn update_user(&self, _user_id: Uuid, _input: &UserUpdateInput) -> Result<UserDto, AuthError> {
+        async fn update_user(
+            &self,
+            _user_id: Uuid,
+            _input: &UserUpdateInput,
+        ) -> Result<UserDto, AuthError> {
             unimplemented!()
         }
-        async fn update_permissions(&self, _user_id: Uuid, _permissions: &[String]) -> Result<UserDto, AuthError> {
+        async fn update_permissions(
+            &self,
+            _user_id: Uuid,
+            _permissions: &[String],
+        ) -> Result<UserDto, AuthError> {
             unimplemented!()
         }
-        async fn update_hourly_rate(&self, _user_id: Uuid, _hourly_rate: f64) -> Result<serde_json::Value, AuthError> {
+        async fn update_hourly_rate(
+            &self,
+            _user_id: Uuid,
+            _hourly_rate: f64,
+        ) -> Result<serde_json::Value, AuthError> {
             unimplemented!()
         }
-        async fn delete_user(&self, _user_id: Uuid, _current_user_id: Uuid) -> Result<(), AuthError> {
+        async fn delete_user(
+            &self,
+            _user_id: Uuid,
+            _current_user_id: Uuid,
+        ) -> Result<(), AuthError> {
             unimplemented!()
         }
         async fn settings_all(&self) -> Result<torgashka_domain::SettingsModulesDto, AuthError> {
@@ -706,10 +732,17 @@ mod tests {
         async fn settings_by_module(&self, _module: &str) -> Result<Vec<SettingDto>, AuthError> {
             unimplemented!()
         }
-        async fn settings_batch_update(&self, _settings: &[(String, Option<String>)]) -> Result<torgashka_domain::SettingsModulesDto, AuthError> {
+        async fn settings_batch_update(
+            &self,
+            _settings: &[(String, Option<String>)],
+        ) -> Result<torgashka_domain::SettingsModulesDto, AuthError> {
             unimplemented!()
         }
-        async fn settings_update_key(&self, _key: &str, _value: Option<String>) -> Result<SettingDto, AuthError> {
+        async fn settings_update_key(
+            &self,
+            _key: &str,
+            _value: Option<String>,
+        ) -> Result<SettingDto, AuthError> {
             unimplemented!()
         }
     }
@@ -775,14 +808,22 @@ mod tests {
     #[tokio::test]
     async fn auth_me_with_valid_token_not_gone_and_200() {
         let status = get("/api/v1/auth/me", Some(&valid_token())).await;
-        assert_ne!(status, StatusCode::GONE, "/api/v1/auth/me не має падати в fallback (410)");
+        assert_ne!(
+            status,
+            StatusCode::GONE,
+            "/api/v1/auth/me не має падати в fallback (410)"
+        );
         assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn auth_users_me_with_valid_token_not_gone_and_200() {
         let status = get("/api/v1/auth/users/me", Some(&valid_token())).await;
-        assert_ne!(status, StatusCode::GONE, "/api/v1/auth/users/me не має падати в fallback (410)");
+        assert_ne!(
+            status,
+            StatusCode::GONE,
+            "/api/v1/auth/users/me не має падати в fallback (410)"
+        );
         assert_eq!(status, StatusCode::OK);
     }
 

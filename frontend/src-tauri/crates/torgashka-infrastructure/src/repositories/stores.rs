@@ -47,10 +47,12 @@ fn store_dto_from_row(row: &sqlx::postgres::PgRow) -> StoreDto {
         address: row.try_get("address").ok().flatten(),
         phone: row.try_get("phone").ok().flatten(),
         is_active: row.try_get("is_active").unwrap_or(true),
-        created_at: row.try_get("created_at").unwrap_or_else(|_| {
-            chrono::Utc::now().naive_utc()
-        }),
-        role: row.try_get("role").unwrap_or_else(|_| "cashier".to_string()),
+        created_at: row
+            .try_get("created_at")
+            .unwrap_or_else(|_| chrono::Utc::now().naive_utc()),
+        role: row
+            .try_get("role")
+            .unwrap_or_else(|_| "cashier".to_string()),
         is_default: row.try_get("is_default").unwrap_or(false),
     }
 }

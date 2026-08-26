@@ -48,25 +48,30 @@ pub fn signer_from_key_material(
     material: &KeyMaterial,
     key_password: &str,
 ) -> Result<Box<dyn PrroSigner>, PrroCryptoError> {
-    use crate::crypto::iit::IitSdk;
     let oid = material.algorithm_oid.as_deref().unwrap_or("");
     let is_dstu = oid == "1.2.804.2.1.1.1.1.3.1.1" || oid == "1.2.804.2.1.1.1.1.3.1.2";
     if is_dstu {
-        let so = default_iit_sdk_path()
-            .ok_or_else(|| PrroCryptoError::UnsupportedFormat(
-                "ДСТУ 4145: не встановлено IIT SDK (euscp.so). Запустіть backend/scripts/setup_iit_sdk.sh".into(),
-            ))?;
-        let store = default_iit_cert_store()
-            .ok_or_else(|| PrroCryptoError::Generic("vendor/iit-sdk/certs не знайдено".into()))?;
-        let mut sdk = IitSdk::load(&so).map_err(PrroCryptoError::Iit)?;
-        sdk.initialize(None, &store).map_err(PrroCryptoError::Iit)?;
+        // SDK НЕ завантажується в ОСНОВНИЙ процес: усі FFI-виклики EUSignCP
+        // йдуть у ІЗОЛЬОВАНИЙ субпроцес (див. iit::sign_via_subprocess).
+        // Крах багнутого cspb.so (#GP, release, offset 0x7a925 — відтворено)
+        // вбиває лише хелпер; Torgashka отримує чисту помилку → HTTP 400.
+        // Тут лише перевірка наявності euscp.so (шлях — без FFI).
+        default_iit_sdk_path().ok_or_else(|| PrroCryptoError::UnsupportedFormat(
+            "ДСТУ 4145: не встановлено IIT SDK (euscp.so). Запустіть backend/scripts/setup_iit_sdk.sh".into(),
+        ))?;
         let key_path = material
             .key_path
             .as_deref()
             .ok_or_else(|| PrroCryptoError::Generic("key_path не задано для JKS".into()))?;
-        sdk.load_jks_key(Path::new(key_path), key_password)
-            .map_err(PrroCryptoError::Iit)?;
-        return Ok(Box::new(IitSigner { sdk }));
+        // Сертифікат підписанта (для get_serial_number/get_signer_name) —
+        // чистий Rust-парсинг, без SDK.
+        let signer_cert_der = crate::keystore::find_signer_cert(&material.certs)
+            .or_else(|| material.certs.first().cloned());
+        return Ok(Box::new(IitSigner {
+            key_path: Path::new(key_path).to_path_buf(),
+            key_password: key_password.to_string(),
+            signer_cert_der,
+        }));
     }
     let cert_der = material
         .certs
@@ -80,31 +85,47 @@ pub fn signer_from_key_material(
     Ok(Box::new(XadesSigner::from_pkcs8_der(key_der, cert_der)?))
 }
 
-/// CAdES-BES підписант (ДСТУ 4145) — обгортка над IIT SDK, 1:1 Python
-/// `PrroCryptoSigner` (бекенд iit).
+/// CAdES-BES підписант (ДСТУ 4145) — 1:1 Python `PrroCryptoSigner` (бекенд iit).
+///
+/// НЕ тримає SDK у пам'яті: кожен sign/verify запускає ізольований субпроцес
+/// (той самий бінарник у режимі SDK_HELPER_ENV), який завантажує euscp.so,
+/// ініціалізує ядро, читає JKS і підписує. Якщо SDK впаде (#GP/SIGSEGV) —
+/// вмирає лише хелпер, основний процес повертає чисту помилку.
 pub struct IitSigner {
-    sdk: iit::IitSdk,
+    /// Шлях до JKS-ключа (для субпроцесу).
+    key_path: std::path::PathBuf,
+    /// Пароль ключа (для субпроцесу).
+    key_password: String,
+    /// Сертифікат підписанта (DER) — для get_serial_number/get_signer_name
+    /// (чистий Rust, без SDK).
+    signer_cert_der: Option<Vec<u8>>,
 }
 
 impl PrroSigner for IitSigner {
     fn sign(&self, xml_bytes: &[u8]) -> Result<Vec<u8>, PrroCryptoError> {
-        self.sdk
-            .sign_data_internal(xml_bytes)
+        iit::sign_via_subprocess(&self.key_path, &self.key_password, xml_bytes)
             .map_err(PrroCryptoError::Iit)
     }
 
     fn verify(&self, signed_xml: &[u8]) -> Result<bool, PrroCryptoError> {
-        self.sdk
-            .verify_data_internal(signed_xml, None)
+        iit::verify_via_subprocess(&self.key_path, &self.key_password, signed_xml, None)
             .map_err(PrroCryptoError::Iit)
     }
 
     fn get_serial_number(&self) -> Result<String, PrroCryptoError> {
-        self.sdk.get_signer_serial().map_err(PrroCryptoError::Iit)
+        let der = self.signer_cert_der.as_deref().ok_or_else(|| {
+            PrroCryptoError::KeyNotLoaded("сертифікат підписанта недоступний".into())
+        })?;
+        crate::crypto::xades::serial_from_cert(der)
+            .map_err(|e| PrroCryptoError::Generic(e.to_string()))
     }
 
     fn get_signer_name(&self) -> Result<String, PrroCryptoError> {
-        self.sdk.get_signer_name().map_err(PrroCryptoError::Iit)
+        let Some(der) = self.signer_cert_der.as_deref() else {
+            return Ok(String::new());
+        };
+        crate::crypto::xades::name_from_cert(der)
+            .map_err(|e| PrroCryptoError::Generic(e.to_string()))
     }
 }
 

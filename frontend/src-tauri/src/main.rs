@@ -40,6 +40,15 @@ fn write_debug_log(stage: &str) {
 }
 
 fn main() {
+    // ── Режим SDK-хелпера ПРРО (ізоляція FFI EUSignCP у субпроцесі) ──────
+    // IitSigner::sign/verify запускає current_exe з TORGASHKA_PRRO_SDK_HELPER=1;
+    // хелпер робить SDK-роботу (load_jks_key/sign) і виходить. Крах багнутого
+    // cspb.so (#GP/SIGSEGV) вбиває лише цей субпроцес — Torgashka виживає.
+    // Перевірка ОБОВ'ЯЗКОВО до ініціалізації Tauri/GTK (хелпер без GUI).
+    if std::env::var_os(torgashka_prro::crypto::iit::SDK_HELPER_ENV).is_some() {
+        std::process::exit(torgashka_prro::crypto::iit::sdk_helper_main());
+    }
+
     // ── Діагностика: стан середовища ДО встановлення змінних ──
     write_debug_log("BEFORE");
 

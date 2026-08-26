@@ -3,9 +3,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Керування POS-обладнанням:
-//   - COM-ваги (serialport, CAS-подібний протокол): фоновий потік читає порт,
-//     парсить вагу (число з плаваючою крапкою) та надсилає подію
-//     "weight-updated".
+//   - COM-ваги (serialport): фоновий потік читає порт, парсить вагу та надсилає
+//     подію "weight-updated". Протоколи: CAS-подібний (за замовчуванням) або
+//     ВТА-60/…-5-АС (KLARUS): 2 (ENQ/ACK/DC1 + кадр SOH..EOT), 3 (пасивний,
+//     3 рядки по 9 символів), 5 (бінарний BCD). Вибір — поле "protocol" у конфізі.
 //   - WiFi/ethernet-термінали ПриватБанку (TCP): фоновий потік періодично
 //     (кожні 5с) перевіряє доступність коротким connect_timeout і надсилає
 //     подію "device-status-changed" лише при зміні статусу.
@@ -28,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
@@ -47,7 +49,7 @@ pub struct DeviceConfig {
     pub device_type: String,
     /// автопідключення при старті
     pub enabled: bool,
-    /// scale: { "port": "/dev/ttyUSB0", "baudRate": 9600 }
+    /// scale: { "port": "/dev/ttyUSB0", "baudRate": 9600, "protocol": "cas"|"vta2"|"vta3"|"vta5" }
     /// terminal: { "ip": "192.168.1.50", "tcpPort": 2024 }
     pub config: serde_json::Value,
 }
@@ -120,6 +122,8 @@ struct ConnectionHandle {
     thread: Option<JoinHandle<()>>,
     /// поточний статус (оновлюється потоком)
     status: Arc<Mutex<DeviceStatus>>,
+    /// поточна ціна для ваг (протокол 5, Режим 2). None = Режим 3 (без ціни).
+    price: Arc<Mutex<Option<f64>>>,
 }
 
 fn connections() -> &'static Mutex<HashMap<String, ConnectionHandle>> {
@@ -282,34 +286,199 @@ fn parse_weight(s: &str) -> Option<f64> {
     None
 }
 
+// ── Парсинг ВТА-60 (KLARUS): протоколи 2, 3, 5 ─────────────────────────────
+// Торгові ваги ВТА-60/…-5-АС (KLARUS) мають три апаратні протоколи RS-232:
+//   2 — ASCII запит-відповідь (ENQ→ACK→DC1, кадр SOH..EOT з BCC);
+//   3 — ASCII пасивний (3 рядки по 9 символів + CR LF);
+//   5 — бінарний BCD (запит 8 байт, відповідь 17 байт).
+
+/// Парсинг кадру протоколу 2 (ВТА-60). Очікує рівно 15 байт:
+/// SOH(0x01) STX(0x02) STA SIGN W5 W4 W3 W2 W1 W0 UN1 UN2 BCC ETX(0x03) EOT(0x04).
+///
+/// - STA: лише 'S' (стабільна маса); 'U' (нестабільна) — ігнор;
+/// - SIGN: лише ' ' (додатна); '-' (від'ємна) і 'F' (перевантаження) — відкинути;
+/// - W5..W0: 6 ASCII цифр (W5 — старший розряд);
+/// - UN1 UN2: одиниці; наявність 'k' → кг (raw/1000.0), інакше грами (raw);
+/// - BCC: XOR. Толерантно: XOR від STX до UN2 включно, або XOR від STA до UN2.
+fn parse_vta2_frame(frame: &[u8]) -> Option<f64> {
+    if frame.len() < 15 {
+        return None;
+    }
+    let f = &frame[..15];
+    if f[0] != 0x01 || f[1] != 0x02 || f[13] != 0x03 || f[14] != 0x04 {
+        return None;
+    }
+    // приймаємо ТІЛЬКИ стабільну масу
+    if f[2] != b'S' {
+        return None;
+    }
+    // тільки додатна маса (SIGN = пробіл)
+    if f[3] != b' ' {
+        return None;
+    }
+    let digits = &f[4..10];
+    // Новий формат (реальні ВАГ-60): десяткова крапка/кома в полі маси,
+    // напр. " 0.000", " 5.123", "60.000". Пробіли та кома — допустимі.
+    let decimal_format = digits.contains(&b'.') || digits.contains(&b',');
+    // BCC: два варіанти XOR (від STX або від STA, до UN2 включно)
+    let bcc_stx = f[1..12].iter().fold(0u8, |acc, b| acc ^ b);
+    let bcc_sta = f[2..12].iter().fold(0u8, |acc, b| acc ^ b);
+    if f[12] != bcc_stx && f[12] != bcc_sta {
+        return None;
+    }
+    let in_kg = f[10] == b'k' || f[11] == b'k';
+    if decimal_format {
+        // trim пробілів, ',' → '.', parse::<f64>
+        let s: String = digits
+            .iter()
+            .map(|b| {
+                let ch = *b as char;
+                if ch == ',' {
+                    '.'
+                } else {
+                    ch
+                }
+            })
+            .collect();
+        let value = s.trim().parse::<f64>().ok()?;
+        // 'k' → значення ВЖЕ в кг (як є); інакше грами → /1000
+        return if in_kg {
+            Some(value)
+        } else {
+            Some(value / 1000.0)
+        };
+    }
+    // Старий формат: 6 чистих ASCII цифр (без крапки)
+    if !digits.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let raw: i64 = digits
+        .iter()
+        .fold(0i64, |acc, b| acc * 10 + i64::from(b - b'0'));
+    if in_kg {
+        Some(raw as f64 / 1000.0)
+    } else {
+        Some(raw as f64)
+    }
+}
+
+/// Пошук кадру протоколу 2 у потоці байтів. Повертає (вага, скільки байтів
+/// спожито) або None, якщо повного кадру ще немає.
+fn parse_vta2_stream(buf: &[u8]) -> Option<(f64, usize)> {
+    let mut i = 0;
+    while i + 15 <= buf.len() {
+        if buf[i] == 0x01 && buf[i + 1] == 0x02 {
+            if let Some(w) = parse_vta2_frame(&buf[i..i + 15]) {
+                return Some((w, i + 15));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Витяг першого числа з десятковою крапкою з 9-символьного рядка протоколу 3
+/// (рядок може містити пробіли й суфікс одиниць, напр. "  1.500kg").
+fn parse_vta3_line(line: &[u8]) -> Option<f64> {
+    let s = std::str::from_utf8(line).ok()?;
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() || chars[i] == '-' || chars[i] == '+' {
+            let start = i;
+            let mut has_dot = false;
+            while i < chars.len()
+                && (chars[i].is_ascii_digit()
+                    || chars[i] == '.'
+                    || chars[i] == '-'
+                    || chars[i] == '+')
+            {
+                if chars[i] == '.' {
+                    has_dot = true;
+                }
+                i += 1;
+            }
+            if has_dot {
+                let token: String = chars[start..i].iter().collect();
+                return token.parse::<f64>().ok();
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Парсинг потоку протоколу 3 (ВТА-60, пасивний): 3 рядки по 9 символів +
+/// CR LF після кожного. Рядок 1 = маса. Шукаємо "9 символів + CR LF" з
+/// десятковою крапкою в перших 7 символах; рядки без крапки ігноруються.
+/// Повертає (маса, спожито байтів).
+fn parse_vta3_stream(buf: &[u8]) -> Option<(f64, usize)> {
+    let mut i = 0;
+    while i + 11 <= buf.len() {
+        if buf[i + 9] == 0x0D && buf[i + 10] == 0x0A {
+            let line = &buf[i..i + 9];
+            if line[..7].contains(&b'.') {
+                if let Some(v) = parse_vta3_line(line) {
+                    return Some((v, i + 11));
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Парсинг відповіді протоколу 5 (ВТА-60, бінарний BCD). Очікує 17 байт:
+/// М0..М5 (маса, М0 — молодший розряд), Ц0..Ц4 (ціна), С0..С5 (вартість).
+/// Кожен байт — неупакований BCD (старша тетрада = 0). Маса = цифри у
+/// зворотному порядку (М5..М0), /1000.0 (кг, 3 десяткові знаки).
+fn parse_vta5_frame(frame: &[u8]) -> Option<f64> {
+    if frame.len() < 17 {
+        return None;
+    }
+    let f = &frame[..17];
+    // усі байти мають бути неупакованим BCD (0x00..=0x09)
+    if !f.iter().all(|b| *b <= 0x09) {
+        return None;
+    }
+    // М5..М0 у зворотному порядку: М5 — найстарший розряд
+    let raw: i64 = f[..6]
+        .iter()
+        .rev()
+        .fold(0i64, |acc, b| acc * 10 + i64::from(*b));
+    Some(raw as f64 / 1000.0)
+}
+
 // ── Фонові потоки ───────────────────────────────────────────────────────────
 
-/// Драйвер COM-ваги: відкриває порт, циклічно читає, парсить вагу та емітить
-/// подію "weight-updated". Статус оновлюється через "device-status-changed".
-///
-/// АДАПТИВНИЙ ЗАПИТ (ФІКС 2026-08-21, ваги «Пром Прилад»): більшість
-/// українських торгових ваг працюють у режимі ЗАПИТ-ВІДПОВІДЬ, а не
-/// постійної передачі. Якщо дані не надходили останні 1.5с — драйвер
-/// надсилає запит (по черзі ENQ 0x05 → 'W' 0x57 → 'P' 0x50, пауза 300мс),
-/// поки не прийде відповідь. Щойно дані прийшли — запити припиняються
-/// (continuous mode ваг не ламається).
+/// Драйвер COM-ваги: відкриває порт і запускає цикл драйвера за протоколом.
+/// protocol: "cas" (за замовчуванням) | "vta2" | "vta3" | "vta5".
 fn spawn_scale(
     app: AppHandle,
     id: String,
     port: String,
     baud_rate: u32,
+    protocol: String,
     status: Arc<Mutex<DeviceStatus>>,
     stop: Arc<AtomicBool>,
+    price: Arc<Mutex<Option<f64>>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut serial = match serialport::new(&port, baud_rate)
-            .timeout(Duration::from_millis(500))
-            .open()
+        // Протокол 5 (ВТА-60, BCD) працює з парністю EVEN (8E1) — обов'язково.
+        // Решта протоколів — 8N1 (парність за замовчуванням serialport).
+        let mut builder = serialport::new(&port, baud_rate).timeout(Duration::from_millis(500));
+        if protocol == "vta5" {
+            builder = builder.parity(serialport::Parity::Even);
+        }
+        let serial = match builder.open()
         {
             Ok(p) => {
                 crate::embedded_pg::pg_log(
                     "INFO",
-                    &format!("scale {id}: порт {port} відкрито ({baud_rate} бод)"),
+                    &format!(
+                        "scale {id}: порт {port} відкрито ({baud_rate} бод, протокол {protocol})"
+                    ),
                 );
                 p
             }
@@ -331,110 +500,422 @@ fn spawn_scale(
         set_status(&status, "connected", None, None);
         emit_status(&app, &id, &status);
 
-        let mut buf = [0u8; 256];
-        let mut acc = String::new();
-        // фільтр стабільності: останнє відправлене значення + кандидат на підтвердження
-        let mut last_emitted: Option<f64> = None;
-        let mut pending: Option<f64> = None;
-        // ── адаптивний запит ──
-        let mut last_data = std::time::Instant::now();
-        let mut request_index: usize = 0; // ENQ → 'W' → 'P' по колу
-        let mut last_request_at: Option<std::time::Instant> = None;
-        let mut silence_logged = false; // перша спроба запиту після тиші → в лог
-        let mut write_error_logged = false; // перша помилка запису підряд → в лог
-        const SILENCE: Duration = Duration::from_millis(1500);
-        const REQUEST_GAP: Duration = Duration::from_millis(300);
-        const PROBES: [u8; 3] = [0x05, b'W', b'P'];
+        // id/port/app/status рухаються в драйвер — для фінального emit тримаємо копії
+        let id_disp = id.clone();
+        let app_disp = app.clone();
+        let status_disp = status.clone();
+        match protocol.as_str() {
+            "vta2" => scale_vta2_loop(serial, app, id, port, status, stop),
+            "vta3" => scale_vta3_loop(serial, app, id, port, status, stop),
+            "vta5" => scale_vta5_loop(serial, app, id, port, status, stop, price),
+            _ => scale_cas_loop(serial, app, id, port, status, stop),
+        }
 
-        while !stop.load(Ordering::Relaxed) {
-            // Тиша > 1.5с → ваги в режимі запит-відповідь: надсилаємо наступний
-            // запит (не частіше ніж раз на 300мс — не спамимо).
-            if last_data.elapsed() > SILENCE {
-                let gap_ok = match last_request_at {
-                    Some(t) => t.elapsed() >= REQUEST_GAP,
-                    None => true,
-                };
-                if gap_ok {
-                    let b = PROBES[request_index % PROBES.len()];
-                    request_index += 1;
-                    let ok = serial.write(&[b]).is_ok() && serial.flush().is_ok();
-                    if ok {
-                        if !silence_logged {
-                            crate::embedded_pg::pg_log(
-                                "INFO",
-                                &format!("scale {id}: тиша >1.5с — запит ваги 0x{b:02X}"),
-                            );
-                            silence_logged = true;
-                        }
-                        write_error_logged = false;
-                    } else if !write_error_logged {
+        set_status(&status_disp, "disconnected", None, None);
+        emit_status(&app_disp, &id_disp, &status_disp);
+    })
+}
+
+/// CAS-драйвер (протокол за замовчуванням): циклічно читає, парсить вагу та
+/// емітить подію "weight-updated". Статус оновлюється через "device-status-changed".
+///
+/// АДАПТИВНИЙ ЗАПИТ (ФІКС 2026-08-21, ваги «Пром Прилад»): більшість
+/// українських торгових ваг працюють у режимі ЗАПИТ-ВІДПОВІДЬ, а не
+/// постійної передачі. Якщо дані не надходили останні 1.5с — драйвер
+/// надсилає запит (по черзі ENQ 0x05 → 'W' 0x57 → 'P' 0x50, пауза 300мс),
+/// поки не прийде відповідь. Щойно дані прийшли — запити припиняються
+/// (continuous mode ваг не ламається).
+fn scale_cas_loop(
+    mut serial: Box<dyn serialport::SerialPort>,
+    app: AppHandle,
+    id: String,
+    port: String,
+    status: Arc<Mutex<DeviceStatus>>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut buf = [0u8; 256];
+    let mut acc = String::new();
+    // фільтр стабільності: останнє відправлене значення + кандидат на підтвердження
+    let mut last_emitted: Option<f64> = None;
+    let mut pending: Option<f64> = None;
+    // ── адаптивний запит ──
+    let mut last_data = std::time::Instant::now();
+    let mut request_index: usize = 0; // ENQ → 'W' → 'P' по колу
+    let mut last_request_at: Option<std::time::Instant> = None;
+    let mut silence_logged = false; // перша спроба запиту після тиші → в лог
+    let mut write_error_logged = false; // перша помилка запису підряд → в лог
+    const SILENCE: Duration = Duration::from_millis(1500);
+    const REQUEST_GAP: Duration = Duration::from_millis(300);
+    const PROBES: [u8; 3] = [0x05, b'W', b'P'];
+
+    while !stop.load(Ordering::Relaxed) {
+        // Тиша > 1.5с → ваги в режимі запит-відповідь: надсилаємо наступний
+        // запит (не частіше ніж раз на 300мс — не спамимо).
+        if last_data.elapsed() > SILENCE {
+            let gap_ok = match last_request_at {
+                Some(t) => t.elapsed() >= REQUEST_GAP,
+                None => true,
+            };
+            if gap_ok {
+                let b = PROBES[request_index % PROBES.len()];
+                request_index += 1;
+                let ok = serial.write(&[b]).is_ok() && serial.flush().is_ok();
+                if ok {
+                    if !silence_logged {
                         crate::embedded_pg::pg_log(
-                            "ERROR",
-                            &format!("scale {id}: помилка запису запиту 0x{b:02X} — продовжую"),
+                            "INFO",
+                            &format!("scale {id}: тиша >1.5с — запит ваги 0x{b:02X}"),
                         );
-                        write_error_logged = true;
+                        silence_logged = true;
                     }
-                    last_request_at = Some(std::time::Instant::now());
-                }
-            } else {
-                // Дані приходять постійно — запити припинено.
-                silence_logged = false;
-                write_error_logged = false;
-            }
-
-            match serial.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    last_data = std::time::Instant::now();
-                    silence_logged = false;
                     write_error_logged = false;
-                    acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    // обмежуємо буфер, щоб не розрісся
-                    if acc.len() > 1024 {
-                        acc = acc
-                            .chars()
-                            .rev()
-                            .take(512)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect();
-                    }
-                    if let Some(weight) = parse_weight(&acc) {
-                        acc.clear();
-                        if let Ok(mut st) = status.lock() {
-                            st.last_weight = Some(weight);
-                        }
-                        if should_emit_weight(&mut last_emitted, &mut pending, weight) {
-                            let _ = app.emit(
-                                "weight-updated",
-                                json!({ "deviceId": id.clone(), "value": weight }),
-                            );
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    // таймаут читання — просто продовжуємо цикл
-                }
-                Err(e) => {
+                } else if !write_error_logged {
                     crate::embedded_pg::pg_log(
                         "ERROR",
-                        &format!("scale {id}: втрата порту {port}: {e}"),
+                        &format!("scale {id}: помилка запису запиту 0x{b:02X} — продовжую"),
                     );
-                    set_status(
-                        &status,
-                        "error",
-                        Some(format!("втрата порту {port}: {e}")),
-                        None,
-                    );
-                    emit_status(&app, &id, &status);
-                    break;
+                    write_error_logged = true;
+                }
+                last_request_at = Some(std::time::Instant::now());
+            }
+        } else {
+            // Дані приходять постійно — запити припинено.
+            silence_logged = false;
+            write_error_logged = false;
+        }
+
+        match serial.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                last_data = std::time::Instant::now();
+                silence_logged = false;
+                write_error_logged = false;
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+                // обмежуємо буфер, щоб не розрісся
+                if acc.len() > 1024 {
+                    acc = acc
+                        .chars()
+                        .rev()
+                        .take(512)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                }
+                if let Some(weight) = parse_weight(&acc) {
+                    acc.clear();
+                    handle_weight(&app, &id, &status, &mut last_emitted, &mut pending, weight);
                 }
             }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                // таймаут читання — просто продовжуємо цикл
+            }
+            Err(e) => {
+                crate::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("scale {id}: втрата порту {port}: {e}"),
+                );
+                set_status(
+                    &status,
+                    "error",
+                    Some(format!("втрата порту {port}: {e}")),
+                    None,
+                );
+                emit_status(&app, &id, &status);
+                break;
+            }
         }
-        set_status(&status, "disconnected", None, None);
-        emit_status(&app, &id, &status);
-    })
+    }
+}
+
+/// Оновлення last_weight + подія "weight-updated" (з фільтром стабільності ±2г).
+fn handle_weight(
+    app: &AppHandle,
+    id: &str,
+    status: &Arc<Mutex<DeviceStatus>>,
+    last_emitted: &mut Option<f64>,
+    pending: &mut Option<f64>,
+    weight: f64,
+) {
+    if let Ok(mut st) = status.lock() {
+        st.last_weight = Some(weight);
+    }
+    if should_emit_weight(last_emitted, pending, weight) {
+        let _ = app.emit("weight-updated", json!({ "deviceId": id, "value": weight }));
+    }
+}
+
+/// Сон з перевіркою прапора зупинки (швидкий вихід із циклів драйвера).
+fn sleep_interruptible(stop: &AtomicBool, dur: Duration) {
+    let mut slept = Duration::ZERO;
+    while slept < dur && !stop.load(Ordering::Relaxed) {
+        let step = std::cmp::min(Duration::from_millis(100), dur - slept);
+        thread::sleep(step);
+        slept += step;
+    }
+}
+
+/// Очікування ACK (0x06) після ENQ: таймаут ~500мс.
+fn wait_vta2_ack(serial: &mut Box<dyn serialport::SerialPort>, stop: &AtomicBool) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut b = [0u8; 1];
+    while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
+        match serial.read(&mut b) {
+            Ok(n) if n > 0 && b[0] == 0x06 => return true,
+            Ok(_) => {} // інші байти ігноруємо
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Читання кадру протоколу 2: накопичує байти до знаходження валідного
+/// кадру SOH..EOT (таймаут ~1.5с).
+fn read_vta2_frame(serial: &mut Box<dyn serialport::SerialPort>, stop: &AtomicBool) -> Option<f64> {
+    let mut buf: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
+        let mut tmp = [0u8; 64];
+        match serial.read(&mut tmp) {
+            Ok(n) if n > 0 => {
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some((w, _)) = parse_vta2_stream(&buf) {
+                    return Some(w);
+                }
+                // тримаємо останні 64 байти (кадр 15 байт — з запасом)
+                if buf.len() > 128 {
+                    buf.drain(..buf.len() - 64);
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Читання відповіді протоколу 5: 17 байт неупакованого BCD. Ковзне вікно —
+/// захист від зсуву (залишкові байти попередніх відповідей).
+fn read_vta5_response(
+    serial: &mut Box<dyn serialport::SerialPort>,
+    stop: &AtomicBool,
+) -> Option<f64> {
+    let mut buf: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
+        let mut tmp = [0u8; 32];
+        match serial.read(&mut tmp) {
+            Ok(n) if n > 0 => {
+                buf.extend_from_slice(&tmp[..n]);
+                while buf.len() >= 17 {
+                    if let Some(w) = parse_vta5_frame(&buf[..17]) {
+                        return Some(w);
+                    }
+                    buf.remove(0);
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Драйвер протоколу 2 (ВТА-60): ENQ → ACK → DC1 → кадр SOH..EOT.
+fn scale_vta2_loop(
+    mut serial: Box<dyn serialport::SerialPort>,
+    app: AppHandle,
+    id: String,
+    port: String,
+    status: Arc<Mutex<DeviceStatus>>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_emitted: Option<f64> = None;
+    let mut pending: Option<f64> = None;
+    const MAX_ENQ_ATTEMPTS: u32 = 3;
+
+    while !stop.load(Ordering::Relaxed) {
+        // 1) ENQ, поки не прийде ACK (таймаут ~500мс, максимум N спроб)
+        let mut acked = false;
+        for _ in 0..MAX_ENQ_ATTEMPTS {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            if serial.write(&[0x05]).is_err() || serial.flush().is_err() {
+                crate::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("scale {id}: помилка запису ENQ на {port}"),
+                );
+                set_status(&status, "error", Some(format!("запис ENQ на {port}")), None);
+                emit_status(&app, &id, &status);
+                return;
+            }
+            if wait_vta2_ack(&mut serial, &stop) {
+                acked = true;
+                break;
+            }
+        }
+        if !acked {
+            // ваги не відповіли — пауза 1с і новий цикл ENQ
+            crate::embedded_pg::pg_log(
+                "WARN",
+                &format!("scale {id}: немає ACK після {MAX_ENQ_ATTEMPTS}×ENQ — пауза 1с"),
+            );
+            sleep_interruptible(&stop, Duration::from_secs(1));
+            continue;
+        }
+        // 2) DC1 — запит даних маси
+        if serial.write(&[0x11]).is_err() || serial.flush().is_err() {
+            crate::embedded_pg::pg_log(
+                "ERROR",
+                &format!("scale {id}: помилка запису DC1 на {port}"),
+            );
+            set_status(&status, "error", Some(format!("запис DC1 на {port}")), None);
+            emit_status(&app, &id, &status);
+            return;
+        }
+        // 3) читання кадру SOH..EOT
+        if let Some(weight) = read_vta2_frame(&mut serial, &stop) {
+            handle_weight(&app, &id, &status, &mut last_emitted, &mut pending, weight);
+        }
+    }
+}
+
+/// Драйвер протоколу 3 (ВТА-60, пасивний): ваги самі передають 3 рядки по
+/// 9 символів + CR LF; беремо перший рядок з крапкою (масу).
+fn scale_vta3_loop(
+    mut serial: Box<dyn serialport::SerialPort>,
+    app: AppHandle,
+    id: String,
+    port: String,
+    status: Arc<Mutex<DeviceStatus>>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_emitted: Option<f64> = None;
+    let mut pending: Option<f64> = None;
+    let mut buf: Vec<u8> = Vec::new();
+
+    while !stop.load(Ordering::Relaxed) {
+        let mut tmp = [0u8; 64];
+        match serial.read(&mut tmp) {
+            Ok(n) if n > 0 => {
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some((weight, consumed)) = parse_vta3_stream(&buf) {
+                    buf.drain(..consumed);
+                    handle_weight(&app, &id, &status, &mut last_emitted, &mut pending, weight);
+                }
+                // обмежуємо буфер
+                if buf.len() > 128 {
+                    buf.drain(..buf.len() - 64);
+                }
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => {
+                crate::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("scale {id}: втрата порту {port}: {e}"),
+                );
+                set_status(
+                    &status,
+                    "error",
+                    Some(format!("втрата порту {port}: {e}")),
+                    None,
+                );
+                emit_status(&app, &id, &status);
+                return;
+            }
+        }
+    }
+}
+
+/// Побудова запиту протоколу 5 (ВТА-60, бінарний BCD):
+/// - Режим 2 (з ціною): 0x00 0x00 0x02 + 5 байт ціни BCD (неупакований,
+///   молодший розряд першим, ціна в копійках, максимум 999.99 грн).
+/// - Режим 3 (без ціни): 0x00 0x00 0x03 + 5 нульових байт.
+/// УВАГА: Режим 3 ПЕРЕДАЄ нульову ціну у ваги — він обнуляє ціну ваг.
+fn vta5_build_request(price: Option<f64>) -> [u8; 8] {
+    let mut req = [0x00u8; 8];
+    match price {
+        None => {
+            // Режим 3: запит без ціни (5 нульових байт ціни)
+            req[2] = 0x03;
+        }
+        Some(p) => {
+            // Режим 2: запит з ціною. Ціна в копійках, до 99_999 (999.99 грн).
+            let cents = ((p * 100.0).round() as u64).min(99_999);
+            req[2] = 0x02;
+            let mut v = cents;
+            for i in 0..5 {
+                req[3 + i] = (v % 10) as u8; // Ц0 (молодший) — перший
+                v /= 10;
+            }
+        }
+    }
+    req
+}
+
+/// Драйвер протоколу 5 (ВТА-60, бінарний BCD): періодичний запит
+/// (кожні ~500мс), відповідь 17 байт, читання з таймаутом.
+/// Ціна береться зі спільного стану: якщо задана — Режим 2 (ваги тримають
+/// ціну і рахують вартість), якщо None — Режим 3 (без ціни).
+fn scale_vta5_loop(
+    mut serial: Box<dyn serialport::SerialPort>,
+    app: AppHandle,
+    id: String,
+    port: String,
+    status: Arc<Mutex<DeviceStatus>>,
+    stop: Arc<AtomicBool>,
+    price: Arc<Mutex<Option<f64>>>,
+) {
+    let mut last_emitted: Option<f64> = None;
+    let mut pending: Option<f64> = None;
+    let mut last_read: Option<f64> = None; // остання ПРОЧИТАНА вага (для логу змін)
+    let mut last_sent_price: Option<u64> = None; // остання надіслана ціна (копійки)
+
+    while !stop.load(Ordering::Relaxed) {
+        let cur = *price.lock().expect("lock poisoned: price");
+        // Копійки: логуємо зміну ціни, але запит надсилаємо КОЖЕН цикл —
+        // протокол 5 це запит-відповідь: без запиту ваги мовчать.
+        let cur_cents = cur.map(|p| ((p * 100.0).round() as u64).min(99_999));
+        if cur_cents != last_sent_price {
+            last_sent_price = cur_cents;
+            crate::embedded_pg::pg_log(
+                "INFO",
+                &format!("scale {id}: ціна для ваг = {:?} коп.", cur_cents),
+            );
+        }
+        let req = vta5_build_request(cur);
+        if serial.write(&req).is_err() || serial.flush().is_err() {
+            crate::embedded_pg::pg_log(
+                "ERROR",
+                &format!("scale {id}: помилка запису запиту BCD на {port}"),
+            );
+            set_status(
+                &status,
+                "error",
+                Some(format!("запис запиту на {port}")),
+                None,
+            );
+            emit_status(&app, &id, &status);
+            return;
+        }
+        if let Some(weight) = read_vta5_response(&mut serial, &stop) {
+            if last_read.map(|lr| (weight - lr).abs() > 0.0005).unwrap_or(true) {
+                crate::embedded_pg::pg_log(
+                    "INFO",
+                    &format!("scale {id}: вага = {weight} кг"),
+                );
+            }
+            last_read = Some(weight);
+            handle_weight(&app, &id, &status, &mut last_emitted, &mut pending, weight);
+        }
+        // періодичність ~500мс
+        sleep_interruptible(&stop, Duration::from_millis(500));
+    }
 }
 
 /// Примусово закрити TCP-сокет через RST (SO_LINGER=0) замість звичайного FIN.
@@ -476,8 +957,11 @@ fn force_rst_close(stream: &std::net::TcpStream) {
         l_linger: u16,
     }
     const SOL_SOCKET: libc::c_int = 0xffff; // Winsock2 winsock.h
-    const SO_LINGER: libc::c_int = 0x0080;  // Winsock2 winsock.h
-    let linger = Linger { l_onoff: 1, l_linger: 0 };
+    const SO_LINGER: libc::c_int = 0x0080; // Winsock2 winsock.h
+    let linger = Linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
     // Безпечно: SOCKET належить stream, linger — стекова змінна на час виклику
     unsafe {
         libc::setsockopt(
@@ -665,6 +1149,7 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
         error: None,
         last_weight: None,
     }));
+    let price = Arc::new(Mutex::new(None::<f64>));
 
     let handle = match cfg.device_type.as_str() {
         "scale" => {
@@ -679,13 +1164,22 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
                 .get("baudRate")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(9600) as u32;
+            // протокол ваг: "cas" (за замовчуванням) | "vta2" | "vta3" | "vta5"
+            let protocol = cfg
+                .config
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cas")
+                .to_string();
             spawn_scale(
                 app.clone(),
                 cfg.id.clone(),
                 port,
                 baud_rate,
+                protocol,
                 status.clone(),
                 stop.clone(),
+                price.clone(),
             )
         }
         "terminal" => {
@@ -733,6 +1227,7 @@ fn start_connection(app: &AppHandle, cfg: &DeviceConfig) -> Result<DeviceStatus,
             stop,
             thread: Some(handle),
             status: status.clone(),
+            price: price.clone(),
         },
     );
 
@@ -857,6 +1352,23 @@ pub fn disconnect_device(id: String) -> Result<DeviceStatus, String> {
             last_weight: None,
         })
     }
+}
+
+/// Встановити ціну для ваг (протокол 5, Режим 2). Ваги тримають ціну і
+/// рахують вартість = маса × ціна. `None` — повернутись до Режиму 3
+/// (запит без ціни; увага: Режим 3 передає у ваги нульову ціну).
+#[tauri::command]
+pub fn set_scale_price(device_id: String, price: Option<f64>) -> Result<(), String> {
+    let map = connections().lock().expect("lock poisoned: connections");
+    let h = map
+        .get(&device_id)
+        .ok_or_else(|| format!("пристрій {device_id} не підключено"))?;
+    *h.price.lock().expect("lock poisoned: price") = price;
+    crate::embedded_pg::pg_log(
+        "INFO",
+        &format!("scale {device_id}: ціну встановлено {:?}", price),
+    );
+    Ok(())
 }
 
 /// Поточні статуси всіх збережених пристроїв.
@@ -1042,7 +1554,7 @@ pub fn get_detected_devices() -> Result<DetectedDevices, String> {
 
 /// Перевірка з'єднання без збереження конфіга.
 /// - "terminal": TCP-підключення до ip:tcpPort (~2с), потім закрити.
-/// - "scale": спроба відкрити COM-порт на 9600 бод.
+/// - "scale": спроба відкрити COM-порт на baudRate з конфіга (9600 за замовчуванням).
 #[tauri::command]
 pub fn test_connection(device_type: String, config: serde_json::Value) -> Result<bool, String> {
     match device_type.as_str() {
@@ -1068,7 +1580,21 @@ pub fn test_connection(device_type: String, config: serde_json::Value) -> Result
                 .get("port")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "scale: не вказано port".to_string())?;
-            let _serial = serialport::new(port, 9600)
+            let baud_rate = config
+                .get("baudRate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(9600) as u32;
+            let protocol = config
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cas")
+                .to_string();
+            // Протокол 5 (ВТА-60, BCD) — парність EVEN (8E1)
+            let mut builder = serialport::new(port, baud_rate);
+            if protocol == "vta5" {
+                builder = builder.parity(serialport::Parity::Even);
+            }
+            let _serial = builder
                 .open()
                 .map_err(|e| format!("відкриття {port}: {e}"))?;
             Ok(true)
@@ -1165,7 +1691,6 @@ pub fn terminal_ping(app: AppHandle) -> Result<terminal::TerminalPingResult, Str
     let _guard = terminal_op_guard();
     terminal::ping(&ip, port)
 }
-
 
 // ── Юніт-тести ───────────────────────────────────────────────────────────────
 
@@ -1278,5 +1803,200 @@ mod tests {
         assert!(!should_emit_weight(&mut last, &mut pending, 100.0));
         assert!(!should_emit_weight(&mut last, &mut pending, 500.0));
         assert_eq!(last, None);
+    }
+
+    // ── ВТА-60 (KLARUS): протокол 2 ──────────────────────────────────────
+
+    /// Побудова кадру протоколу 2 з коректним BCC.
+    fn vta2_frame(
+        sta: u8,
+        sign: u8,
+        digits: &[u8; 6],
+        un1: u8,
+        un2: u8,
+        bcc: Option<u8>,
+    ) -> [u8; 15] {
+        let mut f = [0u8; 15];
+        f[0] = 0x01; // SOH
+        f[1] = 0x02; // STX
+        f[2] = sta;
+        f[3] = sign;
+        f[4..10].copy_from_slice(digits);
+        f[10] = un1;
+        f[11] = un2;
+        // BCC за замовчуванням — XOR від STX до UN2 включно
+        let bcc_val = match bcc {
+            Some(v) => v,
+            None => f[1..12].iter().fold(0u8, |a, b| a ^ b),
+        };
+        f[12] = bcc_val;
+        f[13] = 0x03; // ETX
+        f[14] = 0x04; // EOT
+        f
+    }
+
+    #[test]
+    fn vta2_valid_frame_parses() {
+        // SOH STX 'S' ' ' '0''0''1''5''0''0' 'k''g' BCC ETX EOT → 1.500 кг
+        let f = vta2_frame(b'S', b' ', b"001500", b'k', b'g', None);
+        assert_eq!(parse_vta2_frame(&f), Some(1.500));
+    }
+
+    #[test]
+    fn vta2_decimal_dot_format_real_scale() {
+        // Реальний кадр ВАГ-60: SOH STX 'S' ' ' " 0.000" 'k' 'g' BCC ETX EOT
+        // BCC = XOR від f[2] до f[11] включно = 0x71 (перевірено розрахунком)
+        let f = vta2_frame(b'S', b' ', b" 0.000", b'k', b'g', Some(0x71));
+        assert_eq!(parse_vta2_frame(&f), Some(0.0));
+    }
+
+    #[test]
+    fn vta2_decimal_dot_format_weight() {
+        // " 5.123" кг → 5.123; BCC (XOR f[2..12]) = 0x74
+        let f = vta2_frame(b'S', b' ', b" 5.123", b'k', b'g', Some(0x74));
+        assert_eq!(parse_vta2_frame(&f), Some(5.123));
+    }
+
+    #[test]
+    fn vta2_decimal_comma_format() {
+        // кома замість крапки: " 5,123" → 5.123; BCC (XOR f[2..12]) = 0x74
+        let f = vta2_frame(b'S', b' ', b" 5,123", b'k', b'g', Some(0x74));
+        assert_eq!(parse_vta2_frame(&f), Some(5.123));
+    }
+
+    #[test]
+    fn vta2_decimal_format_grams_divided() {
+        // без 'k' в одиницях (грами) і крапка: " 5123" → грами, /1000 → 5.123
+        let mut f = vta2_frame(b'S', b' ', b" 5.123", b'g', b'r', None);
+        // BCC перераховуємо під нові одиниці: XOR від STX до UN2 включно
+        f[12] = f[1..12].iter().fold(0u8, |a, b| a ^ b);
+        assert_eq!(parse_vta2_frame(&f), Some(5.123 / 1000.0));
+    }
+
+    #[test]
+    fn vta2_old_format_still_works() {
+        // Старий формат без крапки: "000000" кг → 0.0; BCC (XOR f[2..12]) = 0x7F
+        let f = vta2_frame(b'S', b' ', b"000000", b'k', b'g', Some(0x7F));
+        assert_eq!(parse_vta2_frame(&f), Some(0.0));
+        // і значуща вага "001500" кг → 1.500
+        let f2 = vta2_frame(b'S', b' ', b"001500", b'k', b'g', None);
+        assert_eq!(parse_vta2_frame(&f2), Some(1.500));
+    }
+
+    #[test]
+    fn vta2_unstable_frame_ignored() {
+        // 'U' (нестабільна) — приймати ТІЛЬКИ 'S'
+        let f = vta2_frame(b'U', b' ', b"001500", b'k', b'g', None);
+        assert_eq!(parse_vta2_frame(&f), None);
+    }
+
+    #[test]
+    fn vta2_wrong_bcc_rejected() {
+        let mut f = vta2_frame(b'S', b' ', b"001500", b'k', b'g', None);
+        f[12] ^= 0xFF; // псуємо BCC
+        assert_eq!(parse_vta2_frame(&f), None);
+    }
+
+    #[test]
+    fn vta2_negative_rejected() {
+        // SIGN '-' — від'ємна маса, відкидаємо
+        let f = vta2_frame(b'S', b'-', b"001500", b'k', b'g', None);
+        assert_eq!(parse_vta2_frame(&f), None);
+    }
+
+    #[test]
+    fn vta2_bcc_both_variants_accepted() {
+        // варіант 1: XOR від STX(0x02) до UN2 включно
+        let f1 = vta2_frame(b'S', b' ', b"001500", b'k', b'g', None);
+        assert_eq!(parse_vta2_frame(&f1), Some(1.500));
+        // варіант 2: XOR від STA до UN2 включно — теж приймаємо (толерантно)
+        let bcc_sta = f1[2..12].iter().fold(0u8, |a, b| a ^ b);
+        let f2 = vta2_frame(b'S', b' ', b"001500", b'k', b'g', Some(bcc_sta));
+        assert_eq!(parse_vta2_frame(&f2), Some(1.500));
+        // обидва варіанти не збіглися → відкинути
+        let f3 = vta2_frame(b'S', b' ', b"001500", b'k', b'g', Some(0x00));
+        assert_eq!(parse_vta2_frame(&f3), None);
+    }
+
+    #[test]
+    fn vta2_grams_without_k() {
+        // без 'k' в одиницях — грами: raw = 1500
+        let f = vta2_frame(b'S', b' ', b"001500", b'g', b'r', None);
+        assert_eq!(parse_vta2_frame(&f), Some(1500.0));
+    }
+
+    #[test]
+    fn vta2_stream_finds_frame_in_noise() {
+        let mut noise: Vec<u8> = vec![0x00, 0x11, 0xAA];
+        let f = vta2_frame(b'S', b' ', b"001500", b'k', b'g', None);
+        noise.extend_from_slice(&f);
+        noise.extend_from_slice(&[0x00, 0xFF]);
+        assert_eq!(parse_vta2_stream(&noise).map(|(w, _)| w), Some(1.500));
+    }
+
+    // ── ВТА-60 (KLARUS): протокол 3 ──────────────────────────────────────
+
+    #[test]
+    fn vta3_three_lines_parses_mass() {
+        // рядок 1 = маса "  1.500kg", рядок 2 = ціна, рядок 3 = вартість
+        let mut stream = Vec::new();
+        stream.extend_from_slice(b"  1.500kg\r\n");
+        stream.extend_from_slice(b"   250.00\r\n");
+        stream.extend_from_slice(b"   375.00\r\n");
+        let (w, consumed) = parse_vta3_stream(&stream).expect("маса має знайтись");
+        assert!((w - 1.500).abs() < 1e-9);
+        assert_eq!(consumed, 11);
+    }
+
+    #[test]
+    fn vta3_line_without_dot_ignored() {
+        // рядок без крапки в перших 7 символах ігнорується; далі — маса
+        let mut stream = Vec::new();
+        stream.extend_from_slice(b"123456789\r\n"); // без крапки
+        stream.extend_from_slice(b"  1.500kg\r\n");
+        let (w, _) = parse_vta3_stream(&stream).expect("маса має знайтись");
+        assert!((w - 1.500).abs() < 1e-9);
+    }
+
+    #[test]
+    fn vta3_partial_line_accumulates() {
+        // рядок приходить частинами — парсер чекає повні 9 символів + CR LF
+        let mut stream = Vec::new();
+        stream.extend_from_slice(b"  1.50");
+        assert_eq!(parse_vta3_stream(&stream), None);
+        stream.extend_from_slice(b"0kg\r\n");
+        let (w, _) = parse_vta3_stream(&stream).expect("маса має знайтись");
+        assert!((w - 1.500).abs() < 1e-9);
+    }
+
+    // ── ВТА-60 (KLARUS): протокол 5 ──────────────────────────────────────
+
+    #[test]
+    fn vta5_bcd_frame_parses() {
+        // М0..М5 = 0,0,5,1,0,0 → цифри у зворотному порядку (М5..М0) = 0 0 1 5 0 0 → 1.500 кг
+        let mut frame = [0u8; 17];
+        frame[0] = 0x00; // М0 (молодший розряд)
+        frame[1] = 0x00;
+        frame[2] = 0x05;
+        frame[3] = 0x01;
+        frame[4] = 0x00;
+        frame[5] = 0x00; // М5 (старший розряд)
+                         // Ц0..Ц4 та С0..С5 — нулі (запит без ціни)
+        assert_eq!(parse_vta5_frame(&frame), Some(1.500));
+    }
+
+    #[test]
+    fn vta5_bcd_least_significant_first() {
+        // М0=5 → п'ять тисячних кг: 0.005 кг
+        let mut frame = [0u8; 17];
+        frame[0] = 0x05;
+        assert_eq!(parse_vta5_frame(&frame), Some(0.005));
+    }
+
+    #[test]
+    fn vta5_non_bcd_byte_rejected() {
+        let mut frame = [0u8; 17];
+        frame[0] = 0x0A; // старша тетрада != 0 — не BCD
+        assert_eq!(parse_vta5_frame(&frame), None);
     }
 }

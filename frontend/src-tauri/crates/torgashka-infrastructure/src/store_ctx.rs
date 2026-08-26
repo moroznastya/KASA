@@ -25,8 +25,8 @@ use std::ops::Deref;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
 use futures_util::TryStreamExt;
-use sqlx::{Describe, Either, Error, Execute, Executor, PgPool, Postgres};
 use sqlx::Database;
+use sqlx::{Describe, Either, Error, Execute, Executor, PgPool, Postgres};
 use uuid::Uuid;
 
 /// Контекст поточного запиту: користувач + активна точка.
@@ -120,11 +120,13 @@ async fn reset_config(conn: &mut sqlx::PgConnection) -> Result<(), Error> {
     // лишає '' — споживачі трактують '' як NULL через NULLIF.
     // (raw_sql("RESET ...") тут не використано: ламає lifetime-інференс
     //  Executor у fetch_many — відомий sqlx-нюанс.)
-    sqlx::query("SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)")
-        .bind(Option::<String>::None)
-        .bind(Option::<String>::None)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "SELECT set_config('app.user_id', $1, false), set_config('app.store_id', $2, false)",
+    )
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 

@@ -23,7 +23,9 @@ async fn pool() -> sqlx::PgPool {
 }
 
 fn repo(p: &sqlx::PgPool) -> SqlxWriteDirectories {
-    SqlxWriteDirectories::new(torgashka_infrastructure::store_ctx::StorePool::new(p.clone()))
+    SqlxWriteDirectories::new(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
 }
 
 fn uniq() -> String {
@@ -57,94 +59,98 @@ async fn product_crud_flow() {
     let ts = uniq();
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
-    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    let ctx = StoreCtx {
+        user_id: owner_id,
+        store_id,
+        role: "owner".to_string(),
+    };
     with_store_ctx(ctx, async {
         let r = repo(&p);
         let ts = uniq();
 
-    // Create → 201-еквівалент: вхідні значення збережено.
-    let input = ProductCreateInput {
-        barcode: Some(format!("{ts}01")),
-        sku: Some(format!("SKU-{ts}")),
-        title: format!("ТЕСТ-ТОВАР-{ts}"),
-        description: Some("тест".to_string()),
-        price: Some("142.7".into()),
-        cost_price: Some("87.23".into()),
-        markup: None,
-        stock: Some("16".into()),
-        recommended_qty: Some("5".into()),
-        uktzed: Some("4820".into()),
-        scan_excise: false,
-        tax_rate: Some("20".into()),
-        tax_group: Some("А".into()),
-        is_weight: false,
-        unit: Some("шт".into()),
-        category_id: None,
-        supplier_id: None,
-    };
-    let created = r.create_product(&input).await.expect("create product");
-    assert_eq!(created.title, format!("ТЕСТ-ТОВАР-{ts}"));
-    // Вхідна scale збережена (як Python identity map).
-    assert_eq!(created.price.as_deref(), Some("142.7"));
-    assert_eq!(created.stock.as_deref(), Some("16"));
-    // markup розраховано (HALF_EVEN): (142.7-87.23)/87.23*100 = 63.59.
-    assert_eq!(created.markup.as_deref(), Some("63.59"));
-    // tax_rate default scale 0 (вхідне "20").
-    assert_eq!(created.tax_rate.as_deref(), Some("20"));
+        // Create → 201-еквівалент: вхідні значення збережено.
+        let input = ProductCreateInput {
+            barcode: Some(format!("{ts}01")),
+            sku: Some(format!("SKU-{ts}")),
+            title: format!("ТЕСТ-ТОВАР-{ts}"),
+            description: Some("тест".to_string()),
+            price: Some("142.7".into()),
+            cost_price: Some("87.23".into()),
+            markup: None,
+            stock: Some("16".into()),
+            recommended_qty: Some("5".into()),
+            uktzed: Some("4820".into()),
+            scan_excise: false,
+            tax_rate: Some("20".into()),
+            tax_group: Some("А".into()),
+            is_weight: false,
+            unit: Some("шт".into()),
+            category_id: None,
+            supplier_id: None,
+        };
+        let created = r.create_product(&input).await.expect("create product");
+        assert_eq!(created.title, format!("ТЕСТ-ТОВАР-{ts}"));
+        // Вхідна scale збережена (як Python identity map).
+        assert_eq!(created.price.as_deref(), Some("142.7"));
+        assert_eq!(created.stock.as_deref(), Some("16"));
+        // markup розраховано (HALF_EVEN): (142.7-87.23)/87.23*100 = 63.59.
+        assert_eq!(created.markup.as_deref(), Some("63.59"));
+        // tax_rate default scale 0 (вхідне "20").
+        assert_eq!(created.tax_rate.as_deref(), Some("20"));
 
-    // Конфлікт barcode → 409.
-    let dup = ProductCreateInput {
-        title: format!("ДУБЛЬ-{ts}"),
-        ..input.clone()
-    };
-    let err = r.create_product(&dup).await.unwrap_err();
-    assert!(
-        matches!(&err, WriteError::Conflict(msg) if msg.contains("вже існує")),
-        "очікувався Conflict, отримано: {err:?}"
-    );
+        // Конфлікт barcode → 409.
+        let dup = ProductCreateInput {
+            title: format!("ДУБЛЬ-{ts}"),
+            ..input.clone()
+        };
+        let err = r.create_product(&dup).await.unwrap_err();
+        assert!(
+            matches!(&err, WriteError::Conflict(msg) if msg.contains("вже існує")),
+            "очікувався Conflict, отримано: {err:?}"
+        );
 
-    // Update: тільки title + price → відповідь: title новий, price вхідний,
-    // markup перераховано з (нового price, старого cost_price з БД).
-    let upd = ProductUpdateInput {
-        title: Some(format!("ТЕСТ-ТОВАР-{ts}-NEW")),
-        price: Some(Some("150.00".into())),
-        ..ProductUpdateInput::default()
-    };
-    let updated = r
-        .update_product(created.id, &upd)
-        .await
-        .expect("update product");
-    assert_eq!(updated.title, format!("ТЕСТ-ТОВАР-{ts}-NEW"));
-    assert_eq!(updated.price.as_deref(), Some("150.00"));
-    // (150-87.23)/87.23*100 = 71.96 (HALF_EVEN).
-    assert_eq!(updated.markup.as_deref(), Some("71.96"));
+        // Update: тільки title + price → відповідь: title новий, price вхідний,
+        // markup перераховано з (нового price, старого cost_price з БД).
+        let upd = ProductUpdateInput {
+            title: Some(format!("ТЕСТ-ТОВАР-{ts}-NEW")),
+            price: Some(Some("150.00".into())),
+            ..ProductUpdateInput::default()
+        };
+        let updated = r
+            .update_product(created.id, &upd)
+            .await
+            .expect("update product");
+        assert_eq!(updated.title, format!("ТЕСТ-ТОВАР-{ts}-NEW"));
+        assert_eq!(updated.price.as_deref(), Some("150.00"));
+        // (150-87.23)/87.23*100 = 71.96 (HALF_EVEN).
+        assert_eq!(updated.markup.as_deref(), Some("71.96"));
 
-    // 404 на неіснуючий ID.
-    let missing = r.update_product(Uuid::new_v4(), &upd).await.unwrap_err();
-    assert!(matches!(missing, WriteError::NotFound(_)));
+        // 404 на неіснуючий ID.
+        let missing = r.update_product(Uuid::new_v4(), &upd).await.unwrap_err();
+        assert!(matches!(missing, WriteError::NotFound(_)));
 
-    // Delete з ненульовим залишком (stock 16) → 400.
-    let err = r.delete_product(created.id).await.unwrap_err();
-    assert!(
-        matches!(&err, WriteError::BadRequest(msg) if msg.contains("залишок на складі")),
-        "очікувався BadRequest, отримано: {err:?}"
-    );
+        // Delete з ненульовим залишком (stock 16) → 400.
+        let err = r.delete_product(created.id).await.unwrap_err();
+        assert!(
+            matches!(&err, WriteError::BadRequest(msg) if msg.contains("залишок на складі")),
+            "очікувався BadRequest, отримано: {err:?}"
+        );
 
-    // Обнуляємо stock → delete успішний.
-    let upd2 = ProductUpdateInput {
-        stock: Some(Some("0".into())),
-        ..ProductUpdateInput::default()
-    };
-    r.update_product(created.id, &upd2)
-        .await
-        .expect("zero stock");
-    r.delete_product(created.id).await.expect("delete product");
+        // Обнуляємо stock → delete успішний.
+        let upd2 = ProductUpdateInput {
+            stock: Some(Some("0".into())),
+            ..ProductUpdateInput::default()
+        };
+        r.update_product(created.id, &upd2)
+            .await
+            .expect("zero stock");
+        r.delete_product(created.id).await.expect("delete product");
 
-    // 404 після видалення.
-    let err = r.delete_product(created.id).await.unwrap_err();
-    assert!(matches!(&err, WriteError::NotFound(_)));
+        // 404 після видалення.
+        let err = r.delete_product(created.id).await.unwrap_err();
+        assert!(matches!(&err, WriteError::NotFound(_)));
 
-    cleanup_product(&p, created.id).await;
+        cleanup_product(&p, created.id).await;
     })
     .await;
 }
@@ -223,7 +229,11 @@ async fn inventory_confirm_cancel_flow() {
     let user = any_user_id(&p).await;
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
-    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    let ctx = StoreCtx {
+        user_id: owner_id,
+        store_id,
+        role: "owner".to_string(),
+    };
     with_store_ctx(ctx, async {
         let r = repo(&p);
         let ts = uniq();
@@ -361,81 +371,85 @@ async fn concurrent_inventory_confirms_no_data_loss() {
     let user = any_user_id(&p).await;
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
-    let ctx = StoreCtx { user_id: owner_id, store_id, role: "owner".to_string() };
+    let ctx = StoreCtx {
+        user_id: owner_id,
+        store_id,
+        role: "owner".to_string(),
+    };
     with_store_ctx(ctx, async {
         let r = repo(&p);
         let ts = uniq();
         let user = any_user_id(&p).await;
 
-    // Товар зі stock 100.000.
-    let prod = r
-        .create_product(&ProductCreateInput {
-            barcode: Some(format!("{ts}conc")),
-            sku: None,
-            title: format!("ТЕСТ-КОНКУР-{ts}"),
-            description: None,
-            price: Some("10.00".into()),
-            cost_price: Some("5.00".into()),
-            markup: None,
-            stock: Some("100.000".into()),
-            recommended_qty: None,
-            uktzed: None,
-            scan_excise: false,
-            tax_rate: Some("20.00".into()),
-            tax_group: Some("А".into()),
-            is_weight: false,
-            unit: Some("шт".into()),
-            category_id: None,
-            supplier_id: None,
-        })
+        // Товар зі stock 100.000.
+        let prod = r
+            .create_product(&ProductCreateInput {
+                barcode: Some(format!("{ts}conc")),
+                sku: None,
+                title: format!("ТЕСТ-КОНКУР-{ts}"),
+                description: None,
+                price: Some("10.00".into()),
+                cost_price: Some("5.00".into()),
+                markup: None,
+                stock: Some("100.000".into()),
+                recommended_qty: None,
+                uktzed: None,
+                scan_excise: false,
+                tax_rate: Some("20.00".into()),
+                tax_group: Some("А".into()),
+                is_weight: false,
+                unit: Some("шт".into()),
+                category_id: None,
+                supplier_id: None,
+            })
+            .await
+            .expect("create product");
+
+        // Дві інвентаризації на ОДИН товар: +7 і -3.
+        let mk_inv = |diff: &str| InventoryCreateInput {
+            number: None,
+            location: Some("КОНКУРЕНЦІЯ".into()),
+            inventory_date: chrono::Utc::now().naive_utc(),
+            notes: None,
+            items: vec![InventoryItemInput {
+                product_id: prod.id,
+                actual_quantity: "0".into(),
+                accounting_quantity: "0".into(),
+                difference: diff.into(),
+                cost_price: "5.00".into(),
+                price: "10.00".into(),
+            }],
+            created_by: user,
+        };
+        let inv_a = r.create_inventory(&mk_inv("7")).await.expect("inv A");
+        let inv_b = r.create_inventory(&mk_inv("-3")).await.expect("inv B");
+
+        // Паралельне проведення обох (два "термінали").
+        let r2 = repo(&p);
+        let (res_a, res_b) = tokio::join!(
+            r.confirm_inventory(inv_a.id),
+            r2.confirm_inventory(inv_b.id),
+        );
+        res_a.expect("confirm A");
+        res_b.expect("confirm B");
+
+        // Кінцевий залишок: 100 + 7 - 3 = 104.000 — нуль втрат.
+        let stock: String = sqlx::query_scalar(
+            "SELECT quantity::text FROM stock WHERE product_id = $1 AND store_id = $2",
+        )
+        .bind(prod.id)
+        .bind(store_id)
+        .fetch_one(&p)
         .await
-        .expect("create product");
+        .expect("stock");
+        assert_eq!(stock, "104.000", "паралельні проведення втратили дані");
 
-    // Дві інвентаризації на ОДИН товар: +7 і -3.
-    let mk_inv = |diff: &str| InventoryCreateInput {
-        number: None,
-        location: Some("КОНКУРЕНЦІЯ".into()),
-        inventory_date: chrono::Utc::now().naive_utc(),
-        notes: None,
-        items: vec![InventoryItemInput {
-            product_id: prod.id,
-            actual_quantity: "0".into(),
-            accounting_quantity: "0".into(),
-            difference: diff.into(),
-            cost_price: "5.00".into(),
-            price: "10.00".into(),
-        }],
-        created_by: user,
-    };
-    let inv_a = r.create_inventory(&mk_inv("7")).await.expect("inv A");
-    let inv_b = r.create_inventory(&mk_inv("-3")).await.expect("inv B");
-
-    // Паралельне проведення обох (два "термінали").
-    let r2 = repo(&p);
-    let (res_a, res_b) = tokio::join!(
-        r.confirm_inventory(inv_a.id),
-        r2.confirm_inventory(inv_b.id),
-    );
-    res_a.expect("confirm A");
-    res_b.expect("confirm B");
-
-    // Кінцевий залишок: 100 + 7 - 3 = 104.000 — нуль втрат.
-    let stock: String = sqlx::query_scalar(
-        "SELECT quantity::text FROM stock WHERE product_id = $1 AND store_id = $2",
-    )
-    .bind(prod.id)
-    .bind(store_id)
-    .fetch_one(&p)
-    .await
-    .expect("stock");
-    assert_eq!(stock, "104.000", "паралельні проведення втратили дані");
-
-    // Cleanup.
-    let _ = sqlx::query("DELETE FROM inventories WHERE id = ANY($1)")
-        .bind(vec![inv_a.id, inv_b.id])
-        .execute(&p)
-        .await;
-    cleanup_product(&p, prod.id).await;
+        // Cleanup.
+        let _ = sqlx::query("DELETE FROM inventories WHERE id = ANY($1)")
+            .bind(vec![inv_a.id, inv_b.id])
+            .execute(&p)
+            .await;
+        cleanup_product(&p, prod.id).await;
     })
     .await;
 }

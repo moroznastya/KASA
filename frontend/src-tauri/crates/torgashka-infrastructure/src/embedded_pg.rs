@@ -60,7 +60,11 @@ pub enum Error {
     #[error("{cmd} завершився з кодом {code}")]
     Exit { cmd: String, code: i32 },
     #[error("{cmd} завершився з кодом {code}: {stderr}")]
-    ExitWithOutput { cmd: String, code: i32, stderr: String },
+    ExitWithOutput {
+        cmd: String,
+        code: i32,
+        stderr: String,
+    },
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
     #[error("сервер не став готовим за {0:?} (порт {1})")]
@@ -122,7 +126,11 @@ pub fn pg_log(level: &str, msg: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "[{}] [{level}] {msg}", timestamp_str());
     }
@@ -147,15 +155,27 @@ fn read_log_tail(path: &Path, n: usize) -> String {
 // ── Імена бінарників ────────────────────────────────────────────────────────
 
 fn initdb_name() -> &'static str {
-    if cfg!(windows) { "initdb.exe" } else { "initdb" }
+    if cfg!(windows) {
+        "initdb.exe"
+    } else {
+        "initdb"
+    }
 }
 
 fn pg_ctl_name() -> &'static str {
-    if cfg!(windows) { "pg_ctl.exe" } else { "pg_ctl" }
+    if cfg!(windows) {
+        "pg_ctl.exe"
+    } else {
+        "pg_ctl"
+    }
 }
 
 fn psql_name() -> &'static str {
-    if cfg!(windows) { "psql.exe" } else { "psql" }
+    if cfg!(windows) {
+        "psql.exe"
+    } else {
+        "psql"
+    }
 }
 
 /// Чи слухає щось 127.0.0.1:EMBEDDED_PG_PORT (TCP) — перевірка зайнятості
@@ -220,7 +240,9 @@ pub fn data_dir_default() -> PathBuf {
         eprintln!(
             "[WARN] APPDATA/LOCALAPPDATA/temp містять не-ASCII — data_dir: C:\\ProgramData\\Torgashka\\pgdata"
         );
-        return PathBuf::from(r"C:\ProgramData").join("Torgashka").join("pgdata");
+        return PathBuf::from(r"C:\ProgramData")
+            .join("Torgashka")
+            .join("pgdata");
     }
     #[cfg(not(windows))]
     {
@@ -348,7 +370,10 @@ impl EmbeddedPostgres {
     /// DATABASE_URL для підключення до вбудованого сервера.
     pub fn database_url(&self) -> String {
         if self.password.is_empty() {
-            format!("postgresql://{}@127.0.0.1:{}/{}", self.user, EMBEDDED_PG_PORT, self.db)
+            format!(
+                "postgresql://{}@127.0.0.1:{}/{}",
+                self.user, EMBEDDED_PG_PORT, self.db
+            )
         } else {
             format!(
                 "postgresql://{}:{}@127.0.0.1:{}/{}",
@@ -384,7 +409,10 @@ impl EmbeddedPostgres {
             .arg("C")
             .arg("--encoding=UTF8")
             .output()
-            .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
+            .map_err(|e| Error::Command {
+                cmd: cmd.to_string(),
+                e,
+            })?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             pg_log(
@@ -446,9 +474,7 @@ impl EmbeddedPostgres {
                 Err(e) => return Err(e),
             }
         }
-        Err(last_err.unwrap_or_else(|| {
-            Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT)
-        }))
+        Err(last_err.unwrap_or_else(|| Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT)))
     }
 
     /// Одна спроба `pg_ctl start` + poll готовності.
@@ -478,7 +504,10 @@ impl EmbeddedPostgres {
             .arg("-w")
             .arg("start")
             .output()
-            .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
+            .map_err(|e| Error::Command {
+                cmd: cmd.to_string(),
+                e,
+            })?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             pg_log(
@@ -545,7 +574,7 @@ impl EmbeddedPostgres {
         );
     }
 
-/// Зупинка сервера: `pg_ctl -D <dir> -m fast stop`. Ідемпотентно.
+    /// Зупинка сервера: `pg_ctl -D <dir> -m fast stop`. Ідемпотентно.
     pub fn stop(&self) -> Result<(), Error> {
         if !port_is_open() {
             return Ok(());
@@ -569,9 +598,15 @@ impl EmbeddedPostgres {
             .arg("fast")
             .arg("stop")
             .status()
-            .map_err(|e| Error::Command { cmd: cmd.to_string(), e })?;
+            .map_err(|e| Error::Command {
+                cmd: cmd.to_string(),
+                e,
+            })?;
         if !status.success() {
-            let e = Error::Exit { cmd: cmd.to_string(), code: status.code().unwrap_or(-1) };
+            let e = Error::Exit {
+                cmd: cmd.to_string(),
+                code: status.code().unwrap_or(-1),
+            };
             pg_log("ERROR", &format!("pg_ctl stop: {e}"));
             return Err(e);
         }
@@ -597,11 +632,16 @@ impl EmbeddedPostgres {
         let check = Command::new(&psql)
             .args(["-h", "127.0.0.1", "-p", &EMBEDDED_PG_PORT.to_string()])
             .args(["-U", &self.user, "-d", "postgres", "-tAc"])
-            .arg(format!("SELECT 1 FROM pg_database WHERE datname = '{}'", self.db))
+            .arg(format!(
+                "SELECT 1 FROM pg_database WHERE datname = '{}'",
+                self.db
+            ))
             .output()
-            .map_err(|e| Error::Command { cmd: "psql".to_string(), e })?;
-        let exists = check.status.success()
-            && String::from_utf8_lossy(&check.stdout).trim() == "1";
+            .map_err(|e| Error::Command {
+                cmd: "psql".to_string(),
+                e,
+            })?;
+        let exists = check.status.success() && String::from_utf8_lossy(&check.stdout).trim() == "1";
         if exists {
             return Ok(());
         }
@@ -612,10 +652,16 @@ impl EmbeddedPostgres {
             .args(["-U", &self.user, "-d", "postgres", "-c"])
             .arg(&create_sql)
             .status()
-            .map_err(|e| Error::Command { cmd: "psql CREATE DATABASE".to_string(), e })?;
+            .map_err(|e| Error::Command {
+                cmd: "psql CREATE DATABASE".to_string(),
+                e,
+            })?;
         if !status.success() {
             let why = format!("psql CREATE DATABASE exit {:?}", status.code());
-            pg_log("ERROR", &format!("створення БД '{}' не вдалося: {why}", self.db));
+            pg_log(
+                "ERROR",
+                &format!("створення БД '{}' не вдалося: {why}", self.db),
+            );
             return Err(Error::CreateDb {
                 db: self.db.clone(),
                 why,
@@ -727,10 +773,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "torgashka_pg_test_{}_{nanos}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("torgashka_pg_test_{}_{nanos}", std::process::id()))
     }
 
     /// Менеджер для тестів; None → PG не знайдено (тест має зробити skip).
@@ -817,7 +860,8 @@ mod tests {
             "PG_VERSION має створитись після initdb"
         );
         // Ідемпотентність: повторний виклик без помилки і без повторного initdb
-        pg.ensure_initialized().expect("повторний initdb не має падати");
+        pg.ensure_initialized()
+            .expect("повторний initdb не має падати");
         let _ = std::fs::remove_dir_all(pg.data_dir());
     }
 
@@ -835,7 +879,8 @@ mod tests {
         pg.ensure_initialized().expect("initdb");
         pg.start().expect("pg_ctl start має підняти сервер");
         assert!(port_is_open(), "сервер має слухати 127.0.0.1:5433");
-        pg.ensure_database().expect("БД має створитись через psql CREATE DATABASE");
+        pg.ensure_database()
+            .expect("БД має створитись через psql CREATE DATABASE");
         pg.stop().expect("pg_ctl stop має зупинити сервер");
         // fast stop — порт має звільнитись (poll до 4с)
         for _ in 0..40 {
@@ -867,9 +912,11 @@ mod tests {
         // валідний у будь-якому разі, бо ensure_database більше не викликає його.)
         pg.ensure_initialized().expect("initdb");
         pg.start().expect("pg_ctl start");
-        pg.ensure_database().expect("БД має створитись без createdb");
+        pg.ensure_database()
+            .expect("БД має створитись без createdb");
         // Повторний виклик — ідемпотентність (БД вже існує).
-        pg.ensure_database().expect("повторний ensure_database не має падати");
+        pg.ensure_database()
+            .expect("повторний ensure_database не має падати");
         pg.stop().expect("stop");
         for _ in 0..40 {
             if !port_is_open() {

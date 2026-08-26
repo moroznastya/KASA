@@ -71,11 +71,12 @@ fn quote_ident(name: &str) -> String {
 
 /// Чи існує БД у PostgreSQL.
 async fn database_exists(pool: &StorePool, db_name: &str) -> Result<bool, SetupError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-        .bind(db_name)
-        .fetch_one(pool)
-        .await
-        .se()?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(db_name)
+            .fetch_one(pool)
+            .await
+            .se()?;
     Ok(exists)
 }
 

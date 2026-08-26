@@ -21,7 +21,9 @@ async fn pool() -> sqlx::PgPool {
 }
 
 fn repo(p: &sqlx::PgPool) -> SqlxLedger {
-    SqlxLedger::new(torgashka_infrastructure::store_ctx::StorePool::new(p.clone()))
+    SqlxLedger::new(torgashka_infrastructure::store_ctx::StorePool::new(
+        p.clone(),
+    ))
 }
 
 fn uniq() -> String {

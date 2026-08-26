@@ -109,7 +109,11 @@ async fn per_store_price_isolation_v1() {
     let in_b = with_store_ctx(ctx_b.clone(), async { read.get_product(created.id).await })
         .await
         .expect("get in B");
-    assert_eq!(in_b.price.as_deref(), Some("100.00"), "точка B: глобальна 100");
+    assert_eq!(
+        in_b.price.as_deref(),
+        Some("100.00"),
+        "точка B: глобальна 100"
+    );
 
     // 2) Зміна ціни ЛИШЕ в точці A: 100 → 150.
     let upd = ProductUpdateInput {
@@ -155,13 +159,15 @@ async fn per_store_price_isolation_v1() {
     assert_eq!(qty, "16.000", "зміна лише ціни не загубила quantity");
 
     // Глобальна products.price НЕ змінилась (150 записано лише в stock A).
-    let global_price: String =
-        sqlx::query_scalar("SELECT price::text FROM products WHERE id = $1")
-            .bind(created.id)
-            .fetch_one(&p)
-            .await
-            .expect("products.price");
-    assert_eq!(global_price, "100.00", "products.price залишається глобальним дефолтом");
+    let global_price: String = sqlx::query_scalar("SELECT price::text FROM products WHERE id = $1")
+        .bind(created.id)
+        .fetch_one(&p)
+        .await
+        .expect("products.price");
+    assert_eq!(
+        global_price, "100.00",
+        "products.price залишається глобальним дефолтом"
+    );
 
     cleanup_product(&p, created.id).await;
 }

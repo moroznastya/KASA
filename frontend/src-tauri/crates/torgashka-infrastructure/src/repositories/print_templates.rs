@@ -17,10 +17,10 @@
 //! бінарнику). Rust застосовує font-family, але не вбудовує @font-face.
 //! print_font_family у БД відсутній → default 'Arial, sans-serif' (1:1).
 
+use crate::store_ctx::StorePool;
 use chrono::NaiveDateTime;
 use serde_json::{json, Value};
 use sqlx::Row;
-use crate::store_ctx::StorePool;
 use uuid::Uuid;
 
 use super::price_tag::{

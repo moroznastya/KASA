@@ -6,10 +6,10 @@
 //! Грошові поля numeric повертаються як `::text` і парсяться у f64
 //! (Python list/export конвертують Decimal у float).
 
+use crate::store_ctx::StorePool;
 use chrono::NaiveDateTime;
 use serde_json::{json, Value};
-use sqlx::{Row};
-use crate::store_ctx::StorePool;
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_domain::documents::{

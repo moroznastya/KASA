@@ -9,10 +9,10 @@
 //! перезавантажує той самий ORM-об'єкт з сесії. get/list/confirm — значення
 //! з БД (scale колонки). Rust відтворює це перезаписом DTO вхідними даними.
 
+use crate::store_ctx::{current_store_ctx, StorePool};
 use chrono::NaiveDateTime;
 use rust_decimal::Decimal;
 use sqlx::Row;
-use crate::store_ctx::{current_store_ctx, StorePool};
 use uuid::Uuid;
 
 use torgashka_domain::purchase_orders::{
@@ -158,11 +158,9 @@ impl SqlxPurchaseOrders {
         order_id: Uuid,
         items: &[PurchaseOrderItemInput],
     ) -> Result<(), PurchaseOrdersError> {
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PurchaseOrdersError::BadRequest(
-                "Відсутній контекст точки (X-Store-Id)".to_string(),
-            ))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PurchaseOrdersError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         for it in items {
             sqlx::query(
                 "INSERT INTO purchase_order_items \
@@ -284,11 +282,9 @@ impl torgashka_domain::purchase_orders::PurchaseOrdersService for SqlxPurchaseOr
             }
             None => None,
         };
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| PurchaseOrdersError::BadRequest(
-                "Відсутній контекст точки (X-Store-Id)".to_string(),
-            ))?;
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PurchaseOrdersError::BadRequest("Відсутній контекст точки (X-Store-Id)".to_string())
+        })?;
         let new_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO purchase_orders \

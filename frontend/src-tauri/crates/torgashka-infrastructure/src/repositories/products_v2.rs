@@ -11,8 +11,8 @@
 //!   - delete_product: stock != 0 → 400 «Неможливо видалити товар ...»
 //!     (Python float-формат: "5.0", БЕЗ суфікса «Спочатку списати» v1).
 
-use sqlx::{Row};
 use crate::store_ctx::{current_store_ctx, StorePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_domain::{
