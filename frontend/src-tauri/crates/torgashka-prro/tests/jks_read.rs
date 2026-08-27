@@ -26,6 +26,7 @@ fn test_jks_path() -> PathBuf {
 }
 
 #[test]
+#[ignore = "потребує реального КЕП-ключа certs/prro-test/*.jks (секрет, не в git). CI пропускає."]
 fn jks_detect_format_by_extension_and_magic() {
     let path = test_jks_path();
     assert!(path.is_file(), "JKS-ключ має існувати: {}", path.display());
@@ -33,6 +34,7 @@ fn jks_detect_format_by_extension_and_magic() {
 }
 
 #[test]
+#[ignore = "потребує реального КЕП-ключа certs/prro-test/*.jks (секрет, не в git). CI пропускає."]
 fn jks_loads_private_key_and_cert_chain() {
     let path = test_jks_path();
     let m = load_key_material(&path, "test2003", None).expect("JKS читається");
@@ -67,6 +69,7 @@ fn jks_loads_private_key_and_cert_chain() {
 }
 
 #[test]
+#[ignore = "потребує реального КЕП-ключа certs/prro-test/*.jks (секрет, не в git). CI пропускає."]
 fn jks_wrong_password_fails() {
     let path = test_jks_path();
     let err = load_key_material(&path, "wrong_password", None).unwrap_err();
