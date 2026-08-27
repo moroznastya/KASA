@@ -866,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "CI: /dev/shm обмеження в GitHub runner — pg_ctl start падає. Локально: cargo test -p torgashka-infrastructure embedded_pg"]
     fn start_stop_roundtrip() {
         let Some(pg) = test_pg() else {
             eprintln!("SKIP: PostgreSQL бінарники не знайдено");
@@ -897,6 +898,7 @@ mod tests {
     /// (createdb.exe відсутній у slim-бандлі). Тест перевіряє, що ensure_database
     /// НЕ залежить від createdb і створює БД на живому сервері.
     #[test]
+    #[ignore = "CI: /dev/shm обмеження в GitHub runner — pg_ctl start падає. Локально: cargo test -p torgashka-infrastructure embedded_pg"]
     fn ensure_database_creates_without_createdb_binary() {
         let Some(pg) = test_pg() else {
             eprintln!("SKIP: PostgreSQL бінарники не знайдено");
