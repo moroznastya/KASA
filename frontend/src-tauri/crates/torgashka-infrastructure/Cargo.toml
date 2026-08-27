@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Torgashka — Infrastructure layer: реалізації портів (devices, print, terminal, cash_drawer, offline). Перенесено з монолітного Tauri-пакета (етап 0, Strangler Fig)."
 
+
+[lints]
+workspace = true
+
 [dependencies]
 # ⚠️ Тимчасово: команди з #[tauri::command] перенесені разом із логікою.
 # Розщеплення (тонкі команди в shell, чиста логіка тут) — наступні етапи.

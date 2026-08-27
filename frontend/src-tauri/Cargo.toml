@@ -1,3 +1,6 @@
+[workspace.lints.clippy]
+result_large_err = "allow"  # tonic::Status — gRPC-тип (rustc 1.98 lint)
+
 [workspace]
 members = ["crates/*"]
 resolver = "2"

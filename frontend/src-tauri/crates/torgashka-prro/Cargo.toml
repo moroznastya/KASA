@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Torgashka — ПРРО (фіскалізація через ДПС України): gRPC-клієнт ChkIncomeService (tonic), XML СЗЗД 2.1.7 (канонізація C14N, MAC), key_store (JKS/PKCS#12/PEM), крипто-шар (FFI до IIT SDK EUSignCP для ДСТУ 4145 + чистий Rust для RSA/ECDSA). Етап 7 міграції."
 
+
+[lints]
+workspace = true
+
 [dependencies]
 tonic = { version = "0.12", features = ["tls", "tls-roots"] }
 prost = "0.13"

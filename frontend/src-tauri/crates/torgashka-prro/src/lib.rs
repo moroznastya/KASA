@@ -12,8 +12,6 @@
 //!
 //! Стратегія: ADR-014. Еталон: `backend/app/infrastructure/services/prro/` (Python).
 
-#![allow(clippy::result_large_err)] // tonic::Status — стандартний gRPC-тип (rustc 1.98 lint)
-
 pub mod crypto;
 pub mod grpc;
 pub mod jks;

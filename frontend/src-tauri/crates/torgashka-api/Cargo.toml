@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Torgashka — вбудований axum-фасад: HTTP gateway, reverse proxy → Python sidecar, JWT-валідація"
 
+
+[lints]
+workspace = true
+
 [dependencies]
 axum = { version = "0.7", features = ["macros", "multipart"] }
 torgashka-domain = { path = "../torgashka-domain" }
