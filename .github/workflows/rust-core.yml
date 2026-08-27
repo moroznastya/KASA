@@ -16,6 +16,9 @@
 #      без персональних даних).
 #   3. readdirs_snapshot позначено #[ignore] — потребує даних робочої БД
 #      nastya (порівняння з Python-еталоном); CI запускає його лише з --ignored.
+#   4. Додано системні залежності Tauri (libwebkit2gtk-4.1, libgtk-3, ...):
+#      clippy/test збирають root-package (Tauri shell) — без glib/webkit
+#      збірка падає з "PKG_CONFIG_PATH not set".
 # ============================================================================
 
 name: 🦀 Rust Core — workspace
@@ -69,6 +72,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: frontend/src-tauri
+
+      # ─── Системні бібліотеки (Tauri: glib, webkit2gtk...) ──────────────
+      - name: 📦 Install system deps (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
 
       # ─── PostgreSQL: тестова БД + схема/seed ──────────────────────────
       - name: 🗄️ Create test DB
