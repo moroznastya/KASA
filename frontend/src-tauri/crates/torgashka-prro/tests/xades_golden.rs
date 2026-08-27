@@ -30,6 +30,7 @@ fn golden() -> serde_json::Value {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_sign_matches_python_byte_for_byte() {
     let signer = load_signer();
     let golden = golden();
@@ -50,6 +51,7 @@ fn xades_sign_matches_python_byte_for_byte() {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_digest_and_signature_values_match_golden() {
     let signer = load_signer();
     let golden = golden();
@@ -68,6 +70,7 @@ fn xades_digest_and_signature_values_match_golden() {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_verify_own_and_python_signed() {
     let signer = load_signer();
     let golden = golden();
@@ -83,6 +86,7 @@ fn xades_verify_own_and_python_signed() {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_verify_rejects_tampered() {
     let signer = load_signer();
     let golden = golden();
@@ -106,6 +110,7 @@ fn xades_verify_rejects_tampered() {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_signer_identity_matches_python() {
     let signer = load_signer();
     // Python: serial=6FC54869E8DC5E44BAC89F53525143676805901B,
@@ -122,6 +127,7 @@ fn xades_signer_identity_matches_python() {
 }
 
 #[test]
+#[ignore = "потребує тестового ключа certs/prro-test/test-rsa.pem (секрет, не в git). CI пропускає."]
 fn xades_rsa_key_from_pkcs8_der() {
     let Some(pem_path) = torgashka_prro::crypto::xades::test_rsa_key_path() else {
         panic!("test-rsa.pem відсутній");
