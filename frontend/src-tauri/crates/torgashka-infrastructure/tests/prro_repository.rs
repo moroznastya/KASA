@@ -121,10 +121,19 @@ async fn queue_full_cycle() {
     let xml = r#"<DAT FN="400000000000" TN="400000000000" ZN="400000000000" DI="1" V="2.1.7"><C T="0"><E N="1" SM="100" TX="0" TXPR="20.00" TXSM="17"></E></C><TS>20260807120000</TS></DAT>"#;
 
     // add + pending
-    let item =
-        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 1, CHECK_TYPE_CHK, xml, None, None, None)
-            .await
-            .expect("add");
+    let item = PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        Some(shift.id),
+        1,
+        CHECK_TYPE_CHK,
+        xml,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("add");
     assert_eq!(item.status, PrroQueueStatus::Pending);
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 1);
 
@@ -148,10 +157,19 @@ async fn queue_full_cycle() {
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 0);
 
     // mark_failed
-    let item2 =
-        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 2, CHECK_TYPE_CHK, xml, None, None, None)
-            .await
-            .unwrap();
+    let item2 = PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        Some(shift.id),
+        2,
+        CHECK_TYPE_CHK,
+        xml,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let failed = PrroOfflineQueue::mark_failed(&repo, item2.id, "ERROR_OFFLINE_168".into())
         .await
         .unwrap()

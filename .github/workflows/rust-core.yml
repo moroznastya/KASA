@@ -4,9 +4,18 @@
 # Стратегія: docs/RUST_MIGRATION_PLAN.md §6 (CI)
 #   rust-core: cargo fmt --check → cargo clippy -D warnings → cargo test
 # Запускається при push/PR у main та feat/rust-migration.
-# Робоча директорія: frontend/src-tauri (workspace: crates/kasa-domain,
-# kasa-application, kasa-infrastructure, kasa-api + Tauri shell).
+# Робоча директорія: frontend/src-tauri (workspace: crates/torgashka-* + Tauri shell).
 # sqlx: НЕ використовується на етапі 0 — крок sqlx prepare не потрібен.
+#
+# 🔧 ФІКС 2026-08-27:
+#   1. `--workspace` додано до clippy/test — без нього Cargo тестує ЛИШЕ
+#      root-package (Tauri shell, 0 тестів), а тести crates/* пропускаються.
+#   2. Додано PostgreSQL 16 сервіс: інтеграційні тести (pos_crud, ledger_crud,
+#      cash_operations, store_settings_isolation та ін.) потребують живої БД.
+#      Схема + seed — scripts/schema.sql (комітиться; лише DDL + фікстури,
+#      без персональних даних).
+#   3. readdirs_snapshot позначено #[ignore] — потребує даних робочої БД
+#      nastya (порівняння з Python-еталоном); CI запускає його лише з --ignored.
 # ============================================================================
 
 name: 🦀 Rust Core — workspace
@@ -21,6 +30,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  DATABASE_URL: postgresql://postgres:test_password@localhost:5432/pos_system
+  TEST_DATABASE_URL: postgresql://postgres:test_password@localhost:5432/pos_system_test
+
 defaults:
   run:
     working-directory: frontend/src-tauri
@@ -29,6 +42,20 @@ jobs:
   rust-core:
     name: fmt → clippy → test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pos_system
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pos_system"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
@@ -43,11 +70,27 @@ jobs:
         with:
           workspaces: frontend/src-tauri
 
+      # ─── PostgreSQL: тестова БД + схема/seed ──────────────────────────
+      - name: 🗄️ Create test DB
+        run: |
+          PGPASSWORD=test_password psql -h localhost -U postgres -d pos_system \
+            -c "CREATE DATABASE pos_system_test;" || true
+
+      - name: 🗄️ Apply schema + seed (pos_system)
+        run: |
+          PGPASSWORD=test_password psql -h localhost -U postgres -d pos_system \
+            -v ON_ERROR_STOP=1 -f ../../scripts/schema.sql
+
+      - name: 🗄️ Apply schema + seed (pos_system_test)
+        run: |
+          PGPASSWORD=test_password psql -h localhost -U postgres -d pos_system_test \
+            -v ON_ERROR_STOP=1 -f ../../scripts/schema.sql
+
       - name: ✨ cargo fmt --check
         run: cargo fmt --check
 
       - name: 🧹 cargo clippy (warnings = errors)
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: 🧪 cargo test
-        run: cargo test
+        run: cargo test --workspace

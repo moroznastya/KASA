@@ -141,4 +141,3 @@ flatpak/
 .devices_tmp.json
 
 # ── DB dumps (never commit) ────────────────
-scripts/schema.sql

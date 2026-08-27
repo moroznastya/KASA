@@ -290,4 +290,3 @@ async fn cash_operations_http_roundtrip() {
 
     handle.abort();
 }
-

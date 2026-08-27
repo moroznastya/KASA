@@ -83,6 +83,7 @@ fn uuid_of(snapshot: &serde_json::Value, index: usize, field: &str) -> Option<Uu
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn products_default_matches_python() {
     let repo = repo().await;
     let mut filters = ProductFilters::default_page();
@@ -98,6 +99,7 @@ async fn products_default_matches_python() {
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn products_query_matches_python() {
     let repo = repo().await;
     let mut filters = ProductFilters::default_page();
@@ -114,6 +116,7 @@ async fn products_query_matches_python() {
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn categories_default_matches_python() {
     let repo = repo().await;
     let page = repo.list_categories(1, 5).await.expect("list_categories");
@@ -126,6 +129,7 @@ async fn categories_default_matches_python() {
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn suppliers_default_matches_python() {
     let repo = repo().await;
     let page = repo.list_suppliers(1, 3).await.expect("list_suppliers");
@@ -138,6 +142,7 @@ async fn suppliers_default_matches_python() {
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn products_filter_by_category_matches_python() {
     // Фільтр категорією: Rust має повернути ту саму підмножину, що Python.
     // Беремо реальну категорію зі снапшота products і звіряємо total.
@@ -156,6 +161,7 @@ async fn products_filter_by_category_matches_python() {
 }
 
 #[tokio::test]
+#[ignore = "snapshot: потребує живої БД nastya (дані для порівняння з Python-еталоном). CI: без даних не працює. Локально: cargo test --test readdirs_snapshot -- --ignored"]
 async fn empty_query_returns_nothing_weird() {
     // Порожній рядок query → Python: query='' → falsy → еквівалентно None.
     let repo = repo().await;
