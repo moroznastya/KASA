@@ -60,6 +60,17 @@ pub trait PrroRepository: Send + Sync {
         last_mac: Option<String>,
     ) -> Result<Option<PrroShift>, PrroRepoError>;
 
+    /// M1: атомарний local_number — інкремент + збереження в одній операції.
+    /// Повертає НОВЕ значення last_local_number. Гарантує N унікальних
+    /// послідовних номерів при N паралельних фіскалізаціях.
+    async fn next_local_number(&self, shift_id: Uuid) -> Result<i64, PrroRepoError>;
+    /// Оновлює лише last_mac зміни (B1: hash-ланцюжок після sync-відправки).
+    async fn update_shift_last_mac(
+        &self,
+        shift_id: Uuid,
+        last_mac: String,
+    ) -> Result<Option<PrroShift>, PrroRepoError>;
+
     // ── PrroQueueItem ────────────────────────────────────────────────────
     async fn add_to_queue(&self, item: PrroQueueItem) -> Result<PrroQueueItem, PrroRepoError>;
     async fn get_queue_item(&self, item_id: Uuid) -> Result<Option<PrroQueueItem>, PrroRepoError>;
@@ -76,6 +87,12 @@ pub trait PrroRepository: Send + Sync {
         &self,
         item_id: Uuid,
         error: String,
+    ) -> Result<Option<PrroQueueItem>, PrroRepoError>;
+    /// B2: зберігає повний підписаний check_sign (ідемпотентність sync).
+    async fn update_queue_check_sign(
+        &self,
+        item_id: Uuid,
+        check_sign: String,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError>;
     async fn count_pending(&self) -> Result<u64, PrroRepoError>;
     async fn delete_queue_item(&self, item_id: Uuid) -> Result<bool, PrroRepoError>;
@@ -311,6 +328,33 @@ impl PrroRepository for InMemoryPrroRepository {
         Ok(Some(shift.clone()))
     }
 
+    async fn next_local_number(&self, shift_id: Uuid) -> Result<i64, PrroRepoError> {
+        // M1: одна lock-секція → read-modify-write атомарний для конкурентних
+        // фіскалізацій в одному процесі (аналог SQL UPDATE ... RETURNING).
+        let mut shifts = self.shifts.lock().expect("lock poisoned: shifts");
+        let shift = shifts
+            .iter_mut()
+            .find(|s| s.id == shift_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        let next = shift.last_local_number + 1;
+        shift.last_local_number = next;
+        Ok(next)
+    }
+
+    async fn update_shift_last_mac(
+        &self,
+        shift_id: Uuid,
+        last_mac: String,
+    ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let mut shifts = self.shifts.lock().expect("lock poisoned: shifts");
+        let shift = shifts
+            .iter_mut()
+            .find(|s| s.id == shift_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        shift.last_mac = Some(last_mac);
+        Ok(Some(shift.clone()))
+    }
+
     async fn add_to_queue(&self, item: PrroQueueItem) -> Result<PrroQueueItem, PrroRepoError> {
         self.queue
             .lock()
@@ -401,6 +445,20 @@ impl PrroRepository for InMemoryPrroRepository {
             .ok_or(PrroRepoError::NotFound)?;
         item.status = super::models::PrroQueueStatus::Failed;
         item.error = Some(error);
+        Ok(Some(item.clone()))
+    }
+
+    async fn update_queue_check_sign(
+        &self,
+        item_id: Uuid,
+        check_sign: String,
+    ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let mut queue = self.queue.lock().expect("lock poisoned: queue");
+        let item = queue
+            .iter_mut()
+            .find(|i| i.id == item_id)
+            .ok_or(PrroRepoError::NotFound)?;
+        item.check_sign = Some(check_sign);
         Ok(Some(item.clone()))
     }
 

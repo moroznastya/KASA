@@ -96,10 +96,26 @@ class PrroContextFactory:
     # ─── gRPC-клієнт ───────────────────────────────────────────────────────
 
     async def grpc_client(self) -> "PrroGrpcClient":
-        """Повертає кешованого PrroGrpcClient (url + rro_fn з налаштувань)."""
+        """Повертає кешованого PrroGrpcClient (url + rro_fn з налаштувань).
+
+        B3: формує rro_fn_sign — підпис фіскального номера ПРРО тим самим
+        КЕП-ключем (statusRro/infoRro/lastChk/delLastChk/delLastChkId).
+        Якщо ключ не налаштовано — rro_fn_sign=b'' (виклик усе одно піде,
+        але тестовий сервер відкине запит; статус налаштувань покаже це).
+        """
         url = await self.url()
         fn = await self._settings_repo.get(KEY_PRRO_FN) or None
-        return self._service_factory.grpc_client(url=url, rro_fn=fn)
+        rro_fn_sign = None
+        if fn:
+            try:
+                signer = await self.build_crypto_signer()
+                rro_fn_sign = signer.sign(fn.encode("utf-8"))
+            except Exception as exc:  # noqa: BLE001 — ключ може бути не налаштований
+                logger.warning("PRRO_RRO_FN_SIGN | не вдалося підписати ФН: %s", exc)
+                rro_fn_sign = None
+        return self._service_factory.grpc_client(
+            url=url, rro_fn=fn, rro_fn_sign=rro_fn_sign
+        )
 
     # ─── XmlBuilder / CryptoSigner ─────────────────────────────────────────
 
@@ -190,6 +206,7 @@ class PrroContextFactory:
         check_sign: bytes,
         local_number: int,
         check_type: str = CHECK_TYPE_CHK,
+        id_offline: str = "",
     ):
         """
         Формує prro_pb2.Check для sendChkV2.
@@ -198,6 +215,7 @@ class PrroContextFactory:
             check_sign: підписаний XML-документ СЗЗД (bytes).
             local_number: локальний номер чеку (0 — відкриття зміни).
             check_type: "CHK" / "ZREPORT" / "SERVICECHK".
+            id_offline: B4 — офлайн-ідентифікатор ("offline-{n}" в офлайні).
 
         Returns:
             prro_pb2.Check — готове повідомлення.
@@ -213,6 +231,7 @@ class PrroContextFactory:
             check_type=_PRRO_CHECK_TYPE_MAP.get(
                 check_type, _PRRO_CHECK_TYPE_MAP[CHECK_TYPE_CHK]
             ),
+            id_offline=id_offline,
         )
 
     # ─── Лічильник змін ────────────────────────────────────────────────────

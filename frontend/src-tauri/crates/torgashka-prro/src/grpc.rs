@@ -55,6 +55,9 @@ pub fn check_date_time() -> i64 {
 pub struct PrroGrpcClient {
     stub: ChkIncomeServiceClient<Channel>,
     rro_fn: String,
+    /// B3: підписаний ФН ПРРО (тим самим КЕП-ключем, що й check_sign) —
+    /// надсилається у statusRro/infoRro/lastChk/delLastChk/delLastChkId.
+    rro_fn_sign: Vec<u8>,
     timeout: std::time::Duration,
     max_retries: u32,
     initial_backoff: std::time::Duration,
@@ -102,6 +105,7 @@ impl PrroGrpcClient {
         Ok(Self {
             stub: ChkIncomeServiceClient::new(channel),
             rro_fn: rro_fn.into(),
+            rro_fn_sign: Vec::new(), // B3: заповнюється через with_rro_fn_sign
             timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             max_retries: DEFAULT_MAX_RETRIES,
             initial_backoff: std::time::Duration::from_secs(DEFAULT_INITIAL_BACKOFF_SECONDS),
@@ -113,10 +117,17 @@ impl PrroGrpcClient {
         Self {
             stub: ChkIncomeServiceClient::new(channel),
             rro_fn: rro_fn.into(),
+            rro_fn_sign: Vec::new(), // B3: заповнюється через with_rro_fn_sign
             timeout: std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
             max_retries: DEFAULT_MAX_RETRIES,
             initial_backoff: std::time::Duration::from_secs(DEFAULT_INITIAL_BACKOFF_SECONDS),
         }
+    }
+
+    /// B3: задає підписаний ФН ПРРО (rro_fn_sign) для службових RPC.
+    pub fn with_rro_fn_sign(mut self, sign: Vec<u8>) -> Self {
+        self.rro_fn_sign = sign;
+        self
     }
 
     fn make_check(
@@ -177,13 +188,46 @@ impl PrroGrpcClient {
         })
     }
 
+    /// RPC-виклик БЕЗ сліпих ретраїв (H1): фіскальний документ відправляється
+    /// рівно один раз; рішення про повтор приймає fiscalize (lastChk-перевірка).
+    async fn call_once<F, Fut, T>(
+        &self,
+        method_name: &str,
+        f: F,
+    ) -> Result<T, PrroGrpcError>
+    where
+        F: FnOnce(ChkIncomeServiceClient<Channel>) -> Fut,
+        Fut: std::future::Future<Output = Result<tonic::Response<T>, Status>>,
+    {
+        match f(self.stub.clone()).await {
+            Ok(resp) => {
+                tracing::debug!("PRRO_GRPC_CALL_OK | method={method_name} attempt=1");
+                Ok(resp.into_inner())
+            }
+            Err(status) => {
+                tracing::warn!(
+                    "PRRO_GRPC_CALL_ERR | method={method_name} attempt=1/1 code={:?} details={}",
+                    status.code(),
+                    status.message(),
+                );
+                Err(PrroGrpcError::Rpc {
+                    status,
+                    max_retries: 1,
+                })
+            }
+        }
+    }
+
     /// Передача чеку / Z-звіту (sendChkV2) — основний метод з 01.10.2021.
     pub async fn send_chk_v2(
         &self,
         check: Check,
     ) -> Result<crate::proto::CheckResponse, PrroGrpcError> {
+        // H1: фіскальний документ — БЕЗ сліпих ретраїв. Якщо транспортна
+        // помилка, fiscalize робить lastChk-перевірку і ТІЛЬКИ тоді повторює
+        // send (контрольований retry без ризику дубліката).
         let timeout = self.timeout;
-        self.call_with_retry("sendChkV2", move |mut stub| {
+        self.call_once("sendChkV2", move |mut stub| {
             let req = request_with_deadline(check.clone(), timeout);
             async move { stub.send_chk_v2(req).await }
         })
@@ -217,7 +261,7 @@ impl PrroGrpcClient {
         self.call_with_retry("statusRro", move |mut stub| {
             let req = request_with_deadline(
                 CheckRequest {
-                    rro_fn_sign: Vec::new(),
+                    rro_fn_sign: self.rro_fn_sign.clone(), // B3
                 },
                 timeout,
             );
@@ -232,7 +276,7 @@ impl PrroGrpcClient {
         self.call_with_retry("infoRro", move |mut stub| {
             let req = request_with_deadline(
                 CheckRequest {
-                    rro_fn_sign: Vec::new(),
+                    rro_fn_sign: self.rro_fn_sign.clone(), // B3
                 },
                 timeout,
             );
@@ -247,7 +291,7 @@ impl PrroGrpcClient {
         self.call_with_retry("lastChk", move |mut stub| {
             let req = request_with_deadline(
                 CheckRequest {
-                    rro_fn_sign: Vec::new(),
+                    rro_fn_sign: self.rro_fn_sign.clone(), // B3
                 },
                 timeout,
             );
@@ -262,7 +306,7 @@ impl PrroGrpcClient {
         self.call_with_retry("delLastChk", move |mut stub| {
             let req = request_with_deadline(
                 CheckRequest {
-                    rro_fn_sign: Vec::new(),
+                    rro_fn_sign: self.rro_fn_sign.clone(), // B3
                 },
                 timeout,
             );
@@ -281,7 +325,7 @@ impl PrroGrpcClient {
             let req = request_with_deadline(
                 CheckRequestId {
                     id: check_id.clone(),
-                    rro_fn_sign: Vec::new(),
+                    rro_fn_sign: self.rro_fn_sign.clone(), // B3
                 },
                 timeout,
             );
@@ -326,5 +370,41 @@ mod tests {
     #[test]
     fn ping_local_number_is_max_int32() {
         assert_eq!(PING_LOCAL_NUMBER, 2_147_483_647);
+    }
+
+    #[tokio::test]
+    async fn with_rro_fn_sign_sets_non_empty_signature() {
+        // B3: rro_fn_sign — підпис ФН ПРРО тим самим КЕП-ключем.
+        // Жоден CheckRequest/CheckRequestId не містить Vec::new(), коли
+        // клієнт створено через with_rro_fn_sign.
+        let channel = Channel::from_shared("http://127.0.0.1:1")
+            .expect("channel uri")
+            .connect_lazy();
+        let client = PrroGrpcClient::from_channel(channel, "4538765845")
+            .with_rro_fn_sign(b"sign-of-fn-4538765845".to_vec());
+
+        assert!(!client.rro_fn_sign.is_empty(), "B3: rro_fn_sign заповнено");
+        assert_eq!(client.rro_fn_sign, b"sign-of-fn-4538765845");
+        // Усі службові RPC клонують self.rro_fn_sign (див. status/info/last_chk/
+        // del_last_chk/del_last_chk_id) — жоден не створює порожній Vec::new().
+        let requests = [
+            CheckRequest {
+                rro_fn_sign: client.rro_fn_sign.clone(),
+            },
+            CheckRequest {
+                rro_fn_sign: client.rro_fn_sign.clone(),
+            },
+        ];
+        for r in &requests {
+            assert!(!r.rro_fn_sign.is_empty(), "B3: CheckRequest без rro_fn_sign");
+        }
+        let req_by_id = CheckRequestId {
+            id: "chk-1".into(),
+            rro_fn_sign: client.rro_fn_sign.clone(),
+        };
+        assert!(
+            !req_by_id.rro_fn_sign.is_empty(),
+            "B3: CheckRequestId без rro_fn_sign"
+        );
     }
 }

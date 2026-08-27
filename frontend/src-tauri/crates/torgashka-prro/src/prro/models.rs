@@ -89,6 +89,11 @@ pub struct PrroQueueItem {
     pub local_number: i64,
     pub check_type: String,
     pub xml_body: String,
+    /// B2: повний підписаний XML (RQ+MAC+підпис), що надсилається у
+    /// `Check.check_sign` as-is — sync НЕ переформовує документ (ідемпотентність).
+    pub check_sign: Option<String>,
+    /// B4: офлайн-ідентифікатор ("offline-{n}") — проброшується у Check при sync.
+    pub id_offline: Option<String>,
     pub mac: Option<String>,
     pub status: PrroQueueStatus,
     pub error: Option<String>,
@@ -112,6 +117,8 @@ impl PrroQueueItem {
             local_number,
             check_type: check_type.into(),
             xml_body: xml_body.into(),
+            check_sign: None, // B2: заповнюється add_document/update_check_sign
+            id_offline: None, // B4: заповнюється add_document
             mac,
             status: PrroQueueStatus::Pending,
             error: None,
@@ -198,6 +205,11 @@ pub const KEY_LAST_PACKET_ID: &str = "last_packet_id";
 pub const KEY_LAST_MAC_NUMBER: &str = "last_mac_number";
 pub const KEY_AUTO_FISCALIZE: &str = "auto_fiscalize";
 pub const KEY_PRRO_STUB_MODE: &str = "prro_stub_mode";
+// B4: стан офлайн-режиму ПРРО та резервний діапазон номерів (T=109/110/112).
+pub const KEY_PRRO_OFFLINE: &str = "prro_offline"; // "1" — offline, "0"/None — online
+pub const KEY_PRRO_RESERVE_START: &str = "prro_reserve_start";
+pub const KEY_PRRO_RESERVE_END: &str = "prro_reserve_end";
+pub const KEY_PRRO_OFFLINE_NEXT: &str = "prro_offline_next";
 
 // Типи фіскальних документів — 1:1 Python `offline_queue.py`.
 pub const CHECK_TYPE_CHK: &str = "CHK";

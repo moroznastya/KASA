@@ -136,3 +136,6 @@ flatpak/
 
 # Junk: Windows Downloads torgashka dir
 %USERPROFILE%\\Downloads\\torgashka/
+
+# ── Temporary dumps ────────────────────────
+.devices_tmp.json

@@ -20,7 +20,7 @@ use super::repository::{PrroRepoError, PrroRepository};
 
 /// Помилка операції зі зміною ПРРО — 1:1 `PrroShiftError` (message + code).
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[error("[{code}] {message}")]
 pub struct PrroShiftError {
     pub message: String,
     pub code: String,
@@ -121,9 +121,10 @@ impl PrroShiftUseCase {
         let mac = crate::xml::compute_mac(&dat_xml, None);
 
         // 3. Надсилаємо (SERVICECHK, local_number=0)
+        // B2: signed (повний підписаний XML) зберігається у черзі as-is
         let check = make_check(
             xml_builder,
-            signed,
+            signed.clone(),
             0,
             CheckType::Servicechk,
             now,
@@ -134,11 +135,9 @@ impl PrroShiftUseCase {
         })?;
 
         if response.status != 1 {
-            let error_msg = if !response.error_message.is_empty() {
-                response.error_message.clone()
-            } else {
-                format!("status={}", response.status)
-            };
+            // Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            // (1:1 Python shift_use_case.py; джерело мапи: status_codes).
+            let error_msg = shift_status_error_text(response.status, &response.error_message);
             return Err(PrroShiftError::new(
                 format!("Не вдалося відкрити зміну: {error_msg}"),
                 "OPEN_SHIFT_FAILED",
@@ -164,6 +163,8 @@ impl PrroShiftUseCase {
             CHECK_TYPE_SERVICECHK,
             &dat_xml,
             Some(mac),
+            Some(String::from_utf8_lossy(&signed).into_owned()), // B2
+            None, // B4: службові чеки (108/Z) — без id_offline
         )
         .await
         .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -211,9 +212,10 @@ impl PrroShiftUseCase {
         let mac = crate::xml::compute_mac(&dat_xml, None);
 
         // 3. Надсилаємо (ZREPORT, local_number=0)
+        // B2: signed (повний підписаний XML) зберігається у черзі as-is
         let check = make_check(
             xml_builder,
-            signed,
+            signed.clone(),
             0,
             CheckType::Zreport,
             now,
@@ -224,11 +226,9 @@ impl PrroShiftUseCase {
         })?;
 
         if response.status != 1 {
-            let error_msg = if !response.error_message.is_empty() {
-                response.error_message.clone()
-            } else {
-                format!("status={}", response.status)
-            };
+            // Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            // (1:1 Python shift_use_case.py; джерело мапи: status_codes).
+            let error_msg = shift_status_error_text(response.status, &response.error_message);
             return Err(PrroShiftError::new(
                 format!("Не вдалося закрити зміну: {error_msg}"),
                 "CLOSE_SHIFT_FAILED",
@@ -256,11 +256,18 @@ impl PrroShiftUseCase {
             0,
             CHECK_TYPE_ZREPORT,
             &dat_xml,
-            Some(mac),
+            Some(mac.clone()),
+            Some(String::from_utf8_lossy(&signed).into_owned()), // B2
+            None, // B4: службові чеки (108/Z) — без id_offline
         )
         .await
         .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
         PrroOfflineQueue::mark_sent(repo, queue_item.id, Some(now))
+            .await
+            .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
+
+        // B1: last_mac = MAC(Z) — останній успішно відправлений документ зміни.
+        repo.update_shift_last_mac(open_shift.id, mac)
             .await
             .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
 
@@ -504,4 +511,52 @@ async fn persist_builder_counters(
 /// Decimal грн → копійки (×100, ROUND_HALF_UP) — 1:1 Python `_to_cents`.
 fn cents_str(value: Decimal) -> String {
     (value * Decimal::from(100)).round_dp(0).to_string()
+}
+
+/// Формує текст помилки зміни з кодом/ім'ям/описом ДПС.
+///
+/// Якщо текст сервера є — `"{error_message} | status=-13 (ERROR_...: опис)"`,
+/// інакше — `"status=-13 (ERROR_...: опис)"`.
+/// 1:1 Python `shift_use_case.py` (status_codes.status_error_text).
+fn shift_status_error_text(status: i32, error_message: &str) -> String {
+    let status_text = crate::prro::status_codes::status_error_text(status);
+    if error_message.trim().is_empty() {
+        status_text
+    } else {
+        format!("{} | {}", error_message.trim(), status_text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_error_without_server_message_includes_name_and_description() {
+        // Ключовий сценарій задачі: status=-13 НЕ доходить голим.
+        let t = shift_status_error_text(-13, "");
+        assert_eq!(
+            t,
+            "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)"
+        );
+        assert!(t.contains("ERROR_NOT_REGISTERED_RRO"));
+        assert!(t.contains("ПРРО не зареєстровано"));
+    }
+
+    #[test]
+    fn shift_error_with_server_message_keeps_it_fully() {
+        let t = shift_status_error_text(-3, "Server rejected receipt");
+        assert!(t.starts_with("Server rejected receipt | "));
+        assert!(t.contains("status=-3 (ERROR_SAVE:"));
+        assert!(t.contains("ERROR_SAVE"));
+    }
+
+    #[test]
+    fn shift_error_open_shift_wraps_status_text() {
+        let msg = shift_status_error_text(-15, "");
+        let full = format!("Не вдалося відкрити зміну: {msg}");
+        assert!(full.contains("ERROR_NOT_OPEN_SHIFT"));
+        assert!(full.contains("Зміну не відкрито"));
+        assert!(!full.contains("status=-15)") && !full.ends_with("status=-15"));
+    }
 }

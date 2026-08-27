@@ -33,7 +33,7 @@ pub const DEFAULT_PRRO_MODE: &str = "test";
 
 /// Помилка роботи з налаштуваннями ПРРО — 1:1 `PrroSettingsError`.
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[error("[PRRO_SETTINGS_ERROR] {message}")]
 pub struct PrroSettingsError {
     pub message: String,
 }
@@ -530,9 +530,18 @@ impl PrroSettingsUseCase {
                     parts.push(format!("КЕП не вдалося використати: {se}"));
                 }
                 if let Some(se) = &server_error {
-                    parts.push(format!("Відповідь сервера: {se}"));
+                    parts.push(format!(
+                        "[{}] Відповідь сервера: {se}",
+                        crate::prro::fiscalize::status_name(status)
+                    ));
                 }
-                parts.push(Self::status_message(status));
+                // Числовий код + ім'я + короткий людський опис (1:1 Python).
+                parts.push(crate::prro::status_codes::status_error_text(status));
+                parts.push(format!(
+                    "[{}] {}",
+                    crate::prro::fiscalize::status_name(status),
+                    Self::status_message(status)
+                ));
                 serde_json::json!({
                     "status": status,
                     "ok": status == 1,
@@ -656,9 +665,34 @@ pub fn build_fiscal_check_url(
     let sm = format!("{:.2}", amount.round_dp(2));
     let date = sent_at.format("%Y%m%d");
     let time = sent_at.format("%H%M");
+    // V1: параметри URL-кодуються як Python `urllib.parse.urlencode`
+    // (quote_plus) — 1:1 parity (base64 MAC містить + / =).
     Some(format!(
-        "https://cabinet.tax.gov.ua/cashregs/check?mac={mac_value}&date={date}&time={time}&id={fiscal_number}&sm={sm}&fn={prro_fn}"
+        "https://cabinet.tax.gov.ua/cashregs/check?mac={}&date={}&time={}&id={}&sm={}&fn={}",
+        urlencode_plus(&mac_value),
+        urlencode_plus(&date.to_string()),
+        urlencode_plus(&time.to_string()),
+        urlencode_plus(fiscal_number),
+        urlencode_plus(&sm),
+        urlencode_plus(prro_fn),
     ))
+}
+
+/// URL-encode значення параметра у стилі Python `urllib.parse.quote_plus`:
+/// алфавіт `A-Za-z0-9-_.~` лишається, пробіл → '+', решта → %XX.
+/// 1:1 Python `urllib.parse.urlencode` (V1, QR-перевірка ДПС).
+pub fn urlencode_plus(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 /// Ім'я UUID-суфікса для NF-дубліката — 1:1 Python `uuid4().hex[:6]`.

@@ -18,9 +18,11 @@ use super::models::{
     ProductFiscalRow, ReceiptFiscalRow, ReceiptItemFiscalRow, SplitItemInput, CHECK_TYPE_CHK,
     KEY_AUTO_FISCALIZE, KEY_LAST_MAC_NUMBER, KEY_LAST_PACKET_ID, KEY_PRRO_FN, KEY_PRRO_STUB_MODE,
 };
+use super::offline::OfflineStateMachine;
 use super::queue::PrroOfflineQueue;
 use super::repository::{PrroRepoError, PrroRepository};
 use super::settings::{build_fiscal_check_url, uuid6, PrroKeyStore};
+use super::shift::PrroShiftError;
 
 /// Коди помилок фіскального сервера — 1:1 Python ERROR_SAVE / ERROR_BAD_HASH_PREV.
 const ERROR_SAVE: i32 = -3;
@@ -28,7 +30,7 @@ const ERROR_BAD_HASH_PREV: i32 = -12;
 
 /// Помилка фіскалізації чеку ПРРО — 1:1 `PrroFiscalizeError` (message + code).
 #[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[error("[{code}] {message}")]
 pub struct PrroFiscalizeError {
     pub message: String,
     pub code: String,
@@ -43,10 +45,34 @@ impl PrroFiscalizeError {
     }
 }
 
+impl From<PrroShiftError> for PrroFiscalizeError {
+    fn from(e: PrroShiftError) -> Self {
+        PrroFiscalizeError::new(e.message, &e.code)
+    }
+}
+
 impl From<PrroRepoError> for PrroFiscalizeError {
     fn from(e: PrroRepoError) -> Self {
         Self::new(e.to_string(), "PRRO_REPO_ERROR")
     }
+}
+
+/// Ім'я статусу фіскального сервера (CheckResponse.Status enum) —
+/// 1:1 Python `status_name` — єдине джерело: `status_codes`.
+pub use super::status_codes::status_name;
+
+/// Фінальний текст помилки для користувача: `[КОД] Точний текст` —
+/// 1:1 Python `_server_error_text`. Код ДПС (ERROR_SAVE/-12/...) ЗАВЖДИ
+/// присутній; текст — повідомлення сервера, а якщо його немає — людське
+/// пояснення статусу.
+pub fn server_error_text(status: i32, error_message: &str) -> String {
+    let name = status_name(status);
+    let text = if error_message.trim().is_empty() {
+        crate::prro::settings::PrroSettingsUseCase::status_message(status)
+    } else {
+        error_message.to_string()
+    };
+    format!("[{name}] {text}")
 }
 
 /// Результат фіскалізації — 1:1 `FiscalizeResponseDTO`.
@@ -255,7 +281,14 @@ impl FiscalizeReceiptUseCase {
         }
 
         let (items_xml, total, tax_groups) = Self::build_receipt_payload(&planned);
-        let local_number = open_shift.last_local_number + 1;
+        // B4: offline-режим — local_number з резервного діапазону (T=112) +
+        // id_offline (не порожній); online — звичайна нумерація зміни.
+        let (local_number, id_offline) = if OfflineStateMachine::is_offline(repo).await? {
+            OfflineStateMachine::next_offline_local(repo).await?
+        } else {
+            // M1: атомарний інкремент+збереження (в одній операції репозиторію).
+            (repo.next_local_number(open_shift.id).await?, String::new())
+        };
 
         let se = total - tax_groups.iter().map(|g| g.tax_total).sum::<Decimal>();
         let totals = Totals {
@@ -293,6 +326,7 @@ impl FiscalizeReceiptUseCase {
                 &[],
                 None,
                 Some("0"),
+                open_shift.last_mac.as_deref(), // B1: хеш попереднього Check
             )
             .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
         let message = xml_builder
@@ -304,10 +338,116 @@ impl FiscalizeReceiptUseCase {
         let mac = compute_mac(&dat_xml, None);
 
         // 7. Надсилаємо чек (CHK)
-        let check = make_check(xml_builder, signed, local_number, now);
-        let response = sender.send_chk(check).await.map_err(|e| {
-            PrroFiscalizeError::new(format!("gRPC send_chk не вдався: {e}"), "GRPC_ERROR")
-        })?;
+        // B2: signed (повний підписаний XML) зберігається у черзі as-is
+        let check = make_check(xml_builder, signed.clone(), local_number, now, id_offline.clone());
+        let response = match sender.send_chk(check.clone()).await {
+            Ok(r) => r,
+            Err(_e) => {
+                // H1: транспортний таймаут — НЕ сліпий retry. Спочатку lastChk:
+                // сервер міг зберегти чек, а відповідь загубилась.
+                if let Ok(last) = sender_last_chk(sender).await {
+                    let last_xml = String::from_utf8_lossy(&last.data_sign);
+                    if last.status == 1 && crate::xml::extract_check_no(&last_xml) == Some(local_number)
+                    {
+                        // Чек уже на сервері → SENT (без дубліката)
+                        return Self::on_success(
+                            repo,
+                            xml_builder,
+                            &receipt,
+                            &planned,
+                            total,
+                            local_number,
+                            &dat_xml,
+                            &mac,
+                            &String::from_utf8_lossy(&signed),
+                            &id_offline, // B4
+                            &last.id,
+                            &last.id_sign,
+                            open_shift.id,
+                            is_return,
+                            split_receipt_id,
+                            &warnings,
+                            now,
+                        )
+                        .await;
+                    }
+                }
+                // H1: чека немає → один контрольований повторний send
+                match sender.send_chk(check).await {
+                    Ok(r) if r.status == 1 => {
+                        return Self::on_success(
+                            repo,
+                            xml_builder,
+                            &receipt,
+                            &planned,
+                            total,
+                            local_number,
+                            &dat_xml,
+                            &mac,
+                            &String::from_utf8_lossy(&signed),
+                            &id_offline, // B4
+                            &r.id,
+                            &r.id_sign,
+                            open_shift.id,
+                            is_return,
+                            split_receipt_id,
+                            &warnings,
+                            now,
+                        )
+                        .await;
+                    }
+                    Ok(r) => {
+                        let msg = server_error_text(r.status, &r.error_message);
+                        return Self::on_error(
+                            repo,
+                            sender,
+                            &receipt,
+                            local_number,
+                            &dat_xml,
+                            &mac,
+                            &String::from_utf8_lossy(&signed),
+                            &id_offline, // B4
+                            open_shift.id,
+                            r.status,
+                            &msg,
+                            &r.id_sign,
+                            split_receipt_id,
+                            &warnings,
+                        )
+                        .await;
+                    }
+                    Err(e2) => {
+                        // B4: мережа впала (повторно) → документ у offline-чергу
+                        // (failed), ПРРО переходить в офлайн (T=109) і запитує
+                        // резервний діапазон (T=112). Документ НЕ втрачається.
+                        let err_msg2 =
+                            format!("[GRPC_ERROR] gRPC send_chk повторно не вдався: {e2}");
+                        let res = Self::on_error(
+                            repo,
+                            sender,
+                            &receipt,
+                            local_number,
+                            &dat_xml,
+                            &mac,
+                            &String::from_utf8_lossy(&signed),
+                            &id_offline, // B4
+                            open_shift.id,
+                            -1,
+                            &err_msg2,
+                            &[],
+                            split_receipt_id,
+                            &warnings,
+                        )
+                        .await?;
+                        if !OfflineStateMachine::is_offline(repo).await? {
+                            let _ = OfflineStateMachine::enter_offline(repo, sender, xml_builder, signer, now).await;
+                            let _ = OfflineStateMachine::reserve_numbers(repo, sender, xml_builder, signer, now).await;
+                        }
+                        return Ok(res);
+                    }
+                }
+            }
+        };
 
         // 8. Обробка відповіді
         if response.status == 1 {
@@ -320,6 +460,8 @@ impl FiscalizeReceiptUseCase {
                 local_number,
                 &dat_xml,
                 &mac,
+                &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
+                &id_offline, // B4
                 &response.id,
                 &response.id_sign,
                 open_shift.id,
@@ -331,11 +473,7 @@ impl FiscalizeReceiptUseCase {
             .await;
         }
 
-        let error_message = if !response.error_message.is_empty() {
-            response.error_message.clone()
-        } else {
-            format!("ПРРО: статус {}", response.status)
-        };
+        let error_message = server_error_text(response.status, &response.error_message);
         Self::on_error(
             repo,
             sender,
@@ -343,6 +481,8 @@ impl FiscalizeReceiptUseCase {
             local_number,
             &dat_xml,
             &mac,
+            &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
+            &id_offline, // B4
             open_shift.id,
             response.status,
             &error_message,
@@ -687,6 +827,8 @@ impl FiscalizeReceiptUseCase {
         local_number: i64,
         dat_xml: &str,
         mac: &str,
+        check_sign: &str, // B2: повний підписаний XML (RQ+MAC+підпис) — у чергу as-is
+        id_offline: &str, // B4: "offline-{n}" або ""
         response_id: &str,
         id_sign: &[u8],
         open_shift_id: Uuid,
@@ -731,6 +873,8 @@ impl FiscalizeReceiptUseCase {
             CHECK_TYPE_CHK,
             dat_xml,
             Some(mac.to_string()),
+            Some(check_sign.to_string()), // B2: повний підписаний check_sign
+            Some(id_offline.to_string()), // B4: "offline-{n}" або ""
         )
         .await
         .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -759,9 +903,10 @@ impl FiscalizeReceiptUseCase {
         )
         .await?;
 
-        // QR-код: URL перевірки фіскального чеку
+        // QR-код: URL перевірки фіскального чеку (V1: mac = MAC чека,
+        // а НЕ id_sign — за офіційним описом ДПС §5 «Перевірка чеку»)
         let fiscal_check_url =
-            build_fiscal_check_url(response_id, total, xml_builder.rro_fn(), now, Some(&serial));
+            build_fiscal_check_url(response_id, total, xml_builder.rro_fn(), now, Some(mac));
 
         Ok(FiscalizeResponseDto {
             receipt_id: receipt.id,
@@ -789,6 +934,8 @@ impl FiscalizeReceiptUseCase {
         local_number: i64,
         dat_xml: &str,
         mac: &str,
+        check_sign: &str, // B2: повний підписаний XML — у чергу as-is
+        id_offline: &str, // B4: "offline-{n}" або ""
         open_shift_id: Uuid,
         response_status: i32,
         error_message: &str,
@@ -815,6 +962,8 @@ impl FiscalizeReceiptUseCase {
             CHECK_TYPE_CHK,
             dat_xml,
             Some(mac.to_string()),
+            Some(check_sign.to_string()), // B2: повний підписаний check_sign
+            Some(id_offline.to_string()), // B4: "offline-{n}" або ""
         )
         .await
         .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -941,6 +1090,7 @@ fn make_check(
     check_sign: Vec<u8>,
     local_number: i64,
     now: DateTime<Utc>,
+    id_offline: String, // B4: "offline-{n}" для offline-чеків, інакше ""
 ) -> crate::proto::Check {
     crate::proto::Check {
         rro_fn: xml_builder.rro_fn().to_string(),
@@ -948,7 +1098,7 @@ fn make_check(
         check_sign,
         local_number: local_number as i32,
         check_type: CheckType::Chk as i32,
-        id_offline: String::new(),
+        id_offline,
         id_cancel: String::new(),
     }
 }
@@ -976,6 +1126,60 @@ fn join_warnings(warnings: &[String]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::crypto::PrroCryptoError;
+
+    // ─── Помилки: код + точний текст (вимога UX) ─────────────────────────
+
+    #[test]
+    fn fiscalize_error_display_includes_code() {
+        let e = PrroFiscalizeError::new("Unknown error", "ERROR_UNKNOWN");
+        assert_eq!(e.to_string(), "[ERROR_UNKNOWN] Unknown error");
+    }
+
+    #[test]
+    fn fiscalize_error_display_grpc_code() {
+        let e = PrroFiscalizeError::new("gRPC send_chk не вдався: timeout", "GRPC_ERROR");
+        assert!(e.to_string().starts_with("[GRPC_ERROR] "));
+    }
+
+    #[test]
+    fn status_name_maps_server_codes() {
+        assert_eq!(status_name(1), "OK");
+        assert_eq!(status_name(-3), "ERROR_SAVE");
+        assert_eq!(status_name(-12), "ERROR_BAD_HASH_PREV");
+        assert_eq!(status_name(-16), "ERROR_OFFLINE_ID");
+        assert_eq!(status_name(999), "STATUS_999");
+    }
+
+    #[test]
+    fn server_error_text_includes_code_and_server_message() {
+        // серверна помилка з текстом → [КОД] текст сервера as-is
+        assert_eq!(
+            server_error_text(-4, "Unknown error"),
+            "[ERROR_UNKNOWN] Unknown error"
+        );
+        // ERROR_SAVE (-3) з текстом сервера
+        assert_eq!(
+            server_error_text(-3, "Server rejected receipt"),
+            "[ERROR_SAVE] Server rejected receipt"
+        );
+    }
+
+    #[test]
+    fn server_error_text_falls_back_to_human_message_when_empty() {
+        // порожній текст сервера → [КОД] людське пояснення статусу
+        let t = server_error_text(-12, "");
+        assert!(t.starts_with("[ERROR_BAD_HASH_PREV] "), "got: {t}");
+        assert!(t.contains("ERROR_BAD_HASH_PREV"), "got: {t}");
+    }
+
+    #[test]
+    fn on_error_dto_error_carries_code() {
+        // DTO.error (у receipt.fiscal_error / GUI) — завжди з кодом.
+        // Перевіряємо формат через server_error_text, який використовують
+        // всі callsites on_error.
+        let text = server_error_text(-4, "Unknown error");
+        assert!(text.starts_with("[ERROR_UNKNOWN]"));
+    }
     use crate::prro::chk_sender::MockChkSender;
     use crate::prro::repository::InMemoryPrroRepository;
     use crate::prro::settings::PrroKeyStore;

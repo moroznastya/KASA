@@ -73,6 +73,7 @@ class PrroServiceFactory:
         self,
         url: str,
         rro_fn: str | None = None,
+        rro_fn_sign: bytes | None = None,
     ) -> PrroGrpcClient:
         """
         Повертає кешованого PrroGrpcClient для (url, rro_fn).
@@ -80,6 +81,7 @@ class PrroServiceFactory:
         Args:
             url: адреса фіскального сервера (host:port).
             rro_fn: фіскальний номер ПРРО (підставляється в Check).
+            rro_fn_sign: B3 — підписаний ФН ПРРО (тим самим КЕП-ключем).
 
         Returns:
             PrroGrpcClient — клієнт з готовим каналом.
@@ -88,7 +90,7 @@ class PrroServiceFactory:
         client = self._clients.get(key)
         if client is None:
             channel = self._get_channel(url)
-            client = PrroGrpcClient(channel, rro_fn=rro_fn)
+            client = PrroGrpcClient(channel, rro_fn=rro_fn, rro_fn_sign=rro_fn_sign)
             self._clients[key] = client
             logger.info(
                 "PRRO_FACTORY | клієнт створено: url=%s rro_fn=%s", url, rro_fn,

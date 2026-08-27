@@ -217,6 +217,16 @@ class PrroQueueItem(Base):
         nullable=False,
         comment="Канонічний XML <DAT> (підписаний check_sign)",
     )
+    check_sign: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="B2: повний підписаний XML (RQ+MAC+підпис) — sync відправляє as-is",
+    )
+    id_offline: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="B4: офлайн-ідентифікатор offline-чека (offline-{n})",
+    )
     mac: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,

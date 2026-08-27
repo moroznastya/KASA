@@ -31,6 +31,7 @@ from app.infrastructure.persistence.repositories.prro_settings_repository import
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.key_store import PrroKeyStore
+from app.infrastructure.services.prro.xml_builder import compute_mac
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
 
 
@@ -204,6 +205,7 @@ def setup(session: AsyncSession, key_store):
         )
         return {
             "fiscalizer": fiscalizer,
+            "cashier": cashier,
             "receipt": receipt,
             "product": product,
             "shift": shift,
@@ -299,15 +301,16 @@ class TestFiscalizeReceipt:
         )
 
         assert result.fiscal_status == "failed"
-        assert result.error == "Unknown error"
+        # Вимога UX: код помилки ДПС присутній у фінальному повідомленні
+        assert result.error == "[ERROR_UNKNOWN] Unknown error"
 
         await data["session"].refresh(data["receipt"])
         assert data["receipt"].fiscal_status.value == "failed"
-        assert data["receipt"].fiscal_error == "Unknown error"
+        assert data["receipt"].fiscal_error == "[ERROR_UNKNOWN] Unknown error"
 
         items = await data["prro_repo"].list_by_shift(data["shift"].id)
         assert items[0].status.value == "failed"
-        assert items[0].error == "Unknown error"
+        assert items[0].error == "[ERROR_UNKNOWN] Unknown error"
 
     async def test_fiscalize_partial_when_stock_short(self, setup):
         """Нестача fiscal_stock → ЧАСТКОВА фіскалізація + warning."""
@@ -488,3 +491,70 @@ class TestFiscalizeReceipt:
         assert data["receipt"].fiscal_status.value == "none"
         assert data["receipt"].is_fiscal is False
         assert data["receipt"].items[0].fiscal_quantity == 0
+
+
+class TestHashChainB1:
+    """B1: hash-ланцюжок попереднього Check (тег <H> у XML наступного чека)."""
+
+    async def test_three_checks_form_hash_chain(self, setup):
+        """3 чеки поспіль: H(c1)→c2, H(c2)→c3 через FiscalizeReceiptUseCase."""
+        data = await setup()
+        fiscalizer = data["fiscalizer"]
+        session = data["session"]
+        prro_repo = data["prro_repo"]
+        shift = data["shift"]
+
+        xml_bodies = []
+        for i in range(3):
+            # Новий чек для кожної ітерації
+            product = Product(
+                id=uuid4(),
+                title=f"Товар-{i}",
+                price=Decimal("100.00"),
+                stock=Decimal("10"),
+                fiscal_stock=Decimal("10"),
+                is_fiscal=True,
+                tax_rate=Decimal("20.00"),
+                unit="шт",
+            )
+            session.add(product)
+            receipt = Receipt(
+                id=uuid4(),
+                receipt_number=f"SALE-{i}",
+                cashier_id=data["cashier"].id,
+                is_return=False,
+                payment_method="cash",
+                total_amount=float(Decimal("300.00")),
+                cash_amount=float(Decimal("300.00")),
+                is_fiscal=True,
+            )
+            session.add(receipt)
+            session.add(ReceiptItem(
+                id=uuid4(),
+                receipt_id=receipt.id,
+                product_id=product.id,
+                quantity=Decimal("3"),
+                price=Decimal("100.00"),
+                total=float(Decimal("300.00")),
+                fiscal_quantity=Decimal("3"),
+            ))
+            await session.flush()
+
+            result = await fiscalizer.fiscalize_receipt(receipt.id, manual=True)
+            assert result.fiscal_status == "sent", result.error
+
+            items = await prro_repo.list_by_receipt(receipt.id)
+            assert len(items) == 1
+            xml_bodies.append(items[0].xml_body)
+
+        # c1: без <H>; c2: H = MAC(c1); c3: H = MAC(c2)
+        c1, c2, c3 = xml_bodies
+        assert "<H " not in c1, f"c1 не має <H>: {c1}"
+        h1 = compute_mac(c1)
+        assert f'<H N="1">{h1}</H>' in c2, f"c2 має H(c1): {c2}"
+        h2 = compute_mac(c2)
+        assert f'<H N="1">{h2}</H>' in c3, f"c3 має H(c2): {c3}"
+
+        # last_mac зміни оновлено до MAC(c3) — останнього успішно відправленого
+        await session.refresh(shift)
+        assert shift.last_mac == compute_mac(c3)

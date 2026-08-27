@@ -89,9 +89,14 @@ class PrroGrpcClient:
         self,
         channel: aio.Channel,
         rro_fn: str | None = None,
+        rro_fn_sign: bytes | None = None,
     ) -> None:
         self._channel = channel
         self._rro_fn = rro_fn
+        # B3: підписаний ФН ПРРО (тим самим КЕП-ключем, що й check_sign).
+        # Передається готовим з use-case (там є crypto signer); у statusRro/
+        # infoRro/lastChk/delLastChk/delLastChkId — завжди непустий.
+        self._rro_fn_sign = rro_fn_sign if rro_fn_sign else b""
         self._stub = prro_pb2_grpc.ChkIncomeServiceStub(channel)
         logger.info(
             "PRRO_GRPC_CLIENT_INIT | rro_fn=%s channel_ready=%s",
@@ -211,11 +216,20 @@ class PrroGrpcClient:
             "PRRO_SEND_CHK | rro_fn=%s local_number=%d check_type=%s",
             check.rro_fn, check.local_number, check.check_type,
         )
-        return await self._call_with_retry(
-            self._stub.sendChkV2,
-            check,
-            timeout=timeout,
-        )
+        # H1: фіскальний документ — БЕЗ сліпих ретраїв. Якщо транспортна
+        # помилка, fiscalize робить lastChk-перевірку і ТІЛЬКИ тоді повторює
+        # send (контрольований retry без ризику дубліката).
+        try:
+            response = await self._stub.sendChkV2(check, timeout=timeout)
+            logger.info("PRRO_GRPC_CALL_OK | method=sendChkV2 attempt=1/1")
+            return response
+        except grpc.RpcError as e:
+            code = e.code() if hasattr(e, "code") else None
+            logger.warning(
+                "PRRO_GRPC_CALL_ERR | method=sendChkV2 attempt=1/1 code=%s details=%s",
+                code, e.details() if hasattr(e, "details") else e,
+            )
+            raise
 
     async def ping(
         self,
@@ -272,7 +286,7 @@ class PrroGrpcClient:
         Raises:
             grpc.RpcError: якщо сервер недоступний (після всіх ретраїв).
         """
-        request = prro_pb2.CheckRequest()
+        request = prro_pb2.CheckRequest(rro_fn_sign=self._rro_fn_sign)
         logger.info("PRRO_STATUS | rro_fn=%s", self._rro_fn or "не задано")
         return await self._call_with_retry(self._stub.statusRro, request, timeout=timeout)
 
@@ -290,7 +304,7 @@ class PrroGrpcClient:
         Raises:
             grpc.RpcError: якщо сервер недоступний (після всіх ретраїв).
         """
-        request = prro_pb2.CheckRequest()
+        request = prro_pb2.CheckRequest(rro_fn_sign=self._rro_fn_sign)
         logger.info("PRRO_INFO | rro_fn=%s", self._rro_fn or "не задано")
         return await self._call_with_retry(self._stub.infoRro, request, timeout=timeout)
 
@@ -308,7 +322,7 @@ class PrroGrpcClient:
         Raises:
             grpc.RpcError: якщо сервер недоступний (після всіх ретраїв).
         """
-        request = prro_pb2.CheckRequest()
+        request = prro_pb2.CheckRequest(rro_fn_sign=self._rro_fn_sign)
         logger.info("PRRO_LAST_CHK | rro_fn=%s", self._rro_fn or "не задано")
         return await self._call_with_retry(self._stub.lastChk, request, timeout=timeout)
 
@@ -329,7 +343,7 @@ class PrroGrpcClient:
         Raises:
             grpc.RpcError: якщо сервер недоступний (після всіх ретраїв).
         """
-        request = prro_pb2.CheckRequest()
+        request = prro_pb2.CheckRequest(rro_fn_sign=self._rro_fn_sign)
         logger.info("PRRO_DEL_LAST_CHK | rro_fn=%s", self._rro_fn or "не задано")
         return await self._call_with_retry(self._stub.delLastChk, request, timeout=timeout)
 
@@ -354,7 +368,7 @@ class PrroGrpcClient:
         Raises:
             grpc.RpcError: якщо сервер недоступний (після всіх ретраїв).
         """
-        request = prro_pb2.CheckRequestId(id=check_id)
+        request = prro_pb2.CheckRequestId(id=check_id, rro_fn_sign=self._rro_fn_sign)
         logger.info("PRRO_DEL_LAST_CHK_ID | check_id=%s", check_id)
         return await self._call_with_retry(self._stub.delLastChkId, request, timeout=timeout)
 

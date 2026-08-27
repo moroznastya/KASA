@@ -68,6 +68,8 @@ async fn queue_empty_and_pending_visible() {
         torgashka_prro::prro::CHECK_TYPE_CHK,
         xml,
         None,
+        None, // B2: check_sign
+        None, // B4: id_offline
     )
     .await
     .expect("add");

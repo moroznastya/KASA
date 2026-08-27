@@ -49,6 +49,7 @@ fn key_path() -> Option<PathBuf> {
 const VALID_PASSWORD: &str = "prrotestkey22";
 
 #[test]
+#[ignore = "integration: реальний SDK у субпроцесі (OOM-ризик). Запуск: cargo test --test sdk_subprocess -- --ignored"]
 fn sdk_subprocess_sign_valid_key_no_crash() {
     let Some(key) = key_path() else {
         eprintln!("SKIP: ключ ПРРО не знайдено (certs/prro-test/)");
@@ -81,6 +82,7 @@ fn sdk_subprocess_sign_valid_key_no_crash() {
 }
 
 #[test]
+#[ignore = "integration: реальний SDK у субпроцесі (OOM-ризик). Запуск: cargo test --test sdk_subprocess -- --ignored"]
 fn sdk_subprocess_sign_wrong_password_clean_error() {
     let Some(key) = key_path() else {
         eprintln!("SKIP: ключ ПРРО не знайдено (certs/prro-test/)");

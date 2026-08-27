@@ -5,9 +5,11 @@
 pub mod chk_sender;
 pub mod fiscalize;
 pub mod models;
+pub mod offline;
 pub mod queue;
 pub mod repository;
 pub mod settings;
+pub mod status_codes;
 pub mod shift;
 pub mod sync;
 
@@ -21,6 +23,7 @@ pub use models::{
     CHECK_TYPE_ZREPORT, KEY_LAST_MAC_NUMBER, KEY_LAST_PACKET_ID, KEY_LAST_SHIFT_NUMBER,
     KEY_PRRO_FN, KEY_PRRO_MODE, KEY_PRRO_TN, KEY_PRRO_URL, KEY_PRRO_ZN, PRRO_OFFLINE_LIMIT_HOURS,
 };
+pub use offline::OfflineStateMachine;
 pub use queue::{PrroOfflineQueue, QueueError};
 pub use repository::{InMemoryPrroRepository, PrroRepoError, PrroRepository};
 pub use settings::{

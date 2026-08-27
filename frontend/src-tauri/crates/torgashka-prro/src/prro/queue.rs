@@ -25,6 +25,10 @@ pub struct PrroOfflineQueue;
 
 impl PrroOfflineQueue {
     /// Додає фіскальний документ в офлайн-чергу (status=pending).
+    ///
+    /// `check_sign` — ПОВНИЙ підписаний XML (RQ+MAC+підпис), що надсилається
+    /// у `Check.check_sign` as-is (B2: sync не переформовує документ).
+    #[allow(clippy::too_many_arguments)] // 9 параметрів: B2 check_sign + B4 id_offline
     pub async fn add_document(
         repo: &dyn PrroRepository,
         receipt_id: Option<Uuid>,
@@ -33,6 +37,8 @@ impl PrroOfflineQueue {
         check_type: &str,
         xml_body: &str,
         mac: Option<String>,
+        check_sign: Option<String>,
+        id_offline: Option<String>, // B4: "offline-{n}" для offline-чеків
     ) -> Result<PrroQueueItem, QueueError> {
         if local_number < 0 {
             return Err(QueueError::NegativeLocalNumber(local_number));
@@ -40,7 +46,7 @@ impl PrroOfflineQueue {
         if xml_body.trim().is_empty() {
             return Err(QueueError::EmptyXml);
         }
-        let item = PrroQueueItem::new(
+        let mut item = PrroQueueItem::new(
             receipt_id,
             shift_id,
             local_number,
@@ -48,7 +54,19 @@ impl PrroOfflineQueue {
             xml_body,
             mac,
         );
+        item.check_sign = check_sign;
+        item.id_offline = id_offline;
         Ok(repo.add_to_queue(item).await?)
+    }
+
+    /// B2: зберігає/оновлює повний підписаний `check_sign` (для документів,
+    /// доданих до B2 — формується рівно 1 раз при першій sync і фіксується).
+    pub async fn update_check_sign(
+        repo: &dyn PrroRepository,
+        item_id: Uuid,
+        check_sign: String,
+    ) -> Result<Option<PrroQueueItem>, QueueError> {
+        Ok(repo.update_queue_check_sign(item_id, check_sign).await?)
     }
 
     /// Документи, що очікують передачі (pending/failed), у порядку черги.

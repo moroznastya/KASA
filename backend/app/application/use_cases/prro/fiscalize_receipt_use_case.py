@@ -40,6 +40,7 @@ import time
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
+from app.application.use_cases.prro.status_codes import status_name
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -57,10 +58,12 @@ from app.infrastructure.persistence.repositories.prro_repository import PrroRepo
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
+from app.infrastructure.services.prro.xml_builder import extract_check_no
 from app.infrastructure.services.prro.offline_queue import (
     PrroOfflineQueue,
     CHECK_TYPE_CHK,
 )
+from app.infrastructure.services.prro.offline_state import OfflineStateMachine
 from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
 from app.infrastructure.services.prro.xml_builder import (
     CHK_TYPE_RETURN,
@@ -83,12 +86,30 @@ ERROR_BAD_HASH_PREV = -12  # Невірний хеш попереднього ч
 
 
 class PrroFiscalizeError(Exception):
-    """Помилка фіскалізації чеку ПРРО."""
+    """Помилка фіскалізації чеку ПРРО. __str__ = "[КОД] Точний текст" — код
+    помилки (GRPC_ERROR/ERROR_SAVE/-12/...) завжди присутній у фінальному
+    повідомленні користувачу."""
 
     def __init__(self, message: str, code: str = "PRRO_FISCALIZE_ERROR"):
         super().__init__(message)
+        self.message = message
         self.code = code
 
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
+
+
+def server_error_text(status: int, error_message: str) -> str:
+    """Фінальний текст помилки: `[КОД] Точний текст` — 1:1 Rust
+    `server_error_text`. Код ДПС завжди присутній; текст — повідомлення
+    сервера, а якщо його немає — людське пояснення статусу."""
+    from app.application.use_cases.prro.prro_settings_use_case import (
+        PrroSettingsUseCase,
+    )
+    text = error_message.strip() or PrroSettingsUseCase._STATUS_MESSAGES.get(
+        status, "Невідомий статус фіскального сервера."
+    )
+    return f"[{status_name(status)}] {text}"
 
 class FiscalizeReceiptUseCase:
     """
@@ -242,7 +263,16 @@ class FiscalizeReceiptUseCase:
         crypto = await self._context.build_crypto_signer()
 
         items_xml, total, tax_groups = self._build_receipt_payload(planned)
-        local_number = int(open_shift.last_local_number or 0) + 1
+        # B4: offline-режим — local_number з резервного діапазону (T=112) +
+        # id_offline (не порожній); online — звичайна нумерація зміни.
+        if await OfflineStateMachine.is_offline(self._settings_repo):
+            local_number, id_offline = await OfflineStateMachine.next_offline_local(
+                self._settings_repo
+            )
+        else:
+            # M1: атомарний інкремент+збереження (SQL UPDATE ... RETURNING)
+            local_number = await self._prro_repo.next_local_number(open_shift.id)
+            id_offline = "" 
 
         totals = {
             "total": total,
@@ -261,6 +291,7 @@ class FiscalizeReceiptUseCase:
             payments=payments,
             totals=totals,
             return_type="0",  # RT: 0 — повернення товару (для T=1)
+            prev_hash=open_shift.last_mac,  # B1: хеш попереднього Check
         )
         message = xml_builder.build_message(dat_xml)
         signed = crypto.sign(message.encode("utf-8"))
@@ -271,9 +302,113 @@ class FiscalizeReceiptUseCase:
             check_sign=signed,
             local_number=local_number,
             check_type=_CHK,
+            id_offline=id_offline,  # B4: offline-чек — id_offline не порожній
         )
         grpc_client = await self._context.grpc_client()
-        response = await grpc_client.send_chk(check)
+        try:
+            response = await grpc_client.send_chk(check)
+        except Exception as exc:  # noqa: BLE001 — H1/B4: транспортний таймаут
+            # H1: НЕ сліпий retry — спочатку lastChk: сервер міг зберегти чек,
+            # а відповідь загубилась. Збіг NO (local_number) у XML останнього
+            # чека → чек уже там → SENT (без дубліката).
+            error_message = f"[GRPC_ERROR] gRPC send_chk не вдався: {exc}"
+            try:
+                last = await grpc_client.last_chk()
+                last_xml = (getattr(last, "data_sign", b"") or b"").decode(
+                    "utf-8", errors="replace"
+                )
+                if int(last.status) == 1 and extract_check_no(last_xml) == local_number:
+                    logger.info(
+                        "PRRO_FISCALIZE | H1: чек %s вже на сервері (lastChk NO=%d) → SENT",
+                        receipt.id, local_number,
+                    )
+                    return await self._on_success(
+                        receipt=receipt,
+                        planned=planned,
+                        total=total,
+                        local_number=local_number,
+                        dat_xml=dat_xml,
+                        mac=mac,
+                        check_sign=signed.decode("utf-8"),
+                        id_offline=id_offline,
+                        response_id=last.id,
+                        id_sign=getattr(last, "id_sign", b""),
+                        open_shift_id=open_shift.id,
+                        xml_builder=xml_builder,
+                        is_return=is_return,
+                        split_receipt_id=split_receipt_id,
+                        warnings=warnings,
+                    )
+            except Exception as last_exc:  # noqa: BLE001 — lastChk не вдався
+                logger.warning("PRRO_FISCALIZE | H1: lastChk не вдався: %s", last_exc)
+
+            # H1: чека немає → один контрольований повторний send
+            try:
+                response = await grpc_client.send_chk(check)
+            except Exception as exc2:  # noqa: BLE001 — B4: мережа впала (повторно)
+                # Документ у offline-чергу (failed), ПРРО → офлайн (T=109) +
+                # резервний діапазон (T=112). Документ НЕ втрачається.
+                error_message2 = f"[GRPC_ERROR] gRPC send_chk повторно не вдався: {exc2}"
+                result = await self._on_error(
+                    receipt=receipt,
+                    local_number=local_number,
+                    dat_xml=dat_xml,
+                    mac=mac,
+                    check_sign=signed.decode("utf-8"),
+                    id_offline=id_offline,
+                    open_shift_id=open_shift.id,
+                    response_status=-1,
+                    error_message=error_message2,
+                    split_receipt_id=split_receipt_id,
+                    warnings=warnings,
+                )
+                if not await OfflineStateMachine.is_offline(self._settings_repo):
+                    try:
+                        await OfflineStateMachine.enter_offline(
+                            self._settings_repo, grpc_client, xml_builder, crypto
+                        )
+                        await OfflineStateMachine.reserve_numbers(
+                            self._settings_repo, grpc_client, xml_builder, crypto
+                        )
+                    except Exception:  # noqa: BLE001 — стан уже offline, не фатально
+                        logger.warning(
+                            "PRRO_OFFLINE | перехід в офлайн: не вдалося", exc_info=True
+                        )
+                return result
+            if int(response.status) != 1:
+                error_msg = server_error_text(
+                    int(response.status), response.error_message
+                )
+                return await self._on_error(
+                    receipt=receipt,
+                    local_number=local_number,
+                    dat_xml=dat_xml,
+                    mac=mac,
+                    check_sign=signed.decode("utf-8"),
+                    id_offline=id_offline,
+                    open_shift_id=open_shift.id,
+                    response_status=int(response.status),
+                    error_message=error_msg,
+                    split_receipt_id=split_receipt_id,
+                    warnings=warnings,
+                )
+            return await self._on_success(
+                receipt=receipt,
+                planned=planned,
+                total=total,
+                local_number=local_number,
+                dat_xml=dat_xml,
+                mac=mac,
+                check_sign=signed.decode("utf-8"),
+                id_offline=id_offline,
+                response_id=response.id,
+                id_sign=getattr(response, "id_sign", b""),
+                open_shift_id=open_shift.id,
+                xml_builder=xml_builder,
+                is_return=is_return,
+                split_receipt_id=split_receipt_id,
+                warnings=warnings,
+            )
 
         # 8. Обробка відповіді
         if int(response.status) == 1:
@@ -284,6 +419,8 @@ class FiscalizeReceiptUseCase:
                 local_number=local_number,
                 dat_xml=dat_xml,
                 mac=mac,
+                check_sign=signed.decode("utf-8"),
+                id_offline=id_offline,
                 response_id=response.id,
                 id_sign=getattr(response, "id_sign", b""),
                 open_shift_id=open_shift.id,
@@ -298,10 +435,13 @@ class FiscalizeReceiptUseCase:
             local_number=local_number,
             dat_xml=dat_xml,
             mac=mac,
+            check_sign=signed.decode("utf-8"),
+            id_offline=id_offline,
             open_shift_id=open_shift.id,
             response_status=int(response.status),
-            error_message=response.error_message
-            or f"ПРРО: статус {response.status}",
+            error_message=server_error_text(
+                int(response.status), response.error_message
+            ),
             split_receipt_id=split_receipt_id,
             warnings=warnings,
         )
@@ -729,6 +869,8 @@ class FiscalizeReceiptUseCase:
         local_number: int,
         dat_xml: str,
         mac: str,
+        check_sign: str,  # B2: повний підписаний XML (RQ+MAC+підпис) — у чергу as-is
+        id_offline: str,  # B4: "offline-{n}" або ""
         response_id: str,
         id_sign: bytes,
         open_shift_id: UUID,
@@ -766,6 +908,7 @@ class FiscalizeReceiptUseCase:
             check_type=CHECK_TYPE_CHK,
             xml_body=dat_xml,
             mac=mac,
+            check_sign=check_sign,  # B2: повний підписаний check_sign
         )
         await self._offline_queue.mark_sent(queue_item.id)
 
@@ -786,7 +929,7 @@ class FiscalizeReceiptUseCase:
             amount=total,
             prro_fn=getattr(xml_builder, "rro_fn", ""),
             sent_at=now,
-            mac=serial,
+            mac=mac,  # V1: mac = MAC чека (не id_sign) — ДПС §5 «Перевірка чеку»
         )
 
         logger.info(
@@ -814,6 +957,8 @@ class FiscalizeReceiptUseCase:
         local_number: int,
         dat_xml: str,
         mac: str,
+        check_sign: str,  # B2: повний підписаний XML — у чергу as-is
+        id_offline: str,  # B4: "offline-{n}" або ""
         open_shift_id: UUID,
         response_status: int,
         error_message: str,
@@ -831,6 +976,7 @@ class FiscalizeReceiptUseCase:
             check_type=CHECK_TYPE_CHK,
             xml_body=dat_xml,
             mac=mac,
+            check_sign=check_sign,  # B2: повний підписаний check_sign
         )
         await self._offline_queue.mark_failed(queue_item.id, error_message)
 

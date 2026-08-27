@@ -242,6 +242,18 @@ def canonicalize(xml_str: str) -> str:
 
 # ─── Обчислення MAC ─────────────────────────────────────────────────────────
 
+def extract_check_no(xml: str) -> int | None:
+    """Дістає NO (номер операції) з XML чека — H1: lastChk повертає XML
+    останнього чека в data_sign; NO == local_number (Totals.fiscal_number),
+    тому за збігом NO ідентифікуємо "наш" чек. 1:1 Rust `extract_check_no`."""
+    import re as _re
+
+    match = _re.search(r'<E[^>]*NO="(\d+)"', xml)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def compute_mac(dat_xml_canonical: str, key: bytes | None = None) -> str:
     """
     Обчислює MAC для пакету даних <DAT>.
@@ -383,6 +395,7 @@ class XmlBuilder:
         discounts: list[dict[str, Any]] | None = None,
         comment: str | None = None,
         return_type: str | None = None,
+        prev_hash: str | None = None,
     ) -> str:
         """
         Формує канонічний XML пакету даних чеку (<DAT><C>…</C><TS>…</TS></DAT>).
@@ -434,6 +447,9 @@ class XmlBuilder:
                     "ni": int,             # Номер операції, до якої відноситься (NI)
                 }
             comment: текстовий коментар чеку (<L>, опційно).
+            prev_hash: хеш (MAC) XML попереднього Check — тег <H N="..."> всередині
+                <C> (СЗЗД 2.1.7, службова інформація, Base64). Не вставляється для
+                ping T=111 та службових чеків 108/109/110/112 (None — без <H>).
             return_type: тип виплати для чеку повернення (RT, опційно):
                 "0" — повернення товару або рекомпенсація послуги
                       (за замовчуванням для T="1");
@@ -455,6 +471,13 @@ class XmlBuilder:
             nonlocal seq
             seq += 1
             return seq
+
+        # B1: хеш попереднього Check (СЗЗД 2.1.7, тег <H> — службова інформація,
+        # Base64; не друкується; крім ping T=111 та службових 108/109/110/112).
+        # H — перша операція чеку (N=1), щоб Python/Rust були байт-ідентичні.
+        h_tag: list[str] = []
+        if prev_hash:
+            h_tag.append(f'<H N="{next_n()}">{_esc_text(prev_hash)}</H>')
 
         # ── Позиції продажу/повернення (<P>) ─────────────────────────────
         p_tags: list[str] = []
@@ -559,6 +582,7 @@ class XmlBuilder:
         body = "".join(
             [
                 f"<C {' '.join(c_attrs)}>",
+                *h_tag,
                 *p_tags,
                 *d_tags,
                 *m_tags,

@@ -73,21 +73,34 @@ impl SyncOfflineQueueUseCase {
                 error: None,
             };
 
-            // Повторно обгортаємо DAT у RQ+MAC та підписуємо — 1:1 Python
+            // B2: відправляємо ПОВНИЙ підписаний check_sign as-is (ідемпотентність).
+            // Документи, додані до B2 (check_sign=None), формуються рівно 1 раз
+            // і фіксуються у черзі — повторні sync не переформовують (build_message
+            // викликається не більше 1 разу на документ, NT/MAC не змінюються).
             let outcome = async {
-                let message = xml_builder
-                    .build_message(&item.xml_body, None, true)
-                    .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
-                let signed = signer
-                    .sign(message.as_bytes())
-                    .map_err(|e| PrroShiftError::new(e.to_string(), "SIGN_ERROR"))?;
+                let signed_str: String = match &item.check_sign {
+                    Some(cs) if !cs.is_empty() => cs.clone(),
+                    _ => {
+                        let message = xml_builder
+                            .build_message(&item.xml_body, None, true)
+                            .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+                        let signed = signer
+                            .sign(message.as_bytes())
+                            .map_err(|e| PrroShiftError::new(e.to_string(), "SIGN_ERROR"))?;
+                        let signed = String::from_utf8_lossy(&signed).into_owned();
+                        PrroOfflineQueue::update_check_sign(repo, item.id, signed.clone())
+                            .await
+                            .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
+                        signed
+                    }
+                };
                 let check = Check {
                     rro_fn: xml_builder.rro_fn().to_string(),
                     date_time: crate::grpc::check_date_time(),
-                    check_sign: signed,
+                    check_sign: signed_str.into_bytes(),
                     local_number: item.local_number as i32,
                     check_type: check_type_code(&item.check_type),
-                    id_offline: String::new(),
+                    id_offline: item.id_offline.clone().unwrap_or_default(), // B4
                     id_cancel: String::new(),
                 };
                 let response = sender
@@ -103,6 +116,17 @@ impl SyncOfflineQueueUseCase {
                     PrroOfflineQueue::mark_sent(repo, item.id, None)
                         .await
                         .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
+                    // B1: оновлюємо last_mac зміни — наступний Check посилатиметься
+                    // на хеш цього успішно відправленого документа (hash-ланцюжок).
+                    if let Some(shift_id) = item.shift_id {
+                        if let Some(mac) = &item.mac {
+                            repo.update_shift_last_mac(shift_id, mac.clone())
+                                .await
+                                .map_err(|e| {
+                                    PrroShiftError::new(e.to_string(), "QUEUE_ERROR")
+                                })?;
+                        }
+                    }
                     result.synced += 1;
                     entry.status = "sent".to_string();
                 }

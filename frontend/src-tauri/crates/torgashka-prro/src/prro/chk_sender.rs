@@ -56,6 +56,20 @@ impl MockChkSender {
             }));
     }
 
+    /// B4: відповідь OK з data_sign (напр. `<CNF FR=".." TO=".."/>` для T=112).
+    pub fn push_ok_with_data(&self, id: impl Into<String>, data_sign: Vec<u8>) {
+        self.responses
+            .lock()
+            .expect("lock poisoned: responses")
+            .push(Ok(CheckResponse {
+                id: id.into(),
+                status: 1,
+                id_sign: vec![],
+                data_sign,
+                error_message: String::new(),
+            }));
+    }
+
     pub fn push_fail(&self, error_message: &str, status: i32) {
         self.responses
             .lock()

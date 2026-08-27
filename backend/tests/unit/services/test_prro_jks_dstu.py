@@ -86,6 +86,7 @@ class TestLoadJks:
         assert signer._iit_jks_path is not None
         assert signer._iit_jks_password == JKS_PASSWORD
 
+    @pytest.mark.integration
     def test_dstu_jks_signs_and_verifies_via_iit(self, tmp_path):
         """ДСТУ 4145 підпис через крипто-ядро ІІТ (інтеграційний, skip без SDK).
 

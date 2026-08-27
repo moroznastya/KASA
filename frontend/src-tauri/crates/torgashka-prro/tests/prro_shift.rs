@@ -175,6 +175,8 @@ async fn close_shift_zreport_ok() {
             CHECK_TYPE_CHK,
             xml,
             None,
+            None, // B2: check_sign (не заповнено у тесті)
+            None, // B4: id_offline
         )
         .await
         .unwrap();
@@ -267,6 +269,8 @@ async fn build_zreport_data_totals_1_1() {
             CHECK_TYPE_CHK,
             xml,
             None,
+            None, // B2: check_sign (не заповнено у тесті)
+            None, // B4: id_offline
         )
         .await
         .unwrap();

@@ -1,4 +1,5 @@
 import api from './api';
+import { extractErrorMessage } from './prroErrors';
 import {
   PrroSettings,
   PrroSettingsSaveRequest,
@@ -25,16 +26,6 @@ import {
 // щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
 const API_ROOT = import.meta.env.DEV ? '' : 'http://127.0.0.1:8000';
 const V2 = { baseURL: `${API_ROOT}/api/v2` } as const;
-
-/** Помилка відповіді бекенду (detail може бути строкою або масивом) */
-function extractErrorMessage(error: unknown): string {
-  const err = error as { response?: { data?: { detail?: unknown } } };
-  const detail = err?.response?.data?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((d: any) => d.msg || String(d)).join('; ');
-  if (detail && typeof detail === 'object') return JSON.stringify(detail);
-  return 'Помилка запиту до ПРРО';
-}
 
 export const prroService = {
   /** Отримати налаштування ПРРО */
@@ -81,7 +72,18 @@ export const prroService = {
   async testConnection(): Promise<PrroTestConnectionResult> {
     try {
       const response = await api.post<PrroTestConnectionResult>('/prro/test-connection', null, V2);
-      return response.data;
+      const data = response.data;
+      // Rust/Python test_connection: {"status": n, "ok": false, "error": "[КОД] текст"}.
+      // При ok===false error вже містить код + текст причини — НЕ ховаємо його.
+      if (data && data.ok === false) {
+        const reason = data.error || data.detail || data.message;
+        return {
+          ok: false,
+          success: false,
+          message: typeof reason === 'string' && reason.trim() ? reason : extractErrorMessage({ response }),
+        };
+      }
+      return data;
     } catch (error) {
       // Повертаємо зрозумілу помилку, не кидаючи виняток
       return { ok: false, success: false, message: extractErrorMessage(error) };

@@ -62,6 +62,7 @@ fn golden_v1_receipt_sale() {
             &[],
             None,
             None,
+            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -109,6 +110,7 @@ fn golden_v2_receipt_return() {
             &[],
             None,
             Some("0"),
+            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -162,6 +164,7 @@ fn golden_v3_receipt_discount_comment() {
             }],
             Some("Знижка за акцією"),
             None,
+            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -224,6 +227,7 @@ fn golden_v4_receipt_tax_groups() {
             &[],
             None,
             None,
+            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -357,6 +361,70 @@ fn golden_canonical_check() {
 #[test]
 fn golden_to_cents() {
     assert_eq!(to_cents("1.37").unwrap(), 137);
+}
+
+#[test]
+fn golden_hash_chain_python_parity() {
+    // B1: hash-ланцюжок попереднього Check. Вектор згенеровано з Python-еталона
+    // (xml_builder.py, date_time=2026-08-27 12:00:00, DI=2/3):
+    //   c1 без prev_hash → H1 = MAC(c1);
+    //   c2 = build_receipt_xml(prev_hash=H1) → містить <H N="1">H1</H>;
+    //   c3 = build_receipt_xml(prev_hash=H2) → містить <H N="1">H2</H>.
+    let mut b = builder_from(1);
+    let items = [ReceiptItem {
+        code: Some("120".into()),
+        barcode: None,
+        name: "Хліб".into(),
+        quantity: "1".into(),
+        price: "1.00".into(),
+        total: "1.00".into(),
+        tax_rate: "0".into(),
+    }];
+    let payments = [Payment {
+        code: "0".into(),
+        name: Some("ГОТІВКА".into()),
+        amount: "1.00".into(),
+        change: None,
+    }];
+    let totals = Totals {
+        fiscal_number: Some(1),
+        total: "1.00".into(),
+        se: Some("1.00".into()),
+        tax_rate: "0".into(),
+        tax_percent: Some("20.00".into()),
+        tax_total: Some("0.17".into()),
+        dtpr: Some("0.00".into()),
+        dtsm: Some("0".into()),
+        tax_type: Some("0".into()),
+        tax_algorithm: Some("0".into()),
+        ..Default::default()
+    };
+    // c1 (DI=2, бо builder_from(1) → наступний DI=2)
+    let c1 = b
+        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, None)
+        .unwrap();
+    let h1 = compute_mac(&c1, None);
+    assert_eq!(h1, "0XgkJ7hIRPH9haGEVCdpGOYFDdTc4zc9kCNW0Khc1g8=");
+
+    // c2 (DI=3) — байт-ідентичний Python
+    let c2 = b
+        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, Some(&h1))
+        .unwrap();
+    assert_eq!(
+        c2,
+        r#"<DAT DI="3" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><H N="1">0XgkJ7hIRPH9haGEVCdpGOYFDdTc4zc9kCNW0Khc1g8=</H><P C="120" N="2" NM="Хліб" PRC="100" Q="1000" SM="100" TX="0"></P><M N="3" NM="ГОТІВКА" SM="100" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="4" NO="1" SE="100" SM="100" TS="20260807112601" TX="0" TXAL="0" TXPR="20.00" TXSM="17" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#
+    );
+    let h2 = compute_mac(&c2, None);
+    assert_eq!(h2, "h6IONroxT7kzm85Se4XeIE4FeDLj9C2B03jZhLG2YnI=");
+
+    // c3 (DI=4)
+    let c3 = b
+        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, Some(&h2))
+        .unwrap();
+    assert_eq!(
+        c3,
+        r#"<DAT DI="4" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><H N="1">h6IONroxT7kzm85Se4XeIE4FeDLj9C2B03jZhLG2YnI=</H><P C="120" N="2" NM="Хліб" PRC="100" Q="1000" SM="100" TX="0"></P><M N="3" NM="ГОТІВКА" SM="100" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="4" NO="1" SE="100" SM="100" TS="20260807112601" TX="0" TXAL="0" TXPR="20.00" TXSM="17" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#
+    );
 }
 
 #[test]

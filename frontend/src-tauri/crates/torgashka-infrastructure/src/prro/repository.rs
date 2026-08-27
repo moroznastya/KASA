@@ -63,6 +63,8 @@ struct QueueRow {
     local_number: i32,
     check_type: String,
     xml_body: String,
+    check_sign: Option<String>,
+    id_offline: Option<String>,
     mac: Option<String>,
     status: String,
     error: Option<String>,
@@ -79,6 +81,8 @@ impl From<QueueRow> for PrroQueueItem {
             local_number: r.local_number as i64,
             check_type: r.check_type,
             xml_body: r.xml_body,
+            check_sign: r.check_sign,
+            id_offline: r.id_offline,
             mac: r.mac,
             status: match r.status.as_str() {
                 "sent" => PrroQueueStatus::Sent,
@@ -124,14 +128,14 @@ impl SqlxPrroRepository {
 /// SELECT: статус кастується в text (для FromRow String).
 const SHIFT_COLS: &str = "id, shift_number, opened_at, closed_at, signer_serial, signer_name, \
      closed_by, zreport_number, status::text, receipt_count, total_amount, last_local_number, last_mac";
-const QUEUE_COLS: &str = "id, receipt_id, shift_id, local_number, check_type, xml_body, mac, \
+const QUEUE_COLS: &str = "id, receipt_id, shift_id, local_number, check_type, xml_body, check_sign, id_offline, mac, \
      status::text, error, created_at, sent_at";
 /// INSERT: без касту — значення передаються параметрами ($n::enum).
 const SHIFT_INSERT_COLS: &str =
     "id, shift_number, opened_at, closed_at, signer_serial, signer_name, \
      closed_by, zreport_number, status, receipt_count, total_amount, last_local_number, last_mac";
 const QUEUE_INSERT_COLS: &str =
-    "id, receipt_id, shift_id, local_number, check_type, xml_body, mac, \
+    "id, receipt_id, shift_id, local_number, check_type, xml_body, check_sign, id_offline, mac, \
      status, error, created_at, sent_at";
 
 #[async_trait]
@@ -272,10 +276,39 @@ impl PrroRepository for SqlxPrroRepository {
         Ok(row.map(PrroShift::from))
     }
 
+    async fn next_local_number(&self, shift_id: Uuid) -> Result<i64, PrroRepoError> {
+        // M1: атомарний local_number — інкремент + збереження в одній SQL-операції
+        // (UPDATE ... RETURNING), без read-then-write race.
+        let row: Option<(i64,)> = sqlx::query_as(
+            "UPDATE prro_shifts SET last_local_number = COALESCE(last_local_number, 0) + 1              WHERE id = $1 AND status = 'open'::prro_shift_status              RETURNING last_local_number",
+        )
+        .bind(shift_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        row.map(|r| r.0).ok_or(PrroRepoError::NotFound)
+    }
+
+    async fn update_shift_last_mac(
+        &self,
+        shift_id: Uuid,
+        last_mac: String,
+    ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let row = sqlx::query_as::<_, ShiftRow>(&format!(
+            "UPDATE prro_shifts SET last_mac = $2 WHERE id = $1 RETURNING {SHIFT_COLS}"
+        ))
+        .bind(shift_id)
+        .bind(last_mac)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(row.map(PrroShift::from))
+    }
+
     async fn add_to_queue(&self, item: PrroQueueItem) -> Result<PrroQueueItem, PrroRepoError> {
         sqlx::query(&format!(
             "INSERT INTO prro_queue_items ({QUEUE_INSERT_COLS}) VALUES \
-             ($1,$2,$3,$4,$5,$6,$7,$8::prro_queue_status,$9,$10,$11)"
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::prro_queue_status,$11,$12,$13)"
         ))
         .bind(item.id)
         .bind(item.receipt_id)
@@ -283,6 +316,8 @@ impl PrroRepository for SqlxPrroRepository {
         .bind(item.local_number)
         .bind(&item.check_type)
         .bind(&item.xml_body)
+        .bind(&item.check_sign)
+        .bind(&item.id_offline)
         .bind(&item.mac)
         .bind(item.status.as_str())
         .bind(&item.error)
@@ -368,6 +403,22 @@ impl PrroRepository for SqlxPrroRepository {
         ))
         .bind(item_id)
         .bind(error)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Self::map_err)?;
+        Ok(row.map(PrroQueueItem::from))
+    }
+
+    async fn update_queue_check_sign(
+        &self,
+        item_id: Uuid,
+        check_sign: String,
+    ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let row = sqlx::query_as::<_, QueueRow>(&format!(
+            "UPDATE prro_queue_items SET check_sign = $2 WHERE id = $1 RETURNING {QUEUE_COLS}"
+        ))
+        .bind(item_id)
+        .bind(check_sign)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;

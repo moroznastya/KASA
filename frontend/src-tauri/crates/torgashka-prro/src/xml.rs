@@ -516,6 +516,21 @@ pub fn compute_mac(dat_xml_canonical: &str, key: Option<&[u8]>) -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
+/// Дістає NO (номер операції) з XML чека — використовується для H1:
+/// lastChk повертає XML останнього чека в data_sign; NO == local_number
+/// (Totals.fiscal_number), тому за збігом NO ідентифікуємо "наш" чек.
+/// 1:1 Python `extract_check_no`.
+pub fn extract_check_no(xml: &str) -> Option<i64> {
+    // <E ... NO="123" ...> — атрибут NO тега <E> (номер операції в зміні)
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"<E[^>]*NO="(\d+)""#).expect("валидний регекс NO")
+    });
+    re.captures(xml)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<i64>().ok())
+}
+
 // ─── Білдер XML ──────────────────────────────────────────────────────────────
 
 /// Побудова XML-документів СЗЗД 2.1.7 — 1:1 Python `XmlBuilder`.
@@ -605,11 +620,23 @@ impl XmlBuilder {
         discounts: &[Discount],
         comment: Option<&str>,
         return_type: Option<&str>,
+        prev_hash: Option<&str>, // B1: хеш (MAC) попереднього Check — тег <H> у <C>
     ) -> Result<String, XmlBuilderError> {
         let mut seq = 0i64;
         let mut next_n = || {
             seq += 1;
             seq
+        };
+
+        // B1: хеш попереднього Check (СЗЗД 2.1.7, тег <H> — службова інформація,
+        // Base64; не друкується; крім ping T=111 та службових 108/109/110/112).
+        // H — перша операція чеку (N=1), щоб Python/Rust були байт-ідентичні.
+        let h_tag: String = match prev_hash {
+            Some(h) if !h.is_empty() => {
+                let n = next_n();
+                format!("<H N=\"{n}\">{}</H>", esc_text(h))
+            }
+            _ => String::new(),
         };
 
         // Позиції продажу/повернення (<P>)
@@ -760,6 +787,7 @@ impl XmlBuilder {
 
         let mut body = String::new();
         let _ = write!(body, "<C {}>", c_attrs.join(" "));
+        body.push_str(&h_tag);
         body.push_str(&p_tags);
         body.push_str(&d_tags);
         body.push_str(&m_tags);
@@ -1000,6 +1028,72 @@ mod tests {
             None,
         );
         assert_eq!(mac, "ts1jV7GpNqH3C28M4Sl8izXtergBzaeXVVSE3gQBYqc=");
+    }
+
+    #[test]
+    fn hash_chain_inserts_prev_hash_tag() {
+        // B1: 3 чеки поспіль — H(c1)→c2, H(c2)→c3 (тег <H> у <C>, СЗЗД 2.1.7).
+        let mut b = XmlBuilder::new("4538765845", "345612052809", "АА57506761", "0", "1", 0, 0);
+        let items = [ReceiptItem {
+            code: Some("120".into()),
+            barcode: None,
+            name: "Хліб".into(),
+            quantity: "1".into(),
+            price: "1.00".into(),
+            total: "1.00".into(),
+            tax_rate: "0".into(),
+        }];
+        let payments = [Payment {
+            code: "0".into(),
+            name: Some("ГОТІВКА".into()),
+            amount: "1.00".into(),
+            change: None,
+        }];
+        let totals = Totals {
+            fiscal_number: Some(1),
+            total: "1.00".into(),
+            se: Some("1.00".into()),
+            tax_rate: "0".into(),
+            tax_percent: Some("20.00".into()),
+            tax_total: Some("0.17".into()),
+            dtpr: Some("0.00".into()),
+            dtsm: Some("0".into()),
+            tax_type: Some("0".into()),
+            tax_algorithm: Some("0".into()),
+            ..Default::default()
+        };
+        let ts = "20260827120000";
+
+        // c1: без попереднього → без <H>
+        let c1 = b
+            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, None)
+            .unwrap();
+        assert!(!c1.contains("<H "), "c1 не має <H>: {c1}");
+        let h1 = compute_mac(&c1, None);
+
+        // c2: H(c1) = MAC(c1) — тег <H N="1"> у <C>
+        let c2 = b
+            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, Some(&h1))
+            .unwrap();
+        assert!(
+            c2.contains(&format!("<H N=\"1\">{h1}</H>")),
+            "c2 має містити H(c1): {c2}"
+        );
+        let h2 = compute_mac(&c2, None);
+        assert_ne!(h1, h2, "MAC c2 відрізняється від c1 (H змінює DAT)");
+
+        // c3: H(c2) = MAC(c2)
+        let c3 = b
+            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, Some(&h2))
+            .unwrap();
+        assert!(
+            c3.contains(&format!("<H N=\"1\">{h2}</H>")),
+            "c3 має містити H(c2): {c3}"
+        );
+        // послідовність N: H=1, P=2, M=3, E=4
+        assert!(c3.contains("<P C=\"120\" N=\"2\""));
+        assert!(c3.contains("<M N=\"3\""));
+        assert!(c3.contains("<E DTPR=\"0.00\" DTSM=\"0\" FN=\"4538765845\" N=\"4\""));
     }
 
     #[test]

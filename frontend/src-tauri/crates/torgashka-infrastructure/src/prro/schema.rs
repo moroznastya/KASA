@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS prro_queue_items (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     sent_at       TIMESTAMPTZ
 );
+-- B2: повний підписаний check_sign (ідемпотентність sync). Ідемпотентно для
+-- вже існуючих БД (CREATE TABLE IF NOT EXISTS не додає колонку).
+ALTER TABLE prro_queue_items ADD COLUMN IF NOT EXISTS check_sign TEXT;
+-- B4: офлайн-ідентифікатор offline-чека.
+ALTER TABLE prro_queue_items ADD COLUMN IF NOT EXISTS id_offline TEXT;
 CREATE INDEX IF NOT EXISTS ix_prro_queue_items_receipt_id ON prro_queue_items (receipt_id);
 CREATE INDEX IF NOT EXISTS ix_prro_queue_items_shift_id ON prro_queue_items (shift_id);
 CREATE INDEX IF NOT EXISTS ix_prro_queue_items_status ON prro_queue_items (status);

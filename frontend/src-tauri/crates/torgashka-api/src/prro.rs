@@ -38,23 +38,23 @@ use crate::AppState;
 pub enum PrroApiError {
     #[error("ПРРО не налаштовано: {0}")]
     Config(String),
-    #[error("операція ПРРО: {message}")]
+    #[error("[PRRO_SHIFT_ERROR] {message}")]
     Shift {
         message: String,
         #[source]
         source: PrroShiftError,
     },
-    #[error("репозиторій: {0}")]
+    #[error("[PRRO_REPO_ERROR] {0}")]
     Repo(#[from] PrroRepoError),
-    #[error("gRPC: {0}")]
+    #[error("[GRPC_ERROR] {0}")]
     Grpc(#[from] torgashka_prro::grpc::PrroGrpcError),
-    #[error("крипто: {0}")]
+    #[error("[CRYPTO_ERROR] {0}")]
     Crypto(#[from] torgashka_prro::crypto::PrroCryptoError),
-    #[error("ключ: {0}")]
+    #[error("[KEYSTORE_ERROR] {0}")]
     Key(#[from] torgashka_prro::keystore::KeyStoreError),
-    #[error("XML: {0}")]
+    #[error("[XML_ERROR] {0}")]
     Xml(#[from] torgashka_prro::xml::XmlBuilderError),
-    #[error("черга: {0}")]
+    #[error("[QUEUE_ERROR] {0}")]
     Queue(#[from] torgashka_prro::prro::QueueError),
     #[error("{0}")]
     Settings(#[from] PrroSettingsError),
@@ -186,13 +186,20 @@ impl PrroFacade {
         let material =
             keystore::load_key_material(std::path::Path::new(&key_file), &key_password, None)?;
         let signer = signer_from_key_material(&material, &key_password)?;
-        let grpc = PrroGrpcClient::connect(&url, TlsConfig::default(), &rro_fn).await?;
+        // B3: підпис ФН ПРРО тим самим КЕП-ключем (statusRro/infoRro/lastChk/...)
+        let rro_fn_sign = signer
+            .sign(rro_fn.as_bytes())
+            .map_err(PrroApiError::Crypto)?;
+        let grpc = PrroGrpcClient::connect(&url, TlsConfig::default(), &rro_fn)
+            .await?
+            .with_rro_fn_sign(rro_fn_sign);
+        // rro_type="0": DT не додається; version="1": V="1" (1:1 Python build_xml_builder).
         let builder = XmlBuilder::new(
             rro_fn,
             tax_number,
             factory_number,
+            "0",
             "1",
-            "2.1.7",
             packet_id,
             mac_number,
         );
@@ -490,11 +497,19 @@ pub struct ShiftBody {
     pub comment: Option<String>,
 }
 
-fn facade(state: &AppState) -> Result<Arc<PrroFacade>, (StatusCode, String)> {
+/// HTTP-помилка ПРРО у FastAPI-сумісному форматі: `{"detail": "..."}`
+/// (1:1 Python `HTTPException(detail=...)` — frontend читає detail).
+type ApiErr = (StatusCode, Json<serde_json::Value>);
+
+fn api_err(status: StatusCode, msg: impl Into<String>) -> ApiErr {
+    (status, Json(serde_json::json!({"detail": msg.into()})))
+}
+
+fn facade(state: &AppState) -> Result<Arc<PrroFacade>, ApiErr> {
     state.prro.clone().ok_or_else(|| {
-        (
+        api_err(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Rust-гілка ПРРО вимкнена (TORGASHKA_RUST_PRRO=0)".to_string(),
+            "Rust-гілка ПРРО вимкнена (TORGASHKA_RUST_PRRO=0)",
         )
     })
 }
@@ -530,11 +545,11 @@ fn limit_q(req: &Request) -> u32 {
 pub async fn open_shift(
     State(state): State<AppState>,
     _req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     match f.open_shift().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -543,15 +558,15 @@ pub async fn close_shift(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<crate::auth::Claims>,
     req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     if crate::auth_routes::require_admin(&state, &claims)
         .await
         .is_err()
     {
-        return Err((
+        return Err(api_err(
             StatusCode::FORBIDDEN,
-            "потрібні права адміністратора".to_string(),
+            "потрібні права адміністратора",
         ));
     }
     // опційне тіло: {"comment": "..."} (1:1 Python CloseShiftRequestDTO)
@@ -567,7 +582,7 @@ pub async fn close_shift(
     };
     match f.close_shift(comment).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -575,48 +590,48 @@ pub async fn close_shift(
 pub async fn list_shifts(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     let (page, size) = page_q(&req);
     f.list_shifts(page, size)
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 /// POST /api/v2/prro/fiscal/sync
 pub async fn sync_queue(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     f.sync(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 /// GET /api/v2/prro/fiscal/queue
 pub async fn queue(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     f.queue(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 /// GET /api/v2/prro/fiscal/status
 pub async fn status(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     f.status()
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 // ─── Група 8/9: settings + test-connection + fiscalize (TORGASHKA_RUST_PRRO_V2) ──
@@ -624,11 +639,11 @@ pub async fn status(
 /// GET /api/v2/prro/settings
 pub async fn settings_get(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     match f.get_settings().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -637,15 +652,15 @@ pub async fn settings_put(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<crate::auth::Claims>,
     mut multipart: axum::extract::Multipart,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     if crate::auth_routes::require_admin(&state, &claims)
         .await
         .is_err()
     {
-        return Err((
+        return Err(api_err(
             StatusCode::FORBIDDEN,
-            "потрібні права адміністратора".to_string(),
+            "потрібні права адміністратора",
         ));
     }
     let mut key_file_content: Option<Vec<u8>> = None;
@@ -702,7 +717,7 @@ pub async fn settings_put(
         .await
     {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -710,20 +725,20 @@ pub async fn settings_put(
 pub async fn test_connection(
     State(state): State<AppState>,
     axum::Extension(claims): axum::Extension<crate::auth::Claims>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     if crate::auth_routes::require_admin(&state, &claims)
         .await
         .is_err()
     {
-        return Err((
+        return Err(api_err(
             StatusCode::FORBIDDEN,
-            "потрібні права адміністратора".to_string(),
+            "потрібні права адміністратора",
         ));
     }
     match f.test_connection().await {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -732,7 +747,7 @@ pub async fn fiscalize_receipt(
     State(state): State<AppState>,
     axum::extract::Path(receipt_id): axum::extract::Path<uuid::Uuid>,
     req: Request,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     // Опційне тіло: {"manual": bool} (1:1 Python FiscalizeRequestDTO; відсутнє
     // тіло → manual=true — юзер натиснув кнопку).
@@ -748,6 +763,71 @@ pub async fn fiscalize_receipt(
     };
     match f.fiscalize(receipt_id, manual).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use torgashka_prro::prro::PrroShiftError;
+
+    #[test]
+    fn api_error_fiscalize_display_includes_code() {
+        let e = PrroApiError::Fiscalize(PrroFiscalizeError::new(
+            "Невірний хеш попереднього чеку",
+            "ERROR_BAD_HASH_PREV",
+        ));
+        assert_eq!(
+            e.to_string(),
+            "[ERROR_BAD_HASH_PREV] Невірний хеш попереднього чеку"
+        );
+    }
+
+    #[test]
+    fn api_error_shift_display_includes_code() {
+        let e = PrroApiError::from(PrroShiftError::new(
+            "Зміну вже закрито",
+            "PRRO_SHIFT_ERROR",
+        ));
+        assert_eq!(e.to_string(), "[PRRO_SHIFT_ERROR] Зміну вже закрито");
+    }
+
+    #[test]
+    fn api_error_repo_display_includes_code() {
+        let e = PrroApiError::Repo(PrroRepoError::NotFound);
+        assert!(e.to_string().starts_with("[PRRO_REPO_ERROR] "));
+    }
+
+    #[test]
+    fn api_error_settings_display_includes_code() {
+        let e = PrroApiError::Settings(PrroSettingsError::new("налаштуйте ПРРО"));
+        assert!(e.to_string().starts_with("[PRRO_SETTINGS_ERROR] "));
+    }
+
+    #[test]
+    fn api_err_returns_fastapi_compatible_detail_json() {
+        let (status, Json(body)) = api_err(StatusCode::BAD_REQUEST, "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["detail"],
+            "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)"
+        );
+    }
+
+    #[test]
+    fn api_err_shift_status_error_reaches_detail() {
+        // Повний шлях: PrroShiftError (status=-13) → PrroApiError::Shift →
+        // Display з кодом → detail JSON.
+        let e = PrroApiError::Shift {
+            message: "Не вдалося відкрити зміну: status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)".into(),
+            source: PrroShiftError::new("status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)", "OPEN_SHIFT_FAILED"),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("ERROR_NOT_REGISTERED_RRO"));
+        assert!(msg.contains("ПРРО не зареєстровано"));
+        let (_, Json(body)) = api_err(StatusCode::BAD_REQUEST, msg);
+        assert!(body["detail"].as_str().unwrap().contains("ERROR_NOT_REGISTERED_RRO"));
     }
 }

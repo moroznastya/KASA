@@ -72,9 +72,18 @@ class SyncOfflineQueueUseCase:
 
         for item in pending:
             try:
-                # Повторно обгортаємо DAT у RQ+MAC та підписуємо
-                message = xml_builder.build_message(item.xml_body)
-                signed = crypto.sign(message.encode("utf-8"))
+                # B2: відправляємо ПОВНИЙ підписаний check_sign as-is (ідемпотентність).
+                # Документи, додані до B2 (check_sign=None), формуються рівно 1 раз
+                # і фіксуються у черзі — повторні sync не переформовують
+                # (build_message ≤ 1 разу на документ, NT/MAC не змінюються).
+                if getattr(item, "check_sign", None):
+                    signed = item.check_sign.encode("utf-8")
+                else:
+                    message = xml_builder.build_message(item.xml_body)
+                    signed = crypto.sign(message.encode("utf-8"))
+                    await self._offline_queue.update_check_sign(
+                        item.id, signed.decode("utf-8")
+                    )
                 check = await self._context.build_check(
                     check_sign=signed,
                     local_number=int(item.local_number),
@@ -84,6 +93,13 @@ class SyncOfflineQueueUseCase:
 
                 if int(response.status) == 1:
                     await self._offline_queue.mark_sent(item.id)
+                    # B1: оновлюємо last_mac зміни — наступний Check посилатиметься
+                    # на хеш цього успішно відправленого документа (hash-ланцюжок).
+                    # getattr: документи без shift_id/mac (тестові стаби) — пропускаємо.
+                    shift_id = getattr(item, "shift_id", None)
+                    mac = getattr(item, "mac", None)
+                    if shift_id is not None and mac is not None:
+                        await self._prro_repo.update_shift_last_mac(shift_id, mac)
                     synced += 1
                     results.append({
                         "id": str(item.id),

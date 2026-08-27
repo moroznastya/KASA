@@ -1324,7 +1324,7 @@ pub async fn list_shifts(
 pub async fn open_shift(
     State(state): State<AppState>,
     req: Request,
-) -> Result<Json<torgashka_domain::PrroShiftDto>, PosErr> {
+) -> Result<Json<serde_json::Value>, PosErr> {
     let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
         .await
         .unwrap_or_default();
@@ -1337,9 +1337,20 @@ pub async fn open_shift(
                 .map(str::to_string)
         })
     };
+    // ФІСКАЛЬНА гілка ПРРО (Rust-ядро, TORGASHKA_RUST_PRRO=1): реальний
+    // gRPC ДПС + КЕП через torgashka-prro::PrroShiftUseCase::open_shift.
+    // Помилка фасаду вже містить код/ім'я/опис статусу (PrroApiError Display).
+    if let Some(prro) = state.prro.clone() {
+        return match prro.open_shift().await {
+            Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
+            Err(e) => Err(PosErr::Service(PosError::BadRequest(e.to_string()))),
+        };
+    }
+    // Локальна X/Z гілка без фіскального ПРРО — чесна помилка (не хардкод).
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok(Json(svc.open_shift(comment).await?))
+    let dto = svc.open_shift(comment).await?;
+    Ok(Json(serde_json::to_value(dto).unwrap_or_default()))
 }
 
 /// POST /api/v2/prro/shift/close
@@ -1350,7 +1361,7 @@ pub async fn close_shift(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     req: Request,
-) -> Result<Json<torgashka_domain::PrroShiftDto>, PosErr> {
+) -> Result<Json<serde_json::Value>, PosErr> {
     require_admin(&state, &claims).await?;
     let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
         .await
@@ -1364,9 +1375,19 @@ pub async fn close_shift(
                 .map(str::to_string)
         })
     };
+    // ФІСКАЛЬНА гілка ПРРО (Rust-ядро): реальний gRPC ДПС + КЕП
+    // (torgashka-prro::PrroShiftUseCase::close_shift) — див. open_shift вище.
+    if let Some(prro) = state.prro.clone() {
+        return match prro.close_shift(comment).await {
+            Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
+            Err(e) => Err(PosErr::Service(PosError::BadRequest(e.to_string()))),
+        };
+    }
+    // Локальна X/Z гілка без фіскального ПРРО.
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok(Json(svc.close_shift(comment).await?))
+    let dto = svc.close_shift(comment).await?;
+    Ok(Json(serde_json::to_value(dto).unwrap_or_default()))
 }
 
 // ─── Готівкові операції (внесення/інкасація) ───────────────────────────────

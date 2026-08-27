@@ -563,3 +563,58 @@ class TestCounters:
         assert re.search(r'DI="(\d+)"', dat).group(1) == "101"
         msg = b.build_message(dat)
         assert 'NT="51"' in msg
+
+
+# ─── B1: hash-ланцюжок попереднього Check ─────────────────────────────────
+
+class TestPrevHashChain:
+    """B1: тег <H> — хеш (MAC) попереднього Check (СЗЗД 2.1.7)."""
+
+    def test_no_prev_hash_no_h_tag(self, builder, receipt_items, receipt_totals):
+        """Без prev_hash тег <H> не з'являється (сумісність зі старим форматом)."""
+        dat = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE,
+            items=receipt_items,
+            payments=[{"code": "0", "name": "ГОТІВКА", "amount": Decimal("45.00")}],
+            totals=receipt_totals,
+            date_time=TEST_DT,
+        )
+        assert "<H " not in dat
+
+    def test_chain_three_checks(self, builder, receipt_items, receipt_totals):
+        """3 чеки поспіль: H(c1)→c2, H(c2)→c3."""
+        payments = [{"code": "0", "name": "ГОТІВКА", "amount": Decimal("45.00")}]
+
+        c1 = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE, items=receipt_items,
+            payments=payments, totals=receipt_totals, date_time=TEST_DT,
+        )
+        h1 = compute_mac(c1)
+
+        c2 = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE, items=receipt_items,
+            payments=payments, totals=receipt_totals, date_time=TEST_DT,
+            prev_hash=h1,
+        )
+        # H — перша операція (N=1), P стає N=2
+        assert f'<H N="1">{h1}</H>' in c2
+        assert c2.index("<H ") < c2.index("<P ")
+        assert '<P ' in c2 and ' N="2"' in c2
+        h2 = compute_mac(c2)
+
+        c3 = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE, items=receipt_items,
+            payments=payments, totals=receipt_totals, date_time=TEST_DT,
+            prev_hash=h2,
+        )
+        assert f'<H N="1">{h2}</H>' in c3
+
+        # MAC ланцюжка змінюється (H входить у DAT)
+        assert h1 != h2
+        assert h2 != compute_mac(c3)
+
+    def test_service_checks_have_no_h(self, builder):
+        """Службові чеки 108-112 та ping не отримують <H> (за протоколом)."""
+        for st in ("108", "109", "110", "111", "112"):
+            dat = builder.build_service_check_xml(service_type=st, date_time=TEST_DT)
+            assert "<H " not in dat, f"{st} не має <H>"

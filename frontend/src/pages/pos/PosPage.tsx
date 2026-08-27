@@ -1600,7 +1600,8 @@ const PosPage: React.FC = () => {
                 <>Чек очікує фіскалізації (офлайн-черга)</>
               )}
               {fiscalStatus.fiscal_status === 'failed' && (
-                <>Помилка фіскалізації: {fiscalStatus.fiscal_error || 'невідома'}</>
+                // fiscal_error вже у форматі «[КОД] Точний текст» (зберігається з коду)
+                <>{fiscalStatus.fiscal_error || 'Помилка фіскалізації'}</>
               )}
               {fiscalStatus.fiscal_status === 'none' && (
                 <>Чек не фіскалізовано</>

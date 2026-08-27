@@ -9,6 +9,7 @@ Application Layer: PrroShiftUseCase — відкриття/закриття зм
 """
 
 from __future__ import annotations
+from app.application.use_cases.prro.status_codes import status_error_text
 
 import logging
 from datetime import datetime
@@ -48,11 +49,15 @@ logger = logging.getLogger(__name__)
 
 
 class PrroShiftError(Exception):
-    """Помилка операції зі зміною ПРРО."""
+    """Помилка операції зі зміною ПРРО. __str__ = "[КОД] Точний текст"."""
 
     def __init__(self, message: str, code: str = "PRRO_SHIFT_ERROR"):
         super().__init__(message)
+        self.message = message
         self.code = code
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
 
 
 class PrroShiftUseCase:
@@ -132,7 +137,14 @@ class PrroShiftUseCase:
         response = await grpc_client.send_chk(check)
 
         if int(response.status) != 1:
-            error_msg = response.error_message or f"status={response.status}"
+            # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            # (1:1 Rust shift.rs; джерело мапи: status_codes).
+            status_text = status_error_text(int(response.status))
+            error_msg = (
+                f"{response.error_message} | {status_text}"
+                if response.error_message
+                else status_text
+            )
             raise PrroShiftError(
                 f"Не вдалося відкрити зміну: {error_msg}",
                 code="OPEN_SHIFT_FAILED",
@@ -223,7 +235,14 @@ class PrroShiftUseCase:
         response = await grpc_client.send_chk(check)
 
         if int(response.status) != 1:
-            error_msg = response.error_message or f"status={response.status}"
+            # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            # (1:1 Rust shift.rs; джерело мапи: status_codes).
+            status_text = status_error_text(int(response.status))
+            error_msg = (
+                f"{response.error_message} | {status_text}"
+                if response.error_message
+                else status_text
+            )
             raise PrroShiftError(
                 f"Не вдалося закрити зміну: {error_msg}",
                 code="CLOSE_SHIFT_FAILED",
@@ -249,6 +268,9 @@ class PrroShiftUseCase:
             mac=mac,
         )
         await self._offline_queue.mark_sent(queue_item.id)
+
+        # B1: last_mac = MAC(Z) — останній успішно відправлений документ зміни.
+        await self._prro_repo.update_shift_last_mac(open_shift.id, mac)
 
         await self._context.persist_builder_counters(xml_builder)
         await self._session.commit()

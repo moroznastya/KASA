@@ -27,6 +27,7 @@ fn dstu_jks_path() -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "integration: реальний FFI до EUSignCP SDK (OOM-ризик). Запуск: cargo test --test cades_iit -- --ignored"]
 fn cades_signer_serial_and_name_match_python() {
     let Some(so) = iit_available() else {
         eprintln!("SKIP: euscp.so не встановлено (backend/vendor/iit-sdk)");
@@ -55,6 +56,7 @@ fn cades_signer_serial_and_name_match_python() {
 }
 
 #[test]
+#[ignore = "integration: реальний FFI до EUSignCP SDK (OOM-ризик). Запуск: cargo test --test cades_iit -- --ignored"]
 fn cades_sign_verify_and_structure() {
     let Some(so) = iit_available() else {
         eprintln!("SKIP: euscp.so не встановлено (backend/vendor/iit-sdk)");
@@ -103,6 +105,7 @@ fn cades_sign_verify_and_structure() {
 }
 
 #[test]
+#[ignore = "integration: реальний FFI до EUSignCP SDK (OOM-ризик). Запуск: cargo test --test cades_iit -- --ignored"]
 fn cades_verify_python_golden_signature() {
     let Some(so) = iit_available() else {
         eprintln!("SKIP: euscp.so не встановлено (backend/vendor/iit-sdk)");
@@ -138,11 +141,18 @@ fn cades_verify_python_golden_signature() {
 }
 
 #[test]
+#[ignore = "integration: реальний FFI до EUSignCP SDK (OOM-ризик). Запуск: cargo test --test cades_iit -- --ignored"]
 fn cades_signer_from_key_material_integration() {
     let Some(_so) = iit_available() else {
         eprintln!("SKIP: euscp.so не встановлено (backend/vendor/iit-sdk)");
         return;
     };
+    // sign через IitSigner → sign_via_subprocess: потрібен явний шлях до
+    // хелпера (current_exe = тестовий бінарник, у нього немає SDK_HELPER_ENV).
+    std::env::set_var(
+        "TORGASHKA_PRRO_SDK_HELPER_BIN",
+        env!("CARGO_BIN_EXE_prro_sdk_helper"),
+    );
     // повний шлях: key_store (JKS) → фабрика → sign → verify (як Python
     // PrroCryptoSigner з бекендом iit)
     let material =

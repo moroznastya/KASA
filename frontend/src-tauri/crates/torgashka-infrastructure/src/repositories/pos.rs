@@ -3546,9 +3546,14 @@ impl PosService for SqlxPos {
     }
 
     async fn open_shift(&self, _comment: Option<String>) -> Result<PrroShiftDto, PosError> {
-        // ПРРО (зовнішній gRPC) недоступний — Python повертає 400 з цим текстом.
+        // Цей шар — ЛОКАЛЬНА X/Z гілка без фіскального ПРРО. Реальна
+        // фіскальна гілка (gRPC ДПС + КЕП) виконується в torgashka-prro
+        // (PrroShiftUseCase::open_shift) і підключається в HTTP-хендлері
+        // torgashka-api/src/pos.rs за наявності Rust-фасаду. Хардкод-коди
+        // ДПС тут НЕ використовуються — лише чесне повідомлення.
         Err(PosError::BadRequest(
-            "Не вдалося відкрити зміну: status=-13".to_string(),
+            "Фіскальну гілку ПРРО не підключено (TORGASHKA_RUST_PRRO=0);              зверніться до адміністратора"
+                .to_string(),
         ))
     }
 
@@ -3565,8 +3570,10 @@ impl PosService for SqlxPos {
             None => Err(PosError::BadRequest(
                 "Немає відкритої зміни ПРРО".to_string(),
             )),
+            // Реальна фіскальна гілка — torgashka-prro (див. open_shift вище).
             Some(_) => Err(PosError::BadRequest(
-                "Не вдалося закрити зміну: status=-13".to_string(),
+                "Фіскальну гілку ПРРО не підключено (TORGASHKA_RUST_PRRO=0);                  зверніться до адміністратора"
+                    .to_string(),
             )),
         }
     }

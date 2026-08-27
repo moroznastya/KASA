@@ -52,7 +52,15 @@ CERTS_ROOT = _BACKEND_DIR / "certs"
 
 
 class PrroSettingsError(Exception):
-    """Помилка роботи з налаштуваннями ПРРО."""
+    """Помилка роботи з налаштуваннями ПРРО. __str__ = "[КОД] Точний текст"."""
+
+    def __init__(self, message: str, code: str = "PRRO_SETTINGS_ERROR"):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
 
 
 class PrroSettingsUseCase:
@@ -367,6 +375,11 @@ class PrroSettingsUseCase:
         Returns:
             dict: {"status": int, "ok": bool, "error": str | None}.
         """
+        from app.application.use_cases.prro.fiscalize_receipt_use_case import (
+            status_name,
+        )
+        from app.application.use_cases.prro.status_codes import status_error_text
+
         try:
             check_sign, sign_error = await self._build_ping_check_sign()
             client = await self._context.grpc_client()
@@ -380,8 +393,12 @@ class PrroSettingsUseCase:
             if sign_error:
                 parts.append(f"КЕП не вдалося використати: {sign_error}")
             if server_error:
-                parts.append(f"Відповідь сервера: {server_error}")
-            parts.append(self._status_message(status))
+                parts.append(
+                    f"[{status_name(status)}] Відповідь сервера: {server_error}"
+                )
+            # Числовий код + ім'я + короткий людський опис (1:1 Rust).
+            parts.append(status_error_text(status))
+            parts.append(f"[{status_name(status)}] {self._status_message(status)}")
 
             return {
                 "status": status,
