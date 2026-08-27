@@ -122,7 +122,7 @@ async fn queue_full_cycle() {
 
     // add + pending
     let item =
-        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 1, CHECK_TYPE_CHK, xml, None)
+        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 1, CHECK_TYPE_CHK, xml, None, None, None)
             .await
             .expect("add");
     assert_eq!(item.status, PrroQueueStatus::Pending);
@@ -149,7 +149,7 @@ async fn queue_full_cycle() {
 
     // mark_failed
     let item2 =
-        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 2, CHECK_TYPE_CHK, xml, None)
+        PrroOfflineQueue::add_document(&repo, None, Some(shift.id), 2, CHECK_TYPE_CHK, xml, None, None, None)
             .await
             .unwrap();
     let failed = PrroOfflineQueue::mark_failed(&repo, item2.id, "ERROR_OFFLINE_168".into())

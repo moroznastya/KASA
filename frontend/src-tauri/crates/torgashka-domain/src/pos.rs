@@ -141,7 +141,8 @@ pub trait PosService: Send + Sync {
         input: &CashOperationCreateInput,
     ) -> Result<CashOperationDto, PosError>;
     /// Список операцій точки + баланс готівки (deposit − collection).
-    async fn list_cash_operations(&self, store_id: Uuid) -> Result<CashOperationsListDto, PosError>;
+    async fn list_cash_operations(&self, store_id: Uuid)
+        -> Result<CashOperationsListDto, PosError>;
 }
 
 /// Blanket: `Arc<T>` делегує [`PosService`].
@@ -294,9 +295,14 @@ impl<T: PosService + ?Sized> PosService for std::sync::Arc<T> {
         user_id: Uuid,
         input: &CashOperationCreateInput,
     ) -> Result<CashOperationDto, PosError> {
-        (**self).create_cash_operation(store_id, user_id, input).await
+        (**self)
+            .create_cash_operation(store_id, user_id, input)
+            .await
     }
-    async fn list_cash_operations(&self, store_id: Uuid) -> Result<CashOperationsListDto, PosError> {
+    async fn list_cash_operations(
+        &self,
+        store_id: Uuid,
+    ) -> Result<CashOperationsListDto, PosError> {
         (**self).list_cash_operations(store_id).await
     }
 }
@@ -938,7 +944,6 @@ pub struct CashOperationsListDto {
     pub operations: Vec<CashOperationDto>,
     pub balances: CashBalances,
 }
-
 
 // ─── Утиліти Decimal (scale-обізнані, як Python Decimal) ──────────────────
 

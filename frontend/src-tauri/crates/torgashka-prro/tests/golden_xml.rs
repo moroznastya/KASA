@@ -408,7 +408,17 @@ fn golden_hash_chain_python_parity() {
 
     // c2 (DI=3) — байт-ідентичний Python
     let c2 = b
-        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, Some(&h1))
+        .build_receipt_xml(
+            "0",
+            &items,
+            &payments,
+            &totals,
+            TS,
+            &[],
+            None,
+            None,
+            Some(&h1),
+        )
         .unwrap();
     assert_eq!(
         c2,
@@ -419,7 +429,17 @@ fn golden_hash_chain_python_parity() {
 
     // c3 (DI=4)
     let c3 = b
-        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, Some(&h2))
+        .build_receipt_xml(
+            "0",
+            &items,
+            &payments,
+            &totals,
+            TS,
+            &[],
+            None,
+            None,
+            Some(&h2),
+        )
         .unwrap();
     assert_eq!(
         c3,

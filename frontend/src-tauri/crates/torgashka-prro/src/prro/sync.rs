@@ -122,9 +122,7 @@ impl SyncOfflineQueueUseCase {
                         if let Some(mac) = &item.mac {
                             repo.update_shift_last_mac(shift_id, mac.clone())
                                 .await
-                                .map_err(|e| {
-                                    PrroShiftError::new(e.to_string(), "QUEUE_ERROR")
-                                })?;
+                                .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
                         }
                     }
                     result.synced += 1;

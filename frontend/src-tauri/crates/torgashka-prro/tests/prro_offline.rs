@@ -42,25 +42,34 @@ async fn offline_enter_reserve_exit_full_scenario() {
     OfflineStateMachine::enter_offline(&repo, &sender, &mut builder, &MockSigner, now)
         .await
         .unwrap();
-    assert!(OfflineStateMachine::is_offline(&repo).await.unwrap(), "стан → offline");
+    assert!(
+        OfflineStateMachine::is_offline(&repo).await.unwrap(),
+        "стан → offline"
+    );
     // T=109 було надіслано (спроба) — owned-копія (guard не тримаємо)
     let xml109 = String::from_utf8_lossy(&sender.calls.lock().unwrap()[0].check_sign).into_owned();
-    assert!(xml109.contains(r#"<C T="109">"#), "T=109 у check_sign: {xml109}");
+    assert!(
+        xml109.contains(r#"<C T="109">"#),
+        "T=109 у check_sign: {xml109}"
+    );
 
     // 2. reserve_numbers (T=112) → сервер дає діапазон у data_sign
     sender.push_ok_with_data(
         "reserve-ok",
         br#"<?xml version="1.0"?><RS V="1"><DAT><CNF TY="C" FR="1001" TO="1100" ER="0"/></DAT></RS>"#.to_vec(),
     );
-    let (start, end) = OfflineStateMachine::reserve_numbers(&repo, &sender, &mut builder, &MockSigner, now)
-        .await
-        .unwrap();
+    let (start, end) =
+        OfflineStateMachine::reserve_numbers(&repo, &sender, &mut builder, &MockSigner, now)
+            .await
+            .unwrap();
     assert_eq!((start, end), (1001, 1100), "діапазон з data_sign");
     let xml112 = String::from_utf8_lossy(&sender.calls.lock().unwrap()[1].check_sign).into_owned();
     assert!(xml112.contains(r#"<C T="112">"#));
 
     // 3. Offline-чек: резервний local_number + id_offline (не порожній)
-    let (offline_local, id_offline) = OfflineStateMachine::next_offline_local(&repo).await.unwrap();
+    let (offline_local, id_offline) = OfflineStateMachine::next_offline_local(&repo)
+        .await
+        .unwrap();
     assert_eq!(offline_local, 1001);
     assert_eq!(id_offline, "offline-1001");
     assert!(!id_offline.is_empty(), "id_offline не порожній");
@@ -85,10 +94,14 @@ async fn offline_enter_reserve_exit_full_scenario() {
     // 4. Мережа є → exit_offline (T=110) + sync → усі документи пройшли
     sender.push_ok("t110-ok");
     sender.push_ok("chk-offline-1001"); // sync відправляє offline-чек
-    let res = OfflineStateMachine::exit_offline(&repo, &sender, &mut builder, &MockSigner, 100, now)
-        .await
-        .unwrap();
-    assert!(!OfflineStateMachine::is_offline(&repo).await.unwrap(), "стан → online");
+    let res =
+        OfflineStateMachine::exit_offline(&repo, &sender, &mut builder, &MockSigner, 100, now)
+            .await
+            .unwrap();
+    assert!(
+        !OfflineStateMachine::is_offline(&repo).await.unwrap(),
+        "стан → online"
+    );
     assert_eq!(res.synced, 1, "offline-чек синхронізовано");
     assert_eq!(res.failed, 0);
     assert_eq!(res.total, 1);
@@ -97,7 +110,10 @@ async fn offline_enter_reserve_exit_full_scenario() {
     assert!(xml110.contains(r#"<C T="110">"#));
     // offline-чек відправлено з id_offline (не порожнім)
     let offline_check = sender.calls.lock().unwrap()[3].clone();
-    assert_eq!(offline_check.id_offline, "offline-1001", "id_offline у Check");
+    assert_eq!(
+        offline_check.id_offline, "offline-1001",
+        "id_offline у Check"
+    );
     assert_eq!(offline_check.local_number, 1001);
     // черга порожня
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 0);
@@ -107,10 +123,16 @@ async fn offline_enter_reserve_exit_full_scenario() {
 #[tokio::test]
 async fn offline_local_number_increments_within_reserve_range() {
     let repo = InMemoryPrroRepository::new();
-    repo.set_setting("prro_reserve_start", "1001").await.unwrap();
+    repo.set_setting("prro_reserve_start", "1001")
+        .await
+        .unwrap();
     repo.set_setting("prro_reserve_end", "1100").await.unwrap();
-    let (n1, id1) = OfflineStateMachine::next_offline_local(&repo).await.unwrap();
-    let (n2, id2) = OfflineStateMachine::next_offline_local(&repo).await.unwrap();
+    let (n1, id1) = OfflineStateMachine::next_offline_local(&repo)
+        .await
+        .unwrap();
+    let (n2, id2) = OfflineStateMachine::next_offline_local(&repo)
+        .await
+        .unwrap();
     assert_eq!((n1, n2), (1001, 1002));
     assert_eq!(id1, "offline-1001");
     assert_eq!(id2, "offline-1002");
@@ -126,10 +148,19 @@ async fn fiscalize_in_offline_uses_reserve_local_and_id_offline() {
     repo.set_setting("prro_offline", "1").await.unwrap();
     repo.set_setting("prro_reserve_start", "500").await.unwrap();
     repo.set_setting("prro_reserve_end", "600").await.unwrap();
-    let (local, id_offline) = OfflineStateMachine::next_offline_local(&repo).await.unwrap();
+    let (local, id_offline) = OfflineStateMachine::next_offline_local(&repo)
+        .await
+        .unwrap();
     assert_eq!(local, 500);
     assert!(!id_offline.is_empty());
     // у Check id_offline підставляється fiscalize.make_check — тест рівня
     // модуля offline (інтеграцію fiscalize покрито Rust-тестами fiscalize).
-    let _ = SyncOfflineQueueUseCase::sync(&repo, &MockChkSender::new(), &mut test_builder(), &MockSigner, 10).await;
+    let _ = SyncOfflineQueueUseCase::sync(
+        &repo,
+        &MockChkSender::new(),
+        &mut test_builder(),
+        &MockSigner,
+        10,
+    )
+    .await;
 }

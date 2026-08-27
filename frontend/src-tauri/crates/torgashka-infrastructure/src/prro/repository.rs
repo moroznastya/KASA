@@ -128,7 +128,8 @@ impl SqlxPrroRepository {
 /// SELECT: статус кастується в text (для FromRow String).
 const SHIFT_COLS: &str = "id, shift_number, opened_at, closed_at, signer_serial, signer_name, \
      closed_by, zreport_number, status::text, receipt_count, total_amount, last_local_number, last_mac";
-const QUEUE_COLS: &str = "id, receipt_id, shift_id, local_number, check_type, xml_body, check_sign, id_offline, mac, \
+const QUEUE_COLS: &str =
+    "id, receipt_id, shift_id, local_number, check_type, xml_body, check_sign, id_offline, mac, \
      status::text, error, created_at, sent_at";
 /// INSERT: без касту — значення передаються параметрами ($n::enum).
 const SHIFT_INSERT_COLS: &str =

@@ -37,22 +37,26 @@ impl H1Sender {
     }
 
     fn push_transport_error(&self) {
-        self.send_responses.lock().unwrap().push_back(Err(
-            PrroGrpcError::Rpc {
+        self.send_responses
+            .lock()
+            .unwrap()
+            .push_back(Err(PrroGrpcError::Rpc {
                 status: tonic::Status::unavailable("deadline exceeded"),
                 max_retries: 1,
-            },
-        ));
+            }));
     }
 
     fn push_ok(&self, id: &str, data_sign: Vec<u8>) {
-        self.send_responses.lock().unwrap().push_back(Ok(CheckResponse {
-            id: id.to_string(),
-            status: 1,
-            id_sign: format!("id-sign-{id}").into_bytes(),
-            data_sign,
-            error_message: String::new(),
-        }));
+        self.send_responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(CheckResponse {
+                id: id.to_string(),
+                status: 1,
+                id_sign: format!("id-sign-{id}").into_bytes(),
+                data_sign,
+                error_message: String::new(),
+            }));
     }
 
     fn set_last_chk(&self, resp: CheckResponse) {
@@ -295,21 +299,32 @@ async fn timeout_retry_fails_document_queued_and_offline() {
     assert_eq!(q.len(), 1, "документ у черзі");
     assert_eq!(q[0].local_number, 1);
     // ПРРО перейшов в офлайн (B4)
-    assert!(torgashka_prro::prro::OfflineStateMachine::is_offline(&repo).await.unwrap());
+    assert!(torgashka_prro::prro::OfflineStateMachine::is_offline(&repo)
+        .await
+        .unwrap());
     // 2 спроби НАШОГО чека (первинний + контрольований retry), далі — службові
     // T=109 (enter_offline) і T=112 (reserve_numbers): разом 4 виклики.
     let calls = sender.send_calls.lock().unwrap();
     assert_eq!(calls.len(), 4, "2 спроби чека + T=109 + T=112");
     assert_eq!(calls[0].local_number, 1, "перша спроба — наш чек");
-    assert_eq!(calls[1].local_number, 1, "retry — той самий чек (без дубліката номера)");
+    assert_eq!(
+        calls[1].local_number, 1,
+        "retry — той самий чек (без дубліката номера)"
+    );
 }
 
 // ─── V1: QR mac = MAC чека ───────────────────────────────────────────────────
 
 #[test]
 fn extract_check_no_parses_no_from_dat() {
-    assert_eq!(extract_check_no(&String::from_utf8_lossy(&xml_with_no(7))), Some(7));
-    assert_eq!(extract_check_no("<DAT><C T=\"0\"><P N=\"1\"></P></C></DAT>"), None);
+    assert_eq!(
+        extract_check_no(&String::from_utf8_lossy(&xml_with_no(7))),
+        Some(7)
+    );
+    assert_eq!(
+        extract_check_no("<DAT><C T=\"0\"><P N=\"1\"></P></C></DAT>"),
+        None
+    );
 }
 
 #[test]
@@ -322,13 +337,18 @@ fn v1_qr_uses_check_mac_not_fallback_sha1() {
         "45",
         rust_decimal::Decimal::new(78000, 2),
         "3000898168",
-        chrono::DateTime::parse_from_rfc3339("2022-09-04T11:30:00Z").unwrap().with_timezone(&chrono::Utc),
+        chrono::DateTime::parse_from_rfc3339("2022-09-04T11:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
         Some(&mac),
     )
     .expect("URL є");
     // Rust URL-енкодить параметри як Python urlencode (quote_plus): + / =
     // у base64 MAC → %2B %2F %3D
-    let encoded_mac = mac.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+    let encoded_mac = mac
+        .replace('+', "%2B")
+        .replace('/', "%2F")
+        .replace('=', "%3D");
     assert!(
         url.contains(&format!("mac={encoded_mac}")),
         "QR mac = MAC чека (URL-encoded): {url}"

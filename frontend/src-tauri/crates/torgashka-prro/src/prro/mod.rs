@@ -9,8 +9,8 @@ pub mod offline;
 pub mod queue;
 pub mod repository;
 pub mod settings;
-pub mod status_codes;
 pub mod shift;
+pub mod status_codes;
 pub mod sync;
 
 pub use chk_sender::{ChkSender, MockChkSender};

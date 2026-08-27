@@ -204,6 +204,10 @@ mod tests {
     fn parse_reserve_range_invalid_returns_none() {
         assert_eq!(parse_reserve_range(b"not xml"), None);
         assert_eq!(parse_reserve_range(br#"<CNF FR="abc" TO="100"/>"#), None);
-        assert_eq!(parse_reserve_range(br#"<CNF FR="100" TO="50"/>"#), None, "end < start");
+        assert_eq!(
+            parse_reserve_range(br#"<CNF FR="100" TO="50"/>"#),
+            None,
+            "end < start"
+        );
     }
 }

@@ -96,10 +96,8 @@ pub trait StoreService: Send + Sync {
     /// Створити точку (owner) + автоприв'язка творця як owner.
     async fn create_store(&self, input: &StoreCreateInput) -> Result<StoreDto, StoreError>;
     /// Призначити користувача на точку (owner).
-    async fn assign_user_store(
-        &self,
-        input: &UserStoreAssignInput,
-    ) -> Result<StoreDto, StoreError>;
+    async fn assign_user_store(&self, input: &UserStoreAssignInput)
+        -> Result<StoreDto, StoreError>;
     /// Міжточкова наявність: залишки по всіх точках користувача.
     async fn availability(&self) -> Result<Vec<AvailabilityItemDto>, StoreError>;
 }

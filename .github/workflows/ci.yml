@@ -62,7 +62,7 @@ env:
 
 defaults:
   run:
-    working-directory: ./kasa
+    working-directory: .
 
 jobs:
   # ─── Backend Lint — ruff + mypy ─────────────────────────────────────────
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./kasa/backend
+        working-directory: ./backend
 
     steps:
       - name: 📥 Checkout
@@ -83,8 +83,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
           cache-dependency-path: |
-            kasa/backend/requirements.txt
-            kasa/backend/requirements-dev.txt
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: 📦 Install dependencies
         run: |
@@ -106,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./kasa/frontend
+        working-directory: ./frontend
 
     steps:
       - name: 📥 Checkout
@@ -117,7 +117,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
-          cache-dependency-path: kasa/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: 📦 Install dependencies
         run: npm ci
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./kasa/backend
+        working-directory: ./backend
 
     # ─── PostgreSQL 16 (як docker-compose db-test) ────────────────────────
     # Потрібен для інтеграційних тестів, що використовують реальну БД.
@@ -174,8 +174,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
           cache-dependency-path: |
-            kasa/backend/requirements.txt
-            kasa/backend/requirements-dev.txt
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: 📦 Install dependencies
         run: |
@@ -193,7 +193,7 @@ jobs:
         if: always()
         with:
           name: coverage-report
-          path: kasa/backend/htmlcov/
+          path: backend/htmlcov/
           retention-days: 7
 
   # ─── Build — Docker ─────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ jobs:
       - name: 🐳 Build backend image
         uses: docker/build-push-action@v6
         with:
-          context: ./kasa/backend
+          context: ./backend
           push: false
           tags: kasa-backend:ci
           cache-from: type=gha
@@ -218,7 +218,7 @@ jobs:
       - name: 🐳 Build frontend image
         uses: docker/build-push-action@v6
         with:
-          context: ./kasa/frontend
+          context: ./frontend
           push: false
           tags: kasa-frontend:ci
           cache-from: type=gha
@@ -266,7 +266,7 @@ jobs:
   #   if: startsWith(github.ref, 'refs/tags/v')
   #   defaults:
   #     run:
-  #       working-directory: ./kasa/frontend
+  #       working-directory: ./frontend
   #
   #   env:
   #     TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -281,7 +281,7 @@ jobs:
   #       with:
   #         node-version: ${{ env.NODE_VERSION }}
   #         cache: "npm"
-  #         cache-dependency-path: kasa/frontend/package-lock.json
+  #         cache-dependency-path: frontend/package-lock.json
   #
   #     - name: 🦀 Setup Rust (stable)
   #       uses: dtolnay/rust-toolchain@stable

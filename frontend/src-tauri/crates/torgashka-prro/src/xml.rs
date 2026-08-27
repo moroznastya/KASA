@@ -523,9 +523,8 @@ pub fn compute_mac(dat_xml_canonical: &str, key: Option<&[u8]>) -> String {
 pub fn extract_check_no(xml: &str) -> Option<i64> {
     // <E ... NO="123" ...> — атрибут NO тега <E> (номер операції в зміні)
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(r#"<E[^>]*NO="(\d+)""#).expect("валидний регекс NO")
-    });
+    let re =
+        RE.get_or_init(|| regex::Regex::new(r#"<E[^>]*NO="(\d+)""#).expect("валидний регекс NO"));
     re.captures(xml)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<i64>().ok())
@@ -1073,7 +1072,17 @@ mod tests {
 
         // c2: H(c1) = MAC(c1) — тег <H N="1"> у <C>
         let c2 = b
-            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, Some(&h1))
+            .build_receipt_xml(
+                "0",
+                &items,
+                &payments,
+                &totals,
+                ts,
+                &[],
+                None,
+                None,
+                Some(&h1),
+            )
             .unwrap();
         assert!(
             c2.contains(&format!("<H N=\"1\">{h1}</H>")),
@@ -1084,7 +1093,17 @@ mod tests {
 
         // c3: H(c2) = MAC(c2)
         let c3 = b
-            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, Some(&h2))
+            .build_receipt_xml(
+                "0",
+                &items,
+                &payments,
+                &totals,
+                ts,
+                &[],
+                None,
+                None,
+                Some(&h2),
+            )
             .unwrap();
         assert!(
             c3.contains(&format!("<H N=\"1\">{h2}</H>")),

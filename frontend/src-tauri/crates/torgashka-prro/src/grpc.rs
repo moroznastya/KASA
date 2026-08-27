@@ -190,11 +190,7 @@ impl PrroGrpcClient {
 
     /// RPC-виклик БЕЗ сліпих ретраїв (H1): фіскальний документ відправляється
     /// рівно один раз; рішення про повтор приймає fiscalize (lastChk-перевірка).
-    async fn call_once<F, Fut, T>(
-        &self,
-        method_name: &str,
-        f: F,
-    ) -> Result<T, PrroGrpcError>
+    async fn call_once<F, Fut, T>(&self, method_name: &str, f: F) -> Result<T, PrroGrpcError>
     where
         F: FnOnce(ChkIncomeServiceClient<Channel>) -> Fut,
         Fut: std::future::Future<Output = Result<tonic::Response<T>, Status>>,
@@ -396,7 +392,10 @@ mod tests {
             },
         ];
         for r in &requests {
-            assert!(!r.rro_fn_sign.is_empty(), "B3: CheckRequest без rro_fn_sign");
+            assert!(
+                !r.rro_fn_sign.is_empty(),
+                "B3: CheckRequest без rro_fn_sign"
+            );
         }
         let req_by_id = CheckRequestId {
             id: "chk-1".into(),

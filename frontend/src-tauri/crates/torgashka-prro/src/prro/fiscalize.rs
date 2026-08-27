@@ -339,7 +339,13 @@ impl FiscalizeReceiptUseCase {
 
         // 7. Надсилаємо чек (CHK)
         // B2: signed (повний підписаний XML) зберігається у черзі as-is
-        let check = make_check(xml_builder, signed.clone(), local_number, now, id_offline.clone());
+        let check = make_check(
+            xml_builder,
+            signed.clone(),
+            local_number,
+            now,
+            id_offline.clone(),
+        );
         let response = match sender.send_chk(check.clone()).await {
             Ok(r) => r,
             Err(_e) => {
@@ -347,7 +353,8 @@ impl FiscalizeReceiptUseCase {
                 // сервер міг зберегти чек, а відповідь загубилась.
                 if let Ok(last) = sender_last_chk(sender).await {
                     let last_xml = String::from_utf8_lossy(&last.data_sign);
-                    if last.status == 1 && crate::xml::extract_check_no(&last_xml) == Some(local_number)
+                    if last.status == 1
+                        && crate::xml::extract_check_no(&last_xml) == Some(local_number)
                     {
                         // Чек уже на сервері → SENT (без дубліката)
                         return Self::on_success(
@@ -440,8 +447,22 @@ impl FiscalizeReceiptUseCase {
                         )
                         .await?;
                         if !OfflineStateMachine::is_offline(repo).await? {
-                            let _ = OfflineStateMachine::enter_offline(repo, sender, xml_builder, signer, now).await;
-                            let _ = OfflineStateMachine::reserve_numbers(repo, sender, xml_builder, signer, now).await;
+                            let _ = OfflineStateMachine::enter_offline(
+                                repo,
+                                sender,
+                                xml_builder,
+                                signer,
+                                now,
+                            )
+                            .await;
+                            let _ = OfflineStateMachine::reserve_numbers(
+                                repo,
+                                sender,
+                                xml_builder,
+                                signer,
+                                now,
+                            )
+                            .await;
                         }
                         return Ok(res);
                     }
@@ -461,7 +482,7 @@ impl FiscalizeReceiptUseCase {
                 &dat_xml,
                 &mac,
                 &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
-                &id_offline, // B4
+                &id_offline,                       // B4
                 &response.id,
                 &response.id_sign,
                 open_shift.id,
@@ -482,7 +503,7 @@ impl FiscalizeReceiptUseCase {
             &dat_xml,
             &mac,
             &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
-            &id_offline, // B4
+            &id_offline,                       // B4
             open_shift.id,
             response.status,
             &error_message,

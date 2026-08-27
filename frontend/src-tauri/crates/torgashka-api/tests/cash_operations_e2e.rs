@@ -84,6 +84,15 @@ async fn cash_operations_http_roundtrip() {
     let pool = torgashka_infrastructure::db::connect_readonly_pool(2)
         .await
         .expect("pool");
+    // Тест створює власну точку продажу — ізоляція від реальних даних
+    // (CI: чиста БД без store; локально: store вже існує — ON CONFLICT нічого не ламає).
+    sqlx::query(
+        "INSERT INTO stores (id, name) VALUES ($1, 'E2E Тест Точка') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(Uuid::parse_str(STORE_ID).unwrap())
+    .execute(&pool)
+    .await
+    .expect("INSERT тестовий store");
     // Прибирання залишків попередніх запусків (тест падав у різних місцях).
     sqlx::query("DELETE FROM cash_operations WHERE comment LIKE $1")
         .bind(format!("{TEST_MARK}%"))
@@ -281,3 +290,4 @@ async fn cash_operations_http_roundtrip() {
 
     handle.abort();
 }
+

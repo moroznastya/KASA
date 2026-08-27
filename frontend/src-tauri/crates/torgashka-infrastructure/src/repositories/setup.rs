@@ -8,7 +8,7 @@
 //!   - users      (role='owner', onboarding_completed=true, is_active=true)
 //!   - stores     (перша точка)
 //!   - user_stores(owner, role='owner', is_default=true)
-//! Потім видає JWT через API-шар (torgashka-api/setup.rs) — одразу авторизує.
+//!     Потім видає JWT через API-шар (torgashka-api/setup.rs) — одразу авторизує.
 //!
 //! ## Частина 2 — окрема чиста БД кожного власника
 //! При першому setup створюється шаблонна БД `torgashka_template`

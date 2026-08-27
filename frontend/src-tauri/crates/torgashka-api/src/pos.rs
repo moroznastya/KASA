@@ -1504,7 +1504,7 @@ fn parse_cash_amount(v: &Value) -> Result<BigDecimal, PosErr> {
             &raw,
         )
     })?;
-    if amount <= BigDecimal::from(0) {
+    if amount <= 0 {
         return Err(v422(
             "greater_than",
             &["body", "amount"],

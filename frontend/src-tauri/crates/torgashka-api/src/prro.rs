@@ -624,9 +624,7 @@ pub async fn queue(
 }
 
 /// GET /api/v2/prro/fiscal/status
-pub async fn status(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiErr> {
+pub async fn status(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiErr> {
     let f = facade(&state)?;
     f.status()
         .await
@@ -767,7 +765,6 @@ pub async fn fiscalize_receipt(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,10 +784,7 @@ mod tests {
 
     #[test]
     fn api_error_shift_display_includes_code() {
-        let e = PrroApiError::from(PrroShiftError::new(
-            "Зміну вже закрито",
-            "PRRO_SHIFT_ERROR",
-        ));
+        let e = PrroApiError::from(PrroShiftError::new("Зміну вже закрито", "PRRO_SHIFT_ERROR"));
         assert_eq!(e.to_string(), "[PRRO_SHIFT_ERROR] Зміну вже закрито");
     }
 
@@ -808,7 +802,10 @@ mod tests {
 
     #[test]
     fn api_err_returns_fastapi_compatible_detail_json() {
-        let (status, Json(body)) = api_err(StatusCode::BAD_REQUEST, "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)");
+        let (status, Json(body)) = api_err(
+            StatusCode::BAD_REQUEST,
+            "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)",
+        );
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body["detail"],
@@ -828,6 +825,9 @@ mod tests {
         assert!(msg.contains("ERROR_NOT_REGISTERED_RRO"));
         assert!(msg.contains("ПРРО не зареєстровано"));
         let (_, Json(body)) = api_err(StatusCode::BAD_REQUEST, msg);
-        assert!(body["detail"].as_str().unwrap().contains("ERROR_NOT_REGISTERED_RRO"));
+        assert!(body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ERROR_NOT_REGISTERED_RRO"));
     }
 }

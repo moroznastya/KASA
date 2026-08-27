@@ -322,11 +322,15 @@ impl ReadDirectories for SqlxDirectories {
     async fn get_product(&self, id: Uuid) -> Result<ProductDto, DirectoryError> {
         let row = sqlx::query(
             "SELECT DISTINCT p.id, p.barcode, p.sku, p.title, p.description,
-                    p.price::text, p.cost_price::text, p.markup::text, p.stock::text,
+                    COALESCE(NULLIF(st.price, 0), p.price)::text AS price, p.cost_price::text,
+                    p.markup::text, COALESCE(st.quantity, p.stock)::text AS stock,
                     p.recommended_qty::text, p.uktzed, p.scan_excise, p.tax_rate::text,
                     p.tax_group, p.is_weight, p.unit, p.category_id, p.supplier_id,
                     p.created_at, p.updated_at
-             FROM products p WHERE p.id = $1",
+             FROM products p
+             LEFT JOIN stock st ON st.product_id = p.id
+                 AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid
+             WHERE p.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)

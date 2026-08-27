@@ -38,13 +38,33 @@ async fn add_document_ok() {
 #[tokio::test]
 async fn add_document_validations() {
     let repo = InMemoryPrroRepository::new();
-    let err = PrroOfflineQueue::add_document(&repo, None, None, -1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap_err();
+    let err = PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        None,
+        -1,
+        CHECK_TYPE_CHK,
+        XML,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("від'ємним"), "{err}");
-    let err = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, "   ", None, None, None)
-        .await
-        .unwrap_err();
+    let err = PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        None,
+        1,
+        CHECK_TYPE_CHK,
+        "   ",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("порожнім"), "{err}");
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 0);
 }
@@ -52,9 +72,10 @@ async fn add_document_validations() {
 #[tokio::test]
 async fn mark_sent_and_failed() {
     let repo = InMemoryPrroRepository::new();
-    let item = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
+    let item =
+        PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
     let sent = PrroOfflineQueue::mark_sent(&repo, item.id, None)
         .await
         .unwrap()
@@ -63,9 +84,19 @@ async fn mark_sent_and_failed() {
     assert!(sent.sent_at.is_some());
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 0);
 
-    let item2 = PrroOfflineQueue::add_document(&repo, None, None, 2, CHECK_TYPE_ZREPORT, XML, None, None, None)
-        .await
-        .unwrap();
+    let item2 = PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        None,
+        2,
+        CHECK_TYPE_ZREPORT,
+        XML,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let failed = PrroOfflineQueue::mark_failed(&repo, item2.id, "grpc timeout".into())
         .await
         .unwrap()
@@ -80,9 +111,10 @@ async fn mark_sent_and_failed() {
 async fn get_pending_order_pending_first_then_failed() {
     let repo = InMemoryPrroRepository::new();
     // failed (старіший за часом)
-    let f1 = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
+    let f1 =
+        PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
     PrroOfflineQueue::mark_failed(&repo, f1.id, "err".into())
         .await
         .unwrap();
@@ -129,12 +161,14 @@ fn is_expired_168h_boundary() {
 async fn get_expired_filters_only_old() {
     let repo = InMemoryPrroRepository::new();
     let now = Utc::now();
-    let old = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
-    let fresh = PrroOfflineQueue::add_document(&repo, None, None, 2, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
+    let old =
+        PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
+    let fresh =
+        PrroOfflineQueue::add_document(&repo, None, None, 2, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
     // штучно зістарити old (через тестовий сетер)
     repo.set_queue_created_at(old.id, now - Duration::hours(200));
     repo.set_queue_created_at(fresh.id, now - Duration::hours(1));
@@ -148,15 +182,45 @@ async fn get_expired_filters_only_old() {
 async fn list_by_shift_ordered_by_local_number() {
     let repo = InMemoryPrroRepository::new();
     let shift_id = uuid::Uuid::new_v4();
-    PrroOfflineQueue::add_document(&repo, None, Some(shift_id), 3, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
-    PrroOfflineQueue::add_document(&repo, None, Some(shift_id), 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
-    PrroOfflineQueue::add_document(&repo, None, None, 9, CHECK_TYPE_SERVICECHK, XML, None, None, None)
-        .await
-        .unwrap();
+    PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        Some(shift_id),
+        3,
+        CHECK_TYPE_CHK,
+        XML,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        Some(shift_id),
+        1,
+        CHECK_TYPE_CHK,
+        XML,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        None,
+        9,
+        CHECK_TYPE_SERVICECHK,
+        XML,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let items = PrroOfflineQueue::list_by_shift(&repo, shift_id)
         .await
         .unwrap();

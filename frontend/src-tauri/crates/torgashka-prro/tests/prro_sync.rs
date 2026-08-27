@@ -34,9 +34,19 @@ async fn sync_replays_pending_to_sent() {
     let sender = MockChkSender::new();
     // 2 чеки → сервер OK
     for i in 1..=2 {
-        let item = PrroOfflineQueue::add_document(&repo, None, None, i, CHECK_TYPE_CHK, XML, None, None, None)
-            .await
-            .unwrap();
+        let item = PrroOfflineQueue::add_document(
+            &repo,
+            None,
+            None,
+            i,
+            CHECK_TYPE_CHK,
+            XML,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(item.status, PrroQueueStatus::Pending);
     }
     sender.push_ok("chk-1");
@@ -93,9 +103,10 @@ async fn sync_server_rejects_marks_failed() {
 async fn sync_grpc_error_marks_failed_keeps_document() {
     let repo = InMemoryPrroRepository::new();
     let sender = MockChkSender::new();
-    let item = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
+    let item =
+        PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
     sender
         .responses
         .lock()
@@ -183,9 +194,19 @@ async fn sync_service_check_uses_local_number_0() {
     let sender = MockChkSender::new();
     // службовий чек у черзі (наприклад, T=108, local_number=0)
     let svc_xml = r#"<DAT FN="400000000000" TN="400000000000" ZN="400000000000" DI="9" V="2.1.7"><C T="108"><E N="1"></E></C><TS>20260807113000</TS></DAT>"#;
-    PrroOfflineQueue::add_document(&repo, None, None, 0, CHECK_TYPE_SERVICECHK, svc_xml, None, None, None)
-        .await
-        .unwrap();
+    PrroOfflineQueue::add_document(
+        &repo,
+        None,
+        None,
+        0,
+        CHECK_TYPE_SERVICECHK,
+        svc_xml,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     sender.push_ok("svc-ok");
 
     let mut builder = test_builder();
@@ -238,7 +259,11 @@ async fn sync_is_idempotent_check_sign_unchanged() {
     let message = builder.build_message(dat_xml, None, true).unwrap();
     let signed = MockSigner.sign(message.as_bytes()).unwrap();
     let signed_str = String::from_utf8_lossy(&signed).into_owned();
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "signer ще не викликався");
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        0,
+        "signer ще не викликався"
+    );
 
     let item = PrroOfflineQueue::add_document(
         &repo,
@@ -249,7 +274,7 @@ async fn sync_is_idempotent_check_sign_unchanged() {
         dat_xml,
         None,
         Some(signed_str.clone()), // B2: повний підписаний check_sign
-        None, // B4: id_offline
+        None,                     // B4: id_offline
     )
     .await
     .unwrap();
@@ -260,9 +285,17 @@ async fn sync_is_idempotent_check_sign_unchanged() {
         .await
         .unwrap();
     assert_eq!(res.synced, 1);
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "sync НЕ переформовує (sign 0 викликів)");
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        0,
+        "sync НЕ переформовує (sign 0 викликів)"
+    );
     let first_sent = sender.calls.lock().unwrap()[0].check_sign.clone();
-    assert_eq!(first_sent, signed_str.as_bytes(), "відправлено збережений check_sign as-is");
+    assert_eq!(
+        first_sent,
+        signed_str.as_bytes(),
+        "відправлено збережений check_sign as-is"
+    );
 
     // Обрив на сервері: документ повертається у failed
     PrroOfflineQueue::mark_failed(&repo, item.id, "net down".into())
@@ -275,7 +308,11 @@ async fn sync_is_idempotent_check_sign_unchanged() {
         .await
         .unwrap();
     assert_eq!(res2.synced, 1);
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 0, "повторна sync: sign 0 викликів");
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        0,
+        "повторна sync: sign 0 викликів"
+    );
     let second_sent = sender.calls.lock().unwrap()[1].check_sign.clone();
     assert_eq!(
         first_sent, second_sent,
@@ -295,9 +332,10 @@ async fn sync_legacy_item_formats_once_and_persists_check_sign() {
     };
 
     // Legacy-документ: check_sign = None
-    let item = PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
-        .await
-        .unwrap();
+    let item =
+        PrroOfflineQueue::add_document(&repo, None, None, 1, CHECK_TYPE_CHK, XML, None, None, None)
+            .await
+            .unwrap();
 
     // 1-ша sync: формує і зберігає
     sender.push_ok("chk-1");
@@ -305,7 +343,11 @@ async fn sync_legacy_item_formats_once_and_persists_check_sign() {
         .await
         .unwrap();
     assert_eq!(res.synced, 1);
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 1, "1-ша sync: sign 1 раз");
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        1,
+        "1-ша sync: sign 1 раз"
+    );
     let first_sent = sender.calls.lock().unwrap()[0].check_sign.clone();
 
     // check_sign зафіксовано у черзі
@@ -326,7 +368,11 @@ async fn sync_legacy_item_formats_once_and_persists_check_sign() {
         .await
         .unwrap();
     assert_eq!(res2.synced, 1);
-    assert_eq!(signer.calls.load(Ordering::SeqCst), 1, "повторна sync: sign НЕ викликається");
+    assert_eq!(
+        signer.calls.load(Ordering::SeqCst),
+        1,
+        "повторна sync: sign НЕ викликається"
+    );
     let second_sent = sender.calls.lock().unwrap()[1].check_sign.clone();
     assert_eq!(first_sent, second_sent, "check_sign ідентичний");
 }

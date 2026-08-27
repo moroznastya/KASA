@@ -4,14 +4,14 @@
 //! Валідація вхідних даних — на рівні API (torgashka-api); тут лише делегування.
 
 use torgashka_domain::{
-    CashOperationCreateInput, CashOperationDto, CashOperationsListDto,
-    MySessionsDto, PosError, PosService as PosPort, ProductRecentSalesDto, PrroShiftDto,
-    ReceiptCreateInput, ReceiptDto, ReceiptItemDetailDto, ReceiptListDto, ReceiptListQuery,
-    ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto,
-    ReceiptV1ItemDto, ReceiptV1ListDto, ReceiptV1ListQuery, ReceiptV1SearchDto, ReturnableQtyDto,
-    ShiftListDto, TransferCreateInput, TransferDto, TransferListDto, TransferUpdateInput,
-    UserSessionsDto, WorkReportDto, WriteOffCreateInput, WriteOffDto, WriteOffListDto,
-    WriteOffReasonItem, WriteOffReasonsListDto, WriteOffUpdateInput,
+    CashOperationCreateInput, CashOperationDto, CashOperationsListDto, MySessionsDto, PosError,
+    PosService as PosPort, ProductRecentSalesDto, PrroShiftDto, ReceiptCreateInput, ReceiptDto,
+    ReceiptItemDetailDto, ReceiptListDto, ReceiptListQuery, ReceiptSearchDto, ReceiptSearchQuery,
+    ReceiptStatsDto, ReceiptV1CreateInput, ReceiptV1Dto, ReceiptV1ItemDto, ReceiptV1ListDto,
+    ReceiptV1ListQuery, ReceiptV1SearchDto, ReturnableQtyDto, ShiftListDto, TransferCreateInput,
+    TransferDto, TransferListDto, TransferUpdateInput, UserSessionsDto, WorkReportDto,
+    WriteOffCreateInput, WriteOffDto, WriteOffListDto, WriteOffReasonItem, WriteOffReasonsListDto,
+    WriteOffUpdateInput,
 };
 use uuid::Uuid;
 
@@ -192,9 +192,14 @@ impl<R: PosPort> PosServiceFacade<R> {
         user_id: Uuid,
         input: &CashOperationCreateInput,
     ) -> Result<CashOperationDto, PosError> {
-        self.repo.create_cash_operation(store_id, user_id, input).await
+        self.repo
+            .create_cash_operation(store_id, user_id, input)
+            .await
     }
-    pub async fn list_cash_operations(&self, store_id: Uuid) -> Result<CashOperationsListDto, PosError> {
+    pub async fn list_cash_operations(
+        &self,
+        store_id: Uuid,
+    ) -> Result<CashOperationsListDto, PosError> {
         self.repo.list_cash_operations(store_id).await
     }
 }

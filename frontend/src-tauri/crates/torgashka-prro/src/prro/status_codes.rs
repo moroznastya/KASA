@@ -15,23 +15,91 @@ pub struct DpsStatusCode {
 
 /// Усі відомі коди статусів ДПС.
 pub const DPS_STATUS_CODES: &[DpsStatusCode] = &[
-    DpsStatusCode { code: 1, name: "OK", description_uk: "Успішно" },
-    DpsStatusCode { code: -1, name: "ERROR_VEREFY", description_uk: "Помилка перевірки даних" },
-    DpsStatusCode { code: -2, name: "ERROR_CHECK", description_uk: "Помилка перевірки чека" },
-    DpsStatusCode { code: -3, name: "ERROR_SAVE", description_uk: "Помилка збереження даних на сервері ДПС" },
-    DpsStatusCode { code: -4, name: "ERROR_UNKNOWN", description_uk: "Невідома помилка фіскального сервера" },
-    DpsStatusCode { code: -5, name: "ERROR_TYPE", description_uk: "Неправильний тип чека" },
-    DpsStatusCode { code: -6, name: "ERROR_NOT_PREV_ZREPORT", description_uk: "Не знайдено попередній Z-звіт" },
-    DpsStatusCode { code: -7, name: "ERROR_XML", description_uk: "Помилка формування XML" },
-    DpsStatusCode { code: -8, name: "ERROR_XML_DATE", description_uk: "Помилка дати у XML" },
-    DpsStatusCode { code: -9, name: "ERROR_XML_CHK", description_uk: "Помилка чека у XML" },
-    DpsStatusCode { code: -10, name: "ERROR_XML_ZREPORT", description_uk: "Помилка Z-звіту у XML" },
-    DpsStatusCode { code: -11, name: "ERROR_OFFLINE_168", description_uk: "Пристрій працює офлайн (понад 168 годин)" },
-    DpsStatusCode { code: -12, name: "ERROR_BAD_HASH_PREV", description_uk: "Невірний хеш попереднього чека" },
-    DpsStatusCode { code: -13, name: "ERROR_NOT_REGISTERED_RRO", description_uk: "ПРРО не зареєстровано" },
-    DpsStatusCode { code: -14, name: "ERROR_NOT_REGISTERED_SIGNER", description_uk: "Підписувача не зареєстровано" },
-    DpsStatusCode { code: -15, name: "ERROR_NOT_OPEN_SHIFT", description_uk: "Зміну не відкрито" },
-    DpsStatusCode { code: -16, name: "ERROR_OFFLINE_ID", description_uk: "Пристрій офлайн (не отримано ідентифікатор)" },
+    DpsStatusCode {
+        code: 1,
+        name: "OK",
+        description_uk: "Успішно",
+    },
+    DpsStatusCode {
+        code: -1,
+        name: "ERROR_VEREFY",
+        description_uk: "Помилка перевірки даних",
+    },
+    DpsStatusCode {
+        code: -2,
+        name: "ERROR_CHECK",
+        description_uk: "Помилка перевірки чека",
+    },
+    DpsStatusCode {
+        code: -3,
+        name: "ERROR_SAVE",
+        description_uk: "Помилка збереження даних на сервері ДПС",
+    },
+    DpsStatusCode {
+        code: -4,
+        name: "ERROR_UNKNOWN",
+        description_uk: "Невідома помилка фіскального сервера",
+    },
+    DpsStatusCode {
+        code: -5,
+        name: "ERROR_TYPE",
+        description_uk: "Неправильний тип чека",
+    },
+    DpsStatusCode {
+        code: -6,
+        name: "ERROR_NOT_PREV_ZREPORT",
+        description_uk: "Не знайдено попередній Z-звіт",
+    },
+    DpsStatusCode {
+        code: -7,
+        name: "ERROR_XML",
+        description_uk: "Помилка формування XML",
+    },
+    DpsStatusCode {
+        code: -8,
+        name: "ERROR_XML_DATE",
+        description_uk: "Помилка дати у XML",
+    },
+    DpsStatusCode {
+        code: -9,
+        name: "ERROR_XML_CHK",
+        description_uk: "Помилка чека у XML",
+    },
+    DpsStatusCode {
+        code: -10,
+        name: "ERROR_XML_ZREPORT",
+        description_uk: "Помилка Z-звіту у XML",
+    },
+    DpsStatusCode {
+        code: -11,
+        name: "ERROR_OFFLINE_168",
+        description_uk: "Пристрій працює офлайн (понад 168 годин)",
+    },
+    DpsStatusCode {
+        code: -12,
+        name: "ERROR_BAD_HASH_PREV",
+        description_uk: "Невірний хеш попереднього чека",
+    },
+    DpsStatusCode {
+        code: -13,
+        name: "ERROR_NOT_REGISTERED_RRO",
+        description_uk: "ПРРО не зареєстровано",
+    },
+    DpsStatusCode {
+        code: -14,
+        name: "ERROR_NOT_REGISTERED_SIGNER",
+        description_uk: "Підписувача не зареєстровано",
+    },
+    DpsStatusCode {
+        code: -15,
+        name: "ERROR_NOT_OPEN_SHIFT",
+        description_uk: "Зміну не відкрито",
+    },
+    DpsStatusCode {
+        code: -16,
+        name: "ERROR_OFFLINE_ID",
+        description_uk: "Пристрій офлайн (не отримано ідентифікатор)",
+    },
 ];
 
 /// Запис статусу за кодом.
@@ -59,10 +127,7 @@ pub fn status_description_uk(status: i32) -> Option<&'static str> {
 /// Для невідомого коду: `status=999 (STATUS_999: невідомий статус)`.
 pub fn status_error_text(status: i32) -> String {
     match dps_status(status) {
-        Some(s) => format!(
-            "status={} ({}: {})",
-            s.code, s.name, s.description_uk
-        ),
+        Some(s) => format!("status={} ({}: {})", s.code, s.name, s.description_uk),
         None => format!("status={status} (STATUS_{status}: невідомий статус)"),
     }
 }
@@ -91,7 +156,10 @@ mod tests {
     fn description_uk_known_codes() {
         assert_eq!(status_description_uk(-13), Some("ПРРО не зареєстровано"));
         assert_eq!(status_description_uk(-15), Some("Зміну не відкрито"));
-        assert_eq!(status_description_uk(-12), Some("Невірний хеш попереднього чека"));
+        assert_eq!(
+            status_description_uk(-12),
+            Some("Невірний хеш попереднього чека")
+        );
         assert_eq!(status_description_uk(1), Some("Успішно"));
     }
 

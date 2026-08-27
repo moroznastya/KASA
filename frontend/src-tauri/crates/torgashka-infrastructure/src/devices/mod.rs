@@ -454,6 +454,7 @@ fn parse_vta5_frame(frame: &[u8]) -> Option<f64> {
 
 /// Драйвер COM-ваги: відкриває порт і запускає цикл драйвера за протоколом.
 /// protocol: "cas" (за замовчуванням) | "vta2" | "vta3" | "vta5".
+#[allow(clippy::too_many_arguments)]
 fn spawn_scale(
     app: AppHandle,
     id: String,
@@ -471,8 +472,7 @@ fn spawn_scale(
         if protocol == "vta5" {
             builder = builder.parity(serialport::Parity::Even);
         }
-        let serial = match builder.open()
-        {
+        let serial = match builder.open() {
             Ok(p) => {
                 crate::embedded_pg::pg_log(
                     "INFO",
@@ -836,7 +836,7 @@ fn scale_vta3_loop(
 /// - Режим 2 (з ціною): 0x00 0x00 0x02 + 5 байт ціни BCD (неупакований,
 ///   молодший розряд першим, ціна в копійках, максимум 999.99 грн).
 /// - Режим 3 (без ціни): 0x00 0x00 0x03 + 5 нульових байт.
-/// УВАГА: Режим 3 ПЕРЕДАЄ нульову ціну у ваги — він обнуляє ціну ваг.
+///   УВАГА: Режим 3 ПЕРЕДАЄ нульову ціну у ваги — він обнуляє ціну ваг.
 fn vta5_build_request(price: Option<f64>) -> [u8; 8] {
     let mut req = [0x00u8; 8];
     match price {
@@ -904,11 +904,11 @@ fn scale_vta5_loop(
             return;
         }
         if let Some(weight) = read_vta5_response(&mut serial, &stop) {
-            if last_read.map(|lr| (weight - lr).abs() > 0.0005).unwrap_or(true) {
-                crate::embedded_pg::pg_log(
-                    "INFO",
-                    &format!("scale {id}: вага = {weight} кг"),
-                );
+            if last_read
+                .map(|lr| (weight - lr).abs() > 0.0005)
+                .unwrap_or(true)
+            {
+                crate::embedded_pg::pg_log("INFO", &format!("scale {id}: вага = {weight} кг"));
             }
             last_read = Some(weight);
             handle_weight(&app, &id, &status, &mut last_emitted, &mut pending, weight);
