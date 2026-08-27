@@ -185,6 +185,9 @@ jobs:
       - name: 🧪 Unit tests + coverage
         run: pytest tests/unit/ -v --tb=short --cov=app/application --cov-report=term
 
+      - name: 🗄️ Apply migrations (integration tests use real PostgreSQL)
+        run: alembic upgrade head
+
       - name: 🧪 Integration tests + coverage
         run: pytest tests/integration/ -v --tb=short -m integration --cov=app/application --cov-report=term --cov-report=html --cov-append
 
