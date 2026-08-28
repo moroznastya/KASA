@@ -62,9 +62,33 @@ class SyncOfflineQueueUseCase:
         if not pending:
             return {"synced": 0, "failed": 0, "skipped": 0, "total": 0, "results": []}
 
-        xml_builder = await self._context.build_xml_builder()
-        crypto = await self._context.build_crypto_signer()
-        grpc_client = await self._context.grpc_client()
+        try:
+            xml_builder = await self._context.build_xml_builder()
+            crypto = await self._context.build_crypto_signer()
+            grpc_client = await self._context.grpc_client()
+        except Exception as exc:  # noqa: BLE001 — ПРРО не налаштований/недоступний
+            # Позначаємо ВСІ pending як failed: sync не має падати 500,
+            # коли ключ КЕП/сервер ПРРО недоступний (контракт: sync → 200 + failed).
+            logger.warning("PRRO_SYNC | компоненти ПРРО недоступні: %s", exc)
+            error = str(exc)
+            for item in pending:
+                await self._offline_queue.mark_failed(item.id, error)
+            return {
+                "synced": 0,
+                "failed": len(pending),
+                "skipped": 0,
+                "total": len(pending),
+                "results": [
+                    {
+                        "id": str(item.id),
+                        "local_number": int(item.local_number),
+                        "check_type": item.check_type,
+                        "status": "failed",
+                        "error": error,
+                    }
+                    for item in pending
+                ],
+            }
 
         synced = 0
         failed = 0
