@@ -209,6 +209,9 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
+      - name: 🔧 Setup buildx (docker-container driver — потрібен для gha cache)
+        uses: docker/setup-buildx-action@v3
+
       - name: 🐳 Build backend image
         uses: docker/build-push-action@v6
         with:
