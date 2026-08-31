@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Plus, ImageOff, ShoppingCart, Scale } from 'lucide-react';
+import {X, ImageOff, ShoppingCart, Scale} from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { useDevicesStore } from '@/store/devicesStore';
 import { devicesApi } from '@/services/tauri/devices';
-import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, formatUnit } from '@/utils/format';
 

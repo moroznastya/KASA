@@ -1,17 +1,6 @@
 import api from './api';
 import { extractErrorMessage } from './prroErrors';
-import {
-  PrroSettings,
-  PrroSettingsSaveRequest,
-  PrroStatus,
-  PrroShift,
-  PrroShiftsResponse,
-  PrroQueueItem,
-  PrroQueueResponse,
-  FiscalizeResult,
-  PrroTestConnectionResult,
-  ReceiptFiscalInfo,
-} from '@/types/prro';
+import {PrroSettings, PrroSettingsSaveRequest, PrroStatus, PrroShift, PrroShiftsResponse, PrroQueueResponse, FiscalizeResult, PrroTestConnectionResult, ReceiptFiscalInfo, } from '@/types/prro';
 
 /**
  * API-клієнт для роботи з ПРРО (програмний РРО).

@@ -1,19 +1,6 @@
 import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  ArrowLeft,
-  Settings,
-  Wifi,
-  WifiOff,
-  Clock,
-  RefreshCw,
-  PlayCircle,
-  StopCircle,
-  FileCheck2,
-  AlertTriangle,
-  Loader2,
-  Receipt,
-} from 'lucide-react';
+import {ArrowLeft, Settings, Wifi, WifiOff, Clock, RefreshCw, PlayCircle, StopCircle, AlertTriangle, Loader2, Receipt, } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { usePrroStore, startPrroStatusPolling } from '@/store/prroStore';

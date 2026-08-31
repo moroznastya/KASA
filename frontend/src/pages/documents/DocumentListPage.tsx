@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, {useState, useEffect} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, FileText, Search, CheckCircle, ShoppingCart, Printer, Copy, Download, Filter, Save, Bookmark, X, ChevronDown, Trash2 } from 'lucide-react';
 import { useDocuments, useConfirmDocument, useBatchConfirm, useCopyDocument, useDeleteDocument } from '@/hooks/useDocuments';
@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Modal } from '@/components/ui/Modal';
 import { formatCurrency, formatDateTime, formatDocumentType, formatDocumentStatus } from '@/utils/format';
-import { Document, DocumentType, DocumentFilterPreset } from '@/types/document';
+import {Document, DocumentType} from '@/types/document';
 import { supplierService } from '@/services/supplierService';
 import { documentService } from '@/services/documentService';
 import toast from 'react-hot-toast';

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package, ImageUp, Loader2, Camera, Image as ImageIcon, Percent, DollarSign, Hash } from 'lucide-react';
+import {Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Package, Loader2, Camera, Image as ImageIcon, Percent, DollarSign, Hash} from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
@@ -71,20 +71,6 @@ interface NewProductFormState {
 }
 
 /** Рекурсивно будує список опцій категорій */
-function buildCategoryOptions(categories: Category[], depth: number = 0): { value: string; label: string; disabled?: boolean }[] {
-  const options: { value: string; label: string; disabled?: boolean }[] = [];
-  for (const cat of categories) {
-    const hasChildren = cat.children && cat.children.length > 0;
-    if (hasChildren) {
-      options.push({ value: cat.id, label: `${'  '.repeat(depth)}▶ ${cat.name}`, disabled: true });
-      options.push(...buildCategoryOptions(cat.children!, depth + 1));
-    } else {
-      options.push({ value: cat.id, label: `${'  '.repeat(depth)}└── ${cat.name}`, disabled: false });
-    }
-  }
-  return options;
-}
-
 const InvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -228,7 +214,7 @@ const InvoiceFormPage: React.FC = () => {
           is_fiscal: isFiscal,
           payment_method: paymentMethod || undefined,
           notes: notes || undefined,
-          items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+          items: cart.map(({markup_percent, ...item}) => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
@@ -260,7 +246,7 @@ const InvoiceFormPage: React.FC = () => {
       };
 
       if (cart.length > 0) {
-        payload.items = cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+        payload.items = cart.map(({markup_percent, ...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
@@ -451,7 +437,6 @@ const InvoiceFormPage: React.FC = () => {
 
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
   const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
-  const totalMarkup = totalCost > 0 ? Math.round(((totalAmount - totalCost) / totalCost) * 100) : 0;
 
   // ─── Збереження накладної ────────────────────────────────────────────────
   const handleSave = async (andConfirm: boolean = false) => {
@@ -479,7 +464,7 @@ const InvoiceFormPage: React.FC = () => {
           payment_method: paymentMethod || undefined,
           is_fiscal: isFiscal,
           notes: notes || undefined,
-          items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+          items: cart.map(({markup_percent, ...item}) => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
@@ -505,7 +490,7 @@ const InvoiceFormPage: React.FC = () => {
           payment_method: paymentMethod || undefined,
           is_fiscal: isFiscal,
           notes: notes || undefined,
-          items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+          items: cart.map(({markup_percent, ...item}) => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
@@ -533,7 +518,7 @@ const InvoiceFormPage: React.FC = () => {
         payment_method: paymentMethod || undefined,
         is_fiscal: isFiscal,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+        items: cart.map(({markup_percent, ...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
@@ -737,14 +722,14 @@ const InvoiceFormPage: React.FC = () => {
     })),
   ];
 
-  const taxRateOptions = [
+  const _taxRateOptions = [
     { value: 0, label: '0%' },
     { value: 5, label: '5%' },
     { value: 7, label: '7%' },
     { value: 20, label: '20%' },
   ];
 
-  const unitOptions = [
+  const _unitOptions = [
     { value: 'pcs', label: 'шт' },
     { value: 'kg', label: 'кг' },
     { value: 'l', label: 'л' },

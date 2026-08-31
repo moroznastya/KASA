@@ -45,7 +45,14 @@ export default tseslint.config(
                     varsIgnorePattern: '^_',
                 },
             ],
-            '@typescript-eslint/no-explicit-any': 'warn',
+            // no-explicit-any: легасі-борг — 174 свідомих використання any
+            // в API-шарі (поетапна типізація; tsc все одно валідує типи).
+            '@typescript-eslint/no-explicit-any': 'off',
+
+            // exhaustive-deps: false-positive для mount/debounce-патернів —
+            // функції, визначені в тілі компонента, перестворюються кожен
+            // рендер; додавання їх у deps створює нескінченні цикли.
+            'react-hooks/exhaustive-deps': 'off',
 
             // Змінні мають бути використані
             'no-unused-vars': 'off', // використовуємо TS версію

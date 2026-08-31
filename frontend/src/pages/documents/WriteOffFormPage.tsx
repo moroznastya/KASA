@@ -234,7 +234,7 @@ const WriteOffFormPage: React.FC = () => {
             reason,
             write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
             notes: notes || undefined,
-            items: cart.map(({ product_title, product_barcode, ...item }) => ({
+            items: cart.map(({...item}) => ({
               product_id: item.product_id,
               quantity: item.quantity,
               cost_price: item.cost_price,
@@ -262,7 +262,7 @@ const WriteOffFormPage: React.FC = () => {
         reason,
         write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        items: cart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           cost_price: item.cost_price,

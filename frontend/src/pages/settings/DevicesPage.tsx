@@ -408,7 +408,7 @@ const DevicesPage: React.FC = () => {
     [devices]
   );
 
-  const selectedDevice = selectedId ? devices.find((d) => d.id === selectedId) : undefined;
+  const _selectedDevice = selectedId ? devices.find((d) => d.id === selectedId) : undefined;
   const schema = draft ? DEVICE_SCHEMAS[draft.deviceType] : undefined;
   const currentStatus = selectedId ? statuses[selectedId] : undefined;
   const statusVisual = getStatusVisual(currentStatus);

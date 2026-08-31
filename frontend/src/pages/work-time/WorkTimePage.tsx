@@ -1,16 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Clock, User, DollarSign, Calendar } from 'lucide-react';
+import {Clock, User, Calendar} from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
-import {
-  workSessionService,
-  WorkSession,
-  WorkSessionReport,
-  MySessionsResponse,
-  UserSessionsResponse,
-} from '@/services/workSessionService';
+import {workSessionService, WorkSessionReport, MySessionsResponse, UserSessionsResponse, } from '@/services/workSessionService';
 import { formatCurrency } from '@/utils/format';
-import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Modal } from '@/components/ui/Modal';

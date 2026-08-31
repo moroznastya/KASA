@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useCallback, useState } from 'react';
-import { useTauri, isTauri } from './useTauri';
+import {useTauri} from './useTauri';
 
 interface SyncState {
   syncing: boolean;
@@ -22,8 +22,10 @@ interface SyncState {
 /**
  * Хук для роботи з офлайн-синхронізацією
  */
+// react-refresh: файл свідомо експортує хук + компонент (SyncStatus нижче)
+// eslint-disable-next-line react-refresh/only-export-components
 export function useOfflineSync() {
-  const { isTauri: inTauri, syncReceipts, refreshOnlineStatus } = useTauri();
+  const {isTauri: inTauri, syncReceipts} = useTauri();
   const [state, setState] = useState<SyncState>({
     syncing: false,
     lastSync: null,

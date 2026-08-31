@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from 'react-hot-toast';
-import { PRICE_TAG_FIELD_OPTIONS, PRICE_TAG_LABEL_MAP } from '@/types/printTemplate';
+import {PRICE_TAG_FIELD_OPTIONS} from '@/types/printTemplate';
 import {
   Building2,
   ShoppingCart,

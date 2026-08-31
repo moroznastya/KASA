@@ -1,5 +1,5 @@
 import api from './api';
-import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate, WriteOffCreate, BatchConfirmRequest } from '@/types/document';
+import {Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate, WriteOffCreate} from '@/types/document';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 /** Отримує правильний ендпоінт для типу документа */

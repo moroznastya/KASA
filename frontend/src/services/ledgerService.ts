@@ -1,5 +1,5 @@
 import api from './api';
-import { SupplierLedgerEntry, BalanceResponse, PaymentCreate, Payment, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
+import {SupplierLedgerEntry, BalanceResponse, PaymentCreate, InvoiceInfo, InvoicePaymentInfo} from '@/types/ledger';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 // ═════════════════════════════════════════════════════════════════════════════

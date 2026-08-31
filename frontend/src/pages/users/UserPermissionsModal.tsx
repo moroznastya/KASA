@@ -1,24 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Shield,
-  Loader2,
-  Check,
-  X,
-  Package,
-  Tags,
-  Truck,
-  FileText,
-  ShoppingCart,
-  Users,
-  BookOpen,
-  BarChart3,
-  UserCog,
-  ArrowRightLeft,
-  Trash2,
-  Undo2,
-} from 'lucide-react';
+import {Shield, Loader2, Check, Package, Tags, Truck, FileText, ShoppingCart, Users, BookOpen, BarChart3, UserCog, ArrowRightLeft, Trash2, Undo2, } from 'lucide-react';
 import { userService } from '@/services/userService';
-import { User, PermissionGroup, PermissionItem } from '@/types/auth';
+import {User, PermissionGroup} from '@/types/auth';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import toast from 'react-hot-toast';

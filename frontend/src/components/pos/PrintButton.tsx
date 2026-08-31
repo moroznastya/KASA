@@ -112,7 +112,7 @@ function receiptToRenderData(receipt: Receipt): Record<string, string> {
 }
 
 /** Друк HTML у новому вікні (для Tauri та браузера) */
-function printViaNewWindow(html: string, printerName?: string): Promise<void> {
+function printViaNewWindow(html: string, _?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     try {
       const printWindow = window.open('', '_blank');

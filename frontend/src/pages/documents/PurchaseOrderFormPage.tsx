@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Calendar, Package } from 'lucide-react';
+import {Trash2, Search, ArrowLeft, Save, CheckCircle, Calendar, Package} from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
@@ -128,7 +128,7 @@ const PurchaseOrderFormPage: React.FC = () => {
         expected_date: expectedDate ? new Date(expectedDate).toISOString() : undefined,
         is_fiscal: isFiscal,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        items: cart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,

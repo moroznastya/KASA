@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle } from 'lucide-react';
+import {Search, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { debtorService, Debtor } from '@/services/debtorService';
@@ -381,7 +381,7 @@ const PosPage: React.FC = () => {
     onBarcodeFound: (product: any) => handleBarcodeFoundRef.current(product),
   });
   const [debtorSearchResults, setDebtorSearchResults] = useState<Debtor[]>([]);
-  const [isSearchingDebtorsUnified, setIsSearchingDebtorsUnified] = useState(false);
+  const [, setIsSearchingDebtorsUnified] = useState(false);
 
 
   useEffect(() => {
@@ -1309,7 +1309,7 @@ const PosPage: React.FC = () => {
   }, []);
 
   // Додавання товарів повернення з модалок до кошика
-  const handleAddReturnItemsToCart = useCallback((items: ReturnCartItem[]) => {
+  const _handleAddReturnItemsToCart = useCallback((items: ReturnCartItem[]) => {
     setCart(prev => {
       const existing = [...prev];
       for (const newItem of items) {
@@ -1910,7 +1910,7 @@ const PosPage: React.FC = () => {
                               }));
                             }
                           }}
-                          onBlur={(e) => {
+                          onBlur={() => {
                             const val = editingQuantity[item.product_id];
                             if (val === undefined || val === '') {
                               // Якщо поле порожнє — залишаємо поточну кількість

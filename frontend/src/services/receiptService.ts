@@ -1,12 +1,5 @@
 import api from './api';
-import {
-  Receipt,
-  ReceiptCreate,
-  ReceiptSearchResult,
-  ReceiptItem,
-  ProductRecentSalesResponse,
-  ProductRecentSalesListResponse,
-} from '@/types/receipt';
+import {Receipt, ReceiptCreate, ReceiptSearchResult, ReceiptItem, ProductRecentSalesListResponse, } from '@/types/receipt';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 // ═════════════════════════════════════════════════════════════════════════════

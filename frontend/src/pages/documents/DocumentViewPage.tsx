@@ -1,14 +1,14 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, {useMemo, useState} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar, Edit, Printer, ArrowUp, ArrowDown } from 'lucide-react';
+import {ArrowLeft, CheckCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Edit, Printer, ArrowUp, ArrowDown} from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
-import { formatCurrency, formatDateTime, formatDocumentStatus, formatDocumentType } from '@/utils/format';
+import {formatCurrency, formatDateTime, formatDocumentStatus} from '@/utils/format';
 import PrintFromInvoiceModal from '@/components/printing/PrintFromInvoiceModal';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';

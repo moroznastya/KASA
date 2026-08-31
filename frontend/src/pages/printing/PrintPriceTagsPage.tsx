@@ -2,7 +2,6 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Printer, ArrowLeft, Eye, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { Spinner } from '@/components/ui/Spinner';
 import { printService } from '@/services/printService';
 import { isTauri } from '@/hooks/useTauri';
 import PrintProductSelector from '@/components/printing/PrintProductSelector';

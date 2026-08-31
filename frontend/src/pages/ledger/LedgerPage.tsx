@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { formatCurrency, formatDateTime } from '@/utils/format';
-import { SupplierLedgerEntry, Payment, PaymentMethod, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
+import {SupplierLedgerEntry, PaymentMethod, InvoicePaymentInfo} from '@/types/ledger';
 import toast from 'react-hot-toast';
 
 const OPERATION_TYPE_LABELS: Record<string, string> = {
@@ -46,7 +46,7 @@ const LedgerPage: React.FC = () => {
     notes: '',
   });
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
-  const [invoicePaymentInfo, setInvoicePaymentInfo] = useState<InvoicePaymentInfo | null>(null);
+  const [, setInvoicePaymentInfo] = useState<InvoicePaymentInfo | null>(null);
 
   const { data: balance } = useQuery({
     queryKey: ['supplier-balance', selectedSupplierId],

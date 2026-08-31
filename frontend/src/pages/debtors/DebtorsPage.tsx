@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, ArrowLeft, CheckCircle, Banknote } from 'lucide-react';
+import {Users, Search, Loader2, X, UserPlus, Phone, DollarSign, CreditCard, CheckCircle, Banknote} from 'lucide-react';
 import { debtorService, Debtor, DebtorPayment } from '@/services/debtorService';
 import { Receipt } from '@/types/receipt';
 import { Button } from '@/components/ui/Button';

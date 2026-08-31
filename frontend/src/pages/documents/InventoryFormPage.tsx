@@ -104,7 +104,7 @@ const InventoryFormPage: React.FC = () => {
   const [modalPrice, setModalPrice] = useState(0);
 
   // ─── Завантаження даних для редагування ─────────────────────
-  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
+  const [, setIsLoadingEdit] = useState(false);
   const [editLoaded, setEditLoaded] = useState(false);
 
   React.useEffect(() => {
@@ -147,7 +147,7 @@ const InventoryFormPage: React.FC = () => {
         }
         
         setEditLoaded(true);
-      } catch (e: any) {
+      } catch {
         toast.error('Помилка завантаження інвентаризації');
       } finally {
         setIsLoadingEdit(false);
@@ -348,7 +348,7 @@ const InventoryFormPage: React.FC = () => {
           location: location.trim(),
           inventory_date: new Date(inventoryDate).toISOString(),
           notes: notes || undefined,
-          items: cart.map(({ product_title, product_barcode, is_weight, total_cost, total_selling, deviation_sum, ...item }) => ({
+          items: cart.map(({...item}) => ({
             product_id: item.product_id,
             actual_quantity: item.actual_quantity,
             accounting_quantity: item.accounting_quantity,
@@ -370,7 +370,7 @@ const InventoryFormPage: React.FC = () => {
           inventory_date: new Date(inventoryDate).toISOString(),
           notes: notes || undefined,
           items: cart.map(
-            ({ product_title, product_barcode, is_weight, total_cost, total_selling, deviation_sum, ...item }) => ({
+            ({...item}) => ({
               product_id: item.product_id,
               actual_quantity: item.actual_quantity,
               accounting_quantity: item.accounting_quantity,
