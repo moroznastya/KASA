@@ -7,28 +7,28 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Boolean, Enum, Numeric, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import JSON, Boolean, Enum, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy import JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
 if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.receipt import Receipt
     from app.infrastructure.persistence.models.work_session import WorkSession
 
 
-class UserRole(str, PyEnum):
+class UserRole(StrEnum):
     """Ролі користувачів системи."""
     ADMIN = "admin"
     CASHIER = "cashier"
 
 
 class User(Base):
-    """Користувач системи Kasa."""
+    """Користувач системи Torgashka."""
 
     __tablename__ = "users"
 

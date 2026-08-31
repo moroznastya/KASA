@@ -1,12 +1,5 @@
 import api from './api';
-import {
-  Receipt,
-  ReceiptCreate,
-  ReceiptSearchResult,
-  ReceiptItem,
-  ProductRecentSalesResponse,
-  ProductRecentSalesListResponse,
-} from '@/types/receipt';
+import {Receipt, ReceiptCreate, ReceiptSearchResult, ReceiptItem, ProductRecentSalesListResponse, } from '@/types/receipt';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -29,9 +22,9 @@ import { PaginatedResponse, SearchParams } from '@/types/api';
 // ═════════════════════════════════════════════════════════════════════════════
 
 // API_ROOT: у DEV лишається відносний шлях (dev-проксі Vite),
-// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://localhost:8000,
+// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://127.0.0.1:8000,
 // щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
-const API_ROOT = import.meta.env.DEV ? '' : 'http://localhost:8000';
+const API_ROOT = import.meta.env.DEV ? '' : 'http://127.0.0.1:8000';
 // Ключ об'єкта API_ROOT НЕ мініфікується esbuild — літерал лишається
 // в бандлі, щоб перевірка grep -c 'API_ROOT' по бінарнику давала > 0.
 const V2 = { baseURL: `${API_ROOT}/api/v2`, API_ROOT } as const;
@@ -64,7 +57,8 @@ export interface SearchReceiptsResponse {
 /** Мапінг v2 ReceiptItemResponse → фронтовий ReceiptItem */
 function mapReceiptItem(raw: {
   product_id: string;
-  name: string;
+  name?: string | null;
+  product_name?: string | null;
   quantity: number;
   price: number;
   tax_rate?: number;
@@ -73,7 +67,7 @@ function mapReceiptItem(raw: {
   return {
     id: raw.product_id,
     product_id: raw.product_id,
-    product_name: raw.name || '',
+    product_name: raw.name || raw.product_name || '',
     product_barcode: null,
     quantity: raw.quantity,
     price: String(raw.price ?? 0),
@@ -94,6 +88,7 @@ function mapCreatedReceipt(raw: {
   cash_amount?: number | null;
   card_amount?: number | null;
   change_amount?: number | null;
+  cashier_name?: string | null;
   is_fiscal?: boolean;
   fiscal_status?: string | null;
   fiscal_number?: string | null;
@@ -132,6 +127,7 @@ function mapCreatedReceipt(raw: {
     card_amount: String(raw.card_amount ?? 0),
     change_amount: String(raw.change_amount ?? 0),
     cashier_id: data.cashier_id ?? '',
+    cashier_name: data.cashier_name ?? raw.cashier_name ?? '',
     created_by: data.cashier_id ?? '',
     created_at: raw.created_at ?? new Date().toISOString(),
     // ── Фіскалізація ──
@@ -182,15 +178,19 @@ export const receiptService = {
    * ⚠️ Боргові чеки (debtor_id/is_debt/debt_payment) та повернення за
    *    оригінальним чеком (original_receipt_id) → v1 (v2 не підтримує).
    */
-  async createReceipt(data: ReceiptCreate): Promise<Receipt> {
+  async createReceipt(data: ReceiptCreate, storeId?: string): Promise<Receipt> {
     const needsV1 =
       data.is_debt ||
       Boolean(data.debtor_id) ||
       Boolean(data.debt_payment) ||
       Boolean(data.original_receipt_id);
 
+    // Мультиточковість (Етап 5): storeId з офлайн-черги — чек іде у свою точку
+    // (X-Store-Id per-request перекриває поточну активну точку в інтерцепторі).
+    const storeHeaders = storeId ? { 'X-Store-Id': storeId } : undefined;
+
     if (needsV1) {
-      const response = await api.post<Receipt>('/receipts', data);
+      const response = await api.post<Receipt>('/receipts', data, { headers: storeHeaders });
       return response.data;
     }
 
@@ -236,7 +236,7 @@ export const receiptService = {
     const response = await api.post<Parameters<typeof mapCreatedReceipt>[0]>(
       endpoint,
       payload,
-      V2,
+      storeHeaders ? { ...V2, headers: storeHeaders } : V2,
     );
     return mapCreatedReceipt(response.data, data);
   },
@@ -270,8 +270,8 @@ export const receiptService = {
     const response = await api.get<
       Array<{
         product_id: string;
-        name: string;
-        product_name?: string;
+        name?: string | null;
+        product_name?: string | null;
         product_barcode?: string | null;
         quantity: number;
         price: number;
@@ -283,7 +283,8 @@ export const receiptService = {
     return response.data.map((item) => ({
       ...mapReceiptItem({
         product_id: item.product_id,
-        name: item.name || item.product_name || '',
+        name: item.name,
+        product_name: item.product_name,
         quantity: item.quantity,
         price: item.price,
         tax_rate: item.tax_rate,

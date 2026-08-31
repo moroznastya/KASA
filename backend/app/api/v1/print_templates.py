@@ -19,22 +19,22 @@ API роутер для управління шаблонами чеків др�
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, update, func
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.infrastructure.persistence.models.user import User
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.services.print_font_service import PrintFontService
+from app.infrastructure.services.print_template_service import PrintTemplateService
 from app.schemas.print_template import (
     PrintTemplateCreate,
-    PrintTemplateUpdate,
     PrintTemplateResponse,
+    PrintTemplateUpdate,
     TemplateRenderRequest,
     TemplateRenderResponse,
 )
-from app.domain.services.auth_service import AuthService
-from app.infrastructure.services.print_template_service import PrintTemplateService
-from app.infrastructure.services.print_font_service import PrintFontService
 
 router = APIRouter(
     prefix="/print-templates",
@@ -57,12 +57,12 @@ async def list_active_templates(
     Доступно будь-якому аутентифікованому користувачу.
     """
     offset = (page - 1) * size
-    stmt = select(PrintTemplate).where(PrintTemplate.is_active == True).order_by(PrintTemplate.type, PrintTemplate.name).offset(offset).limit(size)
+    stmt = select(PrintTemplate).where(PrintTemplate.is_active).order_by(PrintTemplate.type, PrintTemplate.name).offset(offset).limit(size)
     result = await session.execute(stmt)
     templates = result.scalars().all()
 
     # total count
-    count_stmt = select(func.count(PrintTemplate.id)).where(PrintTemplate.is_active == True)
+    count_stmt = select(func.count(PrintTemplate.id)).where(PrintTemplate.is_active)
     count_result = await session.execute(count_stmt)
     total = count_result.scalar()
 
@@ -159,14 +159,14 @@ async def create_template(
     Якщо is_default == True, то з інших шаблонів того самого типу
     прапорець is_default буде знято.
     """
-    service = PrintTemplateService(session)
+    PrintTemplateService(session)
 
     # Якщо новий шаблон має бути основним — знімаємо is_default з інших
     if data.is_default:
         await session.execute(
             update(PrintTemplate)
             .where(PrintTemplate.type == data.type)
-            .where(PrintTemplate.is_default == True)
+            .where(PrintTemplate.is_default)
             .values(is_default=False)
         )
 
@@ -215,7 +215,7 @@ async def update_template(
         await session.execute(
             update(PrintTemplate)
             .where(PrintTemplate.type == template.type)
-            .where(PrintTemplate.is_default == True)
+            .where(PrintTemplate.is_default)
             .where(PrintTemplate.id != template_id)
             .values(is_default=False)
         )
@@ -294,7 +294,7 @@ async def render_template(
     Замінює всі {{variable}} у вмісті шаблону на відповідні значення.
     Повертає готовий HTML-рядок.
 
-    Тіло запиту: { "data": { "shop_name": "Kasa", "total": "100.00", ... } }
+    Тіло запиту: { "data": { "shop_name": "Torgashka", "total": "100.00", ... } }
     """
     result = await session.execute(
         select(PrintTemplate).where(PrintTemplate.id == template_id)

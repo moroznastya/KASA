@@ -1,7 +1,8 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/store/authStore';
+import { useStoreStore } from '@/store/storeStore';
 
-const API_BASE_URL = import.meta.env.DEV ? '/api/v1' : (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1');
+const API_BASE_URL = import.meta.env.DEV ? '/api/v1' : (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1');
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -13,23 +14,32 @@ api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const token = useAuthStore.getState().accessToken;
     // ═══════════════════════════════════════════════════════════════
-    // ТИМЧАСОВЕ ЛОГУВАННЯ — прибрати після діагностики 401
-    // ═══════════════════════════════════════════════════════════════
-    console.log(
-      '[API] Request:',
-      config.method?.toUpperCase(),
-      config.url,
-      'HasToken:',
-      !!token,
-      'Token10:',
-      token ? token.substring(0, 10) + '...' + token.slice(-10) : 'N/A',
-      'ContentType:',
-      config.headers['Content-Type'] || 'N/A',
-    );
-    // ═══════════════════════════════════════════════════════════════
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+
+    // ── Мультиточковість (Етап 4): X-Store-Id на бізнес-запитах ──
+    // Публічні шляхи (/auth/*, /health) і управління точками (/stores,
+    // /user-stores) НЕ потребують X-Store-Id (store_context.rs: is_public_path,
+    // is_store_management_path). Решта — обов'язковий заголовок: без нього 400.
+    const reqUrl = config.url || '';
+    const isPublicPath =
+      reqUrl.startsWith('/auth/') || reqUrl === '/health';
+    const isStoreMgmtPath =
+      reqUrl === '/stores' ||
+      reqUrl.startsWith('/stores/') ||
+      reqUrl === '/user-stores';
+    if (!isPublicPath && !isStoreMgmtPath) {
+      // Per-request X-Store-Id (синхронізація офлайн-чеків — кожен чек зі
+      // СВОЄЮ точкою з черги) має пріоритет над поточною активною точкою.
+      if (!config.headers['X-Store-Id']) {
+        const storeId = useStoreStore.getState().activeStoreId;
+        if (storeId) {
+          config.headers['X-Store-Id'] = storeId;
+        }
+      }
+    }
+
     // Якщо дані — FormData, не встановлюємо Content-Type (axios встановить multipart/form-data автоматично)
     if (!(config.data instanceof FormData)) {
       config.headers['Content-Type'] = 'application/json';
@@ -65,29 +75,6 @@ api.interceptors.response.use(
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
     if (error.response?.status === 401 && !originalRequest._retry) {
-      // ═══════════════════════════════════════════════════════════════
-      // ТИМЧАСОВЕ ЛОГУВАННЯ 401 
-      // ═══════════════════════════════════════════════════════════════
-      const failedToken = useAuthStore.getState().accessToken;
-      let tokenExpInfo = 'N/A';
-      if (failedToken) {
-        try {
-          const p = JSON.parse(atob(failedToken.split('.')[1]));
-          tokenExpInfo = `exp=${new Date(p.exp*1000).toLocaleString()} iat=${new Date(p.iat*1000).toLocaleString()} role=${p.role}`;
-        } catch(e) { tokenExpInfo = `parse error: ${e}`; }
-      }
-      console.log(
-        '[API] 401 отримано для:',
-        originalRequest.url,
-        'Method:',
-        originalRequest.method?.toUpperCase(),
-        'RefreshToken:',
-        !!useAuthStore.getState().refreshToken,
-        'TokenInfo:',
-        tokenExpInfo,
-        'ResponseHeaders:',
-        error.response?.headers,
-      );
       // ═══════════════════════════════════════════════════════════════
 
       if (isRefreshing) {

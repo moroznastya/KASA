@@ -13,8 +13,6 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
-
 from app.api.v1.users import _close_active_work_sessions
 from app.api.v1.work_sessions import (
     MAX_SESSION_HOURS,

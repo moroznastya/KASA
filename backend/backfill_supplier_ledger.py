@@ -1,5 +1,5 @@
 """
-Бекфілл журналу взаєморозрахунків (supplier_ledger) для Kasa POS.
+Бекфілл журналу взаєморозрахунків (supplier_ledger) для Torgashka POS.
 
 Що робить:
   1. Для кожної confirmed-накладної (invoices.status='confirmed') перевіряє,

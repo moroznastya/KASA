@@ -1,11 +1,10 @@
 """Unit-тести серіалізації RedisCacheService (Pydantic/dataclass/UUID/Decimal/datetime)."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-import pytest
-from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 from app.infrastructure.cache.redis_cache import RedisCacheService

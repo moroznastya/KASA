@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
+import {Trash2, Search, ArrowLeft, Save, CheckCircle} from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
@@ -131,7 +131,7 @@ const TransferFormPage: React.FC = () => {
         from_location: fromLocation,
         to_location: toLocation,
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        items: cart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           cost_price: item.cost_price,

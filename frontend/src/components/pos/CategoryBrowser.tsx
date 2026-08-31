@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Package, Layers, Eye, EyeOff, Settings2 } from 'lucide-react';
+import {ChevronDown, ChevronRight, Package, Layers, EyeOff, Settings2} from 'lucide-react';
 import { useCategoryTree } from '@/hooks/useCategories';
 import { productService } from '@/services/productService';
 import { formatCurrency, formatUnit } from '@/utils/format';

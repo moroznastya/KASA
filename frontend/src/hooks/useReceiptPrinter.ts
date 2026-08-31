@@ -77,7 +77,6 @@ export function receiptToRenderData(
   const name = shopInfo?.shop_name || '';
   const address = shopInfo?.shop_address || '';
   const taxId = shopInfo?.tax_id || '';
-  const isReturn = receipt.receipt_type === 'return';
 
   // ── Покращене вирівнювання: CSS Grid для кожного рядка ──
   const itemsHtml = receipt.items
@@ -472,7 +471,7 @@ function printViaBrowser(html: string): void {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Друк — Kasa POS</title>
+  <title>Друк — Torgashka</title>
   <style>
     ${BROWSER_PRINT_STYLES}
     /* Друк на всю ширину: body точно 58mm */

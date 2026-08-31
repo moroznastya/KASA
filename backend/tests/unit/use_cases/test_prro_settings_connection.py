@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.infrastructure.services.prro import prro_pb2
 from app.application.use_cases.prro.prro_settings_use_case import (
     PrroSettingsUseCase,
 )
+from app.infrastructure.services.prro import prro_pb2
 from app.infrastructure.services.prro.crypto_signer import PrroCryptoError
 from app.infrastructure.services.prro.xml_builder import SERVICE_PING
 

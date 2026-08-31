@@ -11,11 +11,11 @@ import logging
 from typing import Optional
 
 from app.application.dto.prro_dto import PrroQueueItemDTO, PrroStatusDTO
+from app.application.use_cases.prro.context import PrroContextFactory
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
-from app.application.use_cases.prro.context import PrroContextFactory
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class PrroStatusUseCase:
             dto.name = getattr(info_resp, "name", None) or None
             dto.addr = getattr(info_resp, "addr", None) or None
             dto.fn = getattr(info_resp, "fn", None) or dto.fn
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("PRRO_STATUS | сервер недоступний: %s", exc)
 
         return dto

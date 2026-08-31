@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
 
 /**
  * Хук для збереження стану сторінки в sessionStorage.
@@ -14,7 +13,6 @@ export function usePageState<T extends Record<string, any>>(
   keyPrefix: string,
   initialState: T
 ): [T, (newState: Partial<T> | ((prev: T) => Partial<T>)) => void] {
-  const location = useLocation();
   const storageKey = `page_state_${keyPrefix}`;
 
   // Ініціалізація стану: спочатку з sessionStorage, потім initialState

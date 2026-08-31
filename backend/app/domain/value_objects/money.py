@@ -8,8 +8,7 @@ Value Object: Money (Гроші).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Union
+from decimal import ROUND_HALF_UP, Decimal
 
 
 @dataclass(frozen=True)
@@ -55,12 +54,12 @@ class Money:
             raise ValueError("Resulting money amount cannot be negative")
         return Money(result, self.currency)
 
-    def __mul__(self, factor: Union[int, float, Decimal]) -> Money:
+    def __mul__(self, factor: int | float | Decimal) -> Money:
         factor = Decimal(str(factor)) if not isinstance(factor, Decimal) else factor
         result = (self.amount * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return Money(result, self.currency)
 
-    def __truediv__(self, divisor: Union[int, float, Decimal]) -> Money:
+    def __truediv__(self, divisor: int | float | Decimal) -> Money:
         divisor = Decimal(str(divisor)) if not isinstance(divisor, Decimal) else divisor
         if divisor == 0:
             raise ZeroDivisionError("Cannot divide Money by zero")

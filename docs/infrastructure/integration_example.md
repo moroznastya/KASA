@@ -323,9 +323,9 @@ async def lifespan(app: FastAPI):
     service_registry.set_status("stock_module", "active")
     service_registry.set_status("ledger_module", "active")
     
-    print(f"🚀 Kasa POS запущено. Зареєстровано {len(service_registry.list_services())} сервісів")
+    print(f"🚀 Torgashka запущено. Зареєстровано {len(service_registry.list_services())} сервісів")
     yield
-    print("👋 Kasa POS завершує роботу.")
+    print("👋 Torgashka завершує роботу.")
 ```
 
 ---

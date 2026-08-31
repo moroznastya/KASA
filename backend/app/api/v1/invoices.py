@@ -16,41 +16,38 @@ API роутер для роботи з прибутковими накладн�
 ⚠️ DEPRECATED: цей v1-роутер залишено для зворотної сумісності — використовуйте /api/v2/invoices/*.
 """
 
-import math
 import logging
-from uuid import UUID
+import math
+from datetime import UTC, datetime
 from decimal import Decimal
-from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.v1.print import _get_fields_from_settings
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
+from app.domain.services.document_service import DocumentService, generate_invoice_number
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.infrastructure.persistence.models.product import Product
-from app.domain.services.document_service import generate_invoice_number
-from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.print_template import PrintTemplate
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.supplier_ledger import LedgerOperationType, SupplierLedger
+from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
 from app.schemas.invoice import (
-    InvoiceCreate,
-    InvoiceUpdate,
-    InvoiceResponse,
-    InvoiceItemResponse,
     InvoiceConfirmRequest,
+    InvoiceCreate,
     InvoicePaymentInfo,
+    InvoiceResponse,
+    InvoiceUpdate,
 )
 from app.schemas.print import (
     InvoicePrintRequest,
     InvoicePrintResponse,
     PriceChangeItem,
 )
-from app.domain.services.auth_service import AuthService
-from app.domain.services.document_service import DocumentService
-from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger, LedgerOperationType
-from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
-from app.api.v1.print import _get_fields_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +186,7 @@ async def create_invoice(
             select(Product.price).where(Product.id == item_data.product_id)
         )
         current_product_price = prod_result.scalar_one_or_none()
-        
+
         item = InvoiceItem(
             invoice_id=invoice.id,
             product_id=item_data.product_id,
@@ -267,7 +264,7 @@ async def update_invoice(
                 select(Product.price).where(Product.id == item_data.product_id)
             )
             current_product_price = prod_result.scalar_one_or_none()
-            
+
             item = InvoiceItem(
                 invoice_id=invoice.id,
                 product_id=item_data.product_id,
@@ -334,7 +331,7 @@ async def get_invoice_payment_info(
     """
     Повертає інформацію про оплату накладної:
     - total_amount: загальна сума накладної
-    - paid_amount: скільки вже сплачено/компенсовано (сума payment + return записів 
+    - paid_amount: скільки вже сплачено/компенсовано (сума payment + return записів
                    у ledger з цим document_id)
     - remaining: залишок до сплати
 
@@ -370,7 +367,7 @@ async def get_invoice_payment_info(
         )
     )
     ledger_rows = ledger_result.all()
-    
+
     # PAYMENT та RETURN записи мають від'ємну суму (зменшують борг),
     # тому беремо абсолютне значення
     paid_amount = sum(abs(Decimal(str(row[0]))) for row in ledger_rows)
@@ -524,7 +521,7 @@ async def render_invoice_print_items(
     products_dicts: list[dict] = []
     price_changes: list[dict] = []
     changed_count = 0
-    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+    now_str = datetime.now(UTC).strftime("%d.%m.%Y")
 
     for item in invoice.items:
         product = item.product
@@ -625,7 +622,7 @@ async def render_invoice_print_items(
             settings,
         )
         # Обчислюємо кількість сторінок
-        cols, rows, per_page = PriceTagPrintService._calc_grid(
+        _cols, _rows, per_page = PriceTagPrintService._calc_grid(
             data.width_mm,
             data.height_mm,
             data.gap_mm,

@@ -1,5 +1,5 @@
 """
-Головний файл FastAPI застосунку Kasa POS.
+Головний файл FastAPI застосунку Torgashka POS.
 
 Підключає:
   - Всі API роутери v1 та v2
@@ -12,31 +12,30 @@
   - Graceful shutdown для Redis cache
 """
 
+# ─── Інфраструктурні компоненти ─────────────────────────────────────────────
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
+from app.api.rate_limit import limiter
 from app.api.v1 import api_v1_router
 from app.api.v2 import router as v2_router
+from app.config import settings
 from app.middleware.auth_middleware import AuthMiddleware
-from app.api.rate_limit import limiter
 
-# ─── Інфраструктурні компоненти ─────────────────────────────────────────────
-import logging
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 
 # Діагностичні логи рендеру цінників/етикеток (INFO)
 logging.getLogger("app.infrastructure.services.price_tag_print_service").setLevel(logging.INFO)
 from app.infrastructure.di import DIContainer, register_all_services
 from app.infrastructure.event_bus import LocalEventBus
-
 
 # ─── Глобальні екземпляри інфраструктури ────────────────────────────────────
 """
@@ -65,7 +64,7 @@ def get_event_bus() -> LocalEventBus:
 
 # ─── Опис застосунку для Swagger ─────────────────────────────────────────────
 APP_DESCRIPTION = """
-# Kasa POS — Система управління торгівлею
+# Torgashka POS — Система управління торгівлею
 
 ## Можливості API:
 - **Товари**: CRUD, пошук за штрих-кодом, фільтрація
@@ -112,12 +111,12 @@ async def lifespan(app: FastAPI):
 
     # ─── 2. Отримуємо Event Bus з контейнера ────────────────────────────────
     event_bus = container.resolve("event_bus")
-    print(f"   ✅ Event Bus ініціалізовано")
+    print("   ✅ Event Bus ініціалізовано")
 
     # ─── 3. Зберігаємо контейнер в стані застосунку ─────────────────────────
     app.state.di_container = container
 
-    print(f"   ✅ Інфраструктура готова")
+    print("   ✅ Інфраструктура готова")
 
     yield
 
@@ -144,7 +143,7 @@ async def lifespan(app: FastAPI):
     # Очищаємо глобальні посилання
     container = None
     event_bus = None
-    print(f"   ✅ Cleanup завершено")
+    print("   ✅ Cleanup завершено")
 
 
 # ─── Створення застосунку ────────────────────────────────────────────────────

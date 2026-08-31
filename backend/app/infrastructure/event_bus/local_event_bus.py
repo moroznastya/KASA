@@ -7,13 +7,13 @@ In-memory Event Bus для синхронної публікації домен�
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
-from app.domain.events.base_event import BaseDomainEvent
 from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.events.base_event import BaseDomainEvent
 
 logger = logging.getLogger(__name__)
 

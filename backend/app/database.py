@@ -40,7 +40,7 @@ async_session = async_sessionmaker(
 # Базовий клас для всіх моделей (Declarative Base)
 # ──────────────────────────────────────────────
 class Base(DeclarativeBase):
-    """Базовий клас для всіх ORM-моделей Kasa."""
+    """Базовий клас для всіх ORM-моделей Torgashka."""
     pass
 
 

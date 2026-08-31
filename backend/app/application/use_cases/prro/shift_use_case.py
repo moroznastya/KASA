@@ -17,42 +17,42 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dto.prro_dto import PrroShiftDTO
+from app.application.use_cases.prro.context import (
+    CHECK_TYPE_CHK,
+    CHECK_TYPE_SERVICECHK,
+    CHECK_TYPE_ZREPORT,
+    PrroContextFactory,
+)
+from app.application.use_cases.prro.status_codes import status_error_text
 from app.infrastructure.persistence.models.prro import (
+    PrroQueueStatus,
     PrroShift,
     PrroShiftStatus,
-    PrroQueueStatus,
 )
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
-from app.infrastructure.services.prro.offline_queue import (
-    PrroOfflineQueue,
-    CHECK_TYPE_CHK,
-    CHECK_TYPE_SERVICECHK,
-    CHECK_TYPE_ZREPORT,
-)
+from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
 from app.infrastructure.services.prro.xml_builder import (
     SERVICE_OPEN_SHIFT,
     compute_mac,
     parse_receipt_xml_totals,
-)
-from app.application.use_cases.prro.context import (
-    PrroContextFactory,
-    CHECK_TYPE_CHK,
-    CHECK_TYPE_SERVICECHK as _SERVICECHK,
-    CHECK_TYPE_ZREPORT as _ZREPORT,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class PrroShiftError(Exception):
-    """Помилка операції зі зміною ПРРО."""
+    """Помилка операції зі зміною ПРРО. __str__ = "[КОД] Точний текст"."""
 
     def __init__(self, message: str, code: str = "PRRO_SHIFT_ERROR"):
         super().__init__(message)
+        self.message = message
         self.code = code
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
 
 
 class PrroShiftUseCase:
@@ -126,13 +126,20 @@ class PrroShiftUseCase:
         check = await self._context.build_check(
             check_sign=signed,
             local_number=0,
-            check_type=_SERVICECHK,
+            check_type=CHECK_TYPE_SERVICECHK,
         )
         grpc_client = await self._context.grpc_client()
         response = await grpc_client.send_chk(check)
 
         if int(response.status) != 1:
-            error_msg = response.error_message or f"status={response.status}"
+            # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            # (1:1 Rust shift.rs; джерело мапи: status_codes).
+            status_text = status_error_text(int(response.status))
+            error_msg = (
+                f"{response.error_message} | {status_text}"
+                if response.error_message
+                else status_text
+            )
             raise PrroShiftError(
                 f"Не вдалося відкрити зміну: {error_msg}",
                 code="OPEN_SHIFT_FAILED",
@@ -217,13 +224,20 @@ class PrroShiftUseCase:
         check = await self._context.build_check(
             check_sign=signed,
             local_number=0,
-            check_type=_ZREPORT,
+            check_type=CHECK_TYPE_ZREPORT,
         )
         grpc_client = await self._context.grpc_client()
         response = await grpc_client.send_chk(check)
 
         if int(response.status) != 1:
-            error_msg = response.error_message or f"status={response.status}"
+            # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
+            # (1:1 Rust shift.rs; джерело мапи: status_codes).
+            status_text = status_error_text(int(response.status))
+            error_msg = (
+                f"{response.error_message} | {status_text}"
+                if response.error_message
+                else status_text
+            )
             raise PrroShiftError(
                 f"Не вдалося закрити зміну: {error_msg}",
                 code="CLOSE_SHIFT_FAILED",
@@ -249,6 +263,9 @@ class PrroShiftUseCase:
             mac=mac,
         )
         await self._offline_queue.mark_sent(queue_item.id)
+
+        # B1: last_mac = MAC(Z) — останній успішно відправлений документ зміни.
+        await self._prro_repo.update_shift_last_mac(open_shift.id, mac)
 
         await self._context.persist_builder_counters(xml_builder)
         await self._session.commit()
@@ -431,4 +448,4 @@ class PrroShiftUseCase:
         )
 
 
-__all__ = ["PrroShiftUseCase", "PrroShiftError"]
+__all__ = ["PrroShiftError", "PrroShiftUseCase"]

@@ -11,18 +11,27 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.supplier import Supplier
 
-class LedgerOperationType(str, PyEnum):
+
+class LedgerOperationType(StrEnum):
     """Тип операції у взаєморозрахунках."""
     INVOICE = "invoice"               # Надходження товару (борг +)
     PAYMENT = "payment"               # Оплата постачальнику (борг -)

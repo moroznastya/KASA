@@ -1,8 +1,8 @@
-"""API v2 — Use Cases based API для Kasa POS."""
+"""API v2 — Use Cases based API для Torgashka POS."""
 
 from fastapi import APIRouter
 
-from . import products, invoices, receipts, auth, ledger, categories, prro
+from . import auth, categories, invoices, ledger, products, prro, receipts
 
 router = APIRouter(prefix="/api/v2")
 router.include_router(products.router)

@@ -4,8 +4,8 @@ Mapper для User entity.
 Конвертує між User (domain entity) та UserDTO / UserCreateDTO.
 """
 
+from app.application.dto.user_dto import UserCreateDTO, UserDTO
 from app.domain.entities.user import User, UserRole
-from app.application.dto.user_dto import UserDTO, UserCreateDTO
 
 
 class UserMapper:

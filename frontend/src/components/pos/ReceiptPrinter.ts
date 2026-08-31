@@ -204,7 +204,7 @@ export function generateReceiptHtml(data: ReceiptData): string {
     number,
     date,
     time,
-    shopName = 'Kasa POS',
+    shopName = 'Torgashka',
     shopAddress = '',
     taxId = '',
     cashier = '',
@@ -316,7 +316,7 @@ export function generateReceiptHtml(data: ReceiptData): string {
   <div class="footer">
     ${escapeHtml(footer)}
     <br/>
-    Kasa POS v1.0
+    Torgashka v1.0
   </div>
 </body>
 </html>`;

@@ -20,7 +20,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.config import settings as app_settings
-
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
@@ -52,8 +51,8 @@ _PRRO_CHECK_TYPE_MAP: dict[str, int] = {
 }
 
 if TYPE_CHECKING:
-    from app.infrastructure.services.prro.grpc_client import PrroGrpcClient
     from app.infrastructure.services.prro.factory import PrroServiceFactory
+    from app.infrastructure.services.prro.grpc_client import PrroGrpcClient
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ class PrroContextFactory:
         self,
         settings_repo: PrroSettingsRepository,
         key_store: PrroKeyStore,
-        service_factory: "PrroServiceFactory",
+        service_factory: PrroServiceFactory,
         config=None,
     ) -> None:
         self._settings_repo = settings_repo
@@ -95,11 +94,27 @@ class PrroContextFactory:
 
     # ─── gRPC-клієнт ───────────────────────────────────────────────────────
 
-    async def grpc_client(self) -> "PrroGrpcClient":
-        """Повертає кешованого PrroGrpcClient (url + rro_fn з налаштувань)."""
+    async def grpc_client(self) -> PrroGrpcClient:
+        """Повертає кешованого PrroGrpcClient (url + rro_fn з налаштувань).
+
+        B3: формує rro_fn_sign — підпис фіскального номера ПРРО тим самим
+        КЕП-ключем (statusRro/infoRro/lastChk/delLastChk/delLastChkId).
+        Якщо ключ не налаштовано — rro_fn_sign=b'' (виклик усе одно піде,
+        але тестовий сервер відкине запит; статус налаштувань покаже це).
+        """
         url = await self.url()
         fn = await self._settings_repo.get(KEY_PRRO_FN) or None
-        return self._service_factory.grpc_client(url=url, rro_fn=fn)
+        rro_fn_sign = None
+        if fn:
+            try:
+                signer = await self.build_crypto_signer()
+                rro_fn_sign = signer.sign(fn.encode("utf-8"))
+            except Exception as exc:
+                logger.warning("PRRO_RRO_FN_SIGN | не вдалося підписати ФН: %s", exc)
+                rro_fn_sign = None
+        return self._service_factory.grpc_client(
+            url=url, rro_fn=fn, rro_fn_sign=rro_fn_sign
+        )
 
     # ─── XmlBuilder / CryptoSigner ─────────────────────────────────────────
 
@@ -175,7 +190,7 @@ class PrroContextFactory:
         try:
             key_path = self._key_store.get_key_path()
             has_password = self._key_store.is_configured()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, f"ключ КЕП недоступний: {exc}"
         if not key_path:
             return False, "ключ КЕП не збережено"
@@ -190,6 +205,7 @@ class PrroContextFactory:
         check_sign: bytes,
         local_number: int,
         check_type: str = CHECK_TYPE_CHK,
+        id_offline: str = "",
     ):
         """
         Формує prro_pb2.Check для sendChkV2.
@@ -198,6 +214,7 @@ class PrroContextFactory:
             check_sign: підписаний XML-документ СЗЗД (bytes).
             local_number: локальний номер чеку (0 — відкриття зміни).
             check_type: "CHK" / "ZREPORT" / "SERVICECHK".
+            id_offline: B4 — офлайн-ідентифікатор ("offline-{n}" в офлайні).
 
         Returns:
             prro_pb2.Check — готове повідомлення.
@@ -213,6 +230,7 @@ class PrroContextFactory:
             check_type=_PRRO_CHECK_TYPE_MAP.get(
                 check_type, _PRRO_CHECK_TYPE_MAP[CHECK_TYPE_CHK]
             ),
+            id_offline=id_offline,
         )
 
     # ─── Лічильник змін ────────────────────────────────────────────────────
@@ -232,18 +250,18 @@ class PrroContextFactory:
 
 
 __all__ = [
-    "PrroContextFactory",
-    "KEY_PRRO_FN",
-    "KEY_PRRO_TN",
-    "KEY_PRRO_ZN",
-    "KEY_PRRO_MODE",
-    "KEY_PRRO_URL",
-    "KEY_LAST_SHIFT_NUMBER",
-    "KEY_LAST_PACKET_ID",
-    "KEY_LAST_MAC_NUMBER",
-    "KEY_AUTO_FISCALIZE",
-    "KEY_PRRO_STUB_MODE",
     "CHECK_TYPE_CHK",
-    "CHECK_TYPE_ZREPORT",
     "CHECK_TYPE_SERVICECHK",
+    "CHECK_TYPE_ZREPORT",
+    "KEY_AUTO_FISCALIZE",
+    "KEY_LAST_MAC_NUMBER",
+    "KEY_LAST_PACKET_ID",
+    "KEY_LAST_SHIFT_NUMBER",
+    "KEY_PRRO_FN",
+    "KEY_PRRO_MODE",
+    "KEY_PRRO_STUB_MODE",
+    "KEY_PRRO_TN",
+    "KEY_PRRO_URL",
+    "KEY_PRRO_ZN",
+    "PrroContextFactory",
 ]

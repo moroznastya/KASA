@@ -1,8 +1,9 @@
-# 📐 ДЕТАЛІЗОВАНА СТРУКТУРА ПРОЄКТУ — Kasa POS
+# 📐 ДЕТАЛІЗОВАНА СТРУКТУРА ПРОЄКТУ — Torgashka
 
-> **Версія:** 1.0.0  
-> **Архітектура:** Clean Architecture / DDD  
-> **Стек:** FastAPI + React + PostgreSQL + Tauri
+> **Версія:** 2.0.0
+> **Архітектура:** Clean Architecture / DDD
+> **Стек (продакшн):** Rust (axum-фасад) + React + PostgreSQL + Tauri — 100% Rust backend
+> **Legacy:** Python/FastAPI — дезактивований, еталон для differential-тестів
 
 ---
 
@@ -10,15 +11,11 @@
 
 ```
 kasa/
-├── backend/                          # 🖥️ Серверна частина (FastAPI)
-│   ├── alembic/                      # Міграції БД
-│   ├── app/                          # Основний код застосунку
-│   │   ├── api/                      # API шар (роутери)
-│   │   ├── core/                     # Ядро (конфіг, безпека)
-│   │   ├── middleware/               # Middleware (авторизація)
-│   │   ├── models/                   # Моделі БД (SQLAlchemy)
-│   │   ├── schemas/                  # Pydantic схеми (DTO)
-│   │   └── services/                 # Бізнес-логіка (сервіси)
+├── backend/                          # 🧪 LEGACY — Python-бекенд (FastAPI)
+│   │                                 # ДЕЗАКТИВОВАНИЙ: не runtime, лише еталон
+│   │                                 # для differential-тестів та історія міграцій
+│   ├── alembic/                      # Історичні міграції БД
+│   ├── app/                          # Код FastAPI (api, core, models, schemas, services)
 │   ├── migrations/                   # Альтернативні міграції
 │   ├── .env                          # Змінні оточення
 │   ├── alembic.ini                   # Конфіг Alembic
@@ -26,17 +23,29 @@ kasa/
 │
 ├── frontend/                         # 🎨 Клієнтська частина (React + Vite)
 │   ├── public/                       # Статичні файли
-│   ├── src/                          # Вихідний код
+│   ├── src/                          # Вихідний код React
 │   │   ├── components/               # UI компоненти
 │   │   │   ├── layout/               # Компоненти макету
 │   │   │   └── ui/                   # Базові UI компоненти
 │   │   ├── hooks/                    # React хуки
 │   │   ├── pages/                    # Сторінки застосунку
-│   │   ├── services/                 # API сервіси (axios)
+│   │   ├── services/                 # API сервіси (axios → :8000)
 │   │   ├── store/                    # Глобальний стан (Zustand)
 │   │   ├── types/                    # TypeScript типи
 │   │   └── utils/                    # Утиліти
-│   ├── src-tauri/                    # Tauri desktop обгортка
+│   ├── src-tauri/                    # 🦀 Tauri оболонка + Rust-фасад (100% Rust)
+│   │   ├── crates/                   # Робочі крейти Rust
+│   │   │   ├── kasa-api/             # HTTP-фасад (axum), роути v1, 410-fallback
+│   │   │   ├── kasa-application/     # Застосунковий шар (use cases)
+│   │   │   ├── kasa-domain/          # Доменні сутності та правила
+│   │   │   ├── kasa-infrastructure/  # PostgreSQL, репозиторії, міграції
+│   │   │   ├── kasa-ocr/             # OCR (розпізнавання документів)
+│   │   │   └── kasa-prro/            # ПРРО/фіскалізація
+│   │   ├── src/                      # main.rs / lib.rs (Tauri + axum)
+│   │   ├── migrations/               # Міграції БД (Rust)
+│   │   ├── Cargo.toml                # Rust workspace
+│   │   ├── tauri.conf.json           # Конфігурація Tauri
+│   │   └── target/debug/kasa-pos     # Зібраний бінарник (слухає 127.0.0.1:8000)
 │   ├── index.html                    # Вхідна HTML точка
 │   ├── vite.config.ts                # Конфіг Vite
 │   ├── tsconfig.json                 # Конфіг TypeScript
@@ -44,15 +53,77 @@ kasa/
 │   └── package.json                  # Залежності Node.js
 │
 ├── docs/                             # 📄 Документація
+├── docker-compose.yml                # PostgreSQL + backend (backend — профіль legacy)
 ├── ROADMAP.md                        # Дорожня карта розробки
 └── STRUCTURE.md                      # Цей файл
 ```
 
 ---
 
-## 2️⃣ BACKEND — ДЕТАЛІЗОВАНА СТРУКТУРА
+## 2️⃣ RUST-ФАСАД — ПРОДАКШН BACKEND (frontend/src-tauri/crates)
 
-### 2.1 🏗️ Шари архітектури (Clean Architecture)
+**Роль:** єдиний backend системи. Вбудований у Tauri-бінарник, слухає `127.0.0.1:8000`.
+
+### 2.1 🧱 Крейти
+
+```
+frontend/src-tauri/crates/
+│
+├── kasa-api/                          # 🎯 ШАР ПРЕЗЕНТАЦІЇ (HTTP-фасад, axum)
+│   ├── src/
+│   │   ├── lib.rs                     # Збірка роутів, fallback → 410 Gone
+│   │   ├── auth.rs                    # Авторизація (login, login-pin, refresh)
+│   │   ├── products.rs                # Товари (CRUD + пошук за ШК)
+│   │   ├── categories.rs              # Категорії (CRUD + дерево)
+│   │   ├── suppliers.rs               # Постачальники (CRUD)
+│   │   ├── invoices.rs                # Прибуткові накладні
+│   │   ├── transfers.rs               # Переміщення між складами
+│   │   ├── write_offs.rs              # Списання
+│   │   ├── return_invoices.rs         # Повернення постачальнику
+│   │   ├── receipts.rs                # Чеки продажу
+│   │   ├── ledger.rs                  # Взаєморозрахунки
+│   │   ├── documents.rs               # Узагальнений перегляд документів
+│   │   ├── users.rs                   # Користувачі + ролі
+│   │   ├── purchase_orders.rs         # Замовлення постачальнику
+│   │   └── ocr.rs / prro.rs           # OCR та ПРРО-інтеграції
+│   └── tests/                         # Rust-тести фасаду
+│
+├── kasa-application/                  # 🧠 ЗАСТОСУНКОВИЙ ШАР
+│   └── src/                           # Use cases, DTO, mappers, інтерфейси
+│
+├── kasa-domain/                       # 📦 ДОМЕННИЙ ШАР
+│   └── src/                           # Entities, value objects, репозиторії (traits)
+│
+├── kasa-infrastructure/               # 💾 ШАР ІНФРАСТРУКТУРИ
+│   ├── src/                           # PostgreSQL (sqlx/diesel), репозиторії, UoW
+│   ├── migrations/                    # Міграції БД
+│   └── tests/                         # Інтеграційні тести
+│
+├── kasa-ocr/                          # 🔍 OCR
+│   └── src/                           # Розпізнавання документів/зображень
+│
+└── kasa-prro/                         # 🧾 ПРРО/ФІСКАЛІЗАЦІЯ
+    ├── src/                           # Інтеграція з ПРРО
+    ├── ffi/                           # FFI-обгортки
+    └── tests/
+```
+
+### 2.2 🌐 Покриття роутів
+
+| Показник | Значення |
+|----------|----------|
+| Покрито роутів | **157 / 164** |
+| Деприкейтнуті v2-аліаси auth | **7 → 410 Gone** |
+| Fallback для legacy-шляхів | **410 Gone** (Python-бекенд не runtime) |
+
+---
+
+## 3️⃣ BACKEND (PYTHON/FastAPI) — LEGACY
+
+> **Статус:** ❌ ДЕЗАКТИВОВАНИЙ. Профіль `legacy` у docker-compose, Python-процеси
+> не запускаються. Код збережено як **еталон для differential-тестів** та історичну довідку.
+
+### 3.1 🏗️ Шари архітектури (історична довідка)
 
 ```
 backend/app/
@@ -74,18 +145,15 @@ backend/app/
 │       └── documents.py              # Узагальнений перегляд документів
 │
 ├── middleware/                        # 🛡️ ПРОМІЖНИЙ ШАР
-│   ├── __init__.py
 │   └── auth_middleware.py            # JWT авторизація
 │
 ├── services/                          # 🧠 ШАР БІЗНЕС-ЛОГІКИ
-│   ├── __init__.py
 │   ├── auth_service.py               # Авторизація (JWT, bcrypt)
 │   ├── product_service.py            # Товари (логіка пошуку, фільтрації)
 │   ├── document_service.py           # Документи (створення, проведення)
 │   └── ledger_service.py             # Взаєморозрахунки
 │
 ├── models/                            # 💾 ШАР ДАНИХ (SQLAlchemy)
-│   ├── __init__.py
 │   ├── product.py                    # Product (товар)
 │   ├── barcode.py                    # Barcode (штрих-коди)
 │   ├── category.py                   # Category (категорія)
@@ -100,7 +168,6 @@ backend/app/
 │   └── supplier_ledger.py            # SupplierLedger (взаєморозрахунки)
 │
 ├── schemas/                           # 📦 ШАР DTO (Pydantic)
-│   ├── __init__.py
 │   ├── product.py                    # ProductCreate/Update/Response
 │   ├── category.py                   # CategoryCreate/Update/Response
 │   ├── supplier.py                   # SupplierCreate/Update/Response
@@ -113,17 +180,16 @@ backend/app/
 │   └── ledger.py                     # LedgerEntry/Response
 │
 ├── core/                              # ⚙️ ЯДРО
-│   ├── __init__.py
 │   ├── config.py                     # Налаштування (pydantic-settings)
 │   ├── security.py                   # JWT, хешування паролів
 │   └── exceptions.py                 # Кастомні винятки
 │
-├── main.py                           # 🚀 Точка входу FastAPI
+├── main.py                           # 🚀 Точка входу FastAPI (історична)
 ├── database.py                       # 🔗 Підключення до БД (async)
 └── config.py                         # ⚙️ Конфігурація застосунку
 ```
 
-### 2.2 📊 Моделі БД (SQLAlchemy)
+### 3.2 📊 Моделі БД (SQLAlchemy — еталон схеми)
 
 | Модель | Таблиця | Призначення |
 |--------|---------|-------------|
@@ -145,7 +211,10 @@ backend/app/
 | `ReceiptItem` | `receipt_items` | Позиція чеку |
 | `SupplierLedger` | `supplier_ledger` | Журнал взаєморозрахунків |
 
-### 2.3 🔌 API Ендпоінти (v1)
+> Схема БД ідентична для Rust-фасаду: `kasa-infrastructure` реалізує ті самі
+> таблиці та міграції (PostgreSQL). Python-моделі — еталон для differential-тестів.
+
+### 3.3 🔌 API Ендпоінти (v1 — реалізовані в Rust-фасаді)
 
 | Метод | Шлях | Опис |
 |-------|------|------|
@@ -219,11 +288,14 @@ backend/app/
 | GET | `/health` | Перевірка стану сервера |
 | GET | `/` | Кореневий ендпоінт |
 
+> Деприкейтнуті v2-аліаси auth (7 шт.) повертають **410 Gone**.
+> Невідомі/legacy-шляхи — fallback **410 Gone**.
+
 ---
 
-## 3️⃣ FRONTEND — ДЕТАЛІЗОВАНА СТРУКТУРА
+## 4️⃣ FRONTEND — ДЕТАЛІЗОВАНА СТРУКТУРА
 
-### 3.1 🧩 Компонентна архітектура
+### 4.1 🧩 Компонентна архітектура
 
 ```
 frontend/src/
@@ -250,11 +322,11 @@ frontend/src/
 ├── hooks/                             # 🪝 React ХУКИ
 │   ├── useAuth.ts                     # Авторизація (логін, логаут, токен)
 │   ├── useProducts.ts                 # Товари (CRUD, пошук)
-│   ├── useCategories.ts              # Категорії (CRUD, дерево)
-│   ├── useSuppliers.ts               # Постачальники (CRUD)
-│   ├── useDocuments.ts               # Документи (CRUD, фільтрація)
-│   ├── useBarcodeSearch.ts           # Пошук за штрих-кодом (debounce)
-│   └── usePagination.ts              # Пагінація (сторінки, ліміти)
+│   ├── useCategories.ts               # Категорії (CRUD, дерево)
+│   ├── useSuppliers.ts                # Постачальники (CRUD)
+│   ├── useDocuments.ts                # Документи (CRUD, фільтрація)
+│   ├── useBarcodeSearch.ts            # Пошук за штрих-кодом (debounce)
+│   └── usePagination.ts               # Пагінація (сторінки, ліміти)
 │
 ├── pages/                             # 📄 СТОРІНКИ
 │   ├── auth/                          # 🔐 Авторизація
@@ -290,7 +362,7 @@ frontend/src/
 │   └── reports/                       # 📈 Звіти
 │       └── ReportsPage.tsx            # Сторінка звітів
 │
-├── services/                          # 🌐 API СЕРВІСИ (axios)
+├── services/                          # 🌐 API СЕРВІСИ (axios → 127.0.0.1:8000)
 │   ├── api.ts                         # Базовий клієнт (інтерцептори, токен)
 │   ├── authService.ts                 # Авторизація (логін, PIN, refresh)
 │   ├── productService.ts              # Товари (CRUD, пошук за ШК)
@@ -323,7 +395,7 @@ frontend/src/
 └── vite-env.d.ts                      # 📌 Типи Vite
 ```
 
-### 3.2 🗺️ Маршрутизація (React Router)
+### 4.2 🗺️ Маршрутизація (React Router)
 
 | Шлях | Сторінка | Доступ |
 |------|----------|--------|
@@ -345,7 +417,7 @@ frontend/src/
 | `/ledger` | LedgerPage | Захищений |
 | `/reports` | ReportsPage | Захищений |
 
-### 3.3 🎨 UI Компоненти (TailwindCSS v4)
+### 4.3 🎨 UI Компоненти (TailwindCSS v4)
 
 | Компонент | Пропси | Призначення |
 |-----------|--------|-------------|
@@ -362,25 +434,34 @@ frontend/src/
 
 ---
 
-## 4️⃣ Tauri DESKTOP ОБГОРТКА
+## 5️⃣ Tauri DESKTOP ОБГОРТКА + RUST-ФАСАД
 
 ```
 frontend/src-tauri/
 ├── src/
-│   └── main.rs                        # Точка входу Tauri
-├── Cargo.toml                         # Rust залежності
+│   ├── main.rs                        # Точка входу Tauri (бінарник kasa-pos)
+│   └── lib.rs                         # kasa_pos_lib (інтеграція Tauri + axum)
+├── crates/                            # Робочі крейти (kasa-api, kasa-domain, ...)
+├── migrations/                        # Міграції БД
+├── Cargo.toml                         # Rust workspace (бінарник: kasa-pos)
+├── Cargo.lock
 ├── tauri.conf.json                    # Конфігурація Tauri
-└── icons/                             # Іконки застосунку
+├── build.rs
+├── capabilities/                      # Дозволи Tauri
+└── icons/                             # Іконки застосовунку
 ```
+
+> Бінарник `kasa-pos` (target/debug або target/release) запускає axum-фасад
+> на `127.0.0.1:8000` — єдиний backend для React-фронтенду.
 
 ---
 
-## 5️⃣ БАЗА ДАНИХ (PostgreSQL)
+## 6️⃣ БАЗА ДАНИХ (PostgreSQL)
 
-### 5.1 Схема даних
+### 6.1 Схема даних
 
 ```sql
--- Ключові таблиці:
+-- Ключові таблиці (ідентичні для Rust-фасаду та legacy-еталона):
 products          -- Товари (Super-Product Model)
 barcodes          -- Додаткові штрих-коди
 categories        -- Категорії (ієрархічне дерево)
@@ -400,7 +481,7 @@ receipt_items     -- Позиції чеків
 supplier_ledger   -- Журнал взаєморозрахунків
 ```
 
-### 5.2 Materialized Views (для звітів)
+### 6.2 Materialized Views (для звітів)
 
 ```sql
 sales_report_view      -- Продажі за період (групування)
@@ -410,72 +491,74 @@ supplier_ledger_view   -- Взаєморозрахунки з постачаль
 
 ---
 
-## 6️⃣ 🔄 ПОТОКИ ДАНИХ (Data Flow)
+## 7️⃣ 🔄 ПОТОКИ ДАНИХ (Data Flow)
 
-### 6.1 Створення прибуткової накладної
+### 7.1 Створення прибуткової накладної
 ```
 Frontend (InvoiceFormPage)
-  → POST /api/v1/invoices
-    → InvoiceService.create_invoice()
-      → Створення Invoice + InvoiceItems
+  → POST /api/v1/invoices (Rust-фасад :8000)
+    → kasa-api → kasa-application (use case)
+      → kasa-infrastructure: Invoice + InvoiceItems
       → Оновлення залишків (Stock)
       → Оновлення SupplierLedger
   ← Відповідь: InvoiceResponse
 ```
 
-### 6.2 Продаж товару (POS)
+### 7.2 Продаж товару (POS)
 ```
 Frontend (PosPage)
-  → Сканування ШК → GET /api/v1/products/barcode/{barcode}
-    → ProductService.get_product_by_barcode()
+  → Сканування ШК → GET /api/v1/products/barcode/{barcode} (Rust-фасад :8000)
+    → kasa-api → kasa-application → kasa-infrastructure
   ← ProductResponse
   → Додавання в кошик (локальний стан)
   → POST /api/v1/receipts
-    → ReceiptService.create_receipt()
-      → Створення Receipt + ReceiptItems
-      → Зменшення залишків
+    → Створення Receipt + ReceiptItems
+    → Зменшення залишків
   ← ReceiptResponse
 ```
 
-### 6.3 Авторизація
+### 7.3 Авторизація
 ```
 Frontend (LoginPage)
-  → POST /api/v1/auth/login-pin
-    → AuthService.authenticate_by_pin()
-      → Пошук користувача за PIN
-      → Генерація JWT токена
+  → POST /api/v1/auth/login-pin (Rust-фасад :8000)
+    → Пошук користувача за PIN
+    → Генерація JWT токена
   ← { access_token, user }
   → Збереження токена в authStore (Zustand)
   → Додавання токена до заголовків axios (interceptor)
 ```
 
+### 7.4 Fallback legacy-шляхів
+```
+Будь-який запит до деприкейтнутого/невідомого шляху
+  → Rust-фасад: fallback → HTTP 410 Gone
+  (Python-бекенд не запускається, docker-compose backend — профіль legacy)
+```
+
 ---
 
-## 7️⃣ 🧪 ТЕСТУВАННЯ (QA)
+## 8️⃣ 🧪 ТЕСТУВАННЯ (QA)
 
 | Рівень | Інструмент | Що тестуємо |
 |--------|-----------|-------------|
-| Unit | pytest | Сервіси, валідація, утиліти |
-| Integration | pytest + httpx | API ендпоінти |
+| Rust unit | cargo test | Крейти kasa-api, kasa-domain, kasa-infrastructure, kasa-ocr, kasa-prro |
+| Rust integration | cargo test (tests/) | API ендпоінти, БД |
+| Differential | pytest (backend/) | Звірка Rust-фасаду з legacy-еталоном (Python — референс) |
+| Frontend | npm test | Компоненти, хуки |
 | E2E | Playwright | Користувацькі сценарії |
-| UI | Storybook | Компоненти |
 
 ---
 
-## 8️⃣ 📦 ЗАЛЕЖНОСТІ
+## 9️⃣ 📦 ЗАЛЕЖНОСТІ
 
-### Backend (Python)
+### Rust (продакшн-стек)
 ```
-fastapi            — Веб-фреймворк
-sqlalchemy[asyncio] — ORM (async)
-alembic            — Міграції БД
-asyncpg            — Драйвер PostgreSQL
-pydantic           — Валідація даних
-pydantic-settings  — Конфігурація
-PyJWT               — JWT токени
-bcrypt              — Хешування паролів
-python-multipart   — Form data
-uvicorn            — ASGI сервер
+axum               — HTTP-фасад (127.0.0.1:8000)
+tokio              — async runtime
+sqlx / diesel      — PostgreSQL
+serde              — серіалізація
+tauri              — desktop обгортка
+kasa-* (crates)    — api, application, domain, infrastructure, ocr, prro
 ```
 
 ### Frontend (Node.js)
@@ -492,18 +575,29 @@ vite               — Збірка
 @tauri-apps/api    — Tauri API
 ```
 
+### Backend (Python) — LEGACY, лише для differential-тестів
+```
+fastapi            — Веб-фреймворк (історичний)
+sqlalchemy[asyncio] — ORM (async)
+alembic            — Міграції БД (історичні)
+asyncpg            — Драйвер PostgreSQL
+pydantic           — Валідація даних
+uvicorn            — ASGI сервер (НЕ запускається)
+```
+
 ---
 
-## 9️⃣ 📋 СТАТУС РОЗРОБКИ
+## 🔟 📋 СТАТУС РОЗРОБКИ
 
 | Модуль | Статус | Примітки |
 |--------|--------|----------|
-| Backend: Моделі БД | ✅ Готово | Всі моделі створено |
-| Backend: Міграції | ✅ Готово | Початкова міграція |
-| Backend: API (CRUD) | ✅ Готово | Всі ендпоінти |
-| Backend: Бізнес-логіка | ✅ Готово | Документи, проведення |
-| Backend: Авторизація | ✅ Готово | JWT + PIN |
-| Backend: Взаєморозрахунки | ✅ Готово | Ledger |
+| Rust: Фасад kasa-api | ✅ Готово | 157/164 роути, 7 v2-аліасів → 410 |
+| Rust: Домен kasa-domain | ✅ Готово | Сутності, правила |
+| Rust: Application | ✅ Готово | Use cases |
+| Rust: Infrastructure | ✅ Готово | PostgreSQL, міграції |
+| Rust: OCR kasa-ocr | ✅ Готово | Розпізнавання документів |
+| Rust: ПРРО kasa-prro | ✅ Готово | Фіскалізація |
+| Python-бекенд (legacy) | ❌ Дезактивовано | Еталон differential-тестів, профіль legacy |
 | Frontend: Layout | ✅ Готово | Sidebar, Header |
 | Frontend: Login | ✅ Готово | PIN-авторизація |
 | Frontend: POS | ✅ Готово | Кошик, оплата |
@@ -513,12 +607,10 @@ vite               — Збірка
 | Frontend: Документи | ✅ Готово | Всі форми |
 | Frontend: Взаєморозрахунки | ✅ Готово | Ledger |
 | Frontend: Звіти | ⏳ В розробці | ReportsPage |
-| Tauri Desktop | ⏳ В розробці | Обгортка |
-| Фіскалізація (ПРРО) | ⏳ План | Спринт 5 |
-| Negative Stock Logic | ⏳ План | Спринт 2 |
-| Авто-замовлення | ⏳ План | Спринт 3 |
+| Tauri Desktop | ✅ Готово | Бінарник kasa-pos :8000 |
+| Differential-тести | ⏳ В процесі | Rust vs legacy-еталон |
 
 ---
 
-> **Документ створено:** PM Agent v1.0 (ALPHA_PM)  
-> **Останнє оновлення:** 2026
+> **Документ оновлено:** Dev_Agent після етапу 8 міграції Python → Rust  
+> **Архітектура:** 100% Rust backend (axum :8000) + React + Tauri + PostgreSQL

@@ -136,7 +136,7 @@ const PrintLabelsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк етикеток — Kasa POS</title>
+              <title>Друк етикеток — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: 58mm 40mm; }
@@ -165,7 +165,7 @@ const PrintLabelsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк етикеток — Kasa POS</title>
+              <title>Друк етикеток — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: 58mm 40mm; }

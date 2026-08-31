@@ -1,9 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Kasa POS — Tauri Команди
+// Torgashka — Tauri Команди
 // ─────────────────────────────────────────────────────────────────────────────
+// Етап 0 міграції: залишились лише тонкі системні команди.
+// devices/offline/print/pb_protocol — перенесені в torgashka-infrastructure.
 
-pub mod devices;
-pub mod offline;
-pub mod pb_protocol;
-pub mod print;
 pub mod system;

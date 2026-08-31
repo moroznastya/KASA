@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,12 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.use_cases.prro.context import PrroContextFactory
 from app.application.use_cases.prro.shift_use_case import (
-    PrroShiftUseCase,
     PrroShiftError,
+    PrroShiftUseCase,
 )
 from app.infrastructure.persistence.models.prro import (
     PrroShift,
-    PrroQueueItem,
 )
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
@@ -25,7 +23,6 @@ from app.infrastructure.persistence.repositories.prro_settings_repository import
 )
 from app.infrastructure.services.prro.key_store import PrroKeyStore
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-
 
 # ─── Допоміжні фабрики ──────────────────────────────────────────────────────
 
@@ -130,7 +127,7 @@ async def _create_open_shift(
 class TestOpenShift:
     async def test_open_shift_success(self, build_use_case):
         """Успішне відкриття зміни: створюється PrroShift + запис у чергу."""
-        use_case, prro_repo, settings_repo, context = build_use_case()
+        use_case, prro_repo, settings_repo, _context = build_use_case()
 
         dto = await use_case.open_shift(comment="Касир №1")
 
@@ -176,7 +173,24 @@ class TestOpenShift:
         with pytest.raises(PrroShiftError) as exc_info:
             await use_case.open_shift()
         assert exc_info.value.code == "OPEN_SHIFT_FAILED"
-        assert "RRO not registered" in str(exc_info.value)
+        # Текст сервера — ПОВНІСТЮ + код/ім'я/опис статусу (не голий status=-13).
+        msg = str(exc_info.value)
+        assert "RRO not registered" in msg
+        assert "ERROR_NOT_REGISTERED_RRO" in msg
+        assert "ПРРО не зареєстровано" in msg
+        assert "status=-13" in msg
+
+    async def test_open_shift_server_error_without_message_includes_name(self, build_use_case):
+        """Без error_message сервера: «status=-13 (ERROR_NOT_REGISTERED_RRO: ...)»."""
+        grpc = make_grpc_client(
+            send_response=make_check_response(status=-13, error_message="")
+        )
+        use_case, _, _, _ = build_use_case(grpc_client=grpc)
+
+        with pytest.raises(PrroShiftError) as exc_info:
+            await use_case.open_shift()
+        msg = str(exc_info.value)
+        assert "status=-13 (ERROR_NOT_REGISTERED_RRO: ПРРО не зареєстровано)" in msg
 
 
 # ─── Тести close_shift ──────────────────────────────────────────────────────
@@ -313,10 +327,9 @@ class TestZreportTotals:
 
         # Додаємо у чергу як успішно передані (sent)
         from app.infrastructure.services.prro.offline_queue import (
-            PrroOfflineQueue,
             CHECK_TYPE_CHK,
+            PrroOfflineQueue,
         )
-        from app.infrastructure.persistence.models.prro import PrroQueueStatus
 
         offline_queue = PrroOfflineQueue(prro_repo)
         for i, xml in enumerate([sale_xml, return_xml], start=1):

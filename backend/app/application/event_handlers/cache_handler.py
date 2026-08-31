@@ -7,17 +7,17 @@ from typing import Any
 
 from app.domain.events import (
     BaseDomainEvent,
-    ProductCreated,
-    ProductUpdated,
-    ProductDeleted,
-    StockChanged,
-    InvoiceCreated,
-    InvoiceUpdated,
-    InvoiceDeleted,
     InvoiceApproved,
+    InvoiceCreated,
+    InvoiceDeleted,
+    InvoiceUpdated,
+    LedgerEntryCreated,
+    ProductCreated,
+    ProductDeleted,
+    ProductUpdated,
     ReceiptCreated,
     ReceiptRefunded,
-    LedgerEntryCreated,
+    StockChanged,
 )
 
 logger = logging.getLogger(__name__)

@@ -1,8 +1,8 @@
 # 🏛️ СТАН СИСТЕМИ KASA POS v3.0.1
 
-**Дата:** 2026-07-20  
-**Склад:** PM_Agent (Project Manager & System Architect)  
-**Git:** 3 коміти, ~150 файлів, ~11 500 рядків коду
+**Дата:** 2026-08 (після етапу 8 міграції Python → Rust)
+**Склад:** PM_Agent (Project Manager & System Architect), оновлено Dev_Agent
+**Git:** активна розробка, ~11 500+ рядків коду
 
 ---
 
@@ -10,56 +10,51 @@
 
 | Компонент | Статус | Оцінка |
 |-----------|--------|--------|
-| **Backend (FastAPI)** | ✅ Працює | ⭐⭐⭐⭐⭐ |
+| **Rust-фасад (axum :8000, вбудований у Tauri)** | ✅ Працює (продакшн) | ⭐⭐⭐⭐⭐ |
 | **Frontend (React + Vite)** | ✅ Працює | ⭐⭐⭐⭐⭐ |
 | **База даних (PostgreSQL)** | ✅ Працює | ⭐⭐⭐⭐⭐ |
-| **Архітектура (Clean/DDD)** | ✅ Реалізовано | ⭐⭐⭐⭐⭐ |
-| **Docker** | ✅ Налаштовано | ⭐⭐⭐⭐⭐ |
-| **Тести** | ✅ 42 тести | ⭐⭐⭐⭐ |
-| **Безпека** | ✅ JWT + CORS + Rate Limit | ⭐⭐⭐⭐⭐ |
-| **Tauri Desktop** | ❌ Не реалізовано | ⭐ |
+| **Архітектура (Clean/DDD)** | ✅ Реалізовано (Rust-крейти) | ⭐⭐⭐⭐⭐ |
+| **Python-бекенд (FastAPI)** | ❌ ДЕЗАКТИВОВАНИЙ (legacy, еталон тестів) | ⭐ |
+| **Rust-крейти** | ✅ kasa-api, kasa-domain, kasa-application, kasa-infrastructure, kasa-ocr, kasa-prro | ⭐⭐⭐⭐⭐ |
+| **Покриття роутів** | ✅ 157/164 (7 v2-аліасів → 410 Gone) | ⭐⭐⭐⭐⭐ |
+| **Docker** | ✅ PostgreSQL; backend — профіль `legacy` | ⭐⭐⭐⭐ |
+| **Tauri Desktop** | ✅ Реалізовано (бінарник kasa-pos) | ⭐⭐⭐⭐⭐ |
 | **CI/CD** | ⚠️ Базовий | ⭐⭐⭐ |
 
-**Загальна оцінка: 85% готовності**
+**Загальна оцінка: 90% готовності** (міграцію на Rust завершено)
 
 ---
 
-## 2. АРХІТЕКТУРА (Clean Architecture / DDD)
+## 2. АРХІТЕКТУРА (100% Rust backend)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    PRESENTATION LAYER                        │
-│  backend/app/api/v1/  (12 роутерів, ~42 ендпоінти)          │
-│  frontend/src/        (React 18 + TypeScript + Tailwind v4)  │
-├─────────────────────────────────────────────────────────────┤
-│                    APPLICATION LAYER                         │
-│  backend/app/application/                                    │
-│  ├── use_cases/     (5 модулів)                              │
-│  ├── dto/           (7 DTO)                                  │
-│  ├── mappers/       (7 mappers)                              │
-│  └── interfaces/    (IEventBus, IUnitOfWork)                 │
-├─────────────────────────────────────────────────────────────┤
-│                    DOMAIN LAYER                              │
-│  backend/app/domain/                                          │
-│  ├── entities/      (7 entities)                             │
-│  ├── value_objects/ (4 VOs)                                  │
-│  ├── events/        (5 event types)                          │
-│  ├── repositories/  (7 Protocols + IUnitOfWork)              │
-│  └── services/      (2 domain services)                      │
-├─────────────────────────────────────────────────────────────┤
-│                    INFRASTRUCTURE LAYER                       │
-│  backend/app/infrastructure/                                  │
-│  ├── persistence/   (models + 7 repos + UoW)                │
-│  ├── di/            (DI Container + Service Registry)        │
-│  └── event_bus/     (LocalEventBus)                          │
-├─────────────────────────────────────────────────────────────┤
-│                    LEGACY LAYER (ще працює)                   │
-│  backend/app/services/   (5 сервісів)                        │
-│  backend/app/models/     (14 ORM моделей)                    │
-│  backend/app/schemas/    (11 Pydantic схем)                  │
-│  backend/app/contracts/  (6 контрактів)                      │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                    PRESENTATION LAYER                             │
+│  frontend/src/        (React 18 + TypeScript + Tailwind v4)      │
+│  frontend/src-tauri/  (Tauri desktop оболонка)                   │
+├──────────────────────────────────────────────────────────────────┤
+│                    RUST-ФАСАД (axum, 127.0.0.1:8000)             │
+│  frontend/src-tauri/crates/kasa-api/   (HTTP-фасад, 157/164 роути)│
+│    └── fallback для legacy-шляхів → 410 Gone                     │
+├──────────────────────────────────────────────────────────────────┤
+│                    APPLICATION LAYER (Rust)                       │
+│  crates/kasa-application/   (use cases, DTO, mappers)            │
+├──────────────────────────────────────────────────────────────────┤
+│                    DOMAIN LAYER (Rust)                            │
+│  crates/kasa-domain/        (entities, value objects, rules)     │
+├──────────────────────────────────────────────────────────────────┤
+│                    INFRASTRUCTURE LAYER (Rust)                    │
+│  crates/kasa-infrastructure/ (PostgreSQL, репозиторії, міграції) │
+│  crates/kasa-ocr/           (OCR)                                │
+│  crates/kasa-prro/          (ПРРО/фіскалізація)                  │
+├──────────────────────────────────────────────────────────────────┤
+│                    LEGACY LAYER (НЕ runtime)                      │
+│  backend/ (FastAPI) — дезактивований, лише еталон                │
+│  для differential-тестів; docker-compose профіль legacy          │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+**Продакшн-шлях даних:** React → Tauri-оболонка → Rust-фасад (axum :8000) → PostgreSQL.
 
 ---
 
@@ -68,61 +63,54 @@
 ```
 kasa/
 ├── .gitignore, README.md, ROADMAP.md, STRUCTURE.md
-├── docker-compose.yml              # PostgreSQL 16 + Backend
-│
-├── backend/
-│   ├── Dockerfile                  # Multi-stage build
-│   ├── requirements.txt            # Python залежності
-│   ├── pytest.ini                  # Конфіг тестів
-│   ├── alembic.ini                 # Конфіг міграцій
-│   │
-│   ├── alembic/versions/           # 2 міграції
-│   ├── app/
-│   │   ├── main.py                 # FastAPI app
-│   │   ├── config.py               # Pydantic Settings
-│   │   ├── database.py             # SQLAlchemy async
-│   │   ├── api/v1/                 # 12 роутерів
-│   │   ├── domain/                 # 🆕 31 файл
-│   │   ├── application/            # 🆕 24 файли
-│   │   ├── infrastructure/         # 🆕 15 файлів
-│   │   ├── middleware/             # AuthMiddleware
-│   │   ├── models/                 # 14 ORM моделей
-│   │   ├── schemas/                # 11 Pydantic схем
-│   │   ├── services/               # 4 сервіси
-│   │   └── contracts/              # 6 контрактів
-│   └── tests/                      # 🆕 16 файлів, 42 тести
+├── docker-compose.yml              # PostgreSQL 16 + backend (профіль legacy)
 │
 ├── frontend/
-│   ├── src/
-│   │   ├── App.tsx                 # Lazy loading
-│   │   ├── components/             # 14 UI компонентів
-│   │   ├── pages/                  # 15 сторінок
-│   │   ├── hooks/                  # 7 хуків
-│   │   ├── services/               # 8 API сервісів
-│   │   ├── store/                  # 2 Zustand store
-│   │   └── types/                  # 7 TypeScript типів
-│   └── package.json                # React 18 + Vite
+│   ├── src/                        # React (components, pages, hooks, services, store, types)
+│   └── src-tauri/                  # 🦀 Tauri + RUST-ФАСАД (100% Rust backend)
+│       ├── crates/
+│       │   ├── kasa-api/           # HTTP-фасад (axum), роути v1, 410-fallback
+│       │   ├── kasa-application/   # Use cases
+│       │   ├── kasa-domain/        # Домен
+│       │   ├── kasa-infrastructure/# PostgreSQL, репозиторії, міграції
+│       │   ├── kasa-ocr/           # OCR
+│       │   └── kasa-prro/          # ПРРО
+│       ├── src/                    # main.rs (бінарник kasa-pos)
+│       ├── migrations/             # Міграції БД
+│       └── target/debug/kasa-pos   # Зібраний бінарник (слухає :8000)
+│
+├── backend/                        # 🧪 LEGACY Python (FastAPI) — дезактивований
+│   ├── app/                        #   Еталон для differential-тестів
+│   ├── alembic/                    #   Історичні міграції
+│   └── tests/                      #   Differential-тести (референс)
 │
 └── docs/
 ```
 
 ---
 
-## 4. БАЗА ДАНИХ (PostgreSQL)
+## 4. БАЗА ДАННИХ (PostgreSQL)
 
-**14 моделей:** Product, Barcode, Category, Supplier, User, Invoice, InvoiceItem, Receipt, ReceiptItem, ReturnInvoice, Transfer, WriteOff, SupplierLedger, ProductImage
+**Схема ідентична для Rust-фасаду та legacy-еталона:**
 
-**2 міграції:** initial + fix_enums_gin
-
-**Індекси:** GIN trigram на title, унікальні на barcode/number
+- 17 таблиць: products, barcodes, categories, product_images, suppliers, users, invoices, invoice_items, receipts, receipt_items, return_invoices, return_invoice_items, transfers, transfer_items, write_offs, write_off_items, supplier_ledger
+- Міграції: Python (alembic, історичні) + Rust (`frontend/src-tauri/migrations`)
+- Індекси: GIN trigram на title, унікальні на barcode/number
+- Materialized Views: sales_report_view, stock_report_view, supplier_ledger_view
 
 ---
 
-## 5. API (42 ендпоінти)
+## 5. API (Rust-фасад :8000)
+
+| Показник | Значення |
+|----------|----------|
+| **Покрито роутів** | **157 / 164** |
+| **Деприкейтнуті v2-аліаси auth** | **7 → 410 Gone** |
+| Fallback для legacy-шляхів | 410 Gone |
 
 | Група | Ендпоінти | Опис |
 |-------|-----------|------|
-| `/auth/*` | 3 | Login, Login-PIN, Refresh |
+| `/auth/*` | 3 | Login, Login-PIN, Refresh (+7 v2-аліасів → 410) |
 | `/products/*` | 7 | CRUD + пошук за ШК |
 | `/categories/*` | 5 | CRUD + дерево |
 | `/suppliers/*` | 5 | CRUD |
@@ -134,38 +122,35 @@ kasa/
 | `/write-offs/*` | 3 | CRUD |
 | `/ledger/*` | 3 | Історія + баланс |
 | `/documents/*` | 1 | Узагальнений перегляд |
+| OCR / ПРРО | + | kasa-ocr, kasa-prro |
 
 ---
 
-## 6. ТЕСТИ (42 тести)
+## 6. ТЕСТУВАННЯ
 
-| Файл | Тестів | Сценарій |
-|------|--------|----------|
-| `test_auth.py` | 18 | Авторизація та ролі |
-| `test_sale_flow.py` | 4 | Повний цикл продажу |
-| `test_invoice_flow.py` | 7 | Прибуткова накладна |
-| `test_return_flow.py` | 3 | Повернення від клієнта |
-| `test_return_supplier.py` | 4 | Повернення постачальнику |
-| `test_ledger.py` | 6 | Взаєморозрахунки |
+| Рівень | Інструмент | Стан |
+|--------|-----------|------|
+| Rust unit / integration | cargo test (kasa-*) | ✅ Активно |
+| Differential (Rust vs Python-еталон) | pytest (backend/) | ⏳ В процесі |
+| Frontend | npm test | ✅ Базово |
+| E2E | Playwright | ⏳ План |
 
 ---
 
 ## 7. KNOWN ISSUES
 
 ### 🔴 CRITICAL
-- Tauri Desktop не реалізовано
-- CI/CD потребує GitHub Actions
+- Python-бекенд дезактивовано — всі зміни логіки тепер тільки в Rust (differential-тести мають покривати регресії)
 
 ### 🟠 HIGH
-- ReportsPage — заглушка
+- ReportsPage — заглушка (React)
 - DashboardPage — базова
-- Немає тестів для Transfer та WriteOff
-- `datetime.utcnow` deprecated в Python 3.12+
+- Differential-тести покривають не всі 164 роути
 
 ### 🟡 MEDIUM
-- Numeric тип з float анотаціями
-- Відсутні транзакції в legacy сервісах
-- Потрібна міграція з legacy на нові Use Cases
+- 7 деприкейтнутих v2-аліасів auth тримаються лише для сумісності → 410
+- Legacy-код (backend/) зберігається — ризик «мертвого» коду, після завершення differential-тестів можна архівувати
+- OCR/ПРРО потребують реальних пристроїв для повної валідації
 
 ---
 
@@ -173,19 +158,20 @@ kasa/
 
 | Проблема | Агент |
 |----------|-------|
-| Backend API (ендпоінти, сервіси) | `Python_Backend_Agent` |
-| База даних (моделі, міграції) | `DB_Admin_Agent` |
+| Rust-фасад (axum, крейти kasa-*) | `Rust_Agent` |
+| База даних (моделі, міграції, PostgreSQL) | `DB_Admin_Agent` |
 | Frontend (React, TypeScript, UI) | `React_UI_UX_Agent` |
 | Архітектура (шари, DDD, рефакторинг) | `System_Architect_Agent` |
 | Інфраструктура (Docker, безпека, DI) | `Infrastructure_Master_Agent` |
-| Тести (написати/виправити) | `Integration_Test_Agent` |
+| Differential-тести (Python-еталон) | `Python_Backend_Agent` + `Test Helper Agent` |
 | Аудит коду (безпека, логіка) | `QA_Agent` |
 | Git операції | `Git Admin Agent` |
 | Tauri Desktop | `Tauri_Agent` |
+| ПРРО / OCR інтеграції | `apiarm_agent` / `Rust_Agent` |
 | Створення нового агента | `Creator_Agent` |
 | Файлові операції | `File Wizard Agent` |
-| Допомога з тестуванням | `Test Helper Agent` |
 
 ---
 
 *Повний звіт: agents/pm_agent/interactions/system_state_report.md*
+*Оновлено після етапу 8 міграції: Python → Rust (продакшн: axum :8000, 100% Rust)*

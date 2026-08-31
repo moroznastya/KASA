@@ -16,14 +16,14 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.prro import (
-    PrroShift,
-    PrroShiftStatus,
     PrroQueueItem,
     PrroQueueStatus,
+    PrroShift,
+    PrroShiftStatus,
 )
 
 
@@ -138,6 +138,45 @@ class PrroRepository:
         await self._session.flush()
         return shift
 
+    async def next_local_number(self, shift_id: UUID) -> int:
+        """M1: атомарний local_number — інкремент + збереження в одній SQL-операції.
+
+        SQL UPDATE ... RETURNING гарантує N унікальних послідовних номерів
+        при N паралельних фіскалізаціях (без read-then-write race).
+
+        Raises:
+            ValueError: якщо зміну не знайдено (або зміну закрито).
+        """
+        stmt = (
+            update(PrroShift)
+            .where(
+                PrroShift.id == shift_id,
+                PrroShift.status == PrroShiftStatus.OPEN,
+            )
+            .values(
+                last_local_number=func.coalesce(PrroShift.last_local_number, 0) + 1
+            )
+            .returning(PrroShift.last_local_number)
+        )
+        result = await self._session.execute(stmt)
+        value = result.scalar_one_or_none()
+        if value is None:
+            raise ValueError(f"Відкриту зміну {shift_id} не знайдено")
+        return value
+
+    async def update_shift_last_mac(
+        self,
+        shift_id: UUID,
+        last_mac: str,
+    ) -> Optional[PrroShift]:
+        """Оновлює лише last_mac зміни (B1: hash-ланцюжок після sync-відправки)."""
+        shift = await self.get_shift(shift_id)
+        if shift is None:
+            return None
+        shift.last_mac = last_mac
+        await self._session.flush()
+        return shift
+
     async def update_shift(self, shift: PrroShift) -> PrroShift:
         """Оновлює існуючу зміну."""
         merged = await self._session.merge(shift)
@@ -240,6 +279,20 @@ class PrroRepository:
 
         await self._session.flush()
         return item
+
+    async def update_queue_check_sign(
+        self, item_id: UUID, check_sign: str
+    ) -> Optional[PrroQueueItem]:
+        """B2: зберігає повний підписаний check_sign (ідемпотентність sync)."""
+        stmt = (
+            update(PrroQueueItem)
+            .where(PrroQueueItem.id == item_id)
+            .values(check_sign=check_sign)
+            .returning(PrroQueueItem)
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return result.scalar_one_or_none()
 
     async def count_pending(self) -> int:
         """Кількість документів, що очікують передачі (pending)."""

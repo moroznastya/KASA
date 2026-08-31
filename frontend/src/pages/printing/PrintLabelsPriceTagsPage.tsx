@@ -155,7 +155,6 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   // ── Завантаження збережених налаштувань при монтуванні ──
   useEffect(() => {
     loadTypeSettings(printType).finally(() => setSettingsLoaded(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Бонус: якщо template_id порожній — підставляємо дефолтний шаблон типу ──

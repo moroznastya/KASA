@@ -8,10 +8,9 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.infrastructure.persistence.models.user import UserRole
-from app.infrastructure.persistence.models.permission import Permission
 
 
 class UserCreate(BaseModel):

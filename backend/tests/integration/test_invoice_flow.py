@@ -13,13 +13,10 @@
   - Повний цикл: накладна → продаж
 """
 
-from decimal import Decimal
-from uuid import uuid4
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
-
 
 pytestmark = [
     pytest.mark.integration,
@@ -47,7 +44,7 @@ class TestInvoiceFlow:
         return response.json()
 
     async def _create_product(
-        self, client: AsyncClient, auth_headers: dict, supplier_id: str = None
+        self, client: AsyncClient, auth_headers: dict, supplier_id: str | None = None
     ) -> dict:
         """Допоміжний метод: створює товар."""
         data = {

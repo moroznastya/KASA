@@ -21,28 +21,27 @@ import shutil
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
+from app.domain.services.product_service import ProductService
+from app.infrastructure.persistence.models.barcode import Barcode
 from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.product_image import ProductImage
-from app.infrastructure.persistence.models.barcode import Barcode
 from app.schemas.product import (
-    ProductCreate,
-    ProductUpdate,
-    ProductResponse,
-    ProductListResponse,
-    ProductSearchParams,
-    ProductImageResponse,
     BarcodeResponse,
+    ProductCreate,
+    ProductImageResponse,
+    ProductListResponse,
+    ProductResponse,
+    ProductSearchParams,
+    ProductUpdate,
 )
-from app.domain.services.product_service import ProductService
-from app.domain.services.auth_service import AuthService
-
 
 # ─── Допоміжна функція: завантажити товар зі зв'язками ─────────────────────
 

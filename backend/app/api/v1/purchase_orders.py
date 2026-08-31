@@ -11,26 +11,24 @@ API роутер для роботи із замовленнями постач�
   - POST   /purchase-orders/{id}/cancel   — скасувати замовлення
 """
 
-from uuid import UUID
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
-from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
-from app.infrastructure.persistence.models.supplier import Supplier
-from app.schemas.purchase_order import (
-    PurchaseOrderCreate,
-    PurchaseOrderUpdate,
-    PurchaseOrderResponse,
-    PurchaseOrderConfirmRequest,
-)
 from app.domain.services.auth_service import AuthService
-from app.domain.services.product_service import ProductService
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
+from app.schemas.purchase_order import (
+    PurchaseOrderConfirmRequest,
+    PurchaseOrderCreate,
+    PurchaseOrderResponse,
+    PurchaseOrderUpdate,
+)
 
 router = APIRouter(
     prefix="/purchase-orders",

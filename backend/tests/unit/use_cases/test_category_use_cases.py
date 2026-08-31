@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
+from app.domain.entities.category import Category
 from app.domain.use_cases.category_use_cases import (
     CreateCategoryUseCase,
-    UpdateCategoryUseCase,
     DeleteCategoryUseCase,
+    UpdateCategoryUseCase,
 )
-from app.domain.entities.category import Category
 
 
 class TestCreateCategoryUseCase:

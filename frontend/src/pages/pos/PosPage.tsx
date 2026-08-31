@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, Layers, EyeOff, Settings2, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle } from 'lucide-react';
+import {Search, Trash2, ShoppingCart, CreditCard, Banknote, Loader2, X, AlertTriangle, UserPlus, Users, User, DollarSign, BadgePercent, RotateCcw, Clock, FileCheck2, Wifi, WifiOff, PlayCircle, StopCircle} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useUnifiedSearch } from '@/hooks/useUnifiedSearch';
 import { debtorService, Debtor } from '@/services/debtorService';
@@ -29,6 +29,7 @@ import SelectItemsFromReceipt from '@/components/pos/SelectItemsFromReceipt';
 import type { ReturnCartItem } from '@/components/pos/SelectItemsFromReceipt';
 import ReturnWithoutReceipt from '@/components/pos/ReturnWithoutReceipt';
 import type { ReceiptSearchResult } from '@/types/receipt';
+import { markSelectOnMouseDown, preventSelectionClearOnMouseUp } from '@/utils/selectOnFocus';
 
 /** Фіскальні реквізити чеку — ЄДИНІ поля, які мерджимо поверх реального чеку.
  *  Жодних сумарних/позиційних даних тут немає, щоб не перезаписувати
@@ -137,6 +138,11 @@ const PosPage: React.FC = () => {
   // Стан передачі суми на термінал (card / mixed)
   const [terminalState, setTerminalState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [terminalError, setTerminalError] = useState('');
+  // Примусове підтвердження оплати карткою: коли TCP-з'єднання з терміналом
+  // обірвалось ПІСЛЯ списання коштів (таймаут) — terminalState='error',
+  // terminalResult=null, а чек без rrn не створювався. Касир підтверджує,
+  // що клієнт оплатив — чек створюється без terminal_* полів.
+  const [forceCardConfirmed, setForceCardConfirmed] = useState(false);
   // Результат успішної транзакції терміналу (оплата: card / mixed)
   const [terminalResult, setTerminalResult] = useState<TerminalPaymentResult | null>(null);
   // Результат повернення на картку (повернення: card / mixed)
@@ -170,6 +176,7 @@ const PosPage: React.FC = () => {
     // Скидаємо стан терміналу (оплата / повернення) при закритті модалки
     setTerminalState('idle');
     setTerminalError('');
+    setForceCardConfirmed(false);
     terminalResultRef.current = null;
     setTerminalResult(null);
     refundResultRef.current = null;
@@ -235,6 +242,9 @@ const PosPage: React.FC = () => {
   const loadPrroStatus = usePrroStore((s) => s.loadStatus);
   const prroFiscalizing = usePrroStore((s) => s.fiscalizing);
   const { devices, statuses, loadDevices } = useDevicesStore();
+  // Окремий селектор для initListeners: функція стабільна, тому підписка
+  // не ре-рендерить PosPage на кожну подію пристрою (weight-updated тощо)
+  const initListeners = useDevicesStore((s) => s.initListeners);
 
   // Авто-оновлення статусу ПРРО (кожні 30 секунд)
   useEffect(() => {
@@ -249,6 +259,14 @@ const PosPage: React.FC = () => {
       loadDevices();
     }
   }, [showPayment, devices.length, loadDevices]);
+
+  // Підписка на події пристроїв (weight-updated, device-status-changed) —
+  // ваги оновлюються на POS без відкриття Налаштувань → Пристрої.
+  // initListeners повертає cleanup-функцію (unlisten) для розмонтування.
+  useEffect(() => {
+    if (!isTauri()) return;
+    return initListeners();
+  }, [initListeners]);
 
   // Save cart to sessionStorage on change
   useEffect(() => {
@@ -363,7 +381,7 @@ const PosPage: React.FC = () => {
     onBarcodeFound: (product: any) => handleBarcodeFoundRef.current(product),
   });
   const [debtorSearchResults, setDebtorSearchResults] = useState<Debtor[]>([]);
-  const [isSearchingDebtorsUnified, setIsSearchingDebtorsUnified] = useState(false);
+  const [, setIsSearchingDebtorsUnified] = useState(false);
 
 
   useEffect(() => {
@@ -415,6 +433,8 @@ const PosPage: React.FC = () => {
         const CHUNK_SIZE = 300;
         for (let i = 0; i < allProducts.length; i += CHUNK_SIZE) {
           const chunk = allProducts.slice(i, i + CHUNK_SIZE);
+          // Мультиточковість (Етап 5): кеш позначається поточною точкою —
+          // офлайн-довідник фільтрує товари магазину, в якому працює каса.
           const count = await cacheProducts(chunk);
           // Літерал CHUNK_SIZE у лозі: рядок не мініфікується і лишається в бандлі
           // (мініфікатор скорочує саму змінну, тому grep по бандлу шукає літерал)
@@ -889,8 +909,10 @@ const PosPage: React.FC = () => {
             toast.error('Повернення на картку не підтверджено терміналом');
             return;
           }
-        } else {
-          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+        } else if (!forceCardConfirmed) {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась.
+          // Якщо forceCardConfirmed=true (касир підтвердив оплату примусово) —
+          // автопередачу пропускаємо, чек створюється без terminalResult.
           if (
             !terminalResult ||
             terminalResult.success !== true ||
@@ -938,7 +960,7 @@ const PosPage: React.FC = () => {
       if (hasDebtItem && debtPaymentInfo) {
         try {
           debtPayment = JSON.parse(debtPaymentInfo);
-        } catch {}
+        } catch { /* ігноруємо: операція не критична */ }
         sessionStorage.removeItem('pos_debt_payment');
       }
 
@@ -966,6 +988,7 @@ const PosPage: React.FC = () => {
         payment_method: paymentMethod,
         cash_amount: parseFloat(cashAmount) || 0,
         card_amount: parseFloat(cardAmount) || 0,
+        cashier_name: useAuthStore.getState().user?.name,
         // Дані карткового терміналу (якщо транзакція підтверджена)
         ...terminalPayload,
       };
@@ -1005,6 +1028,7 @@ const PosPage: React.FC = () => {
       // Скидаємо стан терміналу та RRN після успішної оплати/повернення
       setTerminalState('idle');
       setTerminalError('');
+      setForceCardConfirmed(false);
       terminalResultRef.current = null;
       setTerminalResult(null);
       refundResultRef.current = null;
@@ -1073,8 +1097,10 @@ const PosPage: React.FC = () => {
             toast.error('Повернення на картку не підтверджено терміналом');
             return;
           }
-        } else {
-          // Продаж: автопередача, якщо результат відсутній або сума змінилась
+        } else if (!forceCardConfirmed) {
+          // Продаж: автопередача, якщо результат відсутній або сума змінилась.
+          // Якщо forceCardConfirmed=true (касир підтвердив оплату примусово) —
+          // автопередачу пропускаємо, чек створюється без terminalResult.
           if (
             !terminalResult ||
             terminalResult.success !== true ||
@@ -1115,7 +1141,7 @@ const PosPage: React.FC = () => {
       if (hasDebtItem && debtPaymentInfo) {
         try {
           debtPayment = JSON.parse(debtPaymentInfo);
-        } catch {}
+        } catch { /* ігноруємо: операція не критична */ }
         sessionStorage.removeItem('pos_debt_payment');
       }
 
@@ -1143,6 +1169,7 @@ const PosPage: React.FC = () => {
         payment_method: paymentMethod,
         cash_amount: parseFloat(cashAmount) || 0,
         card_amount: parseFloat(cardAmount) || 0,
+        cashier_name: useAuthStore.getState().user?.name,
         // Дані карткового терміналу (якщо транзакція підтверджена)
         ...terminalPayload,
       };
@@ -1185,6 +1212,7 @@ const PosPage: React.FC = () => {
       // Скидаємо стан терміналу та RRN після успішної оплати/повернення
       setTerminalState('idle');
       setTerminalError('');
+      setForceCardConfirmed(false);
       terminalResultRef.current = null;
       setTerminalResult(null);
       refundResultRef.current = null;
@@ -1233,6 +1261,7 @@ const PosPage: React.FC = () => {
           quantity: item.quantity,
           price: item.price,
         })),
+        cashier_name: useAuthStore.getState().user?.name,
       };
 
       const { receipt: response, savedOffline } = await createReceiptWithOfflineFallback(
@@ -1280,7 +1309,7 @@ const PosPage: React.FC = () => {
   }, []);
 
   // Додавання товарів повернення з модалок до кошика
-  const handleAddReturnItemsToCart = useCallback((items: ReturnCartItem[]) => {
+  const _handleAddReturnItemsToCart = useCallback((items: ReturnCartItem[]) => {
     setCart(prev => {
       const existing = [...prev];
       for (const newItem of items) {
@@ -1440,6 +1469,27 @@ const PosPage: React.FC = () => {
     }
   };
 
+  /**
+   * Примусове підтвердження оплати карткою.
+   * Використовується, коли TCP-з'єднання з терміналом обірвалось ПІСЛЯ
+   * списання коштів (таймаут): terminalState='error', terminalResult=null,
+   * і handlePayment блокує створення чека. Касир підтверджує, що клієнт
+   * оплатив — чек створюється без terminal_* полів (RRN не збережено).
+   * Для returnMode (повернення на картку) НЕ показується: повернення
+   * коштів без підтвердження терміналу неможливе.
+   */
+  const handleForceCardConfirm = () => {
+    const ok = window.confirm(
+      'Оплата пройшла на терміналі? Підтвердіть, що клієнт оплатив карткою. Дані транзакції (RRN, код авторизації) не будуть збережені в чеку.'
+    );
+    if (ok) {
+      setForceCardConfirmed(true);
+      setTerminalState('idle');
+      setTerminalError('');
+      toast.success('Оплату підтверджено примусово — чек буде створено без даних транзакції');
+    }
+  };
+
   // Enter для кнопки "Сплатити" в модалці оплати
   const handlePaymentKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1550,7 +1600,8 @@ const PosPage: React.FC = () => {
                 <>Чек очікує фіскалізації (офлайн-черга)</>
               )}
               {fiscalStatus.fiscal_status === 'failed' && (
-                <>Помилка фіскалізації: {fiscalStatus.fiscal_error || 'невідома'}</>
+                // fiscal_error вже у форматі «[КОД] Точний текст» (зберігається з коду)
+                <>{fiscalStatus.fiscal_error || 'Помилка фіскалізації'}</>
               )}
               {fiscalStatus.fiscal_status === 'none' && (
                 <>Чек не фіскалізовано</>
@@ -1840,12 +1891,14 @@ const PosPage: React.FC = () => {
                         <input
                           type="number"
                           value={editingQuantity[item.product_id] !== undefined ? editingQuantity[item.product_id] : item.quantity}
+                          onMouseDown={markSelectOnMouseDown}
+                          onMouseUp={preventSelectionClearOnMouseUp}
                           onFocus={(e) => {
                             setEditingQuantity((prev) => ({
                               ...prev,
                               [item.product_id]: String(item.quantity),
                             }));
-                            e.target.select();
+                            e.currentTarget.select();
                           }}
                           onChange={(e) => {
                             const val = e.target.value;
@@ -1857,7 +1910,7 @@ const PosPage: React.FC = () => {
                               }));
                             }
                           }}
-                          onBlur={(e) => {
+                          onBlur={() => {
                             const val = editingQuantity[item.product_id];
                             if (val === undefined || val === '') {
                               // Якщо поле порожнє — залишаємо поточну кількість
@@ -2062,6 +2115,7 @@ const PosPage: React.FC = () => {
                     // Скидаємо результат терміналу при зміні способу оплати
                     setTerminalState('idle');
                     setTerminalError('');
+                    setForceCardConfirmed(false);
                     terminalResultRef.current = null;
                     setTerminalResult(null);
                     refundResultRef.current = null;
@@ -2176,6 +2230,19 @@ const PosPage: React.FC = () => {
                         {terminalError}
                       </p>
                     </div>
+                  )}
+                  {/* Примусова оплата: термінал списав кошти, але TCP обірвався (таймаут).
+                      Касир підтверджує оплату — чек створюється без RRN. Для returnMode
+                      НЕ показуємо: повернення коштів без підтвердження терміналу неможливе. */}
+                  {terminalState === 'error' && !returnMode && (paymentMethod === 'card' || paymentMethod === 'mixed') && (
+                    <button
+                      type="button"
+                      onClick={handleForceCardConfirm}
+                      className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold transition-colors"
+                    >
+                      <AlertTriangle className="w-4 h-4" />
+                      Сплатити примусово
+                    </button>
                   )}
                 </>
               ) : (

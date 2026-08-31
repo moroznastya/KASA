@@ -1,5 +1,5 @@
 """
-API роутер для системних налаштувань Kasa POS.
+API роутер для системних налаштувань Torgashka POS.
 
 GET  /api/v1/settings          — отримати всі налаштування, згруповані за модулями
 GET  /api/v1/settings/:module  — отримати налаштування конкретного модуля
@@ -19,18 +19,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_session
-from app.infrastructure.persistence.models.system_setting import SystemSetting
-from app.schemas.settings import (
-    SystemSettingRead,
-    SystemSettingUpdate,
-    SettingsModuleResponse,
-    SystemSettingBatchUpdate,
-)
-from app.domain.services.auth_service import AuthService
-from app.infrastructure.persistence.models.user import User
 from app.application.services.settings_value_validator import (
     validate_and_normalize_setting_value,
+)
+from app.database import get_session
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.persistence.models.system_setting import SystemSetting
+from app.infrastructure.persistence.models.user import User
+from app.schemas.settings import (
+    SettingsModuleResponse,
+    SystemSettingBatchUpdate,
+    SystemSettingRead,
+    SystemSettingUpdate,
 )
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
@@ -181,7 +181,7 @@ async def get_all_settings(
     """
     result = await session.execute(
         select(SystemSetting)
-        .where(SystemSetting.is_active == True)
+        .where(SystemSetting.is_active)
         .order_by(SystemSetting.module, SystemSetting.key)
     )
     settings = result.scalars().all()
@@ -206,7 +206,7 @@ async def get_settings_by_module(
     """
     result = await session.execute(
         select(SystemSetting)
-        .where(SystemSetting.module == module, SystemSetting.is_active == True)
+        .where(SystemSetting.module == module, SystemSetting.is_active)
         .order_by(SystemSetting.key)
     )
     settings = result.scalars().all()
@@ -256,7 +256,7 @@ async def batch_update_settings(
     # Повертаємо оновлені налаштування
     result = await session.execute(
         select(SystemSetting)
-        .where(SystemSetting.is_active == True)
+        .where(SystemSetting.is_active)
         .order_by(SystemSetting.module, SystemSetting.key)
     )
     settings = result.scalars().all()

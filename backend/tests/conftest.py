@@ -1,5 +1,5 @@
 """
-Глобальні фікстури для тестування Kasa POS — SQLite in-memory.
+Глобальні фікстури для тестування Torgashka POS — SQLite in-memory.
 
 Надає:
   - engine — create_async_engine (SQLite in-memory, per-test)
@@ -19,42 +19,45 @@
   - SlowAPIMiddleware видалено з app
 """
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-    AsyncEngine,
-)
 
 # ─── Підміна PostgreSQL UUID на універсальний UUID для SQLite ──────────────
 # Це дозволяє моделям, які імпортують UUID з postgresql, працювати з SQLite
 import sqlalchemy.dialects.postgresql
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import types
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
 sqlalchemy.dialects.postgresql.UUID = types.UUID
 
 # ─── Вимкнення slowapi rate limiter ──────────────────────────────────────────
 import slowapi
+
 slowapi.Limiter.limit = lambda self, *a, **kw: lambda f: f
 
-from app.main import app
 from slowapi.middleware import SlowAPIMiddleware
+
+from app.main import app
+
 app.user_middleware = [
     m for m in app.user_middleware if m.cls is not SlowAPIMiddleware
 ]
 app.middleware_stack = None
 
-from app.database import Base, get_session
-from app.infrastructure.persistence.models.user import User, UserRole
-from app.domain.services.auth_service import AuthService
 from app.api.v2.deps import get_cache_service
+from app.database import Base, get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.cache.memory_cache import MemoryCacheService
-
+from app.infrastructure.persistence.models.user import User, UserRole
 
 # ─── Тестова БД ──────────────────────────────────────────────────────────────
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"

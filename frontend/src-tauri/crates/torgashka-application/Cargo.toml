@@ -1,0 +1,17 @@
+[package]
+name = "torgashka-application"
+version = "0.1.0"
+edition = "2021"
+description = "Torgashka — Application layer: use cases, порти, DTO. Залежить тільки від torgashka-domain."
+
+
+[lints]
+workspace = true
+
+[dependencies]
+torgashka-domain = { path = "../torgashka-domain" }
+uuid = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+serde_json = "1.0.151"
+chrono = "0.4.45"

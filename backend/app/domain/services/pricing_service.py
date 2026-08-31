@@ -8,7 +8,6 @@ Domain Service: PricingService.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
 
 from ..value_objects.money import Money
 from ..value_objects.tax_rate import TaxRate

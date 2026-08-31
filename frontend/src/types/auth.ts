@@ -9,6 +9,7 @@ export interface User {
   login: string;        // Логін для входу
   role: UserRole;
   is_active: boolean;
+  onboarding_completed?: boolean;  // Онбординг завершено (owner/admin)
   permissions?: string[] | null;  // Список прав доступу
   created_at: string;
   updated_at: string;

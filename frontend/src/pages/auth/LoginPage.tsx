@@ -8,6 +8,8 @@ import { Select, SelectOption } from '@/components/ui/Select';
 import { User, ArrowLeft, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '@/services/api';
+import logo from '@/assets/logo.png';
+
 
 interface UserOption {
   id: string;
@@ -23,13 +25,40 @@ const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingUsers, setIsFetchingUsers] = useState(true);
+  const [emptyError, setEmptyError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<UserOption[]>('/auth/users-list')
-      .then((res) => setUsers(res.data))
-      .catch(() => toast.error('Не вдалося завантажити список користувачів'))
-      .finally(() => setIsFetchingUsers(false));
-  }, []);
+    let cancelled = false;
+    (async () => {
+      // 1) На fresh-БД без користувачів — редирект на майстер першого встановлення.
+      try {
+        const status = await api.get<{ status: string }>('/setup/status');
+        if (!cancelled && status.data.status === 'not_initialized') {
+          navigate('/setup', { replace: true });
+          return;
+        }
+      } catch {
+        // /setup/status недоступний (старий фасад?) — продовжуємо як раніше.
+      }
+      // 2) Список користувачів для логіну.
+      try {
+        const res = await api.get<UserOption[]>('/auth/users-list');
+        if (!cancelled) {
+          setUsers(res.data);
+          if (res.data.length === 0) {
+            setEmptyError('У системі немає користувачів. Система вже ініціалізована — зверніться до адміністратора.');
+          }
+        }
+      } catch {
+        if (!cancelled) toast.error('Не вдалося завантажити список користувачів');
+      } finally {
+        if (!cancelled) setIsFetchingUsers(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   const userOptions: SelectOption[] = users.map((u) => ({
     value: u.id,
@@ -89,15 +118,13 @@ const LoginPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-blue-100 dark:from-slate-900 dark:to-slate-800 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4 shadow-lg shadow-primary-200 dark:shadow-primary-900/30">
-            <span className="text-white font-bold text-2xl">K</span>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Kasa POS</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Система управління продажами
-          </p>
+        {/* Logo — квадрат, сторона = ширина картки входу */}
+        <div className="mb-8">
+          <img
+            src={logo}
+            alt="Torgashka"
+            className="w-full aspect-square object-contain drop-shadow-lg"
+          />
         </div>
 
         {/* Card */}
@@ -112,6 +139,13 @@ const LoginPage: React.FC = () => {
               {isFetchingUsers ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                </div>
+              ) : emptyError ? (
+                <div className="py-6 text-center">
+                  <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center mx-auto mb-3">
+                    <User className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">{emptyError}</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -171,7 +205,7 @@ const LoginPage: React.FC = () => {
         </div>
 
         <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-6">
-          Kasa POS v1.0 &copy; {new Date().getFullYear()}
+          Torgashka v1.0 &copy; {new Date().getFullYear()}
         </p>
       </div>
     </div>

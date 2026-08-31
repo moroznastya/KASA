@@ -1,15 +1,20 @@
-import React, { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle } from 'lucide-react';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
+import { useWriteOffReasons, useCreateWriteOffReason } from '@/hooks/useWriteOffReasons';
 import { Button } from '@/components/ui/Button';
 import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import api from '@/services/api';
+
 interface CartItem {
   product_id: string;
   product_title: string;
@@ -19,19 +24,74 @@ interface CartItem {
   price: number;
 }
 
+/** Поточна дата в ISO-форматі (YYYY-MM-DD), локальний час */
+function todayISO(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offset * 60 * 1000);
+  return local.toISOString().slice(0, 10);
+}
+
 const WriteOffFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { id: editId } = useParams<{ id: string }>();
+  const isEdit = !!editId;
   const { goBack } = useBackNavigation();
   const createMutation = useCreateDocument();
   const confirmMutation = useConfirmDocument();
+  const { data: reasons = [], isLoading: reasonsLoading } = useWriteOffReasons();
+  const createReasonMutation = useCreateWriteOffReason();
 
+  const [reason, setReason] = useState('');
+  const [newReasonName, setNewReasonName] = useState('');
+  const [writeOffDate, setWriteOffDate] = useState(todayISO());
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const { data: searchData } = useSearchProducts(searchQuery);
+
+  // Завантаження даних для редагування (GET /write-offs/{id})
+  const {
+    data: editDoc,
+    isLoading: docLoading,
+    isError: docError,
+  } = useQuery({
+    queryKey: ['write-off', editId],
+    queryFn: async () => {
+      if (!editId) return null;
+      const response = await api.get(`/write-offs/${editId}`);
+      return response.data;
+    },
+    enabled: isEdit,
+  });
+
+  // Заповнення форми при редагуванні
+  useEffect(() => {
+    if (!isEdit || !editDoc) return;
+    setReason(editDoc.reason || '');
+    setWriteOffDate(editDoc.write_off_date ? String(editDoc.write_off_date).slice(0, 10) : todayISO());
+    setNotes(editDoc.notes ?? '');
+    setCart((editDoc.items || []).map((item: any) => ({
+      product_id: item.product_id,
+      product_title: item.product_name,
+      product_barcode: null,
+      quantity: parseFloat(item.quantity) || 0,
+      cost_price: parseFloat(item.cost_price) || 0,
+      price: parseFloat(item.price) || 0,
+    })));
+  }, [editDoc, isEdit]);
+
+  // Помилка завантаження при редагуванні
+  useEffect(() => {
+    if (isEdit && docError) {
+      toast.error('Не вдалося завантажити документ списання');
+    }
+  }, [isEdit, docError]);
 
   const handleSearch = useCallback(
     (query: string) => {
@@ -106,8 +166,48 @@ const WriteOffFormPage: React.FC = () => {
     setCart((prev) => prev.filter((item) => item.product_id !== productId));
   };
 
+  if (isEdit && docLoading) {
+    return (
+      <div className="max-w-4xl mx-auto p-12 text-center text-gray-500 dark:text-gray-400">
+        Завантаження...
+      </div>
+    );
+  }
+
+  if (isEdit && docError) {
+    return (
+      <div className="max-w-4xl mx-auto p-12 text-center space-y-4">
+        <p className="text-red-500">Не вдалося завантажити документ списання</p>
+        <Button variant="secondary" onClick={goBack}>
+          Назад
+        </Button>
+      </div>
+    );
+  }
+
   const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
+
+  const handleAddNewReason = async () => {
+    const name = newReasonName.trim();
+    if (name.length < 2) {
+      toast.error('Назва причини має містити щонайменше 2 символи');
+      return;
+    }
+    // Дублікат серед вже завантажених причин (case-insensitive)
+    if (reasons.some((r) => r.name.toLowerCase() === name.toLowerCase())) {
+      toast.error(`Причина «${name}» вже існує в списку`);
+      return;
+    }
+    try {
+      const created = await createReasonMutation.mutateAsync(name);
+      toast.success(`Причину «${created.name}» додано`);
+      setReason(created.name);
+      setNewReasonName('');
+    } catch {
+      toast.error('Не вдалося додати причину. Можливо, вона вже існує.');
+    }
+  };
 
   const handleSave = async (andConfirm: boolean = false) => {
     if (cart.length === 0) {
@@ -115,11 +215,54 @@ const WriteOffFormPage: React.FC = () => {
       return;
     }
 
+    if (!reason) {
+      toast.error('Оберіть причину списання');
+      return;
+    }
+
+    if (reason === '__new__') {
+      toast.error('Спершу додайте нову причину списання');
+      return;
+    }
+
     try {
+      if (isEdit) {
+        setSaving(true);
+        try {
+          await api.put(`/write-offs/${editId}`, {
+            number: editDoc?.number,
+            reason,
+            write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
+            notes: notes || undefined,
+            items: cart.map(({...item}) => ({
+              product_id: item.product_id,
+              quantity: item.quantity,
+              cost_price: item.cost_price,
+              price: item.price,
+            })),
+          });
+
+          if (andConfirm && editDoc?.status !== 'confirmed') {
+            await confirmMutation.mutateAsync({ id: editId, documentType: 'write_off' });
+          }
+
+          toast.success('Списання збережено');
+          queryClient.invalidateQueries({ queryKey: ['documents'] });
+          navigate('/documents');
+        } catch (e: any) {
+          toast.error(e?.response?.data?.detail || e?.message || 'Помилка при збереженні');
+        } finally {
+          setSaving(false);
+        }
+        return;
+      }
+
       const doc = await createMutation.mutateAsync({
         document_type: 'write_off',
+        reason,
+        write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
         notes: notes || undefined,
-        items: cart.map(({ product_title, product_barcode, ...item }) => ({
+        items: cart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           cost_price: item.cost_price,
@@ -128,6 +271,8 @@ const WriteOffFormPage: React.FC = () => {
       });
 
       if (andConfirm) {
+        // create вже проводить документ (залишки зменшено, статус confirmed).
+        // confirmDocument ідемпотентний — повторний confirm не зменшить залишки вдруге.
         await confirmMutation.mutateAsync({ id: doc.id, documentType: 'write_off' });
       }
 
@@ -148,10 +293,10 @@ const WriteOffFormPage: React.FC = () => {
         </button>
         <div>
           <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            Списання товарів
+            {isEdit ? `Редагування списання №${editDoc?.number || ''}` : 'Списання товарів'}
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Списання товарів зі складу
+            {isEdit ? 'Оновлення даних списання' : 'Списання товарів зі складу'}
           </p>
         </div>
       </div>
@@ -162,6 +307,7 @@ const WriteOffFormPage: React.FC = () => {
             label="Додати товар"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
+            autoFocus
             placeholder="Пошук за назвою або штрих-кодом..."
             icon={<Search className="w-4 h-4" />}
           />
@@ -270,11 +416,69 @@ const WriteOffFormPage: React.FC = () => {
           </div>
         )}
 
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Select
+            label="Причина списання"
+            required
+            placeholder={reasonsLoading ? 'Завантаження причин...' : 'Оберіть причину...'}
+            disabled={reasonsLoading}
+            options={[
+              ...reasons.map((r) => ({ value: r.name, label: r.name })),
+              { value: '__new__', label: '＋ Нова причина…' },
+            ]}
+            value={reason}
+            onChange={(e) => {
+              setReason(e.target.value);
+              if (e.target.value !== '__new__') setNewReasonName('');
+            }}
+          />
+
+          <Input
+            label="Дата списання"
+            type="date"
+            value={writeOffDate}
+            onChange={(e) => setWriteOffDate(e.target.value)}
+          />
+        </div>
+
+        {reason === '__new__' && (
+          <div className="rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50/50 dark:bg-primary-900/10 p-4 space-y-3">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Нова причина списання
+            </p>
+            <div className="flex gap-2">
+              <Input
+                value={newReasonName}
+                onChange={(e) => setNewReasonName(e.target.value)}
+                placeholder="Введіть назву нової причини..."
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddNewReason();
+                  }
+                }}
+              />
+              <Button
+                variant="secondary"
+                onClick={handleAddNewReason}
+                icon={<Plus className="w-4 h-4" />}
+                isLoading={createReasonMutation.isPending}
+                className="shrink-0"
+              >
+                Додати
+              </Button>
+            </div>
+            <p className="text-xs text-gray-400">
+              Нова причина збережеться в довіднику і буде доступна в наступних накладних.
+            </p>
+          </div>
+        )}
+
         <Input
-          label="Причина списання"
+          label="Нотатки (додаткові)"
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="Опишіть причину списання..."
+          placeholder="Додаткові нотатки до списання (необов'язково)..."
         />
 
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
@@ -285,16 +489,16 @@ const WriteOffFormPage: React.FC = () => {
             variant="secondary"
             onClick={() => handleSave(false)}
             icon={<Save className="w-4 h-4" />}
-            isLoading={createMutation.isPending}
+            isLoading={createMutation.isPending || saving}
           >
             Зберегти як чернетку
           </Button>
           <Button
             onClick={() => handleSave(true)}
             icon={<CheckCircle className="w-4 h-4" />}
-            isLoading={createMutation.isPending || confirmMutation.isPending}
+            isLoading={createMutation.isPending || confirmMutation.isPending || saving}
           >
-            Створити та підтвердити
+            {isEdit ? 'Зберегти та підтвердити' : 'Створити та підтвердити'}
           </Button>
         </div>
       </div>

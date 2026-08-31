@@ -7,7 +7,7 @@ Domain Entity: LedgerEntry (Запис журналу взаєморозраху
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 from uuid import UUID, uuid4
@@ -40,7 +40,7 @@ class LedgerEntry:
     amount: Money = field(default_factory=lambda: Money.zero())
     operation_type: OperationType = OperationType.INVOICE
     balance_after: Optional[Money] = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     document_id: Optional[UUID] = None
     document_number: str = ""
     notes: str = ""

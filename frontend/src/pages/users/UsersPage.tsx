@@ -1,18 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Users,
-  Search,
-  Loader2,
-  UserPlus,
-  Shield,
-  ShieldOff,
-  Pencil,
-  Trash2,
-  Key,
-  CheckCircle,
-  XCircle,
-  Lock,
-} from 'lucide-react';
+import {Users, Search, Loader2, UserPlus, Shield, Pencil, Trash2, Key, CheckCircle, XCircle, Lock, } from 'lucide-react';
 import { userService, UserCreate, UserUpdate } from '@/services/userService';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/Button';

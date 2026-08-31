@@ -25,27 +25,34 @@ from app.application.use_cases.invoice_use_cases import InvoiceUseCases
 from app.domain.entities.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.domain.entities.product import Product
 from app.domain.services.document_service import DocumentService
-from app.infrastructure.persistence.models.supplier import Supplier
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate
-from app.domain.value_objects.quantity import Quantity as _Q
-Quantity = _Q
-from app.infrastructure.persistence.models.product import Product as ProductModel
 from app.infrastructure.persistence.models.invoice import (
     Invoice as InvoiceModel,
+)
+from app.infrastructure.persistence.models.invoice import (
     InvoiceItem as InvoiceItemModel,
+)
+from app.infrastructure.persistence.models.invoice import (
     InvoiceStatus as InvoiceStatusModel,
+)
+from app.infrastructure.persistence.models.invoice import (
     PaymentMethod,
+)
+from app.infrastructure.persistence.models.product import Product as ProductModel
+from app.infrastructure.persistence.models.return_invoice import (
+    ReturnActionType,
+    ReturnInvoiceStatus,
 )
 from app.infrastructure.persistence.models.return_invoice import (
     ReturnInvoice as ReturnInvoiceModel,
-    ReturnInvoiceItem as ReturnInvoiceItemModel,
-    ReturnInvoiceStatus,
-    ReturnActionType,
 )
+from app.infrastructure.persistence.models.return_invoice import (
+    ReturnInvoiceItem as ReturnInvoiceItemModel,
+)
+from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.user import User, UserRole
-
 
 # ─── Application InvoiceUseCases ─────────────────────────────────────────────
 

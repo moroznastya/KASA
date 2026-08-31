@@ -1,5 +1,5 @@
 /**
- * Tauri Updater — автооновлення десктоп-обгортки Kasa POS.
+ * Tauri Updater — автооновлення десктоп-обгортки Torgashka.
  *
  * Обгортає @tauri-apps/plugin-updater:
  *   - checkForUpdates()      → перевірка наявності нової версії

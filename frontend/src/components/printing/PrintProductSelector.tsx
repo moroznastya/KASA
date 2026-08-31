@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Plus, X, Loader2, Package } from 'lucide-react';
-import { Spinner } from '@/components/ui/Spinner';
 import { formatCurrency } from '@/utils/format';
 import type { Product } from '@/types/product';
 import type { SelectedProduct } from '@/types/print';

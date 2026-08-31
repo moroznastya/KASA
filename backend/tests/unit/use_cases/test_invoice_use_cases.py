@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
-from app.domain.use_cases.invoice_use_cases import (
-    CreateInvoiceUseCase,
-    ConfirmInvoiceUseCase,
-    CancelInvoiceUseCase,
-    InvoiceItemCreate,
-)
 from app.domain.entities.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.domain.entities.product import Product
+from app.domain.use_cases.invoice_use_cases import (
+    CancelInvoiceUseCase,
+    ConfirmInvoiceUseCase,
+    CreateInvoiceUseCase,
+    InvoiceItemCreate,
+)
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate
-from app.domain.repositories import IProductRepository
 
 
 class TestCreateInvoiceUseCase:

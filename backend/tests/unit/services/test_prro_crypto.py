@@ -13,8 +13,8 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
 from app.infrastructure.services.prro.crypto_signer import (
-    PrroCryptoSigner,
     PrroCryptoError,
+    PrroCryptoSigner,
 )
 
 # ─── Допоміжні функції для генерації тестових ключів ──────────────────────
@@ -37,7 +37,7 @@ def generate_test_cert(tmp_path: Path) -> tuple[Path, bytes]:
         x509.NameAttribute(NameOID.GIVEN_NAME, "Іван"),
         x509.NameAttribute(NameOID.SURNAME, "Петренко"),
     ])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -133,7 +133,7 @@ class TestSignVerify:
             '<E N="2" NO="1" SM="1000" FN="1234567890" TS="20260801120000" '
             'TX="1" TXPR="20.00" TXSM="167" TXTY="0" TXAL="0"></E></C>'
             '<TS>20260801120000</TS></DAT>'
-        ).encode("utf-8")
+        ).encode()
         signed = signer.sign(dat_xml)
         assert b"Signature" in signed
         assert b"<DAT" in signed
@@ -141,20 +141,20 @@ class TestSignVerify:
     def test_verify_returns_true(self, signer):
         """Підписаний документ проходить verify."""
         dat_xml = (
-            '<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
-            '<C T="0"><E N="1"></E></C>'
-            '<TS>20260801120000</TS></DAT>'
-        ).encode("utf-8")
+            b'<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
+            b'<C T="0"><E N="1"></E></C>'
+            b'<TS>20260801120000</TS></DAT>'
+        )
         signed = signer.sign(dat_xml)
         assert signer.verify(signed) is True
 
     def test_verify_tampered_returns_false(self, signer):
         """Змінений документ не проходить verify."""
         dat_xml = (
-            '<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
-            '<C T="0"><E N="1"></E></C>'
-            '<TS>20260801120000</TS></DAT>'
-        ).encode("utf-8")
+            b'<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
+            b'<C T="0"><E N="1"></E></C>'
+            b'<TS>20260801120000</TS></DAT>'
+        )
         signed = signer.sign(dat_xml)
         # Змінюємо TS — підпис має стати невалідним
         tampered = signed.replace(b"20260801120000", b"20260801120001")
@@ -264,7 +264,7 @@ class TestPemFormat:
 
     def test_pem_combined_file(self, pfx_key, tmp_path):
         """Об'єднаний PEM-файл (ключ + сертифікат)."""
-        pfx_path, cert_der = pfx_key
+        pfx_path, _cert_der = pfx_key
         password = TEST_PASSWORD.encode("utf-8")
         key, cert, _ = pkcs12.load_key_and_certificates(
             pfx_path.read_bytes(), password
@@ -352,10 +352,10 @@ class TestJksFormat:
         assert signer.key_format == "jks"
 
         dat_xml = (
-            '<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
-            '<C T="0"><E N="1"></E></C>'
-            '<TS>20260801120000</TS></DAT>'
-        ).encode("utf-8")
+            b'<DAT DI="1" FN="1234567890" TN="123" V="1" ZN="ABC">'
+            b'<C T="0"><E N="1"></E></C>'
+            b'<TS>20260801120000</TS></DAT>'
+        )
         signed = signer.sign(dat_xml)
         assert signer.verify(signed) is True
         assert signer.get_serial_number() == format(cert.serial_number, "X")

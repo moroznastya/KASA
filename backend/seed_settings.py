@@ -1,11 +1,13 @@
 """
-Seed-дані для системних налаштувань Kasa POS.
+Seed-дані для системних налаштувань Torgashka POS.
 Заповнює таблицю system_settings початковими значеннями.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
+
 from app.config import Settings
 
 settings = Settings()
@@ -285,7 +287,7 @@ def seed_settings(database_url: str | None = None):
             ).fetchone()
 
             if not existing:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 session.execute(
                     text("""
                         INSERT INTO system_settings (id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at)

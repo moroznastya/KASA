@@ -8,10 +8,8 @@ import { Table, Column } from '@/components/ui/Table';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { Select } from '@/components/ui/Select';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { Badge } from '@/components/ui/Badge';
 import { formatCurrency, formatUnit } from '@/utils/format';
 import { Product } from '@/types/product';
-import toast from 'react-hot-toast';
 
 import { usePageState } from '@/hooks/usePageState';
 const ProductListPage: React.FC = () => {

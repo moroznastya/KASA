@@ -2,7 +2,6 @@ import { useCallback, useRef, useState } from 'react';
 import html2canvas from 'html2canvas-pro';
 import { printImage, saveReceiptImage } from '@/services/tauri/print';
 import { isTauri } from '@/hooks/useTauri';
-import toast from 'react-hot-toast';
 
 interface UsePrintAsImageOptions {
   showErrors?: boolean;

@@ -1,19 +1,26 @@
+[workspace.lints.clippy]
+result_large_err = "allow"  # tonic::Status — gRPC-тип (rustc 1.98 lint)
+
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
 [package]
-name = "kasa-pos"
+name = "torgashka"
 version = "1.0.0"
-description = "Kasa POS — Enterprise POS-система для малого та середнього бізнесу"
-authors = ["Kasa Team"]
+description = "Torgashka — Enterprise POS-система для малого та середнього бізнесу"
+authors = ["Torgashka Team"]
 edition = "2021"
 
 [lib]
-name = "kasa_pos_lib"
+name = "torgashka_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", default-features = false, features = ["tray-icon", "custom-protocol", "wry", "common-controls-v6", "dynamic-acl", "x11", "dbus"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
@@ -28,24 +35,23 @@ tauri-plugin-autostart = "2"
 # ── Single-instance: захист від подвійного запуску каси на одній машині ──
 tauri-plugin-single-instance = "2"
 # ── Автооновлення (updater): перевірка/завантаження/встановлення оновлень ──
-# Дозволяє користувачам отримувати нові версії без ручного встановлення.
-# Конфігурація (endpoints/pubkey) — у tauri.conf.json → plugins.updater.
 tauri-plugin-updater = "2"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
-chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v4"] }
 dirs-next = "2"
-# ── POS-обладнання: COM-порти (ваги), TCP-термінали ───────────────────
-# serialport 4.x: на Linux default-features=false — БЕЗ libudev (його немає
-# в системі); перелік портів на Linux читається через sysfs (/sys/class/tty).
-serialport = { version = "4", default-features = false }
-image = "0.25"
-thiserror = "2"
-tempfile = "3"
-base64 = "0.22"
-# ── RST-закриття TCP-сокета (SO_LINGER=0): термінал Newland N950 ──
-# не відповідає на FIN → без RST сокети залишаються у FIN-WAIT-2 та накопичуються.
-libc = "0.2"
+# ── Крейт інфраструктури: апаратні інтеграції, друк, офлайн-БД ───────────
+torgashka-infrastructure = { path = "crates/torgashka-infrastructure" }
+torgashka-api = { path = "crates/torgashka-api" }
+torgashka-prro = { path = "crates/torgashka-prro" }
+# ── SIGTERM для graceful shutdown фасаду (Unix) ─────────────────────────
+tokio = { version = "1", features = ["rt", "signal", "net"] }
+
+# ── Профілі збірки ────────────────────────────────────────────────────────
+# Повний debuginfo у debug-профілі роздуває бінарники до 300-400 МБ кожен
+# і накопичує 30+ ГБ у target/debug/deps. line-tables-only дає трасування
+# (backtraces з номерами рядків) без роздування. Strip у release прибирає
+# символи — менші бінарники для дистрибуції.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+strip = true

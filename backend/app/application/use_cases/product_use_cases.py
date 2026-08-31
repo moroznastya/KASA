@@ -14,17 +14,16 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from app.domain.entities.product import Product
-from app.domain.repositories import IProductRepository
-from app.domain.repositories.i_unit_of_work import IUnitOfWork
-from app.application.dto.product_dto import ProductDTO, ProductCreateDTO, ProductUpdateDTO
-from app.application.mappers.product_mapper import ProductMapper
+from app.application.dto.product_dto import ProductCreateDTO, ProductDTO, ProductUpdateDTO
 from app.application.interfaces.i_event_bus import IEventBus
+from app.application.mappers.product_mapper import ProductMapper
 from app.domain.events import (
     ProductCreated,
-    ProductUpdated,
     ProductDeleted,
+    ProductUpdated,
 )
+from app.domain.repositories import IProductRepository
+from app.domain.repositories.i_unit_of_work import IUnitOfWork
 
 
 class ProductUseCases:

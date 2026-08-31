@@ -1,11 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import {
-  ArrowLeft, Package, Search, TrendingUp, TrendingDown,
-  DollarSign, Box, BarChart3, ShoppingCart, Plus, Minus,
-  Trash2, Check, X, FileText, AlertCircle, ExternalLink
-} from 'lucide-react';
+import {ArrowLeft, Package, Search, TrendingUp, TrendingDown, DollarSign, Box, BarChart3, ShoppingCart, Plus, Minus, Trash2, X, FileText, ExternalLink} from 'lucide-react';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';

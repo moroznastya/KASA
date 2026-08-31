@@ -77,6 +77,8 @@ class PrroOfflineQueue:
         check_type: str,
         xml_body: str,
         mac: str | None = None,
+        check_sign: str | None = None,
+        id_offline: str | None = None,  # B4: "offline-{n}" для offline-чеків
     ) -> PrroQueueItem:
         """
         Додає фіскальний документ в офлайн-чергу.
@@ -106,6 +108,8 @@ class PrroOfflineQueue:
             local_number=local_number,
             check_type=check_type,
             xml_body=xml_body,
+            check_sign=check_sign,  # B2: повний підписаний XML — sync as-is
+            id_offline=id_offline,  # B4
             mac=mac,
             status=PrroQueueStatus.PENDING,
         )
@@ -171,6 +175,17 @@ class PrroOfflineQueue:
         logger.warning("PRRO_QUEUE | документ %s позначено failed: %s", item_id, error)
         return await self._repository.mark_failed(item_id, error)
 
+    async def update_check_sign(self, item_id: UUID, check_sign: str) -> PrroQueueItem:
+        """B2: фіксує повний підписаний check_sign (ідемпотентність sync).
+
+        Документи, додані до B2 (check_sign=None), формуються рівно 1 раз
+        при першій sync і зберігаються — повторні sync не переформовують.
+        """
+        item = await self._repository.update_queue_check_sign(item_id, check_sign)
+        if item is None:
+            raise ValueError(f"Документ черги {item_id} не знайдено")
+        return item
+
     # ─── Ліміт офлайн-режиму ───────────────────────────────────────────────
 
     @staticmethod
@@ -203,9 +218,9 @@ class PrroOfflineQueue:
 
 
 __all__ = [
-    "PrroOfflineQueue",
-    "PRRO_OFFLINE_LIMIT_HOURS",
     "CHECK_TYPE_CHK",
-    "CHECK_TYPE_ZREPORT",
     "CHECK_TYPE_SERVICECHK",
+    "CHECK_TYPE_ZREPORT",
+    "PRRO_OFFLINE_LIMIT_HOURS",
+    "PrroOfflineQueue",
 ]

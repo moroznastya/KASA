@@ -22,27 +22,27 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import ClassVar, Optional
 
 from app.application.dto.prro_dto import PrroSettingsDTO
+from app.application.use_cases.prro.context import (
+    KEY_AUTO_FISCALIZE,
+    KEY_PRRO_FN,
+    KEY_PRRO_MODE,
+    KEY_PRRO_TN,
+    KEY_PRRO_ZN,
+    PrroContextFactory,
+)
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.key_store import (
+    PASSWORD_MASK,
     PrroKeyStore,
     PrroKeyStoreError,
-    PASSWORD_MASK,
 )
 from app.infrastructure.services.prro.xml_builder import SERVICE_PING
-from app.application.use_cases.prro.context import (
-    PrroContextFactory,
-    KEY_PRRO_FN,
-    KEY_PRRO_TN,
-    KEY_PRRO_ZN,
-    KEY_PRRO_MODE,
-    KEY_AUTO_FISCALIZE,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,15 @@ CERTS_ROOT = _BACKEND_DIR / "certs"
 
 
 class PrroSettingsError(Exception):
-    """Помилка роботи з налаштуваннями ПРРО."""
+    """Помилка роботи з налаштуваннями ПРРО. __str__ = "[КОД] Точний текст"."""
+
+    def __init__(self, message: str, code: str = "PRRO_SETTINGS_ERROR"):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
 
 
 class PrroSettingsUseCase:
@@ -128,7 +136,7 @@ class PrroSettingsUseCase:
             client = await self._context.grpc_client()
             response = await client.status(timeout=5)
             return bool(getattr(response, "online", False))
-        except Exception:  # noqa: BLE001 — жодна помилка не блокує налаштування
+        except Exception:
             return False
 
     # ─── Швидкий доступ до ФН ─────────────────────────────────────────────
@@ -296,7 +304,7 @@ class PrroSettingsUseCase:
     # ─── Перевірка зв'язку ─────────────────────────────────────────────────
 
     # Людською мовою пояснення статусів CheckResponse (prro_pb2).
-    _STATUS_MESSAGES: dict[int, str] = {
+    _STATUS_MESSAGES: ClassVar[dict[int, str]] = {
         1: "Зв'язок із фіскальним сервером встановлено (OK).",
         -1: "Помилка перевірки підпису/розбору XML (ERROR_VEREFY). "
             "Найчастіші причини: (1) ключ КЕП не завантажено або його "
@@ -352,7 +360,7 @@ class PrroSettingsUseCase:
             crypto = await self._context.build_crypto_signer()
             signed = crypto.sign(message.encode("utf-8"))
             return signed, None
-        except Exception as exc:  # noqa: BLE001 — ключ може бути будь-якого формату
+        except Exception as exc:
             logger.warning("PRRO_SETTINGS | не вдалося підписати ping XML: %s", exc)
             return message.encode("utf-8"), str(exc)
 
@@ -367,6 +375,11 @@ class PrroSettingsUseCase:
         Returns:
             dict: {"status": int, "ok": bool, "error": str | None}.
         """
+        from app.application.use_cases.prro.fiscalize_receipt_use_case import (
+            status_name,
+        )
+        from app.application.use_cases.prro.status_codes import status_error_text
+
         try:
             check_sign, sign_error = await self._build_ping_check_sign()
             client = await self._context.grpc_client()
@@ -380,17 +393,21 @@ class PrroSettingsUseCase:
             if sign_error:
                 parts.append(f"КЕП не вдалося використати: {sign_error}")
             if server_error:
-                parts.append(f"Відповідь сервера: {server_error}")
-            parts.append(self._status_message(status))
+                parts.append(
+                    f"[{status_name(status)}] Відповідь сервера: {server_error}"
+                )
+            # Числовий код + ім'я + короткий людський опис (1:1 Rust).
+            parts.append(status_error_text(status))
+            parts.append(f"[{status_name(status)}] {self._status_message(status)}")
 
             return {
                 "status": status,
                 "ok": status == 1,
                 "error": " | ".join(parts),
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("PRRO_SETTINGS | ping не вдався: %s", exc)
             return {"status": 0, "ok": False, "error": str(exc)}
 
 
-__all__ = ["PrroSettingsUseCase", "PrroSettingsError"]
+__all__ = ["PrroSettingsError", "PrroSettingsUseCase"]

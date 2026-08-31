@@ -12,25 +12,28 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
-from app.domain.entities.invoice import Invoice, InvoiceStatus
-from app.domain.value_objects.quantity import Quantity
+from app.application.dto.invoice_dto import InvoiceConfirmDTO, InvoiceCreateDTO, InvoiceDTO
+from app.application.interfaces.i_event_bus import IEventBus
+from app.application.mappers.invoice_mapper import InvoiceMapper
+from app.domain.entities.invoice import InvoiceStatus
+from app.domain.events import (
+    InvoiceApproved,
+    InvoiceCreated,
+    InvoiceUpdated,
+)
 from app.domain.repositories import IInvoiceRepository, IProductRepository, ISupplierRepository
 from app.domain.repositories.i_unit_of_work import IUnitOfWork
-from app.application.dto.invoice_dto import InvoiceDTO, InvoiceCreateDTO, InvoiceConfirmDTO
-from app.application.mappers.invoice_mapper import InvoiceMapper
-from app.application.interfaces.i_event_bus import IEventBus
+from app.domain.value_objects.quantity import Quantity
 from app.infrastructure.persistence.models.supplier_ledger import (
     LedgerOperationType,
     SupplierLedger,
 )
-from app.domain.events import (
-    InvoiceCreated,
-    InvoiceUpdated,
-    InvoiceApproved,
-)
+
+if TYPE_CHECKING:
+    from app.application.dto.invoice_dto import InvoiceUpdateDTO
 
 
 class InvoiceUseCases:

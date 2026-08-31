@@ -5,10 +5,10 @@ DTO для Receipt (Чек продажу).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 
 @dataclass
@@ -127,4 +127,4 @@ class ReceiptCreateDTO:
         """
         dt = self.terminal_created_at
         if isinstance(dt, datetime) and dt.tzinfo is not None:
-            self.terminal_created_at = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            self.terminal_created_at = dt.astimezone(UTC).replace(tzinfo=None)

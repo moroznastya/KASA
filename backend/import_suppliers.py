@@ -78,7 +78,7 @@ async def import_suppliers():
             )
 
             # ── Читаємо CSV ──
-            with open(CSV_PATH, "r", encoding="utf-8") as f:
+            with open(CSV_PATH, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
 

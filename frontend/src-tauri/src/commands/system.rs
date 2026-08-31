@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Kasa POS — Tauri Команди системної інтеграції
+// Torgashka — Tauri Команди системної інтеграції
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Містить команди для:
@@ -45,30 +45,36 @@ pub fn check_online() -> bool {
 #[tauri::command]
 pub fn get_barcode_scanner_info() -> Result<serde_json::Value, String> {
     // На Linux: перевіряємо /dev/input/ та /dev/hidraw*
-    let mut scanners = Vec::new();
+    let mut scanners: Vec<serde_json::Value> = Vec::new();
 
     #[cfg(unix)]
     {
-        for entry in std::fs::read_dir("/dev/input").ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("event") || name.starts_with("hidraw") {
-                    scanners.push(serde_json::json!({
-                        "path": format!("/dev/input/{}", name),
-                        "type": "hid",
-                    }));
-                }
+        for entry in std::fs::read_dir("/dev/input")
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("event") || name.starts_with("hidraw") {
+                scanners.push(serde_json::json!({
+                    "path": format!("/dev/input/{}", name),
+                    "type": "hid",
+                }));
             }
         }
 
-        for entry in std::fs::read_dir("/dev/hidraw").ok().into_iter().flatten() {
-            if let Ok(entry) = entry {
-                let name = entry.file_name().to_string_lossy().to_string();
-                scanners.push(serde_json::json!({
-                    "path": format!("/dev/hidraw/{}", name),
-                    "type": "hidraw",
-                }));
-            }
+        for entry in std::fs::read_dir("/dev/hidraw")
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().to_string();
+            scanners.push(serde_json::json!({
+                "path": format!("/dev/hidraw/{}", name),
+                "type": "hidraw",
+            }));
         }
     }
 
@@ -82,44 +88,8 @@ pub fn get_barcode_scanner_info() -> Result<serde_json::Value, String> {
 /// Отримати список USB-пристроїв (для налагодження)
 #[tauri::command]
 pub fn get_usb_devices() -> Result<Vec<serde_json::Value>, String> {
-    let mut devices = Vec::new();
-
-    #[cfg(unix)]
-    {
-        // Читаємо /sys/bus/usb/devices/
-        if let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices/") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                // Пропускаємо інтерфейси (usb1, usb2, ...)
-                if name.starts_with("usb") || !name.contains('-') || name == "devices" {
-                    continue;
-                }
-
-                let uevent_path = entry.path().join("uevent");
-                if let Ok(content) = std::fs::read_to_string(&uevent_path) {
-                    let mut product = String::new();
-                    let mut vendor = String::new();
-
-                    for line in content.lines() {
-                        if let Some(val) = line.strip_prefix("PRODUCT=") {
-                            product = val.to_string();
-                        }
-                        if let Some(val) = line.strip_prefix("DEVICE=") {
-                            vendor = val.to_string();
-                        }
-                    }
-
-                    devices.push(serde_json::json!({
-                        "name": name,
-                        "product": product,
-                        "device": vendor,
-                    }));
-                }
-            }
-        }
-    }
-
-    Ok(devices)
+    // Етап 0: тонка обгортка — логіка перенесена в torgashka-infrastructure::devices.
+    Ok(torgashka_infrastructure::devices::list_usb_devices())
 }
 
 /// Отримати стан системи (для дашборду)
@@ -132,7 +102,7 @@ pub fn get_system_status() -> Result<serde_json::Value, String> {
         "online": check_online(),
         "hostname": std::env::var("HOSTNAME").unwrap_or_default(),
         "username": std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default(),
-        "app_data_dir": dirs_next::data_dir().map(|d| d.join("kasa-pos").to_string_lossy().to_string()).unwrap_or_default(),
+        "app_data_dir": dirs_next::data_dir().map(|d| d.join("torgashka").to_string_lossy().to_string()).unwrap_or_default(),
     }))
 }
 
@@ -155,11 +125,7 @@ pub fn get_keyboard_layout() -> Result<String, String> {
 /// Приклад виклику з frontend:
 ///   invoke('send_notification', { title: 'Синхронізація', body: 'Дані оновлено' })
 #[tauri::command]
-pub fn send_notification(
-    app: tauri::AppHandle,
-    title: String,
-    body: String,
-) -> Result<(), String> {
+pub fn send_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
 
     app.notification()

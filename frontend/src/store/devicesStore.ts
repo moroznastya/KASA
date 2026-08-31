@@ -226,7 +226,7 @@ export const useDevicesStore = create<DevicesStore>((set, get) => ({
       name: `Ваги (${port})`,
       deviceType: 'scale',
       enabled: false,
-      config: { port, baudRate: 9600 },
+      config: { port, baudRate: 9600, protocol: 'vta2' },
     };
     return get().saveDevice(config);
   },

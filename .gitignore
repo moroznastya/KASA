@@ -109,3 +109,35 @@ Cert-6.dat
 # ІІТ SDK (крипто-ядро EUSignCP) — встановлюється scripts/setup_iit_sdk.sh
 backend/vendor/iit-sdk/etc/
 backend/vendor/iit-sdk/opt/iit/eu/sw/euscpnmh
+
+# ── Packaging Artifacts (Linux) ─────────────
+*.deb
+*.rpm
+*.AppImage
+*.pkg.tar.zst
+
+# ── Secrets / Keys (глобально) ────────────────
+keys.txt
+*.pem
+*.p12
+*.pfx
+
+# PostgreSQL binaries download cache
+.cache/
+
+# Артефакти збірки та беккапи — не для git
+*.flatpak
+*.tar.gz
+Temp/
+*.bak
+agents/
+flatpak-build/
+flatpak/
+
+# Junk: Windows Downloads torgashka dir
+%USERPROFILE%\\Downloads\\torgashka/
+
+# ── Temporary dumps ────────────────────────
+.devices_tmp.json
+
+# ── DB dumps (never commit) ────────────────

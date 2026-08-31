@@ -1,5 +1,5 @@
 """
-Конфігурація застосунку Kasa POS.
+Конфігурація застосунку Torgashka POS.
 
 Використовує Pydantic Settings для читання змінних оточення
 або .env файлу (в корені backend/ — рівень вище від app/).
@@ -20,9 +20,10 @@
     Якщо задано DATABASE_URL — він має пріоритет.
 """
 
+from pathlib import Path
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -113,7 +114,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # CORS
     # ──────────────────────────────────────────────
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,tauri://localhost,http://tauri.localhost"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000,tauri://localhost,http://tauri.localhost"
 
     @property
     def CORS_ORIGINS_LIST(self) -> list[str]:
@@ -174,7 +175,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # Налаштування застосунку
     # ──────────────────────────────────────────────
-    APP_NAME: str = "Kasa POS"
+    APP_NAME: str = "Torgashka"
     DEBUG: bool = False
 
     model_config = SettingsConfigDict(

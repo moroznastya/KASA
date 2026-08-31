@@ -1,24 +1,12 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import {
-  ShoppingCart,
-  Package,
-  FileText,
-  DollarSign,
-  TrendingUp,
-  Plus,
-  ArrowRight,
-  Receipt,
-  PiggyBank,
-} from 'lucide-react';
+import {ShoppingCart, Package, FileText, TrendingUp, Plus, ArrowRight, Receipt, PiggyBank, } from 'lucide-react';
 import { receiptService } from '@/services/receiptService';
 import { productService } from '@/services/productService';
 import { documentService } from '@/services/documentService';
 import { Button } from '@/components/ui/Button';
-import { formatCurrency, formatDateTime, formatPaymentMethod } from '@/utils/format';
-import { Badge } from '@/components/ui/Badge';
-import { Spinner } from '@/components/ui/Spinner';
+import {formatCurrency} from '@/utils/format';
 
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -83,7 +71,7 @@ const DashboardPage: React.FC = () => {
             Панель керування
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Огляд системи Kasa POS
+            Огляд системи Torgashka
           </p>
         </div>
         <Button onClick={() => navigate('/pos')} icon={<ShoppingCart className="w-4 h-4" />}>

@@ -4,11 +4,11 @@ DTO для LedgerEntry (Запис журналу взаєморозрахунк
 Використовуються для передачі даних між Application та Presentation шарами.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 
 @dataclass

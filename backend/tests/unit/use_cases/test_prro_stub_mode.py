@@ -13,8 +13,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
-
 from app.application.dto.prro_dto import FiscalizeResponseDTO
 from app.application.use_cases.prro.context import (
     KEY_AUTO_FISCALIZE,

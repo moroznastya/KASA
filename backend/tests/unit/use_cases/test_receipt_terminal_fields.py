@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -345,7 +345,7 @@ class TestTerminalCreatedAtNormalization:
 
     def test_dto_post_init_converts_aware_to_naive(self):
         """DTO з aware datetime (UTC) → naive UTC через __post_init__."""
-        aware = datetime(2026, 8, 5, 17, 0, 0, tzinfo=timezone.utc)
+        aware = datetime(2026, 8, 5, 17, 0, 0, tzinfo=UTC)
         dto = _dto(cash_amount=Decimal("200"), terminal_created_at=aware)
 
         assert dto.terminal_created_at == datetime(2026, 8, 5, 17, 0, 0)
@@ -380,7 +380,7 @@ class TestTerminalCreatedAtNormalization:
             payment_method="card",
             card_amount=Decimal("200"),
             terminal_created_at=datetime(
-                2026, 8, 5, 17, 0, 0, tzinfo=timezone.utc
+                2026, 8, 5, 17, 0, 0, tzinfo=UTC
             ),
         )
 

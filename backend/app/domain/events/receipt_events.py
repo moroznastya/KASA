@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import UUID
 from decimal import Decimal
+from uuid import UUID
 
 from .base_event import BaseDomainEvent
 
