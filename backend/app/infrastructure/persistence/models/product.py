@@ -13,18 +13,31 @@
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    ForeignKey,
-    String,
-    Numeric,
     Boolean,
+    ForeignKey,
+    Numeric,
+    String,
     Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.barcode import Barcode
+    from app.infrastructure.persistence.models.category import Category
+    from app.infrastructure.persistence.models.inventory import InventoryItem
+    from app.infrastructure.persistence.models.invoice import InvoiceItem
+    from app.infrastructure.persistence.models.product_image import ProductImage
+    from app.infrastructure.persistence.models.receipt import ReceiptItem
+    from app.infrastructure.persistence.models.return_invoice import ReturnInvoiceItem
+    from app.infrastructure.persistence.models.supplier import Supplier
+    from app.infrastructure.persistence.models.transfer import TransferItem
+    from app.infrastructure.persistence.models.write_off import WriteOffItem
 
 
 class Product(Base):

@@ -14,18 +14,18 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import bcrypt
 import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_session
+from app.infrastructure.persistence.models.permission import ADMIN_PERMISSIONS, CASHIER_PERMISSIONS, Permission
 from app.infrastructure.persistence.models.user import User, UserRole
-from app.infrastructure.persistence.models.permission import Permission, ADMIN_PERMISSIONS, CASHIER_PERMISSIONS
 
 # Схема Bearer токена для Swagger
 # auto_error=False — дозволяє передати None в get_current_user_optional

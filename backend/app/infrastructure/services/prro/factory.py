@@ -19,7 +19,6 @@ Infrastructure Layer: PrroServiceFactory — фабрика gRPC-клієнті�
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import grpc
 from grpc import aio
@@ -105,7 +104,7 @@ class PrroServiceFactory:
             try:
                 await channel.close()
                 logger.info("PRRO_FACTORY | канал закрито: %s", url)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("PRRO_FACTORY | помилка закриття каналу %s", url)
         self._channels.clear()
         self._clients.clear()

@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 
 from app.domain.services.auth_service import AuthService
 
-
 # Список публічних шляхів, які не потребують авторизації
 PUBLIC_PATHS = {
     "/api/v1/auth/login",
@@ -169,7 +168,4 @@ class AuthMiddleware:
             return True
 
         # Шляхи друку (аутентифікація на рівні ендпоінта через get_current_user_optional)
-        if "/print" in path:
-            return True
-
-        return False
+        return "/print" in path

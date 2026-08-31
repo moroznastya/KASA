@@ -2,12 +2,12 @@
 Pydantic схеми для моделей Transfer та TransferItem (Переміщення товару).
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.infrastructure.persistence.models.transfer import TransferStatus
 

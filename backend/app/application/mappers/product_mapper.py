@@ -5,14 +5,13 @@ Mapper для Product entity.
 """
 
 from decimal import Decimal
-from typing import Optional
 
+from app.application.dto.product_dto import ProductCreateDTO, ProductDTO, ProductUpdateDTO
 from app.domain.entities.product import Product
 from app.domain.value_objects.barcode import Barcode
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate
-from app.application.dto.product_dto import ProductDTO, ProductCreateDTO, ProductUpdateDTO
 
 
 class ProductMapper:

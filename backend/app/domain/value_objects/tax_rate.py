@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Union
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class TaxRate:
     value: Decimal
 
     # Дозволені ставки ПДВ в Україні (у відсотках)
-    ALLOWED_RATES_PERCENT = {0, 7, 20}
+    ALLOWED_RATES_PERCENT: ClassVar[frozenset[int]] = frozenset({0, 7, 20})
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, Decimal):

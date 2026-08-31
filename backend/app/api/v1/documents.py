@@ -10,36 +10,34 @@ API роутер для отримання списку всіх докумен�
   - GET    /documents/{id}/print   — дані для друку документа
 """
 
-import io
 import csv
+import io
+from contextlib import suppress
 from datetime import datetime
-from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
+import openpyxl
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-import openpyxl
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-
 from app.database import get_session
-from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
-from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
-from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
-from app.infrastructure.persistence.models.supplier import Supplier
-from app.infrastructure.persistence.models.product import Product
-from app.infrastructure.persistence.models.user import User
-from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem as InventoryItemModel
 from app.domain.services.auth_service import AuthService
 from app.domain.services.document_service import DocumentService, generate_invoice_number
+from app.infrastructure.persistence.models.inventory import Inventory
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderItem, PurchaseOrderStatus
+from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
+from app.infrastructure.persistence.models.user import User
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 
 router = APIRouter(
     prefix="/documents",
@@ -198,10 +196,9 @@ def _parse_ids(ids_str: str | None) -> list[UUID] | None:
         part = part.strip()
         if not part:
             continue
-        try:
-            uuid_list.append(UUID(part))
-        except (ValueError, TypeError):
+        with suppress(ValueError, TypeError):
             # Ігноруємо невалідні UUID
+            uuid_list.append(UUID(part))
             pass
     return uuid_list if uuid_list else None
 
@@ -613,7 +610,10 @@ async def batch_confirm_documents(
                     )
 
                 # Створюємо прибуткову накладну
-                from app.infrastructure.persistence.models.invoice import Invoice as InvoiceModel, PaymentMethod, InvoiceStatus as InvoiceStatusModel, InvoiceItem as InvoiceItemModel
+                from app.infrastructure.persistence.models.invoice import Invoice as InvoiceModel
+                from app.infrastructure.persistence.models.invoice import InvoiceItem as InvoiceItemModel
+                from app.infrastructure.persistence.models.invoice import InvoiceStatus as InvoiceStatusModel
+                from app.infrastructure.persistence.models.invoice import PaymentMethod
 
                 invoice_number = await generate_invoice_number(session)
                 new_invoice = InvoiceModel(
@@ -688,7 +688,8 @@ async def delete_document(
     Визначає тип документа та викликає відповідний delete-ендпоінт.
     """
     if document_type == "invoice":
-        from app.infrastructure.persistence.models.invoice import Invoice, InvoiceStatus as InvStatus
+        from app.infrastructure.persistence.models.invoice import Invoice
+        from app.infrastructure.persistence.models.invoice import InvoiceStatus as InvStatus
         result = await session.execute(
             select(Invoice).where(Invoice.id == document_id)
         )
@@ -706,7 +707,8 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "transfer":
-        from app.infrastructure.persistence.models.transfer import Transfer, TransferStatus as TrStatus
+        from app.infrastructure.persistence.models.transfer import Transfer
+        from app.infrastructure.persistence.models.transfer import TransferStatus as TrStatus
         result = await session.execute(
             select(Transfer).where(Transfer.id == document_id)
         )
@@ -742,7 +744,8 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "return_invoice":
-        from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceStatus as RiStatus
+        from app.infrastructure.persistence.models.return_invoice import ReturnInvoice
+        from app.infrastructure.persistence.models.return_invoice import ReturnInvoiceStatus as RiStatus
         result = await session.execute(
             select(ReturnInvoice).where(ReturnInvoice.id == document_id)
         )
@@ -760,7 +763,8 @@ async def delete_document(
         await session.delete(doc)
 
     elif document_type == "purchase_order":
-        from app.infrastructure.persistence.models.purchase_order import PurchaseOrder, PurchaseOrderStatus as PoStatus
+        from app.infrastructure.persistence.models.purchase_order import PurchaseOrder
+        from app.infrastructure.persistence.models.purchase_order import PurchaseOrderStatus as PoStatus
         result = await session.execute(
             select(PurchaseOrder).where(PurchaseOrder.id == document_id)
         )

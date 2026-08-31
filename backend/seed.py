@@ -13,22 +13,22 @@ Seed-скрипт для наповнення БД початковими дан
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.infrastructure.persistence.models.user import User, UserRole
-from app.infrastructure.persistence.models.supplier import Supplier
-from app.infrastructure.persistence.models.category import Category
-from app.infrastructure.persistence.models.product import Product
-from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
-from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 from app.domain.services.auth_service import AuthService
+from app.infrastructure.persistence.models.category import Category
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType
+from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.user import User, UserRole
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 
 
 async def seed():
@@ -179,7 +179,7 @@ async def seed():
         # ══════════════════════════════════════════════
 
         # ── 5.1 Прибуткова накладна (Invoice) ────────
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         invoice = Invoice(
             id=uuid4(),
             number="INV-2026-0001",
@@ -290,9 +290,9 @@ async def seed():
         print("\n" + "=" * 50)
         print("🎉 Seed завершено успішно!")
         print("=" * 50)
-        print(f"👤 Admin:  login='admin',    password='admin123', PIN='1111'")
-        print(f"👤 Cashier: login='cashier', password='cashier123', PIN='2222'")
-        print(f"📄 Документи:")
+        print("👤 Admin:  login='admin',    password='admin123', PIN='1111'")
+        print("👤 Cashier: login='cashier', password='cashier123', PIN='2222'")
+        print("📄 Документи:")
         print(f"   - Накладна: {invoice.number} ({invoice.total_amount} грн)")
         print(f"   - Чек: {receipt.receipt_number} ({receipt.total_amount} грн)")
         print(f"   - Списання: {write_off.number} ({write_off.total_amount} грн)")

@@ -47,8 +47,7 @@ from typing import TypeVar
 import grpc
 from grpc import aio
 
-from app.infrastructure.services.prro import prro_pb2
-from app.infrastructure.services.prro import prro_pb2_grpc
+from app.infrastructure.services.prro import prro_pb2, prro_pb2_grpc
 
 logger = logging.getLogger(__name__)
 

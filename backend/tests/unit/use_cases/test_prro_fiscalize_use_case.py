@@ -12,28 +12,27 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.use_cases.prro.context import (
-    PrroContextFactory,
     KEY_AUTO_FISCALIZE,
     KEY_PRRO_FN,
     KEY_PRRO_TN,
     KEY_PRRO_ZN,
+    PrroContextFactory,
 )
 from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     FiscalizeReceiptUseCase,
     PrroFiscalizeError,
 )
-from app.infrastructure.persistence.models.prro import PrroShift
-from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.prro import PrroShift
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.key_store import PrroKeyStore
-from app.infrastructure.services.prro.xml_builder import compute_mac
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-
+from app.infrastructure.services.prro.xml_builder import compute_mac
 
 # ─── Допоміжні фабрики ──────────────────────────────────────────────────────
 

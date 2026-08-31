@@ -11,12 +11,10 @@
   - Спроба підтвердити повторно (400)
 """
 
-from decimal import Decimal
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
-
 
 pytestmark = [
     pytest.mark.integration,
@@ -44,7 +42,7 @@ class TestReturnSupplier:
         return response.json()
 
     async def _create_product(
-        self, client: AsyncClient, auth_headers: dict, supplier_id: str = None
+        self, client: AsyncClient, auth_headers: dict, supplier_id: str | None = None
     ) -> dict:
         """Допоміжний метод: створює товар."""
         response = await client.post(

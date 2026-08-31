@@ -4,10 +4,10 @@ DTO для Product (Товар).
 Використовуються для передачі даних між Application та Presentation шарами.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 
 @dataclass

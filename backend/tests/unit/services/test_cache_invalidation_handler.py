@@ -1,7 +1,7 @@
 """Unit-тести CacheInvalidationHandler (інвалідація кешу при доменних подіях)."""
 
-from typing import Any, Optional
 from decimal import Decimal
+from typing import Any, Optional
 from uuid import uuid4
 
 import pytest

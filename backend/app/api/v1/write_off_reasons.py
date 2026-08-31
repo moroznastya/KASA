@@ -7,14 +7,14 @@ API роутер для довідника причин списання (WriteO
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.reasons import WriteOffReason
 from app.schemas.write_off_reasons import WriteOffReasonCreate, WriteOffReasonResponse
-from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/write-off-reasons",

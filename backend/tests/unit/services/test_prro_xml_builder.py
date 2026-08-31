@@ -9,15 +9,15 @@ from decimal import Decimal
 import pytest
 
 from app.infrastructure.services.prro.xml_builder import (
-    XmlBuilder,
-    canonicalize,
-    compute_mac,
-    _to_cents,
-    _to_thousandths,
     CHK_TYPE_RETURN,
     CHK_TYPE_SALE,
     SERVICE_OPEN_SHIFT,
     SERVICE_PING,
+    XmlBuilder,
+    _to_cents,
+    _to_thousandths,
+    canonicalize,
+    compute_mac,
 )
 
 # ─── Фікстури ──────────────────────────────────────────────────────────────

@@ -5,21 +5,21 @@
 Всі сервіси, які працюють зі складом, мають реалізовувати цей Protocol.
 """
 
-from typing import Protocol, Optional, List, Tuple
 from decimal import Decimal
+from typing import Optional, Protocol
 from uuid import UUID
 
 
 class StockModuleInterface(Protocol):
     """
     Інтерфейс модуля складу.
-    
+
     Відповідає за:
     - Оновлення залишків товарів
     - Перевірку достатності товару
     - Відстеження мінімальних рівнів
     - Резервування товарів (майбутнє)
-    
+
     Модулі, які залежать від StockModule, використовують
     цей Protocol замість прямої залежності від ProductService.update_stock().
     """
@@ -51,20 +51,20 @@ class StockModuleInterface(Protocol):
     ) -> Decimal:
         """
         Змінює залишок товару на складі.
-        
+
         Після зміни публікує подію "stock.changed".
         Якщо новий залишок нижче мінімуму — публікує "stock.low".
-        
+
         Args:
             product_id: UUID товару.
             quantity_change: Зміна кількості (додатна — збільшення, від'ємна — зменшення).
             reason: Причина зміни (наприклад, "invoice_confirmed", "receipt_created").
             document_id: ID документа-причини (опціонально).
             document_type: Тип документа (опціонально).
-            
+
         Returns:
             Новий залишок після зміни.
-            
+
         Raises:
             InsufficientStock: Якщо недостатньо товару при зменшенні.
             ProductNotFound: Якщо товар не знайдено.
@@ -74,22 +74,22 @@ class StockModuleInterface(Protocol):
     async def get_stock(self, product_id: UUID) -> Decimal:
         """
         Отримує поточний залишок товару.
-        
+
         Args:
             product_id: UUID товару.
-            
+
         Returns:
             Поточний залишок (Decimal).
         """
         ...
 
-    async def get_stock_batch(self, product_ids: List[UUID]) -> dict:
+    async def get_stock_batch(self, product_ids: list[UUID]) -> dict:
         """
         Отримує залишки для декількох товарів одночасно.
-        
+
         Args:
             product_ids: Список UUID товарів.
-            
+
         Returns:
             Словник {product_id: stock}.
         """
@@ -104,11 +104,11 @@ class StockModuleInterface(Protocol):
     ) -> bool:
         """
         Перевіряє, чи достатньо товару на складі.
-        
+
         Args:
             product_id: UUID товару.
             required_quantity: Необхідна кількість.
-            
+
         Returns:
             True — якщо достатньо, False — якщо недостатньо.
         """
@@ -116,14 +116,14 @@ class StockModuleInterface(Protocol):
 
     async def check_sufficient_stock_batch(
         self,
-        items: List[Tuple[UUID, Decimal]],
-    ) -> Tuple[bool, List[Tuple[UUID, Decimal, Decimal]]]:
+        items: list[tuple[UUID, Decimal]],
+    ) -> tuple[bool, list[tuple[UUID, Decimal, Decimal]]]:
         """
         Перевіряє достатність для списку товарів.
-        
+
         Args:
             items: Список кортежів (product_id, required_quantity).
-            
+
         Returns:
             Кортеж (всі_достатньо, список_недостатніх).
             Кожен елемент списку недостатніх: (product_id, required, available).
@@ -135,17 +135,17 @@ class StockModuleInterface(Protocol):
     async def set_min_stock(self, product_id: UUID, min_quantity: Decimal) -> None:
         """
         Встановлює мінімальний рівень залишку для товару.
-        
+
         Args:
             product_id: UUID товару.
             min_quantity: Мінімальна кількість.
         """
         ...
 
-    async def get_low_stock_products(self) -> List[dict]:
+    async def get_low_stock_products(self) -> list[dict]:
         """
         Отримує список товарів, залишок яких нижче мінімального рівня.
-        
+
         Returns:
             Список словників з інформацією про товари з низьким залишком.
         """
@@ -161,7 +161,7 @@ class StockModuleInterface(Protocol):
     ) -> None:
         """
         Резервує товар на складі (для чеків в процесі створення).
-        
+
         Args:
             product_id: UUID товару.
             quantity: Кількість для резервування.
@@ -172,7 +172,7 @@ class StockModuleInterface(Protocol):
     async def release_reservation(self, reservation_id: str) -> None:
         """
         Звільняє резервацію товару.
-        
+
         Args:
             reservation_id: ID резервації.
         """

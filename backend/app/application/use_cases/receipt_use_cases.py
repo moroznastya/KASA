@@ -17,18 +17,19 @@ Use Cases для Receipt (Чек продажу).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Callable, Optional
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional
 from uuid import UUID, uuid4
 
-from app.domain.entities.receipt import Receipt, PaymentMethod
-from app.domain.repositories import IReceiptRepository, IProductRepository
-from app.domain.repositories.i_unit_of_work import IUnitOfWork
-from app.application.dto.receipt_dto import ReceiptDTO, ReceiptCreateDTO
-from app.application.mappers.receipt_mapper import ReceiptMapper
+from app.application.dto.receipt_dto import ReceiptCreateDTO, ReceiptDTO
 from app.application.interfaces.i_event_bus import IEventBus
+from app.application.mappers.receipt_mapper import ReceiptMapper
+from app.domain.entities.receipt import PaymentMethod, Receipt
 from app.domain.events import ReceiptCreated, ReceiptRefunded
+from app.domain.repositories import IProductRepository, IReceiptRepository
+from app.domain.repositories.i_unit_of_work import IUnitOfWork
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class ReceiptUseCases:
         try:
             fiscalizer = self._fiscalizer_factory()
             await fiscalizer.fiscalize_receipt(receipt_id, manual=False)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "ПРРО: авто-фіскалізація чеку %s не вдалася "
                 "(продаж не заблоковано)", receipt_id
@@ -132,7 +133,7 @@ class ReceiptUseCases:
                 if session is not None:
                     try:
                         await session.close()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         logger.debug(
                             "ПРРО: помилка закриття сесії фіскалізації",
                             exc_info=True,

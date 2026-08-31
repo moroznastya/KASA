@@ -2,26 +2,22 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
+from app.domain.entities.category import Category
+from app.domain.entities.product import Product
+from app.domain.services.pricing_service import PricingService
 from app.domain.use_cases.product_use_cases import (
     CreateProductUseCase,
-    UpdateProductUseCase,
     DeleteProductUseCase,
     SearchProductsUseCase,
-    PaginatedResult,
+    UpdateProductUseCase,
 )
-from app.domain.entities.product import Product
-from app.domain.entities.category import Category
 from app.domain.value_objects.money import Money
-from app.domain.value_objects.quantity import Quantity
-from app.domain.value_objects.barcode import Barcode
-from app.domain.services.pricing_service import PricingService
-
 
 # Валідний CODE128 штрих-код (допускає 1-50 ASCII)
 VALID_BARCODE = "TEST-BARCODE-001"

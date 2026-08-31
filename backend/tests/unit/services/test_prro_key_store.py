@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
 from cryptography.fernet import Fernet
 
 from app.infrastructure.services.prro.key_store import (
+    PASSWORD_MASK,
     PrroKeyStore,
     PrroKeyStoreError,
-    PASSWORD_MASK,
 )
 
 

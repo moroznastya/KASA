@@ -12,29 +12,28 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.use_cases import (
-    ProductUseCases,
-    InvoiceUseCases,
-    ReceiptUseCases,
     AuthUseCases,
+    InvoiceUseCases,
     LedgerUseCases,
+    ProductUseCases,
+    ReceiptUseCases,
 )
 from app.application.use_cases.invoice_print_use_cases import InvoicePrintUseCases
 from app.application.use_cases.prro import PrroUseCases
+from app.database import async_session, get_session
 from app.domain.repositories import ICategoryRepository
 from app.domain.services.cache_service import ICacheService
-from app.database import get_session, async_session
-
+from app.infrastructure.di.prro import build_fiscalize_use_case, build_prro_use_cases
 from app.infrastructure.persistence.repositories import (
-    SQLAlchemyProductRepository,
-    SQLAlchemyInvoiceRepository,
-    SQLAlchemyReceiptRepository,
-    SQLAlchemyUserRepository,
-    SQLAlchemyLedgerRepository,
     SQLAlchemyCategoryRepository,
+    SQLAlchemyInvoiceRepository,
+    SQLAlchemyLedgerRepository,
+    SQLAlchemyProductRepository,
+    SQLAlchemyReceiptRepository,
     SQLAlchemySupplierRepository,
+    SQLAlchemyUserRepository,
 )
 from app.infrastructure.persistence.unit_of_work import SQLAlchemyUnitOfWork
-from app.infrastructure.di.prro import build_prro_use_cases, build_fiscalize_use_case
 
 
 async def get_product_use_cases(

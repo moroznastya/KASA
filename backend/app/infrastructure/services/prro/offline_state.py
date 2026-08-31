@@ -48,7 +48,7 @@ def parse_reserve_range(data_sign: bytes) -> Optional[tuple[int, int]]:
     """Парсить `<CNF TY="C" FR="1001" TO="1100"/>` з data_sign; None → дефолт."""
     try:
         xml = data_sign.decode("utf-8", errors="replace")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     m = re.search(r'<CNF[^>]*\bFR="(\d+)"[^>]*\bTO="(\d+)"', xml)
     if not m:
@@ -84,7 +84,7 @@ class OfflineStateMachine:
         check = _make_service_check(xml_builder, signed, now)
         try:
             await grpc_client.send_chk(check)
-        except Exception as exc:  # noqa: BLE001 — мережа може бути вже мертва
+        except Exception as exc:
             logger.warning("PRRO_OFFLINE | T=109 не доставлено: %s", exc)
         await settings_repo.set(KEY_PRRO_OFFLINE, "1")
 
@@ -172,12 +172,12 @@ def _make_service_check(xml_builder, signed: bytes, now: datetime | None = None)
 
 
 __all__ = [
+    "DEFAULT_RESERVE_END",
+    "DEFAULT_RESERVE_START",
+    "KEY_PRRO_OFFLINE",
+    "KEY_PRRO_OFFLINE_NEXT",
+    "KEY_PRRO_RESERVE_END",
+    "KEY_PRRO_RESERVE_START",
     "OfflineStateMachine",
     "parse_reserve_range",
-    "KEY_PRRO_OFFLINE",
-    "KEY_PRRO_RESERVE_START",
-    "KEY_PRRO_RESERVE_END",
-    "KEY_PRRO_OFFLINE_NEXT",
-    "DEFAULT_RESERVE_START",
-    "DEFAULT_RESERVE_END",
 ]

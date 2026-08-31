@@ -17,7 +17,6 @@ from app.application.services.settings_value_validator import (
     validate_and_normalize_setting_value as v,
 )
 
-
 # ─── Зворотна сумісність із seed_settings.py ─────────────────────────────────
 
 class TestSeedCompatibility:

@@ -5,19 +5,19 @@ Domain шар Torgashka POS.
 """
 
 from .services.auth_service import AuthService
-from .services.product_service import ProductService
 from .services.document_service import DocumentService
 from .services.ledger_service import LedgerService
-from .services.supplier_product_service import SupplierProductService
 from .services.pricing_service import PricingService
+from .services.product_service import ProductService
 from .services.stock_service import StockService
+from .services.supplier_product_service import SupplierProductService
 
 __all__ = [
     "AuthService",
-    "ProductService",
     "DocumentService",
     "LedgerService",
-    "SupplierProductService",
     "PricingService",
+    "ProductService",
     "StockService",
+    "SupplierProductService",
 ]

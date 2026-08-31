@@ -8,16 +8,15 @@ Application Layer: SyncOfflineQueueUseCase — повторна передача
 from __future__ import annotations
 
 import logging
-from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.use_cases.prro.context import PrroContextFactory
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-from app.application.use_cases.prro.context import PrroContextFactory
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ class SyncOfflineQueueUseCase:
             xml_builder = await self._context.build_xml_builder()
             crypto = await self._context.build_crypto_signer()
             grpc_client = await self._context.grpc_client()
-        except Exception as exc:  # noqa: BLE001 — ПРРО не налаштований/недоступний
+        except Exception as exc:
             # Позначаємо ВСІ pending як failed: sync не має падати 500,
             # коли ключ КЕП/сервер ПРРО недоступний (контракт: sync → 200 + failed).
             logger.warning("PRRO_SYNC | компоненти ПРРО недоступні: %s", exc)
@@ -142,7 +141,7 @@ class SyncOfflineQueueUseCase:
                         "status": "failed",
                         "error": error,
                     })
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "PRRO_SYNC | документ %s не передано: %s", item.id, exc
                 )

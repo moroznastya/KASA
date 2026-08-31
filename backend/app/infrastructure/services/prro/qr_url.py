@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 # Базове посилання кабінету платника податків ДПС
 FISCAL_CHECK_BASE_URL = "https://cabinet.tax.gov.ua/cashregs/check"
@@ -88,4 +88,4 @@ def build_fiscal_check_url(
     return f"{FISCAL_CHECK_BASE_URL}?{urlencode(params)}"
 
 
-__all__ = ["build_fiscal_check_url", "FISCAL_CHECK_BASE_URL"]
+__all__ = ["FISCAL_CHECK_BASE_URL", "build_fiscal_check_url"]

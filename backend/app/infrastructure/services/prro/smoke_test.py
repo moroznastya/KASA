@@ -65,7 +65,7 @@ async def run_smoke_test() -> bool:
     try:
         state = channel.get_state(try_to_connect=True)
         _log(f"   ✅ Стан каналу (get_state): {state}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log(f"   ⚠  get_state: {exc}")
 
     client = PrroGrpcClient(channel, rro_fn="0000000000")
@@ -113,7 +113,7 @@ async def run_smoke_test() -> bool:
         # Інші коди (наприклад, UNIMPLEMENTED) все одно означають,
         # що TLS-канал до сервера працює.
         _log("   → Канал досяг сервера (помилка на рівні застосунку, не мережі) — канал ЖИВИЙ ✅")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log(f"   ❌ Невідома помилка: {type(exc).__name__}: {exc}")
         return False
 

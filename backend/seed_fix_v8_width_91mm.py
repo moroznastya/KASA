@@ -4,12 +4,12 @@ import psycopg2
 NEW_CONTENT = """<html>
 <body style="font-family: 'Arial', sans-serif; font-size: 12px; width: 91mm; margin: 0; padding: 0; color: #000; line-height: 1.2;">
     <div style="padding: 2px 4px;">
-        
+
         <!-- Шапка: Інформація про магазин -->
         <div style="text-align: center; margin-bottom: 10px;">
             <div style="font-size: 22px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">{{shop_name}}</div>
             <div style="font-size: 22px;">{{shop_address}}</div>
-           
+
         </div>
 
         <div style="border-top: 1px dashed #000; margin: 8px 0;"></div>

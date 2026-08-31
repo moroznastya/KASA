@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.application.use_cases import ReceiptUseCases
-from app.application.use_cases.receipt_use_cases import ReceiptValidationError
 from app.application.use_cases.prro.prro_use_cases import PrroUseCases
-from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
-from .deps import get_prro_use_cases, get_receipt_use_cases, get_cache_service
-from app.domain.services.cache_service import ICacheService
+from app.application.use_cases.receipt_use_cases import ReceiptValidationError
 from app.config import settings
-from .cache_utils import cached, invalidate_receipt_cache, invalidate_product_cache
+from app.domain.services.cache_service import ICacheService
+from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
+
+from .cache_utils import cached, invalidate_product_cache, invalidate_receipt_cache
+from .deps import get_cache_service, get_prro_use_cases, get_receipt_use_cases
 
 router = APIRouter(prefix="/receipts", tags=["receipts_v2"])
 
@@ -115,7 +116,7 @@ class CreateReceiptRequest(BaseModel):
         asyncpg не приймає aware datetime → DBAPIError (500).
         """
         if isinstance(v, datetime) and v.tzinfo is not None:
-            return v.astimezone(timezone.utc).replace(tzinfo=None)
+            return v.astimezone(UTC).replace(tzinfo=None)
         return v
 
 

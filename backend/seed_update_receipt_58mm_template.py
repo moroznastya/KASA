@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
 from app.infrastructure.persistence.models.print_template import PrintTemplate
 
 DEFAULT_TEMPLATE_ID = "a0000000-0000-0000-0000-000000000001"
@@ -27,7 +28,7 @@ DEFAULT_TEMPLATE_ID = "a0000000-0000-0000-0000-000000000001"
 NEW_CONTENT = """<html>
 <body style="font-family: 'Courier New', Courier, monospace; font-size: 10px; width: 48mm; margin: 0; padding: 0; color: #000; line-height: 1.2; box-sizing: border-box;">
     <div style="padding: 1mm 1.5mm;">
-        
+
         <!-- Шапка -->
         <div style="text-align: center; margin-bottom: 4px;">
             <div style="font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 1px;">{{shop_name}}</div>

@@ -66,8 +66,8 @@ import base64
 import hashlib
 import re
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Iterable
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from lxml import etree
 
@@ -801,7 +801,7 @@ class XmlBuilder:
             )
         di = match.group(1)
 
-        parts: list[str] = [f'<RQ V="1">', dat_xml]
+        parts: list[str] = ['<RQ V="1">', dat_xml]
 
         if include_mac:
             mac = mac_value if mac_value is not None else compute_mac(dat_xml)
@@ -912,19 +912,19 @@ def parse_receipt_xml_totals(dat_xml: str) -> dict:
 
 
 __all__ = [
-    "XmlBuilder",
-    "canonicalize",
-    "compute_mac",
-    "parse_receipt_xml_totals",
-    "_to_cents",
-    "_to_thousandths",
-    "CHK_TYPE_SALE",
     "CHK_TYPE_RETURN",
+    "CHK_TYPE_SALE",
     "CHK_TYPE_SERVICE",
-    "SERVICE_OPEN_SHIFT",
     "SERVICE_OFFLINE",
     "SERVICE_ONLINE",
+    "SERVICE_OPEN_SHIFT",
     "SERVICE_PING",
     "SERVICE_RESERVE",
     "SERVICE_TYPES",
+    "XmlBuilder",
+    "_to_cents",
+    "_to_thousandths",
+    "canonicalize",
+    "compute_mac",
+    "parse_receipt_xml_totals",
 ]

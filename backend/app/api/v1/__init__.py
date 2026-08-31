@@ -6,27 +6,27 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.products import router as products_router
 from app.api.v1.categories import router as categories_router
-from app.api.v1.suppliers import router as suppliers_router
-from app.api.v1.users import auth_router, users_router
+from app.api.v1.debtors import router as debtors_router
+from app.api.v1.documents import router as documents_router
+from app.api.v1.inventory import router as inventory_router
+from app.api.v1.invoice_ocr import router as invoice_ocr_router
 from app.api.v1.invoices import router as invoices_router
-from app.api.v1.transfers import router as transfers_router
-from app.api.v1.write_offs import router as write_offs_router
-from app.api.v1.write_off_reasons import router as write_off_reasons_router
-from app.api.v1.return_invoices import router as return_invoices_router
+from app.api.v1.ledger import router as ledger_router
+from app.api.v1.ocr import router as ocr_router
+from app.api.v1.print import router as print_router
+from app.api.v1.print_templates import router as print_templates_router
+from app.api.v1.products import router as products_router
 from app.api.v1.purchase_orders import router as purchase_orders_router
 from app.api.v1.receipts import router as receipts_router
-from app.api.v1.ledger import router as ledger_router
-from app.api.v1.documents import router as documents_router
-from app.api.v1.debtors import router as debtors_router
-from app.api.v1.ocr import router as ocr_router
-from app.api.v1.invoice_ocr import router as invoice_ocr_router
-from app.api.v1.inventory import router as inventory_router
+from app.api.v1.return_invoices import router as return_invoices_router
 from app.api.v1.settings import router as settings_router
+from app.api.v1.suppliers import router as suppliers_router
+from app.api.v1.transfers import router as transfers_router
+from app.api.v1.users import auth_router, users_router
 from app.api.v1.work_sessions import router as work_sessions_router
-from app.api.v1.print_templates import router as print_templates_router
-from app.api.v1.print import router as print_router
+from app.api.v1.write_off_reasons import router as write_off_reasons_router
+from app.api.v1.write_offs import router as write_offs_router
 
 # Головний роутер v1 API
 api_v1_router = APIRouter(prefix="/api/v1")

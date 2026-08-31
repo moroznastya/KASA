@@ -9,7 +9,6 @@ Application Layer: PrroShiftUseCase — відкриття/закриття зм
 """
 
 from __future__ import annotations
-from app.application.use_cases.prro.status_codes import status_error_text
 
 import logging
 from datetime import datetime
@@ -18,31 +17,27 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dto.prro_dto import PrroShiftDTO
+from app.application.use_cases.prro.context import (
+    CHECK_TYPE_CHK,
+    CHECK_TYPE_SERVICECHK,
+    CHECK_TYPE_ZREPORT,
+    PrroContextFactory,
+)
+from app.application.use_cases.prro.status_codes import status_error_text
 from app.infrastructure.persistence.models.prro import (
+    PrroQueueStatus,
     PrroShift,
     PrroShiftStatus,
-    PrroQueueStatus,
 )
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
-from app.infrastructure.services.prro.offline_queue import (
-    PrroOfflineQueue,
-    CHECK_TYPE_CHK,
-    CHECK_TYPE_SERVICECHK,
-    CHECK_TYPE_ZREPORT,
-)
+from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
 from app.infrastructure.services.prro.xml_builder import (
     SERVICE_OPEN_SHIFT,
     compute_mac,
     parse_receipt_xml_totals,
-)
-from app.application.use_cases.prro.context import (
-    PrroContextFactory,
-    CHECK_TYPE_CHK,
-    CHECK_TYPE_SERVICECHK as _SERVICECHK,
-    CHECK_TYPE_ZREPORT as _ZREPORT,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,7 +126,7 @@ class PrroShiftUseCase:
         check = await self._context.build_check(
             check_sign=signed,
             local_number=0,
-            check_type=_SERVICECHK,
+            check_type=CHECK_TYPE_SERVICECHK,
         )
         grpc_client = await self._context.grpc_client()
         response = await grpc_client.send_chk(check)
@@ -229,7 +224,7 @@ class PrroShiftUseCase:
         check = await self._context.build_check(
             check_sign=signed,
             local_number=0,
-            check_type=_ZREPORT,
+            check_type=CHECK_TYPE_ZREPORT,
         )
         grpc_client = await self._context.grpc_client()
         response = await grpc_client.send_chk(check)
@@ -453,4 +448,4 @@ class PrroShiftUseCase:
         )
 
 
-__all__ = ["PrroShiftUseCase", "PrroShiftError"]
+__all__ = ["PrroShiftError", "PrroShiftUseCase"]

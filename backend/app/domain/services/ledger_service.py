@@ -7,28 +7,28 @@
   - Перегляд історії операцій
 """
 
+from datetime import UTC, datetime
 from decimal import Decimal
-from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger, LedgerOperationType
 from app.infrastructure.persistence.models.supplier import Supplier
+from app.infrastructure.persistence.models.supplier_ledger import LedgerOperationType, SupplierLedger
 
 
 def _naive_dt(dt: datetime) -> datetime:
     """
     Конвертує datetime в offset-naive (без часового поясу).
-    
+
     - Якщо dt з часовим поясом (offset-aware) — конвертує в UTC і прибирає tzinfo.
     - Якщо dt вже offset-naive — повертає як є.
     """
     if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 

@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     PrroFiscalizeError,
     server_error_text,

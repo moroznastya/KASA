@@ -71,7 +71,7 @@ class PrintTemplateService:
         await self.session.execute(
             update(PrintTemplate)
             .where(PrintTemplate.type == template.type)
-            .where(PrintTemplate.is_default == True)
+            .where(PrintTemplate.is_default)
             .values(is_default=False)
         )
 
@@ -98,8 +98,8 @@ class PrintTemplateService:
         result = await self.session.execute(
             select(PrintTemplate)
             .where(PrintTemplate.type == template_type)
-            .where(PrintTemplate.is_default == True)
-            .where(PrintTemplate.is_active == True)
+            .where(PrintTemplate.is_default)
+            .where(PrintTemplate.is_active)
         )
         template = result.scalar_one_or_none()
 
@@ -110,7 +110,7 @@ class PrintTemplateService:
         result = await self.session.execute(
             select(PrintTemplate)
             .where(PrintTemplate.type == template_type)
-            .where(PrintTemplate.is_active == True)
+            .where(PrintTemplate.is_active)
             .order_by(PrintTemplate.created_at.desc())
             .limit(1)
         )

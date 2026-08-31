@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.infrastructure.services.prro.crypto_signer import PrroCryptoSigner  # noqa: E402
+from app.infrastructure.services.prro.crypto_signer import PrroCryptoSigner
 
 TEST_JKS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

@@ -16,14 +16,14 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.models.prro import (
-    PrroShift,
-    PrroShiftStatus,
     PrroQueueItem,
     PrroQueueStatus,
+    PrroShift,
+    PrroShiftStatus,
 )
 
 

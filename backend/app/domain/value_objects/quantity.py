@@ -7,8 +7,7 @@ Value Object: Quantity (Кількість).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Union
+from decimal import ROUND_HALF_UP, Decimal
 
 
 @dataclass(frozen=True)
@@ -54,12 +53,12 @@ class Quantity:
             raise ValueError("Resulting quantity cannot be negative")
         return Quantity(result, self.unit)
 
-    def __mul__(self, factor: Union[int, float, Decimal]) -> Quantity:
+    def __mul__(self, factor: int | float | Decimal) -> Quantity:
         factor = Decimal(str(factor)) if not isinstance(factor, Decimal) else factor
         result = (self.value * factor).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         return Quantity(result, self.unit)
 
-    def __truediv__(self, divisor: Union[int, float, Decimal]) -> Quantity:
+    def __truediv__(self, divisor: int | float | Decimal) -> Quantity:
         divisor = Decimal(str(divisor)) if not isinstance(divisor, Decimal) else divisor
         if divisor == 0:
             raise ZeroDivisionError("Cannot divide Quantity by zero")

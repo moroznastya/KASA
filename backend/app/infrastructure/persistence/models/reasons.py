@@ -8,9 +8,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Boolean, DateTime
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, String
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 

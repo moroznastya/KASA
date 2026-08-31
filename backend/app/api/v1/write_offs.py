@@ -14,19 +14,19 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 from app.schemas.write_off import (
     WriteOffCreate,
-    WriteOffUpdate,
     WriteOffResponse,
+    WriteOffUpdate,
 )
-from app.domain.services.auth_service import AuthService
 
 
 async def generate_write_off_number(session: AsyncSession) -> str:

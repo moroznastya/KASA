@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-import pytest
+from typing import ClassVar
 
 from app.infrastructure.services.price_tag_print_service import (
     PriceTagPrintService,
@@ -141,7 +141,7 @@ class TestBarcodeSvgXss:
 class TestFullRenderXss:
     """Тести повного рендеру сітки цінників та етикеток."""
 
-    PRODUCTS = [{
+    PRODUCTS: ClassVar[list[dict]] = [{
         "id": "00000000-0000-0000-0000-000000000001",
         "title": XSS_PAYLOAD,
         "price": "25.00",

@@ -82,7 +82,7 @@ async def main():
         # Всі активні шаблони чеків (типи: receipt*, return_receipt*, fiscal)
         result = await session.execute(
             select(PrintTemplate)
-            .where(PrintTemplate.is_active == True)
+            .where(PrintTemplate.is_active)
             .order_by(PrintTemplate.type, PrintTemplate.name)
         )
         templates = result.scalars().all()

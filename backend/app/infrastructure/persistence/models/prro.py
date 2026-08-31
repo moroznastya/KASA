@@ -11,32 +11,35 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
-
 from decimal import Decimal
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    DateTime,
+    Enum,
     ForeignKey,
-    String,
-    Text,
     Integer,
     Numeric,
-    Enum,
-    DateTime,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.receipt import Receipt
 
-class PrroShiftStatus(str, PyEnum):
+
+class PrroShiftStatus(StrEnum):
     """Статус зміни ПРРО."""
     OPEN = "open"        # Зміна відкрита
     CLOSED = "closed"    # Зміна закрита (Z-звіт)
 
 
-class PrroQueueStatus(str, PyEnum):
+class PrroQueueStatus(StrEnum):
     """Статус передачі фіскального документа у податкову."""
     PENDING = "pending"  # Очікує передачі
     SENT = "sent"        # Успішно передано
@@ -263,8 +266,8 @@ class PrroQueueItem(Base):
     )
 
     # ── Зв'язки ─────────────────────────────────
-    receipt: Mapped["Receipt | None"] = relationship("Receipt")
-    shift: Mapped["PrroShift | None"] = relationship(
+    receipt: Mapped[Receipt | None] = relationship("Receipt")
+    shift: Mapped[PrroShift | None] = relationship(
         "PrroShift",
         back_populates="queue_items",
     )

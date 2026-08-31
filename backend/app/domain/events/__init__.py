@@ -1,25 +1,25 @@
 """Domain Events для Torgashka POS."""
 
 from .base_event import BaseDomainEvent
-from .product_events import ProductCreated, ProductUpdated, ProductDeleted, StockChanged
-from .invoice_events import InvoiceCreated, InvoiceUpdated, InvoiceDeleted, InvoiceApproved
-from .receipt_events import ReceiptCreated, ReceiptRefunded
+from .invoice_events import InvoiceApproved, InvoiceCreated, InvoiceDeleted, InvoiceUpdated
 from .ledger_events import LedgerEntryCreated
-from .user_events import UserLoggedIn, UserCreated
+from .product_events import ProductCreated, ProductDeleted, ProductUpdated, StockChanged
+from .receipt_events import ReceiptCreated, ReceiptRefunded
+from .user_events import UserCreated, UserLoggedIn
 
 __all__ = [
     "BaseDomainEvent",
-    "ProductCreated",
-    "ProductUpdated",
-    "ProductDeleted",
-    "StockChanged",
-    "InvoiceCreated",
-    "InvoiceUpdated",
-    "InvoiceDeleted",
     "InvoiceApproved",
+    "InvoiceCreated",
+    "InvoiceDeleted",
+    "InvoiceUpdated",
+    "LedgerEntryCreated",
+    "ProductCreated",
+    "ProductDeleted",
+    "ProductUpdated",
     "ReceiptCreated",
     "ReceiptRefunded",
-    "LedgerEntryCreated",
-    "UserLoggedIn",
+    "StockChanged",
     "UserCreated",
+    "UserLoggedIn",
 ]

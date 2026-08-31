@@ -7,19 +7,28 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
-from typing import Optional
+from enum import StrEnum
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.user import User
 
-class InventoryStatus(str, PyEnum):
+
+class InventoryStatus(StrEnum):
     """Статус інвентаризації."""
     DRAFT = "draft"
     CONFIRMED = "confirmed"   # Інвентаризацію проведено

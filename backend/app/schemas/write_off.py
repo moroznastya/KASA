@@ -4,12 +4,12 @@ Pydantic схеми для моделей WriteOff та WriteOffItem (Списа
 reason — рядок: назва причини з персистентного довідника write_off_reasons.
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WriteOffItemCreate(BaseModel):

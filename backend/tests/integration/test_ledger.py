@@ -11,12 +11,10 @@
   - Коригування балансу
 """
 
-from decimal import Decimal
 from datetime import datetime
 
 import pytest
 from httpx import AsyncClient
-
 
 pytestmark = [
     pytest.mark.integration,

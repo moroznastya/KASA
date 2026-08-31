@@ -218,9 +218,9 @@ class PrroOfflineQueue:
 
 
 __all__ = [
-    "PrroOfflineQueue",
-    "PRRO_OFFLINE_LIMIT_HOURS",
     "CHECK_TYPE_CHK",
-    "CHECK_TYPE_ZREPORT",
     "CHECK_TYPE_SERVICECHK",
+    "CHECK_TYPE_ZREPORT",
+    "PRRO_OFFLINE_LIMIT_HOURS",
+    "PrroOfflineQueue",
 ]

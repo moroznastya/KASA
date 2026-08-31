@@ -5,7 +5,7 @@ Pydantic схеми для моделі WriteOffReason (довідник при�
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WriteOffReasonCreate(BaseModel):

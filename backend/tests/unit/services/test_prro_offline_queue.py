@@ -16,9 +16,9 @@ from app.infrastructure.persistence.repositories.prro_repository import (
     PrroRepository,
 )
 from app.infrastructure.services.prro.offline_queue import (
-    PrroOfflineQueue,
-    PRRO_OFFLINE_LIMIT_HOURS,
     CHECK_TYPE_CHK,
+    PRRO_OFFLINE_LIMIT_HOURS,
+    PrroOfflineQueue,
 )
 
 
@@ -71,7 +71,7 @@ class TestAddDocument:
             shift_id=shift_id, receipt_id=receipt_id, local_number=5
         )
 
-        item = await queue.add_document(
+        await queue.add_document(
             receipt_id=receipt_id,
             shift_id=shift_id,
             local_number=5,

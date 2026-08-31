@@ -24,8 +24,8 @@ from app.infrastructure.persistence.models.invoice import (
     InvoiceStatus,
 )
 from app.infrastructure.persistence.models.supplier_ledger import (
-    SupplierLedger,
     LedgerOperationType,
+    SupplierLedger,
 )
 
 # Спільні опції eager-loading для накладної з повним вмістом

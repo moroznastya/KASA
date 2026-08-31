@@ -12,26 +12,25 @@ API роутер для роботи з боржниками (Debtors).
   - GET    /debtors/{debtor_id}/payments   — список оплат боргу
 """
 
-from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, or_, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.debtor import Debtor, DebtorPayment
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
 from app.schemas.debtor import (
     DebtorCreate,
-    DebtorUpdate,
-    DebtorResponse,
-    DebtorPayRequest,
     DebtorPaymentResponse,
+    DebtorPayRequest,
+    DebtorResponse,
+    DebtorUpdate,
 )
 from app.schemas.receipt import ReceiptResponse
-from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/debtors",
@@ -213,7 +212,7 @@ async def pay_debt(
         )
 
     debtor.total_debt -= data.amount
-    
+
     # Створюємо запис про оплату
     payment = DebtorPayment(
         debtor_id=debtor.id,
@@ -221,7 +220,7 @@ async def pay_debt(
         payment_method=data.payment_method,
     )
     session.add(payment)
-    
+
     # Якщо борг став 0 — автоматично видаляємо боржника
     if float(debtor.total_debt) <= 0:
         # Зберігаємо дані для відповіді перед видаленням
@@ -229,7 +228,7 @@ async def pay_debt(
         await session.delete(debtor)
         await session.commit()
         return response_data
-    
+
     await session.flush()
     await session.refresh(debtor)
     return DebtorResponse.model_validate(debtor)

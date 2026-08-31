@@ -5,18 +5,17 @@ Mapper для Receipt entity.
 """
 
 from decimal import Decimal
-from typing import Optional
 
+from app.application.dto.receipt_dto import ReceiptCreateDTO, ReceiptDTO, ReceiptItemDTO
 from app.domain.entities.receipt import (
+    FiscalStatus,
+    PaymentMethod,
     Receipt,
     ReceiptItem,
-    PaymentMethod,
-    FiscalStatus,
 )
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate
-from app.application.dto.receipt_dto import ReceiptDTO, ReceiptItemDTO, ReceiptCreateDTO
 
 
 class ReceiptMapper:

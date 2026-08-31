@@ -10,17 +10,16 @@
 """
 
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.barcode import Barcode
+from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.product_image import ProductImage
-from app.schemas.product import ProductCreate, ProductUpdate, ProductSearchParams
+from app.schemas.product import ProductCreate, ProductSearchParams, ProductUpdate
 
 
 def _relevance_sort_key(query: str):
@@ -400,15 +399,14 @@ class ProductService:
         product = await self.get_product_by_id(product_id)
 
         # Перевіряємо, чи достатньо товару при зменшенні
-        if quantity_change < 0 and product.stock is not None:
-            if product.stock + quantity_change < 0:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Недостатньо товару '{product.title}' на складі. "
-                        f"Доступно: {product.stock}, потрібно: {abs(quantity_change)}"
-                    ),
-                )
+        if quantity_change < 0 and product.stock is not None and product.stock + quantity_change < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Недостатньо товару '{product.title}' на складі. "
+                    f"Доступно: {product.stock}, потрібно: {abs(quantity_change)}"
+                ),
+            )
 
         # Оновлюємо залишок
         if product.stock is None:
@@ -431,7 +429,7 @@ class ProductService:
                 .values(is_main=False)
             )
 
-        product = await self.get_product_by_id(product_id)
+        await self.get_product_by_id(product_id)
         # Рахуємо кількість зображень окремим запитом (уникнення MissingGreenlet)
         count_result = await self.session.execute(
             select(func.count()).select_from(ProductImage).where(ProductImage.product_id == product_id)

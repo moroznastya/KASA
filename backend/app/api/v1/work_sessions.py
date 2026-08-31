@@ -7,23 +7,23 @@ API роутер для робочих сесій (WorkSession).
   - GET /work-sessions/user/{id}     — drill-down: сесії конкретного користувача (admin only)
 """
 
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.work_session import WorkSession
 from app.schemas.work_session import (
-    WorkSessionResponse,
-    WorkSessionReportResponse,
     UserHoursSummary,
+    WorkSessionReportResponse,
+    WorkSessionResponse,
 )
-from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/work-sessions",
@@ -57,10 +57,7 @@ def _effective_duration(ws: WorkSession, now: Optional[datetime] = None) -> Opti
 def _month_bounds(month: int, year: int) -> tuple[datetime, datetime]:
     """Початок та кінець (ексклюзивний) вказаного місяця."""
     month_start = datetime(year, month, 1)
-    if month == 12:
-        month_end = datetime(year + 1, 1, 1)
-    else:
-        month_end = datetime(year, month + 1, 1)
+    month_end = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
     return month_start, month_end
 
 

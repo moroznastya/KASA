@@ -59,7 +59,7 @@ class IitSdk:
       - перевірка підпису (EUVerifyDataInternal).
     """
 
-    _instance: "IitSdk | None" = None
+    _instance: IitSdk | None = None
 
     def __init__(self, lib_path: Path | None = None, cert_store: Path | None = None) -> None:
         self._lib: Any = None
@@ -72,7 +72,7 @@ class IitSdk:
     # ─── Singleton ─────────────────────────────────────────────────────────
 
     @classmethod
-    def get(cls) -> "IitSdk":
+    def get(cls) -> IitSdk:
         """Повертає спільний екземпляр SDK (ініціалізується ліниво)."""
         if cls._instance is None:
             cls._instance = cls()
@@ -197,7 +197,7 @@ class IitSdk:
             return f"код {code}"
         try:
             return desc.decode("cp1251", errors="replace")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return desc.decode("utf-8", errors="replace")
 
     def _free(self, ptr: Any) -> None:
@@ -238,7 +238,7 @@ class IitSdk:
         certs_ptr = ctypes.POINTER(ctypes.c_void_p)()
         cert_lens_ptr = ctypes.POINTER(ctypes.c_ulong)()
 
-        fn = getattr(lib, "EUGetJKSPrivateKeyFile")
+        fn = lib.EUGetJKSPrivateKeyFile
         fn.argtypes = [
             ctypes.c_char_p,
             ctypes.c_char_p,
@@ -281,7 +281,7 @@ class IitSdk:
                 lib.EUFreeMemory(ctypes.cast(cert_lens_ptr, ctypes.c_void_p))
 
         # 2) сертифікати у файлове сховище
-        save = getattr(lib, "EUSaveCertificate")
+        save = lib.EUSaveCertificate
         save.argtypes = [ctypes.c_char_p, ctypes.c_ulong]
         save.restype = ctypes.c_ulong
         for cert in certs:
@@ -293,7 +293,7 @@ class IitSdk:
                 )
 
         # 3) ключ у ядро
-        read = getattr(lib, "EUReadPrivateKeyBinary")
+        read = lib.EUReadPrivateKeyBinary
         read.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p]
         read.restype = ctypes.c_int
         rc = read(key_bytes, len(key_bytes), password.encode("utf-8"))
@@ -324,7 +324,7 @@ class IitSdk:
         for c in certs:
             try:
                 parsed.append(x509.load_der_x509_certificate(c))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         # Сертифікат підписанта — кінцевий (не ЦСК): BasicConstraints
         # відсутній або CA=False, subject != issuer.
@@ -367,7 +367,7 @@ class IitSdk:
                 "викличте load_jks_key()."
             )
         lib = self._init()
-        fn = getattr(lib, "EUSignDataInternal")
+        fn = lib.EUSignDataInternal
         fn.argtypes = [
             ctypes.c_int,                      # bAppendCert
             ctypes.c_char_p,                   # pbData
@@ -418,7 +418,7 @@ class IitSdk:
             bool — True, якщо підпис валідний і (якщо задано) відповідає даним.
         """
         lib = self._init()
-        fn = getattr(lib, "EUVerifyDataInternal")
+        fn = lib.EUVerifyDataInternal
         fn.argtypes = [
             ctypes.c_char_p,                  # pszSignedData (base64) — NULL
             ctypes.c_char_p,                  # pbSignedData

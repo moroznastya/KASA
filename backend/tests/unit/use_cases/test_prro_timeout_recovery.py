@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,18 +14,18 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.use_cases.prro.context import (
-    PrroContextFactory,
     KEY_PRRO_FN,
     KEY_PRRO_TN,
     KEY_PRRO_ZN,
+    PrroContextFactory,
 )
 from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     FiscalizeReceiptUseCase,
 )
-from app.infrastructure.persistence.models.prro import PrroShift
-from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.prro import PrroShift
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
@@ -240,14 +240,14 @@ class TestQrMacV1:
 
     async def test_qr_parameters_match_dps(self, setup):
         """V1: параметри QR відповідають ДПС §5 (mac/date/time/id/sm/fn)."""
+
         from app.infrastructure.services.prro.qr_url import build_fiscal_check_url
-        from datetime import timezone
 
         url = build_fiscal_check_url(
             fiscal_number="45",
             amount=Decimal("780.00"),
             prro_fn="3000898168",
-            sent_at=datetime(2022, 9, 4, 11, 30, tzinfo=timezone.utc),
+            sent_at=datetime(2022, 9, 4, 11, 30, tzinfo=UTC),
             mac="001A000005F00000000015001146D50002924A03E61CA20AF7C297A2D6",
         )
         assert url == (

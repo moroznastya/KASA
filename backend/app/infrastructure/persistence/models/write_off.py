@@ -9,14 +9,23 @@ write_off_reasons (див. models/reasons.py). Користувач може д�
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, DateTime,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.user import User
 
 
 class WriteOff(Base):
