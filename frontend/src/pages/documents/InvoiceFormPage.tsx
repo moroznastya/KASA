@@ -551,7 +551,6 @@ const InvoiceFormPage: React.FC = () => {
     } catch (err: any) {
       const detail = err?.response?.data?.detail || err?.message || "Помилка при збереженні";
       toast.error(detail);
-    } finally {
     }
   };
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

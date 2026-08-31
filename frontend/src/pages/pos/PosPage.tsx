@@ -960,7 +960,7 @@ const PosPage: React.FC = () => {
       if (hasDebtItem && debtPaymentInfo) {
         try {
           debtPayment = JSON.parse(debtPaymentInfo);
-        } catch {}
+        } catch { /* ігноруємо: операція не критична */ }
         sessionStorage.removeItem('pos_debt_payment');
       }
 
@@ -1141,7 +1141,7 @@ const PosPage: React.FC = () => {
       if (hasDebtItem && debtPaymentInfo) {
         try {
           debtPayment = JSON.parse(debtPaymentInfo);
-        } catch {}
+        } catch { /* ігноруємо: операція не критична */ }
         sessionStorage.removeItem('pos_debt_payment');
       }
 

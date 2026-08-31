@@ -478,7 +478,6 @@ const ModuleSection: React.FC<{
   onNavigate: (path: string) => void;
 }> = ({ moduleKey, settings, values, onFieldChange, onNavigate }) => {
   const config = MODULE_CONFIG[moduleKey];
-  if (!config) return null;
 
   // Розділяємо налаштування на звичайні та специфічні для цінників/етикеток
   const regularSettings = settings.filter(s =>
@@ -612,6 +611,8 @@ const ModuleSection: React.FC<{
     });
   }
   printerOptionsArr.push({ value: 'custom', label: '🔧 Інший (ввести вручну)...' });
+
+  if (!config) return null;
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">

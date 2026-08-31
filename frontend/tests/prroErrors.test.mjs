@@ -1,3 +1,5 @@
+/* global console */
+
 // Юніт-тест extractErrorMessage (TS-логіка помилок ПРРО).
 // Запуск: bash tools/run_prro_errors_test.sh (esbuild → node:assert).
 import assert from 'node:assert';
