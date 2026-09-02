@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use rusqlite::{params, Connection};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Офлайн-база даних
 pub struct OfflineDatabase {
@@ -24,10 +24,21 @@ pub struct OfflineDatabase {
 }
 
 impl OfflineDatabase {
-    /// Створити/відкрити SQLite базу даних
+    /// Створити/відкрити SQLite базу даних (стандартний шлях).
+    ///
+    /// Відкриває БД і застосовує міграції до актуальної версії схеми
+    /// (двигун `PRAGMA user_version`, дизайн sync-schema-design.md розділ 7).
     pub fn new() -> Result<Self, String> {
         let db_path = Self::get_db_path_inner()?;
+        Self::open_at(&db_path)
+    }
 
+    /// Відкрити БД за явним шляхом + міграції до актуальної версії.
+    ///
+    /// Існуючі БД (створені старими версіями бінарника, user_version = 0)
+    /// проходять ті самі міграції з 0001 — без втрати даних. Повторний
+    /// запуск ідемпотентний (user_version вже актуальна → no-op).
+    pub fn open_at(db_path: &Path) -> Result<Self, String> {
         // Створюємо директорію, якщо не існує
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
@@ -35,12 +46,21 @@ impl OfflineDatabase {
         }
 
         let conn =
-            Connection::open(&db_path).map_err(|e| format!("Не вдалося відкрити БД: {}", e))?;
+            Connection::open(db_path).map_err(|e| format!("Не вдалося відкрити БД: {}", e))?;
 
-        let db = OfflineDatabase { conn };
-        db.initialize_tables()?;
+        // WAL та foreign_keys — ДО міграцій (journal_mode не можна змінити
+        // всередині транзакції; FK — per-connection прагма).
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;",
+        )
+        .map_err(|e| format!("Помилка PRAGMA (WAL/FK): {}", e))?;
 
-        Ok(db)
+        // Двигун міграцій: user_version → усі міграції N > current послідовно,
+        // кожна в окремій транзакції (BEGIN → SQL → COMMIT → user_version = N).
+        super::migrations::migrate(&conn)?;
+
+        Ok(OfflineDatabase { conn })
     }
 
     /// Отримати шлях до файлу БД (публічний метод)
@@ -59,10 +79,14 @@ impl OfflineDatabase {
         Ok(data_dir.join("torgashka").join("offline.db"))
     }
 
-    /// Додати колонку, якщо її немає (ідемпотентна міграція).
+    /// Додати колонку, якщо її немає — EMERGENCY-ЗАПАС для старих версій
+    /// бінарника (дизайн sync-schema-design.md, розділ 7.1).
     ///
-    /// Перевірка через `PRAGMA table_info(<table>)`: якщо колонка вже існує —
-    /// ALTER TABLE не виконується. Повторний запуск безпечний.
+    /// Новий код НЕ використовує цей хак: усі нові колонки додаються через
+    /// SQL-міграції (`src/offline/migrations/offline/NNNN_*.sql`).
+    /// Залишений для аварійного відновлення БД, які з якоїсь причини
+    /// опинились у проміжному стані.
+    #[allow(dead_code)]
     fn ensure_column(&self, table: &str, column: &str, column_ddl: &str) -> Result<(), String> {
         let mut stmt = self
             .conn
@@ -87,62 +111,6 @@ impl OfflineDatabase {
                     e
                 )
             })?;
-
-        Ok(())
-    }
-
-    /// Ініціалізація таблиць
-    fn initialize_tables(&self) -> Result<(), String> {
-        self.conn
-            .execute_batch(
-                "
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
-
-            -- Товари (офлайн-кеш)
-            CREATE TABLE IF NOT EXISTS products (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                store_id TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            -- Чеки (офлайн)
-            CREATE TABLE IF NOT EXISTS receipts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                data TEXT NOT NULL,
-                store_id TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                synced INTEGER NOT NULL DEFAULT 0
-            );
-
-            -- Налаштування
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            -- Індекси
-            CREATE INDEX IF NOT EXISTS idx_receipts_synced ON receipts(synced);
-            CREATE INDEX IF NOT EXISTS idx_products_name ON products(id);
-        ",
-            )
-            .map_err(|e| format!("Помилка ініціалізації таблиць: {}", e))?;
-
-        // ── Мультиточковість (Етап 5): ідемпотентний апгрейд існуючих БД ──
-        // Стара схема (до Етапу 5) не мала store_id. CREATE TABLE IF NOT EXISTS
-        // не додасть колонку в ІСНУЮЧУ таблицю — тому явна міграція:
-        self.ensure_column("products", "store_id", "store_id TEXT")?;
-        self.ensure_column("receipts", "store_id", "store_id TEXT")?;
-        self.conn
-            .execute_batch(
-                "
-            CREATE INDEX IF NOT EXISTS idx_receipts_store ON receipts(store_id);
-            CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_id);
-        ",
-            )
-            .map_err(|e| format!("Помилка створення індексів store_id: {}", e))?;
 
         Ok(())
     }
