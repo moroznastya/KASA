@@ -31,8 +31,6 @@ interface NavItem {
   icon: React.ReactNode;
   module: string;
   roles?: ('admin' | 'cashier' | 'owner')[];
-  /** Пермішен (якщо вказаний) — пункт видимий лише з ним або для admin/owner. */
-  permission?: string;
 }
 
 const navItems: NavItem[] = [
@@ -91,7 +89,6 @@ const navItems: NavItem[] = [
     icon: <PackageSearch className="w-5 h-5" />,
     module: 'products',
     roles: ['admin', 'cashier'],
-    permission: 'inventory.view_other_stores',
   },
   {
     path: '/categories',
@@ -162,14 +159,9 @@ export const Sidebar: React.FC = () => {
   const { sidebarOpen, toggleSidebar, setActiveModule } = useUIStore();
   const user = useAuthStore((state) => state.user);
 
-  // Пермішен-перевірка: admin/owner мають усі права; решта — за списком прав.
-  const canViewOtherStores =
-    user?.role === 'admin' ||
-    user?.role === 'owner' ||
-    !!user?.permissions?.includes('inventory.view_other_stores');
-
+  // Видимість — тільки за ролями (admin/owner/manager бачать адмін-пункти;
+  // cashier — свої). Дані на сторінках обмежені RLS/user_stores на бекенді.
   const visibleItems = navItems.filter((item) => {
-    if (item.permission && !canViewOtherStores) return false;
     if (!item.roles) return true;
     if (!user) return false;
     // owner/manager прирівнюються до admin (адмін-пункти).
