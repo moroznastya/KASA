@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.torgashka.pos</id>
+  <name>Torgashka</name>
+  <name xml:lang="uk">Торгашка</name>
+  <summary>Enterprise POS-system (Kasa + Warehouse/ERP)</summary>
+  <summary xml:lang="uk">Enterprise POS-система (Каса + Склад/ERP)</summary>
+  <developer_name>Torgashka Team</developer_name>
+  <launchable type="desktop-id">com.torgashka.pos.desktop</launchable>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <url type="homepage">https://github.com/torgashka/torgashka</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-08-21"/>
+  </releases>
+</component>
