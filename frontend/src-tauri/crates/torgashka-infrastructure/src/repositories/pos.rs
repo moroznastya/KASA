@@ -314,7 +314,7 @@ async fn insert_receipt(
             $11::receipt_payment_method,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
             $24::fiscal_status, $25, $26, $27,
-            (now() AT TIME ZONE 'UTC')::timestamp
+            COALESCE($28::timestamp, (now() AT TIME ZONE 'UTC')::timestamp)
         )
         RETURNING created_at::text
         "#,
@@ -346,6 +346,7 @@ async fn insert_receipt(
     .bind(input.split_group_id)
     .bind(input.client_uuid)
     .bind(store_id)
+    .bind(input.created_at)
     .fetch_one(&mut **tx)
     .await
     .pe()?;

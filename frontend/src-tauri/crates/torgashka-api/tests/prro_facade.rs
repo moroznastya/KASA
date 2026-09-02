@@ -28,8 +28,11 @@ async fn facade(shadow: bool) -> Arc<PrroFacade> {
     Arc::new(PrroFacade::new(repo, shadow))
 }
 
+mod common;
+
 #[tokio::test]
 async fn status_reports_rust_gate() {
+    common::force_test_db();
     let f = facade(false).await;
     let v = f.status().await.expect("status");
     assert_eq!(v["rust_gate"], true);
@@ -39,6 +42,7 @@ async fn status_reports_rust_gate() {
 
 #[tokio::test]
 async fn list_shifts_empty_then_with_shift() {
+    common::force_test_db();
     let f = facade(false).await;
     let v = f.list_shifts(1, 20).await.expect("list");
     assert_eq!(v["total"], 0);
@@ -53,6 +57,7 @@ async fn list_shifts_empty_then_with_shift() {
 
 #[tokio::test]
 async fn queue_empty_and_pending_visible() {
+    common::force_test_db();
     let f = facade(false).await;
     let v = f.queue(100).await.expect("queue");
     assert_eq!(v["pending"], 0);
@@ -80,6 +85,7 @@ async fn queue_empty_and_pending_visible() {
 
 #[tokio::test]
 async fn open_shift_without_config_returns_config_error() {
+    common::force_test_db();
     let f = facade(false).await;
     let err = f.open_shift().await.unwrap_err();
     assert!(
@@ -90,6 +96,7 @@ async fn open_shift_without_config_returns_config_error() {
 
 #[tokio::test]
 async fn shadow_sync_reports_python_handles() {
+    common::force_test_db();
     let f = facade(true).await;
     let v = f.sync(100).await.expect("sync shadow");
     assert_eq!(v["shadow"], true);

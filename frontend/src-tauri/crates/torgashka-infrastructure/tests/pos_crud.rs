@@ -134,6 +134,7 @@ fn sale_input_cash(product: Uuid, qty: &str, cash: &str) -> ReceiptCreateInput {
         is_fiscal: false,
         split_group_id: None,
         client_uuid: None,
+        created_at: None,
     }
 }
 

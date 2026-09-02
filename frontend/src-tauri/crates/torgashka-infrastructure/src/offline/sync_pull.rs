@@ -42,6 +42,8 @@ pub const ENTITY_ORDER: [&str; 6] = [
 pub const DEFAULT_INTERVAL_SECS: u64 = 30;
 /// Мінімальний інтервал (розділ 5: мін. 10 с).
 pub const MIN_INTERVAL_SECS: u64 = 10;
+/// Інтервал циклічного pull за замовчуванням (дизайн 5: 30 с).
+pub const DEFAULT_PULL_INTERVAL_SECS: u64 = 30;
 /// Захист від нескінченного циклу пагінації (порожня каса, багато сторінок).
 const MAX_PAGES_PER_ENTITY: u32 = 10_000;
 

@@ -135,8 +135,11 @@ fn push_cfg(db_path: &PathBuf, base: &str, token: &str) -> PushConfig {
 // 1. Зміна ціни: чек за старою ціною (price_snapshot) → created, PG=90.00
 // ─────────────────────────────────────────────────────────────────────────────
 
+mod common;
+
 #[tokio::test]
 async fn price_snapshot_old_price_kept() {
+    common::force_test_db();
     let pool = api_pool().await;
     let product = ensure_seed(&pool).await;
 
@@ -206,6 +209,7 @@ async fn price_snapshot_old_price_kept() {
 
 #[tokio::test]
 async fn deleted_product_offline_receipt_pushed() {
+    common::force_test_db();
     let pool = api_pool().await;
     let product = ensure_seed(&pool).await;
 
@@ -267,11 +271,14 @@ async fn deleted_product_offline_receipt_pushed() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Transfer_in (точка Б не існує / тип поза push ЕТАП 4) → failed + last_error
+// 3. Тип поза приймачами push (ЕТАП 7b приймає receipt/return_receipt/
+// purchase_order/inventory/transfer/write_off; work_session каса офлайн не
+// генерує — див. transactions.rs) → per-item error → failed + last_error
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn unsupported_transfer_marks_failed_with_error() {
+async fn unsupported_type_marks_failed_with_error() {
+    common::force_test_db();
     let pool = api_pool().await;
     let _product = ensure_seed(&pool).await;
 
@@ -281,31 +288,26 @@ async fn unsupported_transfer_marks_failed_with_error() {
     let _h = run_facade(&addr);
     let token = login(&base).await;
 
-    // Каса не створює transfer_in локально (ЕТАП 4 межа) — але моделюємо
-    // агрегат «переміщення в точку Б» (дизайн 2.2), який сервер має
-    // відхилити: per-item error → каса failed + last_error (аномалія вгору).
+    // Агрегат невідомого типу (work_session каса локально НЕ створює) →
+    // сервер відхиляє: per-item error → каса failed + last_error (аномалія).
     let dir = tempfile::TempDir::new().expect("tmpdir");
-    let db_path = dir.path().join("cash-transfer.db");
+    let db_path = dir.path().join("cash-unknown.db");
     let conn = open_connection(&db_path).expect("каса БД");
     let client_uuid = Uuid::new_v4().to_string();
     let payload = json!({
-        "type": "transfer_in",
+        "type": "work_session",
         "client_uuid": client_uuid,
         "store_id": STORE1,
         "created_at": "2026-09-02T00:00:00Z",
-        "payload": {
-            "transfer_id": Uuid::new_v4().to_string(),
-            "to_store_id": "00000000-0000-0000-0000-0000000000bb",
-            "items": [{"product_id": Uuid::new_v4().to_string(), "quantity": 5}],
-        },
+        "payload": {},
     })
     .to_string();
     conn.execute(
         "INSERT INTO outbox (type, client_uuid, payload, status) \
-         VALUES ('transfer_in', ?1, ?2, 'pending')",
+         VALUES ('work_session', ?1, ?2, 'pending')",
         rusqlite::params![client_uuid, payload],
     )
-    .expect("insert transfer_in");
+    .expect("insert work_session");
     drop(conn);
 
     let cfg = push_cfg(&db_path, &base, &token);
@@ -313,7 +315,7 @@ async fn unsupported_transfer_marks_failed_with_error() {
     let s = push_pending_batch(&db_path, &client, &cfg)
         .await
         .expect("push (HTTP 200 з per-item error)");
-    assert_eq!(s.failed, 1, "сервер відхилив transfer_in → failed");
+    assert_eq!(s.failed, 1, "сервер відхилив невідомий тип → failed");
     assert_eq!(s.done, 0);
 
     // КРИТЕРІЙ: outbox status=failed + last_error заповнено (аномалія видима).
@@ -328,7 +330,7 @@ async fn unsupported_transfer_marks_failed_with_error() {
     assert_eq!(status, "failed", "непідтримуваний тип → failed (без retry)");
     let err = last_error.expect("last_error заповнено");
     assert!(
-        err.contains("не підтримується") || err.contains("transfer"),
+        err.contains("не підтримується"),
         "last_error пояснює аномалію: {err}"
     );
     // pending більше немає — failed-агрегат не зациклюється.

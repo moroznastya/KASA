@@ -53,7 +53,7 @@ async fn api_pool() -> sqlx::PgPool {
 }
 
 /// Seed: адмін + user_stores для 4 точок + продукт із залишком на точку.
-async fn ensure_seed(pool: &sqlx::PgPool) -> Vec<(Uuid, Uuid)> {
+async fn ensure_seed(pool: &sqlx::PgPool) -> Vec<(Uuid, Uuid, Uuid)> {
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed)
          VALUES ($1, 'E2E Admin', 'admin', $2, 'owner'::public.user_role, true, now(), now(), true)
@@ -65,6 +65,13 @@ async fn ensure_seed(pool: &sqlx::PgPool) -> Vec<(Uuid, Uuid)> {
     .await
     .expect("seed admin");
 
+    let supplier = Uuid::new_v4();
+    sqlx::query("INSERT INTO suppliers (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+        .bind(supplier)
+        .bind("E2E 4-каси Постачальник")
+        .execute(pool)
+        .await
+        .expect("seed supplier");
     let mut out = Vec::new();
     for i in 0..STORES {
         let store = Uuid::new_v4();
@@ -101,7 +108,7 @@ async fn ensure_seed(pool: &sqlx::PgPool) -> Vec<(Uuid, Uuid)> {
         .execute(pool)
         .await
         .expect("seed stock");
-        out.push((store, product));
+        out.push((store, product, supplier));
     }
     out
 }
@@ -115,6 +122,7 @@ fn build_cash_db(
     k: usize,
     store: Uuid,
     product: Uuid,
+    supplier_uuid: &str,
 ) -> (PathBuf, f64) {
     let db_path = dir.path().join(format!("cash-{k}.db"));
     let mut conn = open_connection(&db_path).expect("каса БД");
@@ -135,7 +143,13 @@ fn build_cash_db(
             "cash_amount": format!("{total:.2}"),
         })
         .to_string();
-        enqueue_receipt(&mut conn, &receipt, Some(&store.to_string())).expect("enqueue sale");
+        let er = enqueue_receipt(&mut conn, &receipt, Some(&store.to_string())).expect("enqueue sale");
+        // БЛОКЕР 2: created_at чека — ЧАС КАСИ. Перший чек кожної каси
+        // «пробитий» у минулому (багатоденний офлайн) — сервер має зберегти
+        // його, не now(). Інші чеки — now() (перевірка «не старі»).
+        if n == 0 {
+            fix_outbox_created_at(&conn, &er.client_uuid, "2026-08-29T10:00:00+03:00");
+        }
         expected_total += total;
     }
     for n in 0..n_return {
@@ -152,24 +166,44 @@ fn build_cash_db(
         enqueue_receipt(&mut conn, &receipt, Some(&store.to_string())).expect("enqueue return");
         expected_total += total;
     }
-    // Локальна закупка (ЕТАП 6): запис synced=0, серверний push її не бере
-    // (приймач sale/return; поширення — серверна частина ЕТАП 7+, у звіті).
+    // Локальна закупка (ЕТАП 6): агрегат + outbox-запис (ЕТАП 7b) — НЕ
+    // synced=0 «в нікуди»: серверний приймач purchase_order розширено.
     let po = json!({
-        "number": format!("PO-{k}"),
-        "items": [{"product_id": product.to_string(), "quantity": 10, "price": "80.00"}],
+        "supplier_id": supplier_uuid,
+        "order_date": "2026-09-01T10:00:00+03:00",
+        "items": [{"product_id": product.to_string(), "quantity": 10, "price": "80.00",
+                   "total": "800.00"}],
         "total_amount": "800.00",
     })
     .to_string();
-    transactions::enqueue_transaction(&mut conn, TYPE_PURCHASE_ORDER, &po, &store.to_string())
+    let po_out = transactions::enqueue_transaction(&mut conn, TYPE_PURCHASE_ORDER, &po, &store.to_string())
         .expect("enqueue purchase_order");
+    // ЕТАП 7b (БЛОКЕР 2): created_at агрегата — ЧАС КАСИ. Фіксуємо конверт
+    // у минулому (багатоденний офлайн) — сервер має зберегти його, не now().
+    fix_outbox_created_at(&conn, &po_out.client_uuid, "2026-09-01T07:00:00+03:00");
 
     // Перевірки Фази 1 (каса працює офлайн, сервер ще вимкнений).
     let pending = pending_count(&conn).expect("pending count");
-    assert_eq!(pending, n_sale + n_return, "каса {k}: outbox накопичує офлайн");
+    assert_eq!(
+        pending,
+        n_sale + n_return + 1,
+        "каса {k}: outbox накопичує чеки + purchase_order (ЕТАП 7b)"
+    );
+    // КРИТЕРІЙ: створений на касі purchase_order має outbox-запис.
+    let (po_type, po_cu, po_status): (String, String, String) = conn
+        .query_row(
+            "SELECT type, client_uuid, status FROM outbox WHERE id = ?1",
+            rusqlite::params![po_out.outbox_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("outbox purchase_order");
+    assert_eq!(po_type, TYPE_PURCHASE_ORDER, "каса {k}: тип в outbox");
+    assert_eq!(po_cu, po_out.client_uuid, "каса {k}: той самий client_uuid");
+    assert_eq!(po_status, "pending");
     let po_rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM purchase_orders WHERE synced = 0", [], |r| r.get(0))
         .expect("purchase_orders");
-    assert_eq!(po_rows, 1, "каса {k}: закупка збережена synced=0");
+    assert_eq!(po_rows, 0, "каса {k}: агрегат передано в outbox (synced=1)");
     // stock: sale −qty, return +qty (ЕТАП 6, локальний ефект).
     let sale_qty: i64 = (0..n_sale).map(|n| ((n % 3) + 1) as i64).sum();
     let return_qty: i64 = n_return as i64;
@@ -187,6 +221,24 @@ fn build_cash_db(
     );
     drop(conn);
     (db_path, expected_total)
+}
+
+/// Переписує created_at у конверті outbox-запису (симуляція часу каси).
+fn fix_outbox_created_at(conn: &rusqlite::Connection, client_uuid: &str, created_at: &str) {
+    let payload: String = conn
+        .query_row(
+            "SELECT payload FROM outbox WHERE client_uuid = ?1",
+            rusqlite::params![client_uuid],
+            |r| r.get(0),
+        )
+        .expect("outbox payload");
+    let mut v: serde_json::Value = serde_json::from_str(&payload).expect("payload JSON");
+    v["created_at"] = serde_json::Value::String(created_at.to_string());
+    conn.execute(
+        "UPDATE outbox SET payload = ?1 WHERE client_uuid = ?2",
+        rusqlite::params![v.to_string(), client_uuid],
+    )
+    .expect("update outbox payload");
 }
 
 /// push-цикл: повторює батчі, поки outbox не спорожніє (done/failed).
@@ -233,10 +285,13 @@ async fn login(base: &str) -> String {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+mod common;
+
 #[tokio::test]
 async fn four_stores_outage_then_sync_consistent() {
+    common::force_test_db();
     let pool = api_pool().await;
-    let seeds = ensure_seed(&pool).await;
+    let seeds = ensure_seed(&pool).await; // (store, product, supplier)
 
     // ── Фаза 1: СЕРВЕР ВИМКНЕНИЙ — каси накопичують офлайн ────────────────
     let port = free_port().await;
@@ -245,8 +300,9 @@ async fn four_stores_outage_then_sync_consistent() {
     let dir = tempfile::TempDir::new().expect("tmpdir");
 
     let mut stores = Vec::new();
-    for (k, (store, product)) in seeds.iter().enumerate() {
-        let (db_path, expected_total) = build_cash_db(&dir, k, *store, *product);
+    for (k, (store, product, supplier)) in seeds.iter().enumerate() {
+        let (db_path, expected_total) =
+            build_cash_db(&dir, k, *store, *product, &supplier.to_string());
         stores.push((*store, *product, db_path, expected_total));
     }
 
@@ -292,6 +348,12 @@ async fn four_stores_outage_then_sync_consistent() {
         .fetch_one(&pool)
         .await
         .expect("count receipts");
+    let before_po: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count purchase_orders");
     for (store, _product, db_path, _expected) in &stores {
         let conn = open_connection(db_path).expect("БД");
         conn.execute(
@@ -314,7 +376,17 @@ async fn four_stores_outage_then_sync_consistent() {
         .fetch_one(&pool)
         .await
         .expect("count receipts after");
-    assert_eq!(before, after, "КРИТЕРІЙ: повторний push не створив дублікатів");
+    assert_eq!(before, after, "КРИТЕРІЙ: повторний push не створив дублікатів чеків");
+    let after_po: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count purchase_orders after");
+    assert_eq!(
+        before_po, after_po,
+        "КРИТЕРІЙ: повторний push не створив дублікатів закупок"
+    );
 
     // ── Фаза 3b: консистентність даних по 4 касах ─────────────────────────
     // Зведеного ендпоінта-агрегата немає (див. звіт) — точність звіту
@@ -344,11 +416,79 @@ async fn four_stores_outage_then_sync_consistent() {
             "точка {store}: сума total на сервері ({sum}) == згенерована ({expected_total})"
         );
     }
+
+    // ── Фаза 3c (ЕТАП 7b): не-чекові операції каси доставлені ─────────────
+    // КРИТЕРІЙ «всі дані на сервері»: кожна закупка (purchase_order) каси
+    // присутня РІВНО 1 разом; дублікатів 0; created_at = created_at каси.
+    for (store, product, _db_path, _expected) in &stores {
+        let k = seeds.iter().position(|(s, _, _)| s == store).expect("каса");
+        let po_row = sqlx::query(
+            "SELECT number, status::text, created_at, supplier_id, total_amount::text \
+             FROM purchase_orders WHERE store_id = $1 AND client_uuid IS NOT NULL",
+        )
+        .bind(store)
+        .fetch_one(&pool)
+        .await
+        .expect("purchase_order точки");
+        let status: String = po_row.get("status");
+        assert_eq!(status, "confirmed", "точка {store}: касовий факт confirmed");
+        let po_dups: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) - COUNT(DISTINCT client_uuid) FROM purchase_orders WHERE store_id = $1",
+        )
+        .bind(store)
+        .fetch_one(&pool)
+        .await
+        .expect("по дублікати");
+        assert_eq!(po_dups, 0, "точка {store}: закупки без дублікатів");
+        // created_at закупки = дата каси (2026-09-01T07:00:00Z), не now().
+        let created: chrono::NaiveDateTime = po_row.get("created_at");
+        assert_eq!(
+            created.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-09-01T04:00:00",
+            "точка {store}: created_at = payload каси (RFC3339→UTC), не now()"
+        );
+        // БЛОКЕР 2 (чеки): перший чек каси має created_at = час каси
+        // (2026-08-29T07:00:00Z), а не now() сервера.
+        let first_receipt_created: chrono::NaiveDateTime = sqlx::query_scalar(
+            "SELECT created_at FROM receipts WHERE store_id = $1 AND client_uuid IS NOT NULL \
+             ORDER BY created_at ASC LIMIT 1",
+        )
+        .bind(store)
+        .fetch_one(&pool)
+        .await
+        .expect("created_at чека");
+        assert_eq!(
+            first_receipt_created.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-08-29T07:00:00",
+            "точка {store}: created_at чека = created_at каси (RFC3339→UTC), не now()"
+        );
+        // Stock-ефект закупки відображено в серверному stock: seed 100000 −
+        // продажі + повернення + 10 шт надходження (в одиницях).
+        let sale_qty: i64 = (0..(3 + k)).map(|n| ((n % 3) + 1) as i64).sum();
+        let return_qty: i64 = if k % 2 == 0 { 1 } else { 0 };
+        let expected_server: i64 = 100000 - sale_qty + return_qty + 10;
+        let srv: f64 = sqlx::query_scalar::<_, f64>(
+            "SELECT quantity::float8 FROM stock WHERE store_id = $1 AND product_id = $2",
+        )
+        .bind(store)
+        .bind(product)
+        .fetch_one(&pool)
+        .await
+        .expect("серверний stock точки");
+        assert!(
+            (srv - expected_server as f64).abs() < 0.001,
+            "точка {store}: серверний stock {} == очікуваний {expected_server}              (seed − продажі + повернення + закупка 10)",
+            srv
+        );
+        eprintln!(
+            "[sync_4stores_outage_e2e] точка {store}: purchase_order confirmed,              created_at з каси, stock {srv}"
+        );
+    }
     eprintln!("[sync_4stores_outage_e2e] ✅ 4 каси × outage: 0 дублікатів, суми сходяться");
 }
 
 /// Очікувана кількість чеків точки на сервері (sale + return).
-async fn expected_n(store: &Uuid, seeds: &[(Uuid, Uuid)]) -> i64 {
-    let k = seeds.iter().position(|(s, _)| s == store).expect("каса");
+async fn expected_n(store: &Uuid, seeds: &[(Uuid, Uuid, Uuid)]) -> i64 {
+    let k = seeds.iter().position(|(s, _, _)| s == store).expect("каса");
     (3 + k) as i64 + if k % 2 == 0 { 1 } else { 0 }
 }

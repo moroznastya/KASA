@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS outbox (
     payload         TEXT    NOT NULL,          -- JSON агрегата (розділ 2.2)
     status          TEXT    NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending','in_flight','failed','done')),
+                    -- 'in_flight' — РЕЗЕРВОВАНО (LOW QA 5.3): код його не
+                    -- використовує (стандартний контур pending→done/failed);
+                    -- лишаємо в CHECK для майбутніх конкурентних pusher-ів,
+                    -- НЕ видаляючи (зміна CHECK = recreate таблиці).
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT    NOT NULL DEFAULT (datetime('now')),
     last_error      TEXT,

@@ -57,8 +57,11 @@ async fn ensure_seed(pool: &sqlx::PgPool) {
     .expect("seed user_stores");
 }
 
+mod common;
+
 #[tokio::test]
 async fn pull_client_initial_and_repeat_sync() {
+    common::force_test_db();
     // ── Фасад + seed + login ──────────────────────────────────────────────
     let _ = torgashka_infrastructure::db::resolve_database_url()
         .expect("БД недоступна: задайте DATABASE_URL або DB_* у backend/.env");

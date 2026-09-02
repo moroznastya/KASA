@@ -5,14 +5,12 @@
 //! (таблиці міграції 0006) зі stock-ефектом АТОМАРНО (дизайн 4.4) —
 //! працює з вимкненим сервером.
 //!
-//! Чому БЕЗ outbox (розбіжність з текстом завдання «агрегат+ефекти+outbox»):
-//! серверний Rust-фасад POST /api/v1/sync/push (ЕТАП 4) приймає ЛИШЕ
-//! receipt/return_receipt (перевірено e2e: інші типи → per-item error →
-//! outbox failed). Outbox-запис для purchase/inventory/transfer/write_off
-//! дав би ГАРАНТОВАНИЙ failed-стан без жодного шансу доставки. Тому агрегати
-//! пишуться у власні таблиці з synced=0 + client_uuid (ідемпотентність
-//! готова); ЕТАП 7 — розширення фасаду сервера і переведення цих агрегатів
-//! в outbox (міграція даних synced=0 → outbox).
+//! ЕТАП 7b: серверний push-приймач розширено на всі 4 типи (sync.rs +
+//! sync_receivers.rs) — агрегати тепер кладуться в outbox ОДРАЗУ (той самий
+//! контур, що й чеки: INSERT агрегат synced=1 + INSERT outbox(pending) в
+//! одній транзакції, дизайн 4.4). Для рядків synced=0, накопичених СТАРОЮ
+//! версією (до оновлення), є [`sweep_legacy_unsynced`] — при першому sync
+//! вони підмітаються в outbox (INSERT OR IGNORE за client_uuid).
 //!
 //! Формат payload — як його формує фронт для /v2-ендпоінтів сервера
 //! (зберігається в data цілком); Rust читає лише items[].product_id/quantity
@@ -33,13 +31,15 @@ pub const TYPE_TRANSFER: &str = "transfer";
 /// Тип агрегата «списання».
 pub const TYPE_WRITE_OFF: &str = "write_off";
 
-/// Результат локального запису транзакції.
+/// Результат локального запису транзакції (агрегат + outbox).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnqueuedTransaction {
     /// Локальний rowid у таблиці агрегата.
     pub id: i64,
-    /// UUIDv4 каси — ідемпотентний ключ майбутнього push.
+    /// UUIDv4 каси — ідемпотентний ключ push (той самий в агрегаті й outbox).
     pub client_uuid: String,
+    /// rowid у outbox (ЕТАП 7b: агрегат одразу стає push-кандидатом).
+    pub outbox_id: i64,
 }
 
 /// Напрямок stock-ефекту переміщення відносно каси.
@@ -122,12 +122,13 @@ fn table_of(kind: &str) -> Result<&'static str, String> {
     }
 }
 
-/// Атомарний запис локальної транзакції: агрегат (таблиця 0006, synced=0)
-/// + stock-ефект — ОДНА SQLite-транзакція (BEGIN IMMEDIATE → INSERT →
-/// ефекти → COMMIT). Помилка будь-де → ROLLBACK: жодного агрегата без
-/// stock-ефекту і навпаки (дизайн 4.4).
+/// Атомарний запис локальної транзакції (ЕТАП 7b): агрегат (таблиця 0006,
+/// synced=1) + outbox-запис (pending) + stock-ефект — ОДНА SQLite-транзакція
+/// (BEGIN IMMEDIATE → INSERT агрегат → INSERT outbox → ефекти → COMMIT).
+/// Помилка будь-де → ROLLBACK: жодного агрегата без outbox-запису і без
+/// stock-ефекту (дизайн 4.4, той самий контур, що й чеки enqueue_receipt).
 ///
-/// Повертає client_uuid агрегата (ідемпотентний ключ майбутнього push).
+/// Повертає client_uuid агрегата (той самий в агрегаті й outbox — A.1).
 pub fn enqueue_transaction(
     conn: &mut Connection,
     kind: &str,
@@ -138,33 +139,115 @@ pub fn enqueue_transaction(
     let payload: Value = serde_json::from_str(payload_json)
         .map_err(|e| format!("Payload {kind} — невалідний JSON: {e}"))?;
     let client_uuid = Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    // Конверт push (дизайн 2.2) — ідентичний чекам sync_push::envelope.
+    let envelope = serde_json::json!({
+        "type": kind,
+        "client_uuid": client_uuid,
+        "store_id": store_id,
+        "created_at": created_at,
+        "payload": payload,
+    })
+    .to_string();
 
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("BEGIN IMMEDIATE ({kind}): {e}"))?;
 
-    // 1. Агрегат: data = payload як є (фронтовий /v2-формат), synced = 0
-    //    (доставка на сервер — ЕТАП 7; outbox НЕ використовується — див.
-    //    doc-коментар модуля).
+    // 1. Агрегат: data = payload як є (фронтовий /v2-формат), synced = 1 —
+    //    агрегат передано в outbox (наступний push його забере).
     tx.execute(
         &format!(
             "INSERT INTO {table} (client_uuid, store_id, data, synced) \
-             VALUES (?1, ?2, ?3, 0)"
+             VALUES (?1, ?2, ?3, 1)"
         ),
         params![client_uuid, store_id, payload_json],
     )
     .map_err(|e| format!("INSERT {table} (client_uuid={client_uuid}): {e}"))?;
     let id = tx.last_insert_rowid();
 
-    // 2. Stock-ефект — у тій самій транзакції.
+    // 2. Outbox-запис (pending) — доставка на сервер (дизайн 4.2).
+    tx.execute(
+        "INSERT INTO outbox (type, client_uuid, payload, status) \
+         VALUES (?1, ?2, ?3, 'pending')",
+        params![kind, client_uuid, envelope],
+    )
+    .map_err(|e| format!("INSERT outbox ({kind}, client_uuid={client_uuid}): {e}"))?;
+    let outbox_id = tx.last_insert_rowid();
+
+    // 3. Stock-ефект — у тій самій транзакції.
     apply_effects(&tx, kind, &payload, store_id)
         .map_err(|e| format!("stock-ефект {kind} (client_uuid={client_uuid}): {e}"))?;
 
-    // 3. COMMIT.
+    // 4. COMMIT.
     tx.commit()
         .map_err(|e| format!("COMMIT ({kind}): {e}"))?;
 
-    Ok(EnqueuedTransaction { id, client_uuid })
+    Ok(EnqueuedTransaction { id, client_uuid, outbox_id })
+}
+
+/// Підмітає в outbox агрегати synced=0, накопичені СТАРОЮ версією коду
+/// (ЕТАП 6: запис без outbox). Ідемпотентно: INSERT OR IGNORE за client_uuid
+/// (outbox.client_uuid UNIQUE) + позначка synced=1. Викликається на початку
+/// push-циклу (push_pending_batch) — «при першому sync після оновлення всі
+/// не-чекові операції потрапляють в outbox».
+pub fn sweep_legacy_unsynced(conn: &mut Connection) -> Result<usize, String> {
+    let mut swept = 0usize;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN IMMEDIATE (sweep): {e}"))?;
+    for kind in [
+        TYPE_PURCHASE_ORDER,
+        TYPE_INVENTORY,
+        TYPE_TRANSFER,
+        TYPE_WRITE_OFF,
+    ] {
+        let table = table_of(kind)?;
+        let rows: Vec<(String, String, Option<String>)> = {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT client_uuid, data, store_id FROM {table} WHERE synced = 0"
+                ))
+                .map_err(|e| format!("sweep SELECT {table}: {e}"))?;
+            let it = stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(|e| format!("sweep query {table}: {e}"))?;
+            let mut v = Vec::new();
+            for row in it {
+                v.push(row.map_err(|e| format!("sweep row {table}: {e}"))?);
+            }
+            v
+        };
+        for (client_uuid, data, sid) in rows {
+            let store_id = sid.unwrap_or_default();
+            let payload: Value = serde_json::from_str(&data)
+                .map_err(|e| format!("sweep {table} data JSON: {e}"))?;
+            let envelope = serde_json::json!({
+                "type": kind,
+                "client_uuid": client_uuid,
+                "store_id": store_id,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "payload": payload,
+            })
+            .to_string();
+            tx.execute(
+                "INSERT OR IGNORE INTO outbox (type, client_uuid, payload, status) \
+                 VALUES (?1, ?2, ?3, 'pending')",
+                params![kind, client_uuid, envelope],
+            )
+            .map_err(|e| format!("sweep INSERT outbox ({table} {client_uuid}): {e}"))?;
+            tx.execute(
+                &format!("UPDATE {table} SET synced = 1 WHERE client_uuid = ?1"),
+                params![client_uuid],
+            )
+            .map_err(|e| format!("sweep UPDATE {table}: {e}"))?;
+            swept += 1;
+        }
+    }
+    tx.commit().map_err(|e| format!("COMMIT (sweep): {e}"))?;
+    Ok(swept)
 }
 
 /// Отримати агрегат за client_uuid (data JSON + статус) — для тестів і
@@ -216,9 +299,9 @@ mod tests {
         stock::get_stock_level(conn, STORE, product).expect("level")
     }
 
-    /// Закупка: агрегат записано (synced=0, client_uuid) + stock +qty.
+    /// Закупка (ЕТАП 7b): агрегат (synced=1) + outbox-запис + stock +qty.
     #[test]
-    fn purchase_enqueues_aggregate_and_adds_stock() {
+    fn purchase_enqueues_aggregate_outbox_and_adds_stock() {
         let mut conn = migrated_conn();
         let mut c = conn;
         let payload = json!({
@@ -238,11 +321,22 @@ mod tests {
 
         let (data, synced, sid) =
             get_transaction(&c, TYPE_PURCHASE_ORDER, &out.client_uuid).expect("читання");
-        assert_eq!(synced, 0, "очікує синхронізації (ЕТАП 7)");
+        assert_eq!(synced, 1, "агрегат передано в outbox (не synced=0 «в нікуди»)");
         assert_eq!(sid.as_deref(), Some(STORE));
         let v: Value = serde_json::from_str(&data).expect("data JSON");
         assert_eq!(v["supplier_id"], "sup-1");
-        assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 1);
+        assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 0);
+        // КРИТЕРІЙ ЕТАП 7b: outbox-запис існує з тим самим client_uuid.
+        let (typ, cu, status): (String, String, String) = c
+            .query_row(
+                "SELECT type, client_uuid, status FROM outbox WHERE id = ?1",
+                params![out.outbox_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("outbox");
+        assert_eq!(typ, TYPE_PURCHASE_ORDER);
+        assert_eq!(cu, out.client_uuid);
+        assert_eq!(status, "pending");
     }
 
     /// Інвентаризація: АБСОЛЮТНИЙ рівень (факт перерахунку), не дельта.
@@ -255,9 +349,11 @@ mod tests {
             "items": [{"product_id": "p1", "fact_quantity": 7}],
         })
         .to_string();
-        enqueue_transaction(&mut c, TYPE_INVENTORY, &payload, STORE).expect("інвентаризація");
+        let out = enqueue_transaction(&mut c, TYPE_INVENTORY, &payload, STORE)
+            .expect("інвентаризація");
         assert_eq!(level(&c, "p1"), 7000, "факт 7 шт (не 5+7)");
-        assert_eq!(unsynced_count(&c, TYPE_INVENTORY).unwrap(), 1);
+        assert_eq!(unsynced_count(&c, TYPE_INVENTORY).unwrap(), 0);
+        assert!(out.outbox_id > 0, "інвентаризація теж в outbox (ЕТАП 7b)");
     }
 
     /// Списання: stock −qty.
@@ -271,8 +367,10 @@ mod tests {
             "items": [{"product_id": "p1", "quantity": 3}],
         })
         .to_string();
-        enqueue_transaction(&mut c, TYPE_WRITE_OFF, &payload, STORE).expect("списання");
+        let out = enqueue_transaction(&mut c, TYPE_WRITE_OFF, &payload, STORE)
+            .expect("списання");
         assert_eq!(level(&c, "p1"), 7000, "10 − 3 = 7 шт");
+        assert!(out.outbox_id > 0);
     }
 
     /// Переміщення З каси (from=store): −qty.
@@ -332,16 +430,64 @@ mod tests {
         let res = enqueue_transaction(&mut c, TYPE_PURCHASE_ORDER, "{не-json", STORE);
         assert!(res.is_err(), "невалідний payload → помилка");
         assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 0, "агрегата немає");
+        let ob: i64 = c
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+            .expect("outbox count");
+        assert_eq!(ob, 0, "outbox-запису немає (ROLLBACK)");
         assert_eq!(level(&c, "p1"), 500, "stock без змін (ROLLBACK)");
 
         // Невідомий тип — помилка ДО транзакції.
         assert!(enqueue_transaction(&mut c, "work_session", "{}", STORE).is_err());
     }
 
+    /// ЕТАП 7b: накопичені synced=0 (стара версія) → outbox при першому sync.
+    #[test]
+    fn sweep_moves_legacy_unsynced_into_outbox() {
+        let mut conn = migrated_conn();
+        let mut c = conn;
+        // Симулюємо СТАРУ версію: агрегат synced=0 без outbox.
+        let po = json!({"items": [{"product_id": "p1", "quantity": 5}]}).to_string();
+        c.execute(
+            "INSERT INTO purchase_orders (client_uuid, store_id, data, synced) \
+             VALUES ('11111111-1111-1111-1111-111111111111', ?1, ?2, 0)",
+            params![STORE, po],
+        )
+        .expect("legacy row");
+        let wo = json!({"reason": "x", "items": [{"product_id": "p1", "quantity": 1}]}).to_string();
+        c.execute(
+            "INSERT INTO write_offs (client_uuid, store_id, data, synced) \
+             VALUES ('22222222-2222-2222-2222-222222222222', ?1, ?2, 0)",
+            params![STORE, wo],
+        )
+        .expect("legacy row 2");
+
+        let n = sweep_legacy_unsynced(&mut c).expect("sweep");
+        assert_eq!(n, 2, "обидва легасі-агрегати підмітено");
+        assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 0, "synced=1");
+        assert_eq!(unsynced_count(&c, TYPE_WRITE_OFF).unwrap(), 0);
+        // Outbox має обидва записи (type, client_uuid).
+        let ob: i64 = c
+            .query_row("SELECT COUNT(*) FROM outbox WHERE status = 'pending'", [], |r| r.get(0))
+            .expect("outbox");
+        assert_eq!(ob, 2);
+        let (typ, cu): (String, String) = c
+            .query_row(
+                "SELECT type, client_uuid FROM outbox WHERE client_uuid = ?1",
+                params!["11111111-1111-1111-1111-111111111111"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("outbox row");
+        assert_eq!(typ, TYPE_PURCHASE_ORDER);
+        assert_eq!(cu, "11111111-1111-1111-1111-111111111111");
+        // Ідемпотентність повторного sweep.
+        let n2 = sweep_legacy_unsynced(&mut c).expect("sweep 2");
+        assert_eq!(n2, 0, "повторний sweep нічого не робить");
+    }
+
     /// Кожен тип має власну таблицю: запис+читання (критерій тестів ЕТАПУ 6).
     #[test]
     fn each_kind_reads_back_from_own_table() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         for (kind, table) in [
             (TYPE_PURCHASE_ORDER, "purchase_orders"),

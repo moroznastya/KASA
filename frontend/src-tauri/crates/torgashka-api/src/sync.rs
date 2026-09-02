@@ -484,7 +484,8 @@ pub async fn push(
     Ok(Json(results))
 }
 
-/// Обробляє ОДИН агрегат: ідемпотентний прийом + sync_log.
+/// Обробляє ОДИН агрегат: ідемпотентний прийом + sync_log (ЕТАП 7b:
+/// чеки + типи каси ЕТАПУ 6 — purchase_order/inventory/transfer/write_off).
 async fn process_push_item(
     svc: &torgashka_application::PosServiceFacade<
         std::sync::Arc<dyn torgashka_domain::PosService + Send + Sync>,
@@ -495,27 +496,25 @@ async fn process_push_item(
     ctx_store: Uuid,
 ) -> PushItemResult {
     let hash = payload_hash(item);
-    // 1. Валідація типу: ЕТАП 4 підтримує лише чеки каси (дизайн 2.2).
-    let receipt_kind = match item.kind.as_str() {
-        "receipt" => "sale",
-        "return_receipt" => "return",
-        other => {
+    // 1. Валідація типу: приймач = таблиця-приймач client_uuid (0013/схема).
+    let table = match receiver_table(&item.kind) {
+        Some(t) => t,
+        None => {
             log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
-                "тип '{other}' не підтримується push ЕТАП 4 (TODO ЕТАП 6)"
-            )))
-            .await;
+                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off)", item.kind
+            ))).await;
             return PushItemResult::error(item.client_uuid, format!(
-                "тип '{other}' не підтримується push ЕТАП 4"
+                "тип '{}' не підтримується push", item.kind
             ));
         }
     };
+
     // 2. store_id агрегата має збігатися з точкою запиту (X-Store-Id).
     if item.store_id != ctx_store {
         log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
             "store_id агрегата {} не збігається з точкою запиту",
             item.store_id
-        )))
-        .await;
+        ))).await;
         return PushItemResult::error(
             item.client_uuid,
             "store_id агрегата не збігається з X-Store-Id",
@@ -523,24 +522,66 @@ async fn process_push_item(
     }
 
     // 3. Дублікат? (звичайний SELECT — гонку ловить UNIQUE 0013 нижче).
-    if let Some(existing) = find_by_client_uuid(pool, item.client_uuid).await {
+    if let Some(existing) = find_by_client_uuid_in(pool, table, item.client_uuid).await {
         log_sync(pool, item, ctx_store, "already_exists", &hash, None).await;
         return PushItemResult::already_exists(item.client_uuid, existing);
     }
 
-    // 4. Парсинг payload → вхідні дані чека (та сама валідація, що v2 /sale).
+    // 4. created_at каси (RFC3339, конверт PushEnvelope) → UTC; invalid → None
+    //    (сервер напише now()). Не ламає прийом аномальних пакетів.
+    let created_at = crate::sync_receivers::parse_created_at_utc(item.created_at.as_deref());
+
+    // 5. Прийом за типом (окрема транзакція на агрегат).
+    match item.kind.as_str() {
+        "receipt" | "return_receipt" => {
+            accept_receipt_kind(svc, pool, item, table, cashier, ctx_store, created_at, &hash).await
+        }
+        kind => {
+            accept_non_receipt_kind(pool, item, table, kind, cashier, ctx_store, created_at, &hash).await
+        }
+    }
+}
+
+/// Таблиця-приймач client_uuid за типом агрегата (дизайн 2.2, ЕТАП 6 типи).
+fn receiver_table(kind: &str) -> Option<&'static str> {
+    match kind {
+        "receipt" | "return_receipt" => Some("receipts"),
+        "purchase_order" | "purchase" => Some("purchase_orders"),
+        "inventory" => Some("inventories"),
+        "transfer" | "transfer_out" | "transfer_in" => Some("transfers"),
+        "write_off" => Some("write_offs"),
+        _ => None,
+    }
+}
+
+/// Чеки (існуючий шлях svc.create_sale/return_receipt) + created_at з payload.
+#[allow(clippy::too_many_arguments)]
+async fn accept_receipt_kind(
+    svc: &torgashka_application::PosServiceFacade<
+        std::sync::Arc<dyn torgashka_domain::PosService + Send + Sync>,
+    >,
+    pool: &StorePool,
+    item: &PushEnvelope,
+    table: &str,
+    cashier: Option<Uuid>,
+    ctx_store: Uuid,
+    created_at: Option<chrono::NaiveDateTime>,
+    hash: &str,
+) -> PushItemResult {
+    let receipt_kind = if item.kind == "receipt" { "sale" } else { "return" };
+    // Парсинг payload → вхідні дані чека (та сама валідація, що v2 /sale).
     let mut input = match crate::pos::parse_receipt_create(&item.payload, cashier) {
         Ok(i) => i,
         Err(e) => {
             let msg = pos_err_msg(&e);
-            log_sync(pool, item, ctx_store, "error", &hash, Some(msg.clone())).await;
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
             return PushItemResult::error(item.client_uuid, msg);
         }
     };
     input.client_uuid = Some(item.client_uuid);
+    // ЕТАП 7b (QA §4.3.2): created_at каси, НЕ now() сервера.
+    input.created_at = created_at;
 
-    // 5. Створення чека на сервері (існуюча POS-логіка: нумерація, items,
-    //    stock-ефекти sale/return). Окрема транзакція на агрегат.
     let created = if receipt_kind == "sale" {
         svc.create_sale_receipt(&input).await
     } else {
@@ -549,7 +590,7 @@ async fn process_push_item(
 
     match created {
         Ok(dto) => {
-            log_sync(pool, item, ctx_store, "ok", &hash, None).await;
+            log_sync(pool, item, ctx_store, "ok", hash, None).await;
             PushItemResult::created(item.client_uuid, dto.id)
         }
         Err(e) => {
@@ -557,27 +598,82 @@ async fn process_push_item(
             // Гонка: два одночасні push з тим самим client_uuid — UNIQUE
             // uq_receipts_client_uuid (0013) зловив другий атомарно.
             if msg.contains("uq_receipts_client_uuid") {
-                if let Some(existing) = find_by_client_uuid(pool, item.client_uuid).await {
-                    log_sync(pool, item, ctx_store, "already_exists", &hash, None).await;
+                if let Some(existing) = find_by_client_uuid_in(pool, table, item.client_uuid).await
+                {
+                    log_sync(pool, item, ctx_store, "already_exists", hash, None).await;
                     return PushItemResult::already_exists(item.client_uuid, existing);
                 }
             }
-            log_sync(pool, item, ctx_store, "error", &hash, Some(msg.clone())).await;
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
             PushItemResult::error(item.client_uuid, msg)
         }
     }
 }
 
-/// SELECT server_id за client_uuid (уже прийнятий чек).
-async fn find_by_client_uuid(pool: &StorePool, client_uuid: Uuid) -> Option<Uuid> {
-    sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM receipts WHERE client_uuid = $1 LIMIT 1",
-    )
-    .bind(client_uuid)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
+/// Не-чекові типи каси ЕТАПУ 6 → SQL-приймачі sync_receivers.
+#[allow(clippy::too_many_arguments)]
+async fn accept_non_receipt_kind(
+    pool: &StorePool,
+    item: &PushEnvelope,
+    table: &str,
+    kind: &str,
+    cashier: Option<Uuid>,
+    ctx_store: Uuid,
+    created_at: Option<chrono::NaiveDateTime>,
+    hash: &str,
+) -> PushItemResult {
+    let Some(cashier) = cashier else {
+        let msg = format!("{kind}: push вимагає автентифікованого користувача (JWT sub)");
+        log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+        return PushItemResult::error(item.client_uuid, msg);
+    };
+    let res = match kind {
+        "purchase_order" | "purchase" => {
+            crate::sync_receivers::accept_purchase_order(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+        }
+        "inventory" => {
+            crate::sync_receivers::accept_inventory(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+        }
+        "transfer" | "transfer_out" | "transfer_in" => {
+            crate::sync_receivers::accept_transfer(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+        }
+        "write_off" => {
+            crate::sync_receivers::accept_write_off(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+        }
+        _ => unreachable!("receiver_table пропустив тип"),
+    };
+    match res {
+        Ok(server_id) => {
+            log_sync(pool, item, ctx_store, "ok", hash, None).await;
+            PushItemResult::created(item.client_uuid, server_id)
+        }
+        Err(e) => {
+            let msg = e;
+            // Гонка: два одночасні push з тим самим client_uuid — UNIQUE
+            // uq_{table}_client_uuid (0013) зловив другий атомарно.
+            let uq = format!("uq_{table}_client_uuid");
+            if msg.contains(&uq) {
+                if let Some(existing) = find_by_client_uuid_in(pool, table, item.client_uuid).await
+                {
+                    log_sync(pool, item, ctx_store, "already_exists", hash, None).await;
+                    return PushItemResult::already_exists(item.client_uuid, existing);
+                }
+            }
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            PushItemResult::error(item.client_uuid, msg)
+        }
+    }
+}
+
+/// SELECT server_id за client_uuid у таблиці-приймачі (уже прийнятий агрегат).
+async fn find_by_client_uuid_in(pool: &StorePool, table: &str, client_uuid: Uuid) -> Option<Uuid> {
+    let q = format!("SELECT id FROM {table} WHERE client_uuid = $1 LIMIT 1");
+    sqlx::query_scalar::<_, Uuid>(&q)
+        .bind(client_uuid)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Людське повідомлення помилки парсингу (PosErr не реалізує Display).
@@ -607,12 +703,12 @@ async fn log_sync(
     hash: &str,
     error: Option<String>,
 ) {
+    let entity: String = item.kind.chars().take(32).collect();
     let res = sqlx::query(
-        "INSERT INTO sync_log \
-            (store_id, direction, entity, client_uuid, status, payload_hash, error) \
-         VALUES ($1, 'push', 'receipt', $2, $3, $4, $5)",
+        "INSERT INTO sync_log             (store_id, direction, entity, client_uuid, status, payload_hash, error)          VALUES ($1, 'push', $2, $3, $4, $5, $6)",
     )
     .bind(store_id)
+    .bind(&entity)
     .bind(item.client_uuid)
     .bind(status)
     .bind(hash)

@@ -30,7 +30,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{migrations, stock};
+use super::{migrations, stock, transactions};
 
 /// Максимум агрегатів на один HTTP-запит push (дизайн 4.2: до 50).
 pub const PUSH_BATCH_MAX: usize = 50;
@@ -461,6 +461,9 @@ pub async fn push_pending_batch(
     cfg: &PushConfig,
 ) -> Result<PushSummary, String> {
     let mut conn = open_connection(db_path)?;
+    // ЕТАП 7b: легасі-агрегати synced=0 (створені до оновлення) підмітаються
+    // в outbox при першому ж sync — «не synced=0 в нікуди».
+    let _ = transactions::sweep_legacy_unsynced(&mut conn)?;
     let batch = pending_outbox(&conn, PUSH_BATCH_MAX)?;
     if batch.is_empty() {
         return Ok(PushSummary::default());
@@ -517,10 +520,19 @@ pub async fn push_pending_batch(
         return Ok(summary);
     }
 
-    // 200: per-item результати сервера.
+    // 200: per-item результати сервера. Аномалія: HTTP 200, але тіло —
+    // невалідний JSON (дефектний/чужий сервер). Журналюємо push_fail —
+    // моніторинг бачить причину, а не мовчить (LOW 5.4, sync_push.rs:537).
     let results: Vec<ServerPushResult> = match resp.json().await {
         Ok(r) => r,
-        Err(e) => return Err(format!("невалідна відповідь push: {e}")),
+        Err(e) => {
+            let msg = format!("невалідна відповідь push (HTTP 200, тіло не JSON): {e}");
+            for it in &batch {
+                let _ = log_event(&conn, "push_fail", None, Some(&msg), None);
+                defer_or_fail(&mut conn, it, None)?;
+            }
+            return Err(msg);
+        }
     };
     for it in &batch {
         let result = results.iter().find(|r| r.client_uuid == it.client_uuid);
@@ -540,9 +552,18 @@ pub async fn push_pending_batch(
                 summary.failed += 1;
             }
             // Сервер не повернув результат для агрегата (аномалія):
-            // deferred — наступний цикл спробує знову.
+            // deferred — наступний цикл спробує знову. Подія retry у sync_log
+            // (LOW 5.4, sync_push.rs:549-551): при систематичному ігноруванні
+            // сервером журнал показує причину, health — stale pending.
             None => {
                 summary.deferred += 1;
+                let _ = log_event(
+                    &conn,
+                    "retry",
+                    None,
+                    Some("сервер не повернув результат для агрегата — повтор"),
+                    None,
+                );
             }
         }
     }

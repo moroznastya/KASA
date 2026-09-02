@@ -74,8 +74,11 @@ async fn setup_test_user(pool: &sqlx::PgPool, login_name: &str, role: &str) -> U
     id
 }
 
+mod common;
+
 #[tokio::test]
 async fn cash_operations_http_roundtrip() {
+    common::force_test_db();
     let port = free_port().await;
     let addr = format!("127.0.0.1:{port}");
     let handle = run_facade(&addr);

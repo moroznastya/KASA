@@ -140,8 +140,11 @@ fn find_change<'a>(delta: &'a Value, id: &str) -> Option<&'a Value> {
 
 // ─── Тест 1: upsert → delete дельти ─────────────────────────────────────────
 
+mod common;
+
 #[tokio::test]
 async fn master_returns_upsert_then_delete_deltas() {
+    common::force_test_db();
     let ctx = Ctx::new().await;
     let suffix = format!("{:08x}", Uuid::new_v4().as_u128() & 0xffff_ffff);
     let name_a = format!("__sync_e2e_A_{suffix}");
@@ -228,6 +231,7 @@ async fn master_returns_upsert_then_delete_deltas() {
 
 #[tokio::test]
 async fn master_paginates_over_500() {
+    common::force_test_db();
     let ctx = Ctx::new().await;
     let suffix = format!("{:08x}", Uuid::new_v4().as_u128() & 0xffff_ffff);
     let prefix = format!("__sync_e2e_pag_{suffix}");
@@ -282,6 +286,7 @@ async fn master_paginates_over_500() {
 
 #[tokio::test]
 async fn master_rls_isolates_stores() {
+    common::force_test_db();
     let ctx = Ctx::new().await;
     let suffix = format!("{:08x}", Uuid::new_v4().as_u128() & 0xffff_ffff);
     let store2 = Uuid::new_v4();

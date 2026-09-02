@@ -17,6 +17,7 @@ use crate::offline::db::OfflineDatabase;
 use crate::offline::snapshots;
 use crate::offline::stock;
 use crate::offline::transactions;
+use crate::offline::sync_pull::{self, PullConfig};
 use crate::offline::sync_push::{self, PushConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -98,6 +99,53 @@ pub fn ensure_push_task_started() -> Result<bool, String> {
     // tauri::async_runtime::spawn гарантує його з будь-якого потоку.
     let _ = tauri::async_runtime::spawn(async move {
         sync_push::spawn_push_task(cfg);
+    });
+    Ok(true)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Фоновий pull-цикл (ЕТАП 7b, HIGH QA §5.1): один на процес; конфіг — з тих
+// самих SQLite settings, що й push. Раніше spawn_pull_task не запускався в
+// додатку (pull_all викликали лише тести) — каса в prod не оновлювала
+// довідники, last_pull_ok_at у health ніколи не заповнювався.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static PULL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Запустити фоновий циклічний pull (spawn_pull_task), якщо налаштування
+/// server_url/api_token/store_id збережені і таск ще не запущено.
+/// Викликається з setup (lib.rs) і після set_setting (разом з push).
+pub fn ensure_pull_task_started() -> Result<bool, String> {
+    if PULL_TASK_STARTED.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    let path = OfflineDatabase::default_db_path()?;
+    let conn = sync_push::open_connection(&path)?;
+    let (Some(base_url), Some(token), Some(store_id)) = (
+        get_setting_conn(&conn, "server_url")?,
+        get_setting_conn(&conn, "api_token")?,
+        get_setting_conn(&conn, "store_id")?,
+    ) else {
+        return Ok(false); // не налаштовано — фоновий цикл пізніше
+    };
+    if base_url.trim().is_empty() || token.trim().is_empty() || store_id.trim().is_empty() {
+        return Ok(false);
+    }
+    if PULL_TASK_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(false); // хтось уже запустив
+    }
+    let cfg = PullConfig {
+        base_url,
+        token,
+        store_id,
+        db_path: path,
+        interval_secs: sync_pull::DEFAULT_PULL_INTERVAL_SECS,
+    };
+    let _ = tauri::async_runtime::spawn(async move {
+        sync_pull::spawn_pull_task(cfg);
     });
     Ok(true)
 }
@@ -224,6 +272,9 @@ pub fn set_setting(key: String, value: String) -> Result<(), String> {
     let db = get_db()?;
     db.set_setting(&key, &value)?;
     let _ = ensure_push_task_started();
+    // ЕТАП 7b (HIGH §5.1): pull-цикл стартує разом з push — довідники каси
+    // оновлюються, last_pull_ok_at у health заповнюється.
+    let _ = ensure_pull_task_started();
     Ok(())
 }
 

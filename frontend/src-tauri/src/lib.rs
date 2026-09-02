@@ -311,6 +311,13 @@ pub fn run() {
                     Ok(false) => {}
                     Err(e) => eprintln!("[sync_push] spawn при старті: {e}"),
                 }
+                // ЕТАП 7b (HIGH QA §5.1): pull-цикл стартує разом з push —
+                // каса оновлює довідники, last_pull_ok_at у health заповнюється.
+                match torgashka_infrastructure::offline::commands::ensure_pull_task_started() {
+                    Ok(true) => eprintln!("[sync_pull] фоновий цикл запущено (ЕТАП 7b)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[sync_pull] spawn при старті: {e}"),
+                }
             });
 
             Ok(())

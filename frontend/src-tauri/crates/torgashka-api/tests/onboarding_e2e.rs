@@ -74,8 +74,11 @@ async fn login(client: &reqwest::Client, base: &str) -> serde_json::Value {
     panic!("фасад не піднявся за 10с або логін admin/admin123 невалідний");
 }
 
+mod common;
+
 #[tokio::test]
 async fn put_onboarding_completed_persists_in_db() {
+    common::force_test_db();
     let port = free_port().await;
     let addr = format!("127.0.0.1:{port}");
     // Зовнішній фасад — лише якщо ONBOARDING_E2E_BASE задано явно.

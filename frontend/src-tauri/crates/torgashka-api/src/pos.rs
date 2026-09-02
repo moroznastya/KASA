@@ -334,6 +334,9 @@ pub(crate) fn parse_receipt_create(v: &Value, cashier_id: Option<Uuid>) -> Resul
             .unwrap_or(false),
         split_group_id: field_uuid(v, "split_group_id", false)?,
         client_uuid: field_uuid(v, "client_uuid", false)?,
+        // ЕТАП 7b: created_at ставить sync-push приймач з PushEnvelope.created_at
+        // (RFC3339 каси); звичайний API (v2 /sale) → None → сервер пише now().
+        created_at: None,
     })
 }
 

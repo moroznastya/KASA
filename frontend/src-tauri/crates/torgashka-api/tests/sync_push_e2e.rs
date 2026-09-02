@@ -166,8 +166,11 @@ async fn server_receipt_count(pool: &sqlx::PgPool, client_uuid: &str) -> i64 {
 // 1. Ідемпотентність: 2× push одного client_uuid → already_exists, 1 запис
 // ─────────────────────────────────────────────────────────────────────────────
 
+mod common;
+
 #[tokio::test]
 async fn push_idempotent_single_server_record() {
+    common::force_test_db();
     let pool = api_pool().await;
     let product = ensure_seed(&pool).await;
 
@@ -237,6 +240,7 @@ async fn push_idempotent_single_server_record() {
 
 #[tokio::test]
 async fn server_down_outbox_grows_then_flushes_fifo() {
+    common::force_test_db();
     let pool = api_pool().await;
     let product = ensure_seed(&pool).await;
 
