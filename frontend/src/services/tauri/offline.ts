@@ -46,6 +46,36 @@ export async function getUnsyncedCount(): Promise<number> {
 
 // ─── Синхронізація (outbox-push, ЕТАП 4/5 Rust) ─────────────────────────────────
 
+/** Діагностика циклу синхронізації (команда `sync_health`).
+ *
+ * Контракт (torgashka-infrastructure/src/offline/health.rs):
+ *   { outbox_pending, outbox_failed, stale_failed_since,
+ *     last_push_ok_at, last_pull_ok_at, last_push_fail_at,
+ *     last_error, degraded }
+ *
+ * `degraded = outbox_failed > 0` АБО є pending з next_attempt_at простроченим
+ * > 3600с (стагнація: цикл push не рухає чергу ≥ 1 год). Споживається
+ * SyncStatus — алерт на стагнацію (QA ЕТАП 7 §1.3).
+ */
+export interface SyncHealthResult {
+  /** Усі записи outbox зі статусом 'pending' */
+  outbox_pending: number;
+  /** Записи зі статусом 'failed' (вичерпали спроби / валідація) */
+  outbox_failed: number;
+  /** ISO-час, з якого триває проблемний стан (failed/stale), null — чисто */
+  stale_failed_since: string | null;
+  /** ISO-час останнього УСПІШНОГО push, null — ще не було */
+  last_push_ok_at: string | null;
+  /** ISO-час останнього УСПІШНОГО pull, null — ще не було */
+  last_pull_ok_at: string | null;
+  /** ISO-час останньої НЕВДАЛОЇ спроби push, null — не було */
+  last_push_fail_at: string | null;
+  /** Остання помилка health-контексту (детальніша за sync_status.last_error) */
+  last_error: string | null;
+  /** true: failed>0 АБО stale pending (цикл не рухає чергу ≥ 1 год) */
+  degraded: boolean;
+}
+
 /**
  * Статус outbox-черги (команда `sync_status`).
  *
@@ -61,6 +91,8 @@ export interface SyncStatusResult {
   last_error: string | null;
   /** ISO-час останнього успішного push (MAX(pushed_at) по done), null — ще не було */
   last_sync_at: string | null;
+  /** Діагностика циклу; відсутня у старих Rust-збірках (undefined) */
+  health?: SyncHealthResult | null;
 }
 
 /**
@@ -92,6 +124,20 @@ export interface SyncNowResult {
 export async function syncStatus(): Promise<SyncStatusResult | null> {
   try {
     return await invoke<SyncStatusResult>('sync_status');
+  } catch {
+    return null;
+  }
+}
+
+/** Діагностика циклу синхронізації (sync_health).
+ *
+ * Викликається SyncStatus як fallback, коли `sync_status` ще не повертає
+ * `health` (проміжна Rust-збірка). Каса без Tauri/Rust: invoke падає →
+ * null (UI без degraded-алерта, старий стан).
+ */
+export async function syncHealth(): Promise<SyncHealthResult | null> {
+  try {
+    return await invoke<SyncHealthResult>('sync_health');
   } catch {
     return null;
   }
