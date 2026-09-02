@@ -22,7 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -380,4 +380,246 @@ async fn query_settings(
         })
         .collect();
     Ok((changes, false))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Push (ЕТАП 4 offline-first): каса → сервер.
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/v1/sync/push — приймає масив агрегатів (до 50) з outbox каси
+// (дизайн 2.2/4.2). Кожен агрегат обробляється ОКРЕМОЮ транзакцією: помилка
+// одного не валить решту пакета. Ідемпотентність — через client_uuid каси:
+//   * SELECT ... FROM receipts WHERE client_uuid (до створення) →
+//     already_exists;
+//   * UNIQUE-індекс uq_receipts_client_uuid (Alembic 0013) ловить гонку
+//     двох одночасних push з тим самим client_uuid → already_exists.
+// Кожен прийом логується в sync_log (direction='push', payload_hash sha256) —
+// дизайн 8.2.
+//
+// ЕТАП 4 підтримує ТИЛЬКИ типи, що реально записуються локально касою:
+//   receipt (продаж)        → POST /v2/receipts/sale    (PG приймач receipts)
+//   return_receipt (повернення) → POST /v2/receipts/return (return_invoices…)
+// Інші типи дизайну 2.2 (purchase/inventory/transfer/write_off/cash_operation/
+// work_session) локально касою не створюються — TODO ЕТАП 6; сервер відповідає
+// per-item error без retry (каса позначить outbox failed — «потребує уваги»).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Максимум агрегатів на один push-запит (дизайн 4.2: до 50).
+pub const PUSH_BATCH_MAX: usize = 50;
+
+/// Агрегат з outbox каси (дизайн 2.2).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PushEnvelope {
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Ідемпотентний ключ каси (UUIDv4, генерується при створенні транзакції).
+    pub client_uuid: Uuid,
+    /// store_id каси; має збігатися з X-Store-Id (StoreCtx).
+    pub store_id: Uuid,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Вміст агрегата (для receipt — ReceiptCreate-подібний JSON).
+    pub payload: serde_json::Value,
+}
+
+/// Результат обробки одного агрегата.
+#[derive(Debug, Serialize)]
+pub struct PushItemResult {
+    pub client_uuid: Uuid,
+    /// created | already_exists | error
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PushItemResult {
+    fn created(uuid: Uuid, server_id: Uuid) -> Self {
+        Self { client_uuid: uuid, status: "created", server_id: Some(server_id), error: None }
+    }
+    fn already_exists(uuid: Uuid, server_id: Uuid) -> Self {
+        Self { client_uuid: uuid, status: "already_exists", server_id: Some(server_id), error: None }
+    }
+    fn error(uuid: Uuid, msg: impl Into<String>) -> Self {
+        Self { client_uuid: uuid, status: "error", server_id: None, error: Some(msg.into()) }
+    }
+}
+
+/// POST /api/v1/sync/push → 200 (усі результати per-item у тілі).
+pub async fn push(
+    State(state): State<AppState>,
+    Extension(claims): Extension<crate::auth::Claims>,
+    Json(body): Json<Vec<PushEnvelope>>,
+) -> Result<Json<Vec<PushItemResult>>, SyncError> {
+    if body.is_empty() {
+        return Err(SyncError::BadRequest("порожній пакет push".to_string()));
+    }
+    if body.len() > PUSH_BATCH_MAX {
+        return Err(SyncError::BadRequest(format!(
+            "пакет push перевищує {PUSH_BATCH_MAX} агрегатів: {}",
+            body.len()
+        )));
+    }
+
+    let pool = state.store_pool.clone().ok_or(SyncError::Unavailable)?;
+    let repo = state.pos.clone().ok_or_else(|| {
+        SyncError::BadRequest("Rust-гілка POS вимкнена — push недоступний".to_string())
+    })?;
+    let svc = torgashka_application::PosServiceFacade::new(repo);
+
+    let cashier = Uuid::parse_str(&claims.sub).ok();
+    // StoreCtx (X-Store-Id, middleware) — явна перевірка store_id агрегата
+    // проти контексту точки (не покладаємось лише на RLS — dev-роль
+    // postgres має BYPASSRLS, див. master).
+    let ctx_store = torgashka_infrastructure::store_ctx::current_store_ctx()
+        .map(|c| c.store_id)
+        .unwrap_or_else(uuid::Uuid::nil);
+
+    let mut results = Vec::with_capacity(body.len());
+    for item in &body {
+        results.push(
+            process_push_item(&svc, &pool, item, cashier, ctx_store).await,
+        );
+    }
+    Ok(Json(results))
+}
+
+/// Обробляє ОДИН агрегат: ідемпотентний прийом + sync_log.
+async fn process_push_item(
+    svc: &torgashka_application::PosServiceFacade<
+        std::sync::Arc<dyn torgashka_domain::PosService + Send + Sync>,
+    >,
+    pool: &StorePool,
+    item: &PushEnvelope,
+    cashier: Option<Uuid>,
+    ctx_store: Uuid,
+) -> PushItemResult {
+    let hash = payload_hash(item);
+    // 1. Валідація типу: ЕТАП 4 підтримує лише чеки каси (дизайн 2.2).
+    let receipt_kind = match item.kind.as_str() {
+        "receipt" => "sale",
+        "return_receipt" => "return",
+        other => {
+            log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
+                "тип '{other}' не підтримується push ЕТАП 4 (TODO ЕТАП 6)"
+            )))
+            .await;
+            return PushItemResult::error(item.client_uuid, format!(
+                "тип '{other}' не підтримується push ЕТАП 4"
+            ));
+        }
+    };
+    // 2. store_id агрегата має збігатися з точкою запиту (X-Store-Id).
+    if item.store_id != ctx_store {
+        log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
+            "store_id агрегата {} не збігається з точкою запиту",
+            item.store_id
+        )))
+        .await;
+        return PushItemResult::error(
+            item.client_uuid,
+            "store_id агрегата не збігається з X-Store-Id",
+        );
+    }
+
+    // 3. Дублікат? (звичайний SELECT — гонку ловить UNIQUE 0013 нижче).
+    if let Some(existing) = find_by_client_uuid(pool, item.client_uuid).await {
+        log_sync(pool, item, ctx_store, "already_exists", &hash, None).await;
+        return PushItemResult::already_exists(item.client_uuid, existing);
+    }
+
+    // 4. Парсинг payload → вхідні дані чека (та сама валідація, що v2 /sale).
+    let mut input = match crate::pos::parse_receipt_create(&item.payload, cashier) {
+        Ok(i) => i,
+        Err(e) => {
+            let msg = pos_err_msg(&e);
+            log_sync(pool, item, ctx_store, "error", &hash, Some(msg.clone())).await;
+            return PushItemResult::error(item.client_uuid, msg);
+        }
+    };
+    input.client_uuid = Some(item.client_uuid);
+
+    // 5. Створення чека на сервері (існуюча POS-логіка: нумерація, items,
+    //    stock-ефекти sale/return). Окрема транзакція на агрегат.
+    let created = if receipt_kind == "sale" {
+        svc.create_sale_receipt(&input).await
+    } else {
+        svc.create_return_receipt(&input).await
+    };
+
+    match created {
+        Ok(dto) => {
+            log_sync(pool, item, ctx_store, "ok", &hash, None).await;
+            PushItemResult::created(item.client_uuid, dto.id)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            // Гонка: два одночасні push з тим самим client_uuid — UNIQUE
+            // uq_receipts_client_uuid (0013) зловив другий атомарно.
+            if msg.contains("uq_receipts_client_uuid") {
+                if let Some(existing) = find_by_client_uuid(pool, item.client_uuid).await {
+                    log_sync(pool, item, ctx_store, "already_exists", &hash, None).await;
+                    return PushItemResult::already_exists(item.client_uuid, existing);
+                }
+            }
+            log_sync(pool, item, ctx_store, "error", &hash, Some(msg.clone())).await;
+            PushItemResult::error(item.client_uuid, msg)
+        }
+    }
+}
+
+/// SELECT server_id за client_uuid (уже прийнятий чек).
+async fn find_by_client_uuid(pool: &StorePool, client_uuid: Uuid) -> Option<Uuid> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM receipts WHERE client_uuid = $1 LIMIT 1",
+    )
+    .bind(client_uuid)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Людське повідомлення помилки парсингу (PosErr не реалізує Display).
+fn pos_err_msg(e: &crate::pos::PosErr) -> String {
+    match e {
+        crate::pos::PosErr::Service(pe) => pe.to_string(),
+        crate::pos::PosErr::Validation(v) => v.to_string(),
+        crate::pos::PosErr::Forbidden(s) | crate::pos::PosErr::Unauthorized(s) => s.clone(),
+    }
+}
+
+/// sha256 (hex) канонічного JSON агрегата — payload_hash sync_log (дизайн 8.2).
+fn payload_hash(item: &PushEnvelope) -> String {
+    use sha2::Digest;
+    let canonical = serde_json::to_string(item).unwrap_or_default();
+    let digest = sha2::Sha256::digest(canonical.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// INSERT у sync_log (direction='push'). Помилка логування не впливає на
+/// результат прийому (журнал — аудит, не контракт).
+async fn log_sync(
+    pool: &StorePool,
+    item: &PushEnvelope,
+    store_id: Uuid,
+    status: &str,
+    hash: &str,
+    error: Option<String>,
+) {
+    let res = sqlx::query(
+        "INSERT INTO sync_log \
+            (store_id, direction, entity, client_uuid, status, payload_hash, error) \
+         VALUES ($1, 'push', 'receipt', $2, $3, $4, $5)",
+    )
+    .bind(store_id)
+    .bind(item.client_uuid)
+    .bind(status)
+    .bind(hash)
+    .bind(error)
+    .execute(pool)
+    .await;
+    if let Err(e) = res {
+        eprintln!("[sync/push] sync_log запис не вдався: {e}");
+    }
 }

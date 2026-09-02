@@ -152,6 +152,11 @@ pub fn build_router(state: AppState) -> Router {
     if state.readdirs.is_some() {
         router = router.route("/api/v1/sync/master", get(sync::master));
     }
+    // Rust-гілка sync push (ЕТАП 4 offline-first) — каса → сервер. Потребує
+    // POS-гілки (створення чеків з client_uuid) + sync_meta/sync_log (0011).
+    if state.pos.is_some() {
+        router = router.route("/api/v1/sync/push", post(sync::push));
+    }
 
     // Rust-гілка ledger (етап 4) — під тим самим feature-flag.
     if state.ledger.is_some() {

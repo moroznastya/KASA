@@ -308,12 +308,12 @@ async fn insert_receipt(
             terminal_transaction_id, terminal_response_code, terminal_status,
             terminal_receipt, terminal_card_pan, terminal_payment_system,
             terminal_merchant, terminal_created_at, is_fiscal, fiscal_status,
-            split_group_id, store_id, created_at
+            split_group_id, client_uuid, store_id, created_at
         ) VALUES (
             $1, $2, $3::receipt_type, $4, $5, NULL, $6, $7, $8, $9, $10,
             $11::receipt_payment_method,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-            $24::fiscal_status, $25, $26,
+            $24::fiscal_status, $25, $26, $27,
             (now() AT TIME ZONE 'UTC')::timestamp
         )
         RETURNING created_at::text
@@ -344,6 +344,7 @@ async fn insert_receipt(
     .bind(input.is_fiscal)
     .bind(if input.is_fiscal { "pending" } else { "none" })
     .bind(input.split_group_id)
+    .bind(input.client_uuid)
     .bind(store_id)
     .fetch_one(&mut **tx)
     .await

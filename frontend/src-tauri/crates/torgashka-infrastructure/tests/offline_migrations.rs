@@ -232,6 +232,6 @@ fn engine_reports_current_version() {
         migrations::SCHEMA_VERSION,
         "двигун бачить актуальну версію"
     );
-    assert_eq!(migrations::SCHEMA_VERSION, 3, "двигун бачить актуальну версію (0003)");
+    assert_eq!(migrations::SCHEMA_VERSION, 4, "двигун бачить актуальну версію (0004)");
     drop(db);
 }

@@ -7,3 +7,4 @@ pub mod commands;
 pub mod db;
 pub mod migrations;
 pub mod sync_pull;
+pub mod sync_push;

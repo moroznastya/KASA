@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -51,6 +51,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "master_tables",
         sql: include_str!("migrations/offline/0003_master_tables.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "transaction_idempotency",
+        sql: include_str!("migrations/offline/0004_transaction_idempotency.sql"),
     },
 ];
 
