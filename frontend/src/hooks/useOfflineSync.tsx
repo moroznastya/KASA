@@ -1,174 +1,193 @@
 /**
- * Хук для автоматичної синхронізації офлайн-даних
+ * Хук статусу синхронізації на базі outbox-push механізму (ЕТАП 4/5 Rust).
  *
- * При поновленні інтернет-з'єднання автоматично:
- *   1. Перевіряє наявність несинхронізованих чеків (get_unsynced_count)
- *   2. Відправляє їх на сервер (get_unsynced_receipts → receiptService.createReceipt:
- *      звичайні чеки → v2 /receipts/sale|return, боргові → v1 /receipts)
- *   3. Позначає як синхронізовані (mark_receipt_synced)
+ * Новий потік (замість старого getUnsyncedReceipts → receiptService.createReceipt):
+ *   - `sync_status` → { pending_count, failed_count, last_error, last_sync_at }
+ *     (читає outbox-чергу SQLite: status='pending' / status='failed')
+ *   - `sync_now`    → { pushed, already_exists, failed, remaining, last_error }
+ *     (ручний тригер push; Rust повторює батчі, поки є pending)
+ *
+ * Rust-команди недоступні (браузер або стара версія Tauri): invoke падає →
+ * syncStatus()/syncNow() повертають null → available=false → SyncStatus
+ * не рендериться.
  */
 
-import { useEffect, useCallback, useState } from 'react';
-import {useTauri} from './useTauri';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  syncStatus,
+  syncNow,
+  type SyncStatusResult,
+  type SyncNowResult,
+} from '@/services/tauri/offline';
 
-interface SyncState {
+/** Період опитування sync_status (мс). */
+const POLL_INTERVAL_MS = 15_000;
+
+export interface OfflineSyncState {
+  /** sync_now у процесі виконання */
   syncing: boolean;
-  lastSync: Date | null;
+  /** Час останнього успішного push (з sync_status або після sync_now) */
+  lastSyncAt: Date | null;
+  /** Записи в outbox зі статусом 'pending' */
   pendingCount: number;
-  syncedCount: number;
-  error: string | null;
+  /** Записи зі статусом 'failed' — потребують уваги */
+  failedCount: number;
+  /** Остання помилка push (для title/аномалій) */
+  lastError: string | null;
+  /** Команди sync_status/sync_now доступні (Tauri з Rust-бібліотекою) */
+  available: boolean;
 }
 
 /**
- * Хук для роботи з офлайн-синхронізацією
+ * Хук для роботи з офлайн-синхронізацією (outbox-push).
+ *
+ * - Первинна перевірка доступності + статусу одразу після монтування.
+ * - Poll sync_status кожні 15 секунд.
+ * - Оновлення після події 'kasa:offline-receipt-saved' (новий запис у черзі)
+ *   та події 'online' (з'явилась мережа).
  */
 // react-refresh: файл свідомо експортує хук + компонент (SyncStatus нижче)
 // eslint-disable-next-line react-refresh/only-export-components
 export function useOfflineSync() {
-  const {isTauri: inTauri, syncReceipts} = useTauri();
-  const [state, setState] = useState<SyncState>({
+  const [state, setState] = useState<OfflineSyncState>({
     syncing: false,
-    lastSync: null,
+    lastSyncAt: null,
     pendingCount: 0,
-    syncedCount: 0,
-    error: null,
+    failedCount: 0,
+    lastError: null,
+    available: false,
   });
 
-  // ── Лічильник pending-чеків (get_unsynced_count) ────────────────────
-  // Одразу при завантаженні показуємо скільки чеків очікують у SQLite-черзі.
-  // Також оновлюємося, коли PosPage зберігає новий чек офлайн
-  // (подія 'kasa:offline-receipt-saved').
-  useEffect(() => {
-    if (!inTauri) return;
-    let cancelled = false;
-
-    const refreshPendingCount = async () => {
-      try {
-        const { getUnsyncedCount } = await import('./useTauri');
-        const count = await getUnsyncedCount();
-        if (!cancelled) {
-          setState((prev) => ({ ...prev, pendingCount: count }));
-        }
-      } catch {
-        // Ігноруємо — наступне оновлення виправить
-      }
-    };
-
-    refreshPendingCount();
-
-    const handleOfflineReceiptSaved = () => refreshPendingCount();
-    window.addEventListener('kasa:offline-receipt-saved', handleOfflineReceiptSaved);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener('kasa:offline-receipt-saved', handleOfflineReceiptSaved);
-    };
-  }, [inTauri]);
-
-  // Запустити синхронізацію вручну
-  const sync = useCallback(async () => {
-    if (!inTauri) return;
-
-    setState((prev) => ({ ...prev, syncing: true, error: null }));
-
-    try {
-      const { getUnsyncedReceipts } = await import('./useTauri');
-      const pending = await getUnsyncedReceipts();
-
-      setState((prev) => ({ ...prev, pendingCount: pending.length }));
-
-      if (pending.length === 0) {
-        setState((prev) => ({
-          ...prev,
-          syncing: false,
-          lastSync: new Date(),
-          syncedCount: 0,
-        }));
-        return;
-      }
-
-      const synced = await syncReceipts();
-
-      setState((prev) => ({
-        ...prev,
-        syncing: false,
-        lastSync: new Date(),
-        syncedCount: synced,
-        pendingCount: pending.length - synced,
-        error: synced < pending.length ? `Не вдалося синхронізувати ${pending.length - synced} чеків` : null,
-      }));
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        syncing: false,
-        error: error instanceof Error ? error.message : 'Помилка синхронізації',
-      }));
+  /** Оновити стан зі sync_status (read-only; нічого не пушить). */
+  const refreshStatus = useCallback(async () => {
+    const status: SyncStatusResult | null = await syncStatus();
+    if (!status) {
+      // Команда недоступна (браузер / старий Rust) — ховаємо індикатор.
+      setState((prev) => (prev.available ? { ...prev, available: false } : prev));
+      return;
     }
-  }, [inTauri, syncReceipts]);
+    setState((prev) => ({
+      ...prev,
+      available: true,
+      pendingCount: status.pending_count,
+      failedCount: status.failed_count,
+      lastError: status.last_error,
+      // last_sync_at з БД авторитетніший; ISO null (ще не було push) — не затираємо
+      lastSyncAt: status.last_sync_at ? new Date(status.last_sync_at) : prev.lastSyncAt,
+    }));
+  }, []);
 
-  // Автоматична синхронізація при поновленні з'єднання
+  /** Ручний тригер push: sync_now → оновити стан з результату. */
+  const sync = useCallback(async () => {
+    setState((prev) => ({ ...prev, syncing: true }));
+
+    const result: SyncNowResult | null = await syncNow();
+    if (!result) {
+      setState((prev) => ({ ...prev, syncing: false, available: false }));
+      return;
+    }
+
+    const progressed = result.pushed + result.already_exists > 0;
+    const needsAttention = result.failed > 0 || result.remaining > 0;
+    const lastError = result.failed > 0
+      ? result.last_error ?? `${result.failed} записів не вдалося синхронізувати`
+      : result.remaining > 0
+        ? result.last_error ?? 'Частину записів не вдалося відправити на сервер'
+        : null;
+
+    setState((prev) => ({
+      ...prev,
+      syncing: false,
+      available: true,
+      pendingCount: result.remaining,
+      failedCount: result.failed,
+      lastError: needsAttention ? lastError : null,
+      lastSyncAt: progressed ? new Date() : prev.lastSyncAt,
+    }));
+  }, []);
+
+  // Первинна перевірка: визначає available + перший статус.
   useEffect(() => {
-    if (!inTauri) return;
+    void refreshStatus();
+  }, [refreshStatus]);
 
-    const handleOnline = () => {
-      sync();
-    };
+  // Poll 15с + події — тільки коли команди доступні (available=true).
+  useEffect(() => {
+    if (!state.available) return;
 
+    const interval = setInterval(() => void refreshStatus(), POLL_INTERVAL_MS);
+
+    const handleReceiptSaved = () => void refreshStatus();
+    const handleOnline = () => void refreshStatus();
+
+    window.addEventListener('kasa:offline-receipt-saved', handleReceiptSaved);
     window.addEventListener('online', handleOnline);
 
-    // Синхронізація при завантаженні
-    const initialSync = setTimeout(() => sync(), 3000);
-
     return () => {
+      clearInterval(interval);
+      window.removeEventListener('kasa:offline-receipt-saved', handleReceiptSaved);
       window.removeEventListener('online', handleOnline);
-      clearTimeout(initialSync);
     };
-  }, [inTauri, sync]);
+  }, [state.available, refreshStatus]);
 
   return {
     ...state,
     sync,
-    isTauri: inTauri,
   };
 }
 
 /**
- * Компонент індикатора статусу синхронізації
+ * Компонент індикатора статусу синхронізації.
+ *
+ * 4 стани (пріоритет зверху вниз):
+ *   1. syncing            → синє  «Синхронізація…»
+ *   2. failedCount > 0    → червоне «⚠ Потребує уваги» (title=lastError; клік → sync)
+ *   3. pendingCount > 0   → жовте «N очікують синхронізації» (клік → sync)
+ *   4. інакше + lastSyncAt → зелене «Синхронізовано HH:MM:SS»
+ * Команди недоступні (available=false) → не рендериться взагалі.
  */
 export const SyncStatus: React.FC = () => {
-  const { syncing, lastSync, pendingCount, error, sync, isTauri } = useOfflineSync();
+  const { syncing, lastSyncAt, pendingCount, failedCount, lastError, sync, available } =
+    useOfflineSync();
 
-  if (!isTauri) return null;
+  if (!available) return null;
+
+  const time = lastSyncAt?.toLocaleTimeString('uk-UA', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 
   return (
-    <div className="flex items-center gap-2 text-xs">
-      {syncing && (
-        <span className="text-blue-600 dark:text-blue-400">
-          Синхронізація...
-        </span>
-      )}
-
-      {!syncing && pendingCount > 0 && (
+    <div className="flex items-center text-xs whitespace-nowrap">
+      {syncing ? (
+        <span className="text-blue-600 dark:text-blue-400">Синхронізація…</span>
+      ) : failedCount > 0 ? (
         <button
-          onClick={sync}
-          className="text-yellow-600 hover:text-yellow-700 dark:text-yellow-400 underline"
-          title="Натисніть, щоб синхронізувати зараз"
+          type="button"
+          onClick={() => void sync()}
+          title={lastError ?? 'Помилка синхронізації — натисніть, щоб повторити'}
+          className="text-red-600 hover:text-red-700 dark:text-red-400 underline"
         >
-          {pendingCount} чеків очікують синхронізації
+          ⚠ Потребує уваги
         </button>
-      )}
-
-      {!syncing && pendingCount === 0 && lastSync && (
-        <span className="text-green-600 dark:text-green-400">
-          Синхронізовано: {lastSync.toLocaleTimeString('uk-UA')}
+      ) : pendingCount > 0 ? (
+        <button
+          type="button"
+          onClick={() => void sync()}
+          title="Натисніть, щоб синхронізувати зараз"
+          className="text-yellow-600 hover:text-yellow-700 dark:text-yellow-400 underline"
+        >
+          {pendingCount} {pendingCount === 1 ? 'очікує' : 'очікують'} синхронізації
+        </button>
+      ) : lastSyncAt ? (
+        <span
+          className="text-green-600 dark:text-green-400"
+          title={lastSyncAt.toLocaleString('uk-UA')}
+        >
+          Синхронізовано {time}
         </span>
-      )}
-
-      {error && (
-        <span className="text-red-600 dark:text-red-400" title={error}>
-          ⚠ Помилка
-        </span>
-      )}
+      ) : null}
     </div>
   );
 };

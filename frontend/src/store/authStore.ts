@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import axios from 'axios';
 import { User } from '@/types/auth';
+import { persistSyncCredentials } from '@/services/tauri/offline';
 
 const API_BASE_URL = import.meta.env.DEV ? '/api/v1' : (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1');
 
@@ -37,6 +38,9 @@ export const useAuthStore = create<AuthStore>((set) => ({
     localStorage.setItem('accessToken', accessToken);
     localStorage.setItem('refreshToken', refreshToken);
     set({ accessToken, refreshToken, isAuthenticated: true });
+    // ЕТАП 5 (outbox-push): Rust читає server_url/api_token з SQLite settings
+    // перед кожним push — оновлюємо при кожній зміні токена (refresh).
+    void persistSyncCredentials(accessToken, API_BASE_URL);
   },
 
   setLoading: (isLoading: boolean) => set({ isLoading }),
@@ -58,6 +62,8 @@ export const useAuthStore = create<AuthStore>((set) => ({
       isAuthenticated: true,
       isLoading: false,
     });
+    // ЕТАП 5 (outbox-push): server_url + api_token для Rust-пушера.
+    void persistSyncCredentials(accessToken, API_BASE_URL);
   },
 
   logout: () => {
