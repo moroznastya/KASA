@@ -1,9 +1,9 @@
 //! ЕТАП 2 — міграційна база SQLite (PRAGMA user_version + двигун міграцій).
 //!
 //! Покриває критерії прийняття:
-//!   1. Нова БД → мігрується до 0002: sync_meta/outbox існують, user_version = 2.
+//!   1. Нова БД → мігрується до актуальної версії: sync_meta/outbox існують.
 //!   2. Стара схема (створена старим db.rs, user_version = 0) → мігрується
-//!      до 0002 БЕЗ втрати даних.
+//!      до актуальної версії БЕЗ втрати даних.
 //!   3. Повторний запуск — ідемпотентний (не падає, версія не змінюється).
 //!   4. Міграції йдуть ТІЛЬКИ через двигун user_version (SQL-файли),
 //!      ensure_column-хак не використовується.
@@ -85,7 +85,7 @@ fn table_exists(db_file: &PathBuf, table: &str) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Нова БД → мігрується до 0002
+// 1. Нова БД → мігрується до актуальної версії
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -102,7 +102,7 @@ fn fresh_db_migrates_to_v2_with_sync_tables() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, 2, "нова БД мігрується до 0002");
+    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "нова БД мігрується до актуальної версії");
     assert!(table_exists(&db_file, "sync_meta"), "sync_meta існує");
     assert!(table_exists(&db_file, "outbox"), "outbox існує");
     assert!(table_exists(&db_file, "products"), "products існує");
@@ -143,7 +143,7 @@ fn legacy_db_migrates_without_data_loss() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, 2, "legacy БД → 0002");
+    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "legacy БД → актуальна версія");
 
     // Дані не втрачені.
     let pid: String = conn
@@ -207,7 +207,7 @@ fn rerun_is_idempotent() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, 2, "версія не змінилась");
+    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "версія не змінилась");
 
     let ver: i64 = conn
         .query_row("SELECT version FROM sync_meta WHERE entity='products'", [], |row| row.get(0))
@@ -229,9 +229,9 @@ fn engine_reports_current_version() {
     let conn = Connection::open(db.get_db_path()).expect("БД відкрита для перевірки");
     assert_eq!(
         migrations::current_version(&conn).unwrap(),
-        2,
+        migrations::SCHEMA_VERSION,
         "двигун бачить актуальну версію"
     );
-    assert_eq!(migrations::SCHEMA_VERSION, 2);
+    assert_eq!(migrations::SCHEMA_VERSION, 3, "двигун бачить актуальну версію (0003)");
     drop(db);
 }

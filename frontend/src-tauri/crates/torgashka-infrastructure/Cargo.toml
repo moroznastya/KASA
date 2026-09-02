@@ -34,7 +34,8 @@ torgashka-ocr = { path = "../torgashka-ocr" }
 async-trait = "0.1"
 bcrypt = "0.19.3"
 regex = "1.13.1"
-tokio = { version = "1", features = ["process"] }
+tokio = { version = "1", features = ["process", "time", "macros", "rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
 barcoders = "2.0.0"
 futures-util = "0.3"

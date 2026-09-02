@@ -21,7 +21,7 @@ use tower_http::cors::CorsLayer;
 use crate::{
     auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
     print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, setup,
-    store_context, stores, suppliers, AppState,
+    store_context, stores, suppliers, sync, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -146,6 +146,11 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/suppliers/:supplier_id/products",
                 get(suppliers::products),
             );
+    }
+
+    // Rust-гілка sync (ЕТАП 3 offline-first) — pull майстер-даних.
+    if state.readdirs.is_some() {
+        router = router.route("/api/v1/sync/master", get(sync::master));
     }
 
     // Rust-гілка ledger (етап 4) — під тим самим feature-flag.

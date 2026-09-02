@@ -35,6 +35,7 @@ pub mod return_invoices;
 pub mod router_v1;
 pub mod setup;
 pub mod store_context;
+pub mod sync;
 pub mod stores;
 pub mod suppliers;
 

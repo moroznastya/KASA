@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -46,6 +46,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "sync_meta",
         sql: include_str!("migrations/offline/0002_sync_meta.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "master_tables",
+        sql: include_str!("migrations/offline/0003_master_tables.sql"),
     },
 ];
 
@@ -190,13 +195,13 @@ mod tests {
     /// Свіжа БД (user_version=0) → мігрується до 0002:
     /// sync_meta/outbox створені, user_version = SCHEMA_VERSION.
     #[test]
-    fn fresh_db_migrates_to_v2() {
+    fn fresh_db_migrates_to_actual() {
         let conn = Connection::open_in_memory().expect("in-memory");
         assert_eq!(current_version(&conn).unwrap(), 0);
 
         let v = migrate(&conn).expect("міграція свіжої БД");
-        assert_eq!(v, 2);
-        assert_eq!(current_version(&conn).unwrap(), 2);
+        assert_eq!(v, super::SCHEMA_VERSION);
+        assert_eq!(current_version(&conn).unwrap(), super::SCHEMA_VERSION);
 
         assert!(table_exists(&conn, "products"));
         assert!(table_exists(&conn, "receipts"));
@@ -231,6 +236,15 @@ mod tests {
         // Свіжа БД: store_id вже в DDL, legacy-крок — no-op.
         assert!(has_column(&conn, "products", "store_id"));
         assert!(has_column(&conn, "receipts", "store_id"));
+
+        // Міграція 0003 (master_tables): нормалізовані довідники на місці.
+        for t in ["categories", "suppliers", "employees", "stock_norms", "products_v2"] {
+            assert!(table_exists(&conn, t), "0003: таблиця {t}");
+        }
+        for col in ["is_deleted", "server_version"] {
+            assert!(has_column(&conn, "products_v2", col), "products_v2.{col}");
+            assert!(has_column(&conn, "categories", col), "categories.{col}");
+        }
     }
 
     /// Стара БД (схема старого db.rs, user_version=0) → мігрується до 0002
@@ -265,8 +279,8 @@ mod tests {
         )
         .expect("legacy schema");
 
-        let v = migrate(&conn).expect("legacy → 0002");
-        assert_eq!(v, 2);
+        let v = migrate(&conn).expect("legacy → актуальна");
+        assert_eq!(v, super::SCHEMA_VERSION);
 
         // Дані не втрачені.
         let pid: String = conn
@@ -297,7 +311,7 @@ mod tests {
     fn rerun_is_idempotent() {
         let conn = Connection::open_in_memory().expect("in-memory");
         migrate(&conn).expect("перша міграція");
-        assert_eq!(current_version(&conn).unwrap(), 2);
+        assert_eq!(current_version(&conn).unwrap(), super::SCHEMA_VERSION);
 
         conn.execute(
             "INSERT INTO sync_meta (entity, version) VALUES ('products', 42)",
@@ -307,8 +321,8 @@ mod tests {
 
         // Повторний запуск.
         let v = migrate(&conn).expect("повторна міграція");
-        assert_eq!(v, 2);
-        assert_eq!(current_version(&conn).unwrap(), 2);
+        assert_eq!(v, super::SCHEMA_VERSION);
+        assert_eq!(current_version(&conn).unwrap(), super::SCHEMA_VERSION);
 
         // Дані після міграції цілі.
         let ver: i64 = conn
