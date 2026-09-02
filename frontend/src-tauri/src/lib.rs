@@ -302,6 +302,17 @@ pub fn run() {
                 });
             }
 
+            // ЕТАП 5: фоновий push-цикл (outbox → сервер). Стартує, якщо
+            // налаштування server_url/api_token/store_id уже збережені в
+            // SQLite; інакше — запуститься після set_setting (commands.rs).
+            tauri::async_runtime::spawn(async move {
+                match torgashka_infrastructure::offline::commands::ensure_push_task_started() {
+                    Ok(true) => eprintln!("[sync_push] фоновий цикл запущено (ЕТАП 5)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[sync_push] spawn при старті: {e}"),
+                }
+            });
+
             Ok(())
         })
         // Реєстрація команд
@@ -323,6 +334,8 @@ pub fn run() {
             torgashka_infrastructure::offline::commands::save_receipt_offline,
             torgashka_infrastructure::offline::commands::get_unsynced_receipts,
             torgashka_infrastructure::offline::commands::mark_receipt_synced,
+            torgashka_infrastructure::offline::commands::sync_now,
+            torgashka_infrastructure::offline::commands::sync_status,
             torgashka_infrastructure::offline::commands::get_setting,
             torgashka_infrastructure::offline::commands::set_setting,
             torgashka_infrastructure::offline::commands::clear_product_cache,

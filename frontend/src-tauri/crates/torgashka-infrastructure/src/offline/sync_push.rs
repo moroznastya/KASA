@@ -106,8 +106,7 @@ pub fn enqueue_receipt_with_uuid(
     client_uuid: &str,
 ) -> Result<EnqueuedReceipt, String> {
     let outbox_type = outbox_type_of(receipt_json);
-    let payload = envelope(outbox_type, client_uuid, store_id, receipt_json)?
-        .to_string();
+    let payload = envelope(outbox_type, client_uuid, store_id, receipt_json)?.to_string();
 
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -164,15 +163,18 @@ pub struct OutboxItem {
     pub payload: String,
 }
 
-/// Вибірка до `limit` pending-агрегатів СТРОГО FIFO за (created_at, id)
-/// (дизайн 4.2). Враховує next_attempt_at (backoff).
+/// Вибірка до `limit` pending-агрегатів СТРОГО FIFO за **rowid** (id).
+///
+/// Дизайн 4.2 (FIFO) + 6.2 (зсув годинника): порядок outbox — локальний
+/// порядок вставки (rowid), НЕ created_at (годинник каси може бути
+/// зсунутий — created_at лише метадата). Враховує next_attempt_at (backoff).
 pub fn pending_outbox(conn: &Connection, limit: usize) -> Result<Vec<OutboxItem>, String> {
     let limit = limit.min(PUSH_BATCH_MAX);
     let mut stmt = conn
         .prepare(
             "SELECT id, type, client_uuid, payload FROM outbox \
              WHERE status = 'pending' AND next_attempt_at <= datetime('now') \
-             ORDER BY created_at, id LIMIT ?1",
+             ORDER BY id LIMIT ?1",
         )
         .map_err(|e| format!("підготовка SELECT outbox: {e}"))?;
     let rows = stmt
@@ -202,6 +204,64 @@ pub fn pending_count(conn: &Connection) -> Result<usize, String> {
     )
     .map(|n| n as usize)
     .map_err(|e| format!("COUNT outbox: {e}"))
+}
+
+/// Статистика outbox для UI-статусу синхронізації (ЕТАП 5, sync_status):
+/// pending/failed лічильники, остання помилка (failed.last_error останнього
+/// за rowid) і час останньої успішної синхронізації (MAX(pushed_at) по done).
+#[derive(Debug, Clone, Default)]
+pub struct OutboxStats {
+    /// Агрегати, що чекають вивантаження (status='pending').
+    pub pending: usize,
+    /// Агрегати, що потребують уваги (status='failed', дизайн 4.3).
+    pub failed: usize,
+    /// last_error останнього failed-агрегата (за rowid).
+    pub last_error: Option<String>,
+    /// MAX(pushed_at) по done — час останнього успішного push.
+    pub last_sync_at: Option<String>,
+}
+
+/// Поточна статистика outbox (для sync_status / get_offline_stats).
+pub fn outbox_stats(conn: &Connection) -> Result<OutboxStats, String> {
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("COUNT outbox pending: {e}"))?;
+    let failed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE status = 'failed'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("COUNT outbox failed: {e}"))?;
+    let last_error: Option<String> = conn
+        .query_row(
+            "SELECT last_error FROM outbox WHERE status = 'failed' \
+             AND last_error IS NOT NULL ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("SELECT outbox last_error: {e}"))?
+        .flatten();
+    // MAX(...) ЗАВЖДИ повертає один рядок (можливо з NULL) — без .optional().
+    let last_sync_at: Option<String> = conn
+        .query_row(
+            "SELECT MAX(pushed_at) FROM outbox WHERE status = 'done' \
+             AND pushed_at IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| format!("SELECT outbox last_sync_at: {e}"))?;
+    Ok(OutboxStats {
+        pending: pending as usize,
+        failed: failed as usize,
+        last_error,
+        last_sync_at,
+    })
 }
 
 // ─── Backoff ────────────────────────────────────────────────────────────────
@@ -265,7 +325,7 @@ pub async fn push_pending_batch(
     client: &reqwest::Client,
     cfg: &PushConfig,
 ) -> Result<PushSummary, String> {
-    let mut conn = open_connection(db_path)?;
+    let conn = open_connection(db_path)?;
     let batch = pending_outbox(&conn, PUSH_BATCH_MAX)?;
     if batch.is_empty() {
         return Ok(PushSummary::default());
@@ -287,12 +347,7 @@ pub async fn push_pending_batch(
     // Немає мережі / сервер недоступний: pending без змін (дизайн 4.3).
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => {
-            return Err(format!(
-                "push недоступний (сервер вимкнений?): {}",
-                e
-            ))
-        }
+        Err(e) => return Err(format!("push недоступний (сервер вимкнений?): {}", e)),
     };
 
     let status = resp.status();
@@ -324,14 +379,10 @@ pub async fn push_pending_batch(
     // 200: per-item результати сервера.
     let results: Vec<ServerPushResult> = match resp.json().await {
         Ok(r) => r,
-        Err(e) => {
-            return Err(format!("невалідна відповідь push: {e}"))
-        }
+        Err(e) => return Err(format!("невалідна відповідь push: {e}")),
     };
     for it in &batch {
-        let result = results
-            .iter()
-            .find(|r| r.client_uuid == it.client_uuid);
+        let result = results.iter().find(|r| r.client_uuid == it.client_uuid);
         match result {
             // created/already_exists → done + pushed_at (дизайн 3.2/4.4).
             Some(r) if r.status == "created" => {
@@ -359,7 +410,11 @@ pub async fn push_pending_batch(
 
 /// attempts += 1; якщо спроба 5xx/429: next_attempt_at = now + backoff;
 /// після MAX_ATTEMPTS невдалих спроб → failed (алерт — статус видимий).
-fn defer_or_fail(conn: &Connection, item: &OutboxItem, error: Option<String>) -> Result<(), String> {
+fn defer_or_fail(
+    conn: &Connection,
+    item: &OutboxItem,
+    error: Option<String>,
+) -> Result<(), String> {
     let attempts: i64 = conn
         .query_row(
             "SELECT attempts FROM outbox WHERE id = ?1",
@@ -378,7 +433,11 @@ fn defer_or_fail(conn: &Connection, item: &OutboxItem, error: Option<String>) ->
         conn.execute(
             "UPDATE outbox SET attempts = ?1, status = 'failed', last_error = ?2 \
              WHERE id = ?3",
-            params![next_attempts, error.unwrap_or_else(|| format!("10 невдалих спроб (5xx)")), item.id],
+            params![
+                next_attempts,
+                error.unwrap_or_else(|| format!("10 невдалих спроб (5xx)")),
+                item.id
+            ],
         )
         .map_err(|e| format!("UPDATE outbox → failed: {e}"))?;
     } else {
@@ -415,8 +474,8 @@ fn mark_failed(conn: &Connection, item: &OutboxItem, error: Option<String>) -> R
 
 /// Відкриває SQLite-БД каси з міграціями до актуальної версії (0001-0004).
 pub fn open_connection(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("Не вдалося відкрити БД каси: {}", e))?;
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Не вдалося відкрити БД каси: {}", e))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;",
@@ -498,8 +557,8 @@ mod tests {
     fn enqueue_writes_receipt_and_outbox_atomically() {
         let mut conn = test_conn();
         let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
-        let out = enqueue_receipt(&mut conn, &sale_receipt_json(1001), Some(store))
-            .expect("enqueue");
+        let out =
+            enqueue_receipt(&mut conn, &sale_receipt_json(1001), Some(store)).expect("enqueue");
 
         // receipts: чек з client_uuid, synced=1 (виключений з legacy-черги).
         let (data, uuid, synced): (String, String, i64) = conn
@@ -549,27 +608,30 @@ mod tests {
     fn mid_transaction_failure_rolls_back_everything() {
         let mut conn = test_conn();
         let first = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("перший");
-        let count_before: i64 =
-            conn.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0)).unwrap();
-        let ob_before: i64 =
-            conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap();
+        let count_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0))
+            .unwrap();
+        let ob_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
 
         // Другий запис з тим самим client_uuid — падає на INSERT receipts
         // (UNIQUE), транзакція має відкотитись повністю.
-        let dup = enqueue_receipt_with_uuid(
-            &mut conn,
-            &sale_receipt_json(2),
-            None,
-            &first.client_uuid,
-        );
+        let dup =
+            enqueue_receipt_with_uuid(&mut conn, &sale_receipt_json(2), None, &first.client_uuid);
         assert!(dup.is_err(), "дублікат client_uuid → помилка");
 
-        let count_after: i64 =
-            conn.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0)).unwrap();
-        let ob_after: i64 =
-            conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap();
+        let count_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0))
+            .unwrap();
+        let ob_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count_after, count_before, "ROLLBACK: жодного нового чека");
-        assert_eq!(ob_after, ob_before, "ROLLBACK: жодного нового outbox-запису");
+        assert_eq!(
+            ob_after, ob_before,
+            "ROLLBACK: жодного нового outbox-запису"
+        );
     }
 
     // ── FIFO порядок (дизайн 4.2) ──────────────────────────────────────────
@@ -583,9 +645,9 @@ mod tests {
             let out = enqueue_receipt(&mut conn, &sale_receipt_json(n), None).expect("enqueue");
             ids.push(out.outbox_id);
         }
-        // Перший запис отримує created_at на 100с У МАЙБУТНЬОМУ — FIFO за
-        // (created_at, id) має віддати його ОСТАННІМ (2, 3, 1), попри те,
-        // що він вставлений першим (порядок вставки ≠ порядок created_at).
+        // Зсув годинника (дизайн 6.2): перший запис отримує created_at на
+        // 100с У МАЙБУТНЬОМУ (годинник каси пішов уперед). Порядок outbox —
+        // локальний порядок вставки (rowid), НЕ годинник: черга НЕ змінюється.
         conn.execute(
             "UPDATE outbox SET created_at = datetime('now', '+100 seconds') WHERE id = ?1",
             params![ids[0]],
@@ -594,11 +656,66 @@ mod tests {
 
         let batch = pending_outbox(&conn, 50).expect("batch");
         assert_eq!(batch.len(), 3);
-        assert_eq!(batch[0].id, ids[1], "FIFO: другий за created_at");
-        assert_eq!(batch[1].id, ids[2], "FIFO: третій за created_at");
-        assert_eq!(batch[2].id, ids[0], "FIFO: найпізніший created_at — останній");
+        assert_eq!(
+            batch[0].id, ids[0],
+            "FIFO: перший вставлений — перший у черзі (rowid)"
+        );
+        assert_eq!(batch[1].id, ids[1], "FIFO: другий за rowid");
+        assert_eq!(batch[2].id, ids[2], "FIFO: третій за rowid");
         // Клієнтський код відправляє payload у тому ж порядку.
-        assert!(batch[0].payload.contains("\"receipt_number\":2"));
+        assert!(batch[0].payload.contains("\"receipt_number\":1"));
+    }
+
+    /// Edge-case «зсув годинника» (дизайн 6.2): два чеки з created_at у
+    /// payload «у минулому/майбутньому» — порядок outbox за rowid; тобто
+    /// штучний created_at у payload/outbox НЕ переставляє чергу.
+    #[test]
+    fn clock_skew_does_not_reorder_outbox() {
+        let mut conn = test_conn();
+        let a = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("a");
+        let b = enqueue_receipt(&mut conn, &sale_receipt_json(2), None).expect("b");
+
+        // Перший чек «у минулому» (payload-created_at давній), другий —
+        // «у майбутньому». Спершу скоригуємо outbox.created_at обох.
+        conn.execute(
+            "UPDATE outbox SET created_at = datetime('now', '-1 day') WHERE id = ?1",
+            params![a.outbox_id],
+        )
+        .expect("a в минулому");
+        conn.execute(
+            "UPDATE outbox SET created_at = datetime('now', '+1 day') WHERE id = ?1",
+            params![b.outbox_id],
+        )
+        .expect("b у майбутньому");
+
+        let batch = pending_outbox(&conn, 50).expect("batch");
+        assert_eq!(batch.len(), 2);
+        assert_eq!(
+            batch[0].id, a.outbox_id,
+            "rowid порядок збережено: a перший"
+        );
+        assert_eq!(
+            batch[1].id, b.outbox_id,
+            "rowid порядок збережено: b другий"
+        );
+
+        // Ідемпотентність не ламається: кожен outbox має свій UNIQUE
+        // client_uuid незалежно від часу.
+        let (ua, ub): (String, String) = (
+            conn.query_row(
+                "SELECT client_uuid FROM outbox WHERE id = ?1",
+                params![a.outbox_id],
+                |r| r.get(0),
+            )
+            .unwrap(),
+            conn.query_row(
+                "SELECT client_uuid FROM outbox WHERE id = ?1",
+                params![b.outbox_id],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        );
+        assert_ne!(ua, ub, "унікальні client_uuid при зсуві годинника");
     }
 
     /// Ліміт пакета: pending_outbox(2) повертає 2 (дизайн 4.2: ≤50).
@@ -619,7 +736,11 @@ mod tests {
     /// min(2^attempts, 3600): 1→2, 2→4, 3→8, … 10→3600 (стеля).
     #[test]
     fn backoff_is_exponential_with_cap() {
-        assert_eq!(backoff_delay_secs(0), 2, "attempt 0 → трактується як 1 → 2с");
+        assert_eq!(
+            backoff_delay_secs(0),
+            2,
+            "attempt 0 → трактується як 1 → 2с"
+        );
         assert_eq!(backoff_delay_secs(1), 2);
         assert_eq!(backoff_delay_secs(2), 4);
         assert_eq!(backoff_delay_secs(3), 8);
@@ -663,7 +784,10 @@ mod tests {
             .expect("outbox стан");
         assert_eq!(status, "failed", "10 спроб (5xx) → failed");
         assert_eq!(attempts, 10);
-        assert!(err.unwrap_or_default().contains("10 невдалих"), "алерт: last_error заповнено");
+        assert!(
+            err.unwrap_or_default().contains("10 невдалих"),
+            "алерт: last_error заповнено"
+        );
     }
 
     // ── Статусна модель ────────────────────────────────────────────────────
@@ -681,7 +805,11 @@ mod tests {
         mark_done(&conn, &items[0]).expect("done");
         mark_failed(&conn, &items[1], Some("тестова помилка".to_string())).expect("failed");
 
-        assert_eq!(pending_count(&conn).expect("count"), 1, "failed видимий (потребує уваги)");
+        assert_eq!(
+            pending_count(&conn).expect("count"),
+            1,
+            "failed видимий (потребує уваги)"
+        );
         let (s1, pushed): (String, Option<String>) = conn
             .query_row(
                 "SELECT status, pushed_at FROM outbox WHERE id = ?1",

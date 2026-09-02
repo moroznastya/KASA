@@ -70,6 +70,15 @@ impl OfflineDatabase {
             .unwrap_or_default()
     }
 
+    /// Стандартний шлях до файлу БД каси (без відкриття з'єднання).
+    ///
+    /// Використовується новим outbox-шляхом (ЕТАП 4/5): команди відкривають
+    /// власне з'єднання через `offline::sync_push::open_connection` і не
+    /// тримають другий `OfflineDatabase`.
+    pub fn default_db_path() -> Result<PathBuf, String> {
+        Self::get_db_path_inner()
+    }
+
     /// Шлях до файлу бази даних (внутрішній)
     fn get_db_path_inner() -> Result<PathBuf, String> {
         // Використовуємо стандартну директорію для даних застосунку
