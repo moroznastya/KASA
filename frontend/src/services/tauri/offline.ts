@@ -265,3 +265,90 @@ export async function persistSyncStore(storeId: string): Promise<boolean> {
 export async function getOfflineStats(storeId?: string | null): Promise<OfflineStats> {
   return invoke<OfflineStats>('get_offline_stats', { storeId: storeId ?? null });
 }
+
+// ─── Операції каси поза продажем (ЕТАП 6 offline-first) ─────────────────────
+//
+// Контракт (torgashka-infrastructure/src/offline/transactions.rs):
+//   save_*_offline(payload: String, store_id: String) → client_uuid (String)
+// Payload — JSON, який фронт будує для серверного ендпоінта; Rust читає
+// лише items[].product_id + quantity (або fact_quantity для інвентаризації)
+// та from_store_id/to_store_id (переміщення). Весь payload зберігається
+// в data агрегата (таблиці 0006) — для майбутнього push (ЕТАП 7).
+// Stock-ефект і запис агрегата — в одній SQLite-транзакції.
+
+/**
+ * Локальна закупка/надходження: items[].product_id + quantity → stock +qty.
+ * @returns client_uuid агрегата (ідемпотентний ключ майбутнього push)
+ */
+export async function savePurchaseOrderOffline(payload: unknown, storeId: string): Promise<string> {
+  return invoke<string>('save_purchase_order_offline', {
+    payload: JSON.stringify(payload),
+    storeId,
+  });
+}
+
+/**
+ * Локальна інвентаризація: items[].product_id + fact_quantity (або quantity)
+ * → stock = факт (абсолютний рівень). UI передає quantity=факт за перерахунком.
+ * @returns client_uuid агрегата
+ */
+export async function saveInventoryOffline(payload: unknown, storeId: string): Promise<string> {
+  return invoke<string>('save_inventory_offline', {
+    payload: JSON.stringify(payload),
+    storeId,
+  });
+}
+
+/**
+ * Локальне переміщення між точками: payload.from_store_id/to_store_id
+ * визначають сторону каси (from=каса → −qty; to=каса → +qty; чуже → запис).
+ * @returns client_uuid агрегата
+ */
+export async function saveTransferOffline(payload: unknown, storeId: string): Promise<string> {
+  return invoke<string>('save_transfer_offline', {
+    payload: JSON.stringify(payload),
+    storeId,
+  });
+}
+
+/**
+ * Локальне списання: items[].product_id + quantity → stock −qty.
+ * @returns client_uuid агрегата
+ */
+export async function saveWriteOffOffline(payload: unknown, storeId: string): Promise<string> {
+  return invoke<string>('save_write_off_offline', {
+    payload: JSON.stringify(payload),
+    storeId,
+  });
+}
+
+/** Елемент локальних залишків каталогу (get_stock_levels). */
+export interface StockLevelItem {
+  product_id: string;
+  name: string;
+  quantity: number;
+}
+
+/**
+ * Локальні залишки всього каталогу точки: [{product_id, name, quantity}].
+ * Товари без stock-рядка → quantity=0. Недоступно (браузер) → [].
+ */
+export async function getStockLevels(storeId: string): Promise<StockLevelItem[]> {
+  try {
+    return await invoke<StockLevelItem[]>('get_stock_levels', { storeId });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Локальний залишок одного товару точки (одиниці; 0 — рядка немає).
+ * Недоступно (браузер) → 0.
+ */
+export async function getStockLevel(productId: string, storeId: string): Promise<number> {
+  try {
+    return await invoke<number>('get_stock_level', { productId, storeId });
+  } catch {
+    return 0;
+  }
+}

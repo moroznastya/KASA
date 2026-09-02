@@ -16,6 +16,13 @@ import { normalizeDecimalInput } from '@/utils/decimal';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import { isTauri } from '@/hooks/useTauri';
+import {
+  saveInventoryOffline,
+  syncNow,
+  getStockLevel,
+} from '@/services/tauri/offline';
+import { useStoreStore } from '@/store/storeStore';
 
 /** Елемент кошика інвентаризації */
 interface CartItem {
@@ -246,7 +253,7 @@ const InventoryFormPage: React.FC = () => {
   };
 
   // ─── Підтвердження додавання через модалку ───────────────────────
-  const confirmAddItem = () => {
+  const confirmAddItem = async () => {
     if (!modalProduct || modalQuantity < 0) return; // ← < 0 замість <= 0
 
     const existing = cart.find((item) => item.product_id === modalProduct.id);
@@ -271,7 +278,12 @@ const InventoryFormPage: React.FC = () => {
       );
     } else {
       // Новий товар
-      const accountingQty = Number(modalProduct.stock) || 0;
+      // ЕТАП 6: обліковий залишок — ЛОКАЛЬНИЙ stock каси (SQLite), а не
+      // серверний product.stock; у браузері (dev) лишаємо серверне значення.
+      const storeId = useStoreStore.getState().activeStoreId;
+      const accountingQty = isTauri() && storeId
+        ? await getStockLevel(modalProduct.id, storeId)
+        : Number(modalProduct.stock) || 0;
       const diff = modalQuantity - accountingQty;
       setCart((prev) => [
         ...prev,
@@ -364,6 +376,38 @@ const InventoryFormPage: React.FC = () => {
         }
       } else {
         // Створення нової
+        const storeId = useStoreStore.getState().activeStoreId;
+        // ЕТАП 6 (offline-first): у Tauri інвентаризація — ЛОКАЛЬНО (агрегат
+        // 0006 + stock = факт атомарно). Rust читає quantity (факт за
+        // перерахунком); повний payload зберігається в data для майбутнього push.
+        if (isTauri() && storeId) {
+          try {
+            const inventoryPayload = {
+              document_type: 'inventory' as const,
+              location: location.trim(),
+              inventory_date: new Date(inventoryDate).toISOString(),
+              notes: notes || undefined,
+              items: cart.map((item) => ({
+                product_id: item.product_id,
+                quantity: item.actual_quantity, // факт за перерахунком → stock = факт
+                actual_quantity: item.actual_quantity,
+                accounting_quantity: item.accounting_quantity,
+                difference: item.difference,
+                cost_price: item.cost_price,
+                price: item.price,
+              })),
+            };
+            const clientUuid = await saveInventoryOffline(inventoryPayload, storeId);
+            void syncNow(); // негайний push (мережа) / pending в outbox (офлайн)
+            toast.success(`Інвентаризацію збережено локально (№ ${clientUuid.slice(0, 8)})`);
+            queryClient.invalidateQueries({ queryKey: ['documents'] });
+            navigate('/documents');
+            return;
+          } catch (e) {
+            console.warn('save_inventory_offline недоступна, fallback на API:', e);
+          }
+        }
+
         doc = await createMutation.mutateAsync({
           document_type: 'inventory',
           location: location.trim(),

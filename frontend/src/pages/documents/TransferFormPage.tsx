@@ -1,11 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {Trash2, Search, ArrowLeft, Save, CheckCircle} from 'lucide-react';
-import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useSearchProducts } from '@/hooks/useProducts';
 import { Button } from '@/components/ui/Button';
+import { Select, SelectOption } from '@/components/ui/Select';
 import { DecimalInput } from '@/components/ui/DecimalInput';
 import { Input } from '@/components/ui/Input';
+import { isTauri } from '@/hooks/useTauri';
+import { saveTransferOffline, syncNow } from '@/services/tauri/offline';
+import { useStoreStore } from '@/store/storeStore';
 import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
@@ -22,11 +25,13 @@ interface CartItem {
 const TransferFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { goBack } = useBackNavigation();
-  const createMutation = useCreateDocument();
-  const confirmMutation = useConfirmDocument();
+  const stores = useStoreStore((s) => s.stores);
+  const activeStoreId = useStoreStore((s) => s.activeStoreId);
 
-  const [fromLocation, setFromLocation] = useState('');
-  const [toLocation, setToLocation] = useState('');
+  // ЕТАП 6: переміщення — між ТОЧКАМИ (store_id), не текстові локації.
+  const [fromStoreId, setFromStoreId] = useState<string>(activeStoreId ?? '');
+  const [toStoreId, setToStoreId] = useState<string>('');
+  const [saving, setSaving] = useState(false);
   const [notes, setNotes] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -111,43 +116,71 @@ const TransferFormPage: React.FC = () => {
   const totalCost = cart.reduce((sum, item) => sum + item.quantity * item.cost_price, 0);
   const totalAmount = cart.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
-  const handleSave = async (andConfirm: boolean = false) => {
-    if (!fromLocation.trim()) {
-      toast.error('Вкажіть звідки переміщення');
+  const handleSave = async (_andConfirm: boolean = false) => {
+    if (!fromStoreId) {
+      toast.error('Вкажіть точку-відправника');
       return;
     }
-    if (!toLocation.trim()) {
-      toast.error('Вкажіть куди переміщення');
+    if (!toStoreId) {
+      toast.error('Вкажіть точку-отримувача');
+      return;
+    }
+    if (fromStoreId === toStoreId) {
+      toast.error('Точки мають відрізнятися');
       return;
     }
     if (cart.length === 0) {
       toast.error('Додайте хоча б один товар');
       return;
     }
+    const cashStoreId = useStoreStore.getState().activeStoreId;
+    if (!cashStoreId) {
+      toast.error('Не визначено активну точку каси');
+      return;
+    }
 
+    const payload = {
+      document_type: 'transfer' as const,
+      from_store_id: fromStoreId,
+      to_store_id: toStoreId,
+      notes: notes || undefined,
+      items: cart.map(({ ...item }) => ({
+        product_id: item.product_id,
+        quantity: item.quantity,
+        cost_price: item.cost_price,
+        price: item.price,
+      })),
+    };
+
+    // ЕТАП 6 (offline-first): переміщення — ЛОКАЛЬНО (SQLite агрегат 0006 +
+    // stock ±qty атомарно). Rust сам визначає сторону каси: from=каса → −qty
+    // (відправлення), to=каса → +qty (прийом). Серверний /transfers (v1) не
+    // реалізований у documentService — локальний запис єдиний шлях створення.
+    setSaving(true);
     try {
-      const doc = await createMutation.mutateAsync({
-        document_type: 'transfer',
-        from_location: fromLocation,
-        to_location: toLocation,
-        notes: notes || undefined,
-        items: cart.map(({...item}) => ({
-          product_id: item.product_id,
-          quantity: item.quantity,
-          cost_price: item.cost_price,
-          price: item.price,
-        })),
-      });
-
-      if (andConfirm) {
-        await confirmMutation.mutateAsync({ id: doc.id, documentType: 'transfer' });
-      }
-
+      const clientUuid = await saveTransferOffline(payload, cashStoreId);
+      void syncNow(); // негайний push (мережа) / pending в outbox (офлайн)
+      toast.success(`Переміщення збережено локально (№ ${clientUuid.slice(0, 8)})`);
       navigate('/documents');
-    } catch {
-      // Error handled
+    } catch (e) {
+      console.warn('save_transfer_offline недоступна:', e);
+      toast.error(
+        isTauri()
+          ? 'Не вдалося зберегти переміщення локально'
+          : 'Переміщення доступне лише в десктопному застосунку',
+      );
+    } finally {
+      setSaving(false);
     }
   };
+
+  const storeOptions: SelectOption[] = stores.map((s) => ({
+    value: s.id,
+    label: s.name,
+  }));
+  const toStoreOptions: SelectOption[] = stores
+    .filter((s) => s.id !== fromStoreId)
+    .map((s) => ({ value: s.id, label: s.name }));
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -163,24 +196,29 @@ const TransferFormPage: React.FC = () => {
             Переміщення товарів
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Переміщення між складами або локаціями
+            Переміщення між торговельними точками
           </p>
         </div>
       </div>
 
       <div className="card p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Input
-            label="Звідки *"
-            value={fromLocation}
-            onChange={(e) => setFromLocation(e.target.value)}
-            placeholder="Склад А, Магазин 1..."
+          <Select
+            label="Звідки (точка-відправник) *"
+            options={storeOptions}
+            value={fromStoreId}
+            placeholder="Оберіть точку"
+            onChange={(e) => {
+              setFromStoreId(e.target.value);
+              if (e.target.value === toStoreId) setToStoreId('');
+            }}
           />
-          <Input
-            label="Куди *"
-            value={toLocation}
-            onChange={(e) => setToLocation(e.target.value)}
-            placeholder="Склад Б, Магазин 2..."
+          <Select
+            label="Куди (точка-отримувач) *"
+            options={toStoreOptions}
+            value={toStoreId}
+            placeholder="Оберіть точку"
+            onChange={(e) => setToStoreId(e.target.value)}
           />
         </div>
 
@@ -312,16 +350,16 @@ const TransferFormPage: React.FC = () => {
             variant="secondary"
             onClick={() => handleSave(false)}
             icon={<Save className="w-4 h-4" />}
-            isLoading={createMutation.isPending}
+            isLoading={saving}
           >
-            Зберегти як чернетку
+            Зберегти
           </Button>
           <Button
             onClick={() => handleSave(true)}
             icon={<CheckCircle className="w-4 h-4" />}
-            isLoading={createMutation.isPending || confirmMutation.isPending}
+            isLoading={saving}
           >
-            Створити та підтвердити
+            Зберегти та провести
           </Button>
         </div>
       </div>

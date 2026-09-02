@@ -12,6 +12,9 @@ import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import { isTauri } from '@/hooks/useTauri';
+import { savePurchaseOrderOffline, syncNow } from '@/services/tauri/offline';
+import { useStoreStore } from '@/store/storeStore';
 interface CartItem {
   product_id: string;
   product_title: string;
@@ -135,6 +138,23 @@ const PurchaseOrderFormPage: React.FC = () => {
           total: item.quantity * item.price,
         })),
       };
+
+      // ЕТАП 6 (offline-first): у Tauri закупка пишеться ЛОКАЛЬНО в SQLite
+      // (агрегат 0006 + stock +qty атомарно) — працює з вимкненим сервером.
+      // Доставка на сервер — outbox-push (sync_now нижче; фоновий push Rust).
+      const storeId = useStoreStore.getState().activeStoreId;
+      if (isTauri() && storeId) {
+        try {
+          const clientUuid = await savePurchaseOrderOffline(payload, storeId);
+          void syncNow(); // негайний push, якщо мережа є; інакше лишиться pending
+          toast.success(`Закупку збережено локально (№ ${clientUuid.slice(0, 8)})`);
+          navigate('/documents');
+          return;
+        } catch (e) {
+          // Команда недоступна (стара Rust-збірка) — fallback на сервер.
+          console.warn('save_purchase_order_offline недоступна, fallback на API:', e);
+        }
+      }
 
       const doc = await createMutation.mutateAsync(payload);
 
