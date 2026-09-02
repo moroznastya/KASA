@@ -340,6 +340,13 @@ pub fn run() {
             torgashka_infrastructure::offline::commands::set_setting,
             torgashka_infrastructure::offline::commands::clear_product_cache,
             torgashka_infrastructure::offline::commands::get_offline_stats,
+            // ЕТАП 6: самодостатні операції каси (локальний запис + stock).
+            torgashka_infrastructure::offline::commands::save_purchase_order_offline,
+            torgashka_infrastructure::offline::commands::save_inventory_offline,
+            torgashka_infrastructure::offline::commands::save_transfer_offline,
+            torgashka_infrastructure::offline::commands::save_write_off_offline,
+            torgashka_infrastructure::offline::commands::get_stock_level,
+            torgashka_infrastructure::offline::commands::get_stock_levels,
             // ── Команди системної інтеграції ──────────────────────────
             commands::system::get_app_version,
             commands::system::get_platform,

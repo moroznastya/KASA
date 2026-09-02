@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -56,6 +56,21 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "transaction_idempotency",
         sql: include_str!("migrations/offline/0004_transaction_idempotency.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "local_stock",
+        sql: include_str!("migrations/offline/0005_local_stock.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "transaction_tables",
+        sql: include_str!("migrations/offline/0006_transaction_tables.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "local_settings_namespace",
+        sql: include_str!("migrations/offline/0007_local_settings_namespace.sql"),
     },
 ];
 
@@ -112,6 +127,68 @@ fn legacy_add_store_id(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Міграція legacy-даних: products (JSON-кеш 0001) → products_v2 (0003).
+///
+/// Формат legacy: products.data = повний JSON серверного продукта
+/// (кеш readdirs/старий cache_products) — поля id/barcode/name|title/price/
+/// unit/category_id. Нормалізовані колонки products_v2 заповнюються з нього.
+///
+/// Без втрат: кожен рядок legacy products стає рядком products_v2 (upsert
+/// idempotent — ON CONFLICT DO NOTHING). Якщо products_v2 вже наповнена
+/// pull-дельтою (каса синхронізувалась до оновлення) — рядки pull НЕ
+/// перезаписуються legacy-кешем (дані pull свіжіші, з сервера); кожен
+/// legacy id гарантовано присутній у products_v2.
+fn migrate_legacy_products(conn: &Connection) -> Result<usize, String> {
+    // Таблиці products (0001) може не бути в БД, що пройшли лише 0002+?
+    // Ні: 0001 створює products завжди. Але захист від екзотики — перевірка.
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='products'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("sqlite_master(products): {e}"))?;
+    if exists == 0 {
+        return Ok(0);
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT id, data FROM products")
+        .map_err(|e| format!("SELECT products (міграція): {e}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("читання products (міграція): {e}"))?;
+    let mut migrated = 0usize;
+    for row in rows {
+        let (id, data) = row.map_err(|e| format!("рядок products (міграція): {e}"))?;
+        let v: serde_json::Value = serde_json::from_str(&data)
+            .map_err(|e| format!("products.data (id={id}) — не JSON: {e}"))?;
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("title").and_then(|x| x.as_str()))
+            .unwrap_or(&id);
+        let opt = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string());
+        conn.execute(
+            "INSERT INTO products_v2 (id, barcode, name, unit, category_id, price, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![
+                id,
+                opt("barcode"),
+                name,
+                opt("unit"),
+                opt("category_id"),
+                opt("price"),
+                data
+            ],
+        )
+        .map_err(|e| format!("INSERT products_v2 (id={id}, міграція): {e}"))?;
+        migrated += 1;
+    }
+    Ok(migrated)
+}
+
 /// Застосувати всі міграції N > поточної версії послідовно.
 ///
 /// Кожна міграція — в окремій транзакції:
@@ -143,6 +220,14 @@ pub fn migrate(conn: &Connection) -> Result<u32, String> {
 
         tx.execute_batch(m.sql)
             .map_err(|e| format!("Міграція {} v{}: {}", m.name, m.version, e))?;
+
+        // Міграція 0006: legacy products (JSON-кеш 0001) → products_v2 (0003).
+        // Rust-крок У ТІЙ САМІЙ транзакції, після DDL (таблиці вже існують:
+        // products_v2 — з 0003, transaction_tables — щойно створені).
+        if m.version == 6 {
+            migrate_legacy_products(&tx)
+                .map_err(|e| format!("Legacy-крок {} v{}: {}", m.name, m.version, e))?;
+        }
 
         tx.commit()
             .map_err(|e| format!("COMMIT (міграція {} v{}): {}", m.name, m.version, e))?;

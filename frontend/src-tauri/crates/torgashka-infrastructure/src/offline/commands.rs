@@ -15,6 +15,8 @@
 
 use crate::offline::db::OfflineDatabase;
 use crate::offline::snapshots;
+use crate::offline::stock;
+use crate::offline::transactions;
 use crate::offline::sync_push::{self, PushConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -235,6 +237,97 @@ pub fn clear_product_cache(store_id: Option<String>) -> Result<usize, String> {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ЕТАП 6: самодостатні операції каси (закупка/інвентаризація/переміщення/
+// списання). Кожна: локальний запис агрегата (таблиця 0006, synced=0) +
+// stock-ефект АТОМАРНО (offline/transactions.rs) — працює з вимкненим
+// сервером. Повертають client_uuid агрегата. Payload — той самий JSON, що
+// фронт відправляє на /v2-ендпоінт сервера (data зберігається цілком).
+// Доставка на сервер (outbox) — ЕТАП 7 (серверний Rust-фасад приймає лише
+// sale/return; див. transactions.rs doc-коментар).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Локальна закупка: items[].product_id/quantity → stock +qty.
+#[tauri::command]
+pub fn save_purchase_order_offline(payload: String, store_id: String) -> Result<String, String> {
+    let mut conn = open_db_conn()?;
+    let out = transactions::enqueue_transaction(
+        &mut conn,
+        transactions::TYPE_PURCHASE_ORDER,
+        &payload,
+        &store_id,
+    )?;
+    Ok(out.client_uuid)
+}
+
+/// Локальна інвентаризація: items[].product_id/fact_quantity → stock = факт.
+#[tauri::command]
+pub fn save_inventory_offline(payload: String, store_id: String) -> Result<String, String> {
+    let mut conn = open_db_conn()?;
+    let out = transactions::enqueue_transaction(
+        &mut conn,
+        transactions::TYPE_INVENTORY,
+        &payload,
+        &store_id,
+    )?;
+    Ok(out.client_uuid)
+}
+
+/// Локальне переміщення: from_store_id/to_store_id визначає сторону каси
+/// (from=каса → −qty, to=каса → +qty; чуже → тільки запис).
+#[tauri::command]
+pub fn save_transfer_offline(payload: String, store_id: String) -> Result<String, String> {
+    let mut conn = open_db_conn()?;
+    let out = transactions::enqueue_transaction(
+        &mut conn,
+        transactions::TYPE_TRANSFER,
+        &payload,
+        &store_id,
+    )?;
+    Ok(out.client_uuid)
+}
+
+/// Локальне списання: items[].product_id/quantity → stock −qty.
+#[tauri::command]
+pub fn save_write_off_offline(payload: String, store_id: String) -> Result<String, String> {
+    let mut conn = open_db_conn()?;
+    let out = transactions::enqueue_transaction(
+        &mut conn,
+        transactions::TYPE_WRITE_OFF,
+        &payload,
+        &store_id,
+    )?;
+    Ok(out.client_uuid)
+}
+
+/// Поточний локальний залишок товару точки (одиниці; 0 — рядка немає).
+#[tauri::command]
+pub fn get_stock_level(product_id: String, store_id: String) -> Result<f64, String> {
+    let conn = open_db_conn()?;
+    let milli = stock::get_stock_level(&conn, &store_id, &product_id)?;
+    Ok(stock::milli_to_units(milli))
+}
+
+/// Локальні залишки всього каталогу точки: [{product_id, name, quantity}].
+///
+/// LEFT JOIN products_v2: товари без stock-рядка повертаються з quantity=0.
+#[tauri::command]
+pub fn get_stock_levels(store_id: String) -> Result<serde_json::Value, String> {
+    let conn = open_db_conn()?;
+    let rows = stock::stock_with_catalog(&conn, &store_id)?;
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(id, name, milli)| {
+            serde_json::json!({
+                "product_id": id,
+                "name": name,
+                "quantity": stock::milli_to_units(*milli),
+            })
+        })
+        .collect();
+    Ok(serde_json::Value::Array(items))
+}
 /// Статус синхронізації каси (ЕТАП 5) — з outbox.
 ///
 /// JSON-контракт:

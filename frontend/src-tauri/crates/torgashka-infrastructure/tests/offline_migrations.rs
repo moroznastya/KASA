@@ -232,6 +232,141 @@ fn engine_reports_current_version() {
         migrations::SCHEMA_VERSION,
         "двигун бачить актуальну версію"
     );
-    assert_eq!(migrations::SCHEMA_VERSION, 4, "двигун бачить актуальну версію (0004)");
+    assert_eq!(migrations::SCHEMA_VERSION, 7, "двигун бачить актуальну версію (0007)");
     drop(db);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. ЕТАП 6: свіжа БД → v7 зі stock і транзакційними таблицями (0005/0006)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn fresh_db_reaches_v7_with_stock_and_txn_tables() {
+    let _guard = xdg_lock().lock().unwrap();
+    let tmp = temp_data_home("fresh-v7");
+    std::env::set_var("XDG_DATA_HOME", &tmp);
+    let db_file = tmp.join("torgashka").join("offline.db");
+
+    OfflineDatabase::new().expect("БД відкрита");
+
+    let conn = Connection::open(&db_file).expect("БД відкрита для перевірки");
+    let v: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(v, 7, "свіжа БД доходить до останньої версії (0007)");
+
+    // 0005: локальний stock.
+    assert!(table_exists(&db_file, "stock"), "stock існує (0005)");
+    conn.execute(
+        "INSERT INTO stock (store_id, product_id, quantity) VALUES ('s-1', 'p-1', 1000)",
+        [],
+    )
+    .expect("stock приймає рядок");
+
+    // 0006: транзакційні таблиці.
+    for t in [
+        "receipt_items",
+        "purchase_orders",
+        "inventories",
+        "transfers",
+        "write_offs",
+        "debtors_ledger",
+        "cash_ledger",
+    ] {
+        assert!(table_exists(&db_file, t), "{t} існує (0006)");
+    }
+    // Агрегати приймають рядок з client_uuid (UNIQUE, nullable).
+    conn.execute(
+        "INSERT INTO purchase_orders (client_uuid, store_id, data) \
+         VALUES ('cu-1', 's-1', '{}')",
+        [],
+    )
+    .expect("purchase_orders приймає агрегат");
+    // receipt_items: FK на receipts.client_uuid (0004) працює.
+    conn.execute(
+        "INSERT INTO receipts (data, store_id, synced, client_uuid) \
+         VALUES ('{}', 's-1', 1, 'cu-receipt')",
+        [],
+    )
+    .expect("receipt");
+    conn.execute(
+        "INSERT INTO receipt_items (receipt_client_uuid, product_id, quantity) \
+         VALUES ('cu-receipt', 'p-1', 2000)",
+        [],
+    )
+    .expect("receipt_items приймає позицію");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. ЕТАП 6: legacy products (JSON-кеш 0001) → products_v2 без втрат
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn legacy_products_json_migrated_to_products_v2() {
+    let _guard = xdg_lock().lock().unwrap();
+    let tmp = temp_data_home("legacy-products");
+    std::env::set_var("XDG_DATA_HOME", &tmp);
+    let db_file = tmp.join("torgashka").join("offline.db");
+    create_legacy_db(&db_file);
+
+    // Додаємо legacy-кеш продуктів у різних форматах (readdirs/старий кеш).
+    let conn = Connection::open(&db_file).expect("БД відкрита");
+    conn.execute_batch(
+        r#"
+        INSERT INTO products (id, data) VALUES
+          ('legacy-2', '{"id":"legacy-2","name":"Кава","barcode":"4820000000001","price":"250.00","category_id":"cat-1"}'),
+          ('legacy-3', '{"id":"legacy-3","title":"Старий формат","price":"10.50"}');
+        "#,
+    )
+    .expect("додаткові legacy-продукти");
+    let before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM products", [], |row| row.get(0))
+        .expect("count products до");
+    drop(conn);
+
+    // Міграція (відкриття OfflineDatabase).
+    OfflineDatabase::new().expect("міграція legacy БД");
+
+    let conn = Connection::open(&db_file).expect("БД відкрита після міграції");
+    let after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM products_v2", [], |row| row.get(0))
+        .expect("count products_v2 після");
+    assert_eq!(before, after, "КРИТЕРІЙ: COUNT до == COUNT після (без втрат)");
+
+    // Кожен legacy id мігрував з нормалізованими колонками.
+    let name1: String = conn
+        .query_row("SELECT name FROM products_v2 WHERE id = 'legacy-1'", [], |row| row.get(0))
+        .expect("legacy-1");
+    assert_eq!(name1, "Тест", "name з data");
+
+    let (barcode, category, price): (Option<String>, Option<String>, Option<f64>) = conn
+        .query_row(
+            "SELECT barcode, category_id, price FROM products_v2 WHERE id = 'legacy-2'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("legacy-2");
+    assert_eq!(barcode.as_deref(), Some("4820000000001"));
+    assert_eq!(category.as_deref(), Some("cat-1"));
+    // price — NUMERIC: "250.00" збережено REAL 250.0 (як у pull-шляху).
+    assert_eq!(price, Some(250.0), "price з data");
+
+    let name3: String = conn
+        .query_row("SELECT name FROM products_v2 WHERE id = 'legacy-3'", [], |row| row.get(0))
+        .expect("legacy-3");
+    assert_eq!(name3, "Старий формат", "title → name (старий формат)");
+
+    drop(conn);
+    // Повторна міграція — ідемпотентна (повторний запуск не дублює).
+    OfflineDatabase::new().expect("повторна міграція");
+    let conn = Connection::open(&db_file).expect("БД відкрита після повтору");
+    let again: i64 = conn
+        .query_row("SELECT COUNT(*) FROM products_v2", [], |row| row.get(0))
+        .expect("count після повтору");
+    assert_eq!(again, after, "повторний запуск не дублює рядки");
+    let v: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(v, 7, "БД на останній версії");
+}
+

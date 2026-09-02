@@ -8,4 +8,6 @@ pub mod db;
 pub mod migrations;
 pub mod snapshots;
 pub mod sync_pull;
+pub mod stock;
 pub mod sync_push;
+pub mod transactions;

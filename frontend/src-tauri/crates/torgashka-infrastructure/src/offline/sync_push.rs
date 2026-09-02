@@ -30,7 +30,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::migrations;
+use super::{migrations, stock};
 
 /// Максимум агрегатів на один HTTP-запит push (дизайн 4.2: до 50).
 pub const PUSH_BATCH_MAX: usize = 50;
@@ -127,6 +127,77 @@ pub fn enqueue_receipt_with_uuid(
     )
     .map_err(|e| format!("INSERT outbox (client_uuid={client_uuid}): {e}"))?;
     let outbox_id = tx.last_insert_rowid();
+
+    // 2.5. ЕТАП 6: деталізація чека (receipt_items) + локальний stock-ефект
+    // (дизайн 4.4) — У ТІЙ САМІЙ транзакції, що receipts+outbox: продаж −qty,
+    // повернення +qty. Будь-яка помилка тут → tx drop → ROLLBACK і чека,
+    // і outbox, і stock (жодного часткового стану).
+    let receipt_val: Value = serde_json::from_str(receipt_json)
+        .map_err(|e| format!("Чек каси — невалідний JSON: {e}"))?;
+    match receipt_val.get("items") {
+        None => {} // чек без позицій (легально для деяких типів)
+        Some(Value::Array(items)) => {
+            for item in items {
+                let pid = item.get("product_id").and_then(|p| p.as_str());
+                let qty_milli = item.get("quantity").map(stock::qty_to_milli).unwrap_or(0);
+                // Нормалізована деталізація (локальний перегляд без парсингу data).
+                let price_v = item.get("price");
+                let price_s = price_v.and_then(|v| v.as_str()).map(|s| s.to_string()).or_else(
+                    || price_v.and_then(|v| v.as_f64()).map(|f| format!("{f:.2}")),
+                );
+                let snap_v = item.get("price_snapshot").or(price_v);
+                let snap_s = snap_v
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| snap_v.and_then(|v| v.as_f64()).map(|f| format!("{f:.2}")));
+                let sum_s = item
+                    .get("sum")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        item.get("sum").and_then(|v| v.as_f64()).map(|f| format!("{f:.2}"))
+                    })
+                    .or_else(|| {
+                        let price_f = price_v.and_then(|v| v.as_f64())
+                            .or_else(|| price_v.and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()))
+                            .unwrap_or(0.0);
+                        let q = stock::milli_to_units(qty_milli);
+                        Some(format!("{:.2}", price_f * q))
+                    });
+                tx.execute(
+                    "INSERT INTO receipt_items
+                     (receipt_client_uuid, product_id, barcode, name_snapshot,
+                      quantity, price, price_snapshot, sum)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        client_uuid,
+                        pid,
+                        item.get("barcode").and_then(|v| v.as_str()),
+                        item.get("name_snapshot").and_then(|v| v.as_str()),
+                        qty_milli,
+                        price_s,
+                        snap_s,
+                        sum_s,
+                    ],
+                )
+                .map_err(|e| format!("INSERT receipt_items (чек {client_uuid}): {e}"))?;
+
+                // Stock-ефект: лише коли каса знає свою точку (store_id) і
+                // позиція має product_id. Від'ємний залишок допустимий
+                // (локальний stock стартує порожнім; див. stock.rs).
+                if let (Some(sid), Some(pid), q) = (store_id, pid, qty_milli) {
+                    if q != 0 {
+                        let delta = if outbox_type == TYPE_RETURN_RECEIPT { q } else { -q };
+                        stock::apply_stock_delta(&tx, sid, pid, delta)
+                            .map_err(|e| format!("stock-ефект чека {client_uuid}: {e}"))?;
+                    }
+                }
+            }
+        }
+        Some(_) => {
+            return Err(format!("Чек каси (client_uuid={client_uuid}): поле items — не масив"));
+        }
+    }
 
     // 3. COMMIT. Будь-яка помилка вище → tx drop → ROLLBACK.
     tx.commit()
@@ -520,7 +591,7 @@ pub fn spawn_push_task(cfg: PushConfig) -> tokio::task::JoinHandle<()> {
 mod tests {
     use super::*;
 
-    /// In-memory БД з міграціями до актуальної версії (0004).
+    /// In-memory БД з міграціями до актуальної версії (0007).
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory БД");
         conn.execute_batch("PRAGMA foreign_keys = ON;").expect("FK");
@@ -828,5 +899,113 @@ mod tests {
             .expect("b");
         assert_eq!(s2, "failed");
         assert_eq!(err.as_deref(), Some("тестова помилка"));
+    }
+
+    // ── ЕТАП 6: receipt_items деталізація + локальний stock-ефект ──────────
+
+    fn stock_level(conn: &Connection, store: &str, product: &str) -> i64 {
+        stock::get_stock_level(conn, store, product).expect("stock level")
+    }
+
+    /// Продаж: stock −qty, receipt_items записано — У ТІЙ САМІЙ транзакції.
+    #[test]
+    fn sale_enqueue_applies_stock_delta_and_items() {
+        let mut conn = test_conn();
+        let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
+        let mut c = conn;
+        // Передпродажний залишок: +3 шт.
+        stock::apply_stock_delta(&c, store, "t-1", 3000).expect("початковий +3");
+
+        let receipt = json!({
+            "receipt_type": "sale",
+            "receipt_number": 2001,
+            "items": [{"product_id": "t-1", "quantity": 2, "price": "50.00",
+                       "name_snapshot": "Товар T"}],
+            "total_amount": "100.00",
+        })
+        .to_string();
+        let out = enqueue_receipt(&mut c, &receipt, Some(store)).expect("sale");
+
+        assert_eq!(stock_level(&c, store, "t-1"), 1000, "3 − 2 = 1 шт");
+
+        // Деталізація: одна позиція з правильними полями.
+        let (pid, qty, price, name): (Option<String>, i64, Option<f64>, Option<String>) = c
+            .query_row(
+                "SELECT product_id, quantity, price, name_snapshot FROM receipt_items \
+                 WHERE receipt_client_uuid = ?1",
+                params![out.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("receipt_items");
+        assert_eq!(pid.as_deref(), Some("t-1"));
+        assert_eq!(qty, 2000, "quantity у міліодиницях");
+        assert_eq!(price, Some(50.0), "price — NUMERIC: \"50.00\" збережено REAL 50.0");
+        assert_eq!(name.as_deref(), Some("Товар T"));
+    }
+
+    /// Повернення: stock +qty (товар повертається на склад).
+    #[test]
+    fn return_enqueue_applies_positive_stock_delta() {
+        let mut conn = test_conn();
+        let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
+        let mut c = conn;
+        let receipt = json!({
+            "receipt_type": "return",
+            "receipt_number": 2002,
+            "items": [{"product_id": "t-1", "quantity": "0.500", "price": "50.00"}],
+            "total_amount": "-25.00",
+        })
+        .to_string();
+        let out = enqueue_receipt(&mut c, &receipt, Some(store)).expect("return");
+        assert_eq!(stock_level(&c, store, "t-1"), 500, "повернення +0.5 шт");
+        let (otype, _, _) = outbox_row(&c, &out.client_uuid);
+        assert_eq!(otype, TYPE_RETURN_RECEIPT);
+    }
+
+    /// Без store_id каса не веде stock (немає ключа точки) — але чек і
+    /// деталізація записуються (поведінка ЕТАП 4 збережена).
+    #[test]
+    fn enqueue_without_store_skips_stock_but_writes_items() {
+        let mut conn = test_conn();
+        let mut c = conn;
+        let out = enqueue_receipt(&mut c, &sale_receipt_json(3001), None).expect("sale");
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM receipt_items WHERE receipt_client_uuid = ?1",
+                params![out.client_uuid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "деталізація записана");
+        let rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM stock", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "stock не оновлюється без store_id");
+    }
+
+    /// Збій mid-транзакції (items — не масив) → ROLLBACK: ні чека, ні
+    /// outbox, ні receipt_items, ні stock-ефекту.
+    #[test]
+    fn mid_tx_items_error_rolls_back_stock_and_items() {
+        let mut conn = test_conn();
+        let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
+        let mut c = conn;
+        stock::apply_stock_delta(&c, store, "t-1", 1000).expect("початковий");
+
+        let bad = json!({
+            "receipt_type": "sale",
+            "items": "не-масив",
+            "total_amount": "10.00",
+        })
+        .to_string();
+        assert!(enqueue_receipt(&mut c, &bad, Some(store)).is_err());
+
+        let counts: (i64, i64, i64, i64) = (
+            c.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0)).unwrap(),
+            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap(),
+            c.query_row("SELECT COUNT(*) FROM receipt_items", [], |r| r.get(0)).unwrap(),
+            stock_level(&c, store, "t-1"),
+        );
+        assert_eq!(counts, (0, 0, 0, 1000), "ROLLBACK: жодного часткового стану");
     }
 }
