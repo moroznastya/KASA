@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -57,6 +58,22 @@ class ReturnInvoice(Base):
         primary_key=True,
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор повернення",
+    )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_return_invoices_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
     )
     number: Mapped[str] = mapped_column(
         String(50),
