@@ -348,7 +348,21 @@ pub fn sync_status() -> Result<serde_json::Value, String> {
         "failed_count": s.failed,
         "last_error": s.last_error,
         "last_sync_at": s.last_sync_at,
+        // ЕТАП 7: health — додаткове поле, контракт ЕТАП 5 не ламається
+        // (старі поля ті самі).
+        "health": sync_push::sync_health(&conn)?,
     }))
+}
+
+/// Стан здоров'я синхронізації каси (ЕТАП 7 — моніторинг sync_log).
+///
+/// Див. [`sync_push::sync_health`] — JSON-контракт. `degraded: true` —
+/// алерт: є failed-агрегати (потребують уваги) АБО pending застряг
+/// (next_attempt_at прострочений > BACKOFF_CAP_SECS — стагнація циклу).
+#[tauri::command]
+pub fn sync_health() -> Result<serde_json::Value, String> {
+    let conn = open_db_conn()?;
+    sync_push::sync_health(&conn)
 }
 
 /// Вивантажити outbox на сервер зараз (ручний тригер синхронізації).

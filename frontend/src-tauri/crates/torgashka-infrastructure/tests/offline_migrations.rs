@@ -232,7 +232,7 @@ fn engine_reports_current_version() {
         migrations::SCHEMA_VERSION,
         "двигун бачить актуальну версію"
     );
-    assert_eq!(migrations::SCHEMA_VERSION, 7, "двигун бачить актуальну версію (0007)");
+    assert_eq!(migrations::SCHEMA_VERSION, 8, "двигун бачить актуальну версію (0008)");
     drop(db);
 }
 
@@ -241,7 +241,7 @@ fn engine_reports_current_version() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn fresh_db_reaches_v7_with_stock_and_txn_tables() {
+fn fresh_db_reaches_latest_with_stock_txn_and_sync_log() {
     let _guard = xdg_lock().lock().unwrap();
     let tmp = temp_data_home("fresh-v7");
     std::env::set_var("XDG_DATA_HOME", &tmp);
@@ -253,7 +253,7 @@ fn fresh_db_reaches_v7_with_stock_and_txn_tables() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, 7, "свіжа БД доходить до останньої версії (0007)");
+    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "свіжа БД доходить до останньої версії");
 
     // 0005: локальний stock.
     assert!(table_exists(&db_file, "stock"), "stock існує (0005)");
@@ -275,6 +275,25 @@ fn fresh_db_reaches_v7_with_stock_and_txn_tables() {
     ] {
         assert!(table_exists(&db_file, t), "{t} існує (0006)");
     }
+    // 0008: sync_log (моніторинг ЕТАП 7) — таблиця, CHECK і індекс.
+    assert!(table_exists(&db_file, "sync_log"), "sync_log існує (0008)");
+    conn.execute(
+        "INSERT INTO sync_log (kind, entity, detail, attempts) \
+         VALUES ('push_ok', 'cu-x', NULL, 1)",
+        [],
+    )
+    .expect("sync_log приймає валідну подію");
+    let bad = conn.execute("INSERT INTO sync_log (kind) VALUES ('unknown_kind')", []);
+    assert!(bad.is_err(), "CHECK: невідомий kind відхиляється");
+    let idx: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_sync_log_kind_ts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("індекс");
+    assert_eq!(idx, 1, "індекс (kind, ts) створено");
+
     // Агрегати приймають рядок з client_uuid (UNIQUE, nullable).
     conn.execute(
         "INSERT INTO purchase_orders (client_uuid, store_id, data) \
@@ -367,6 +386,6 @@ fn legacy_products_json_migrated_to_products_v2() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, 7, "БД на останній версії");
+    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "БД на останній версії");
 }
 

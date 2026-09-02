@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -71,6 +71,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "local_settings_namespace",
         sql: include_str!("migrations/offline/0007_local_settings_namespace.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "sync_log",
+        sql: include_str!("migrations/offline/0008_sync_log.sql"),
     },
 ];
 

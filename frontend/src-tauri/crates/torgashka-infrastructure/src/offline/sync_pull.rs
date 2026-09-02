@@ -389,11 +389,28 @@ pub async fn pull_all(
         match pull_entity(&mut conn, client, cfg, entity).await {
             Ok(to) => {
                 eprintln!("[sync_pull] {entity}: → v{to}");
+                // ЕТАП 7: подія pull_ok у sync_log (після успішного COMMIT
+                // дельти в apply_delta). Помилка журналу не блокує цикл.
+                let _ = super::sync_push::log_event(
+                    &conn,
+                    "pull_ok",
+                    Some(entity),
+                    Some(&format!("→ v{to}")),
+                    None,
+                );
                 ok += 1;
             }
             Err(e) => {
                 // Незалежність: помилка не зупиняє цикл (дизайн 5).
                 eprintln!("[sync_pull] {entity}: ПОМИЛКА: {e}");
+                // ЕТАП 7: подія pull_fail у sync_log (моніторинг/алерти).
+                let _ = super::sync_push::log_event(
+                    &conn,
+                    "pull_fail",
+                    Some(entity),
+                    Some(&e),
+                    None,
+                );
             }
         }
     }

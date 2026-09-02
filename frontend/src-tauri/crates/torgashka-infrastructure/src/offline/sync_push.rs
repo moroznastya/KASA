@@ -335,6 +335,70 @@ pub fn outbox_stats(conn: &Connection) -> Result<OutboxStats, String> {
     })
 }
 
+/// Стан здоров'я синхронізації каси (ЕТАП 7 — моніторинг sync_log).
+///
+/// Читає outbox + sync_log і віддає JSON для Tauri-команди `sync_health`
+/// та поля `health` у `sync_status`:
+/// ```json
+/// {
+///   "outbox_pending": 0,
+///   "outbox_failed": 0,
+///   "stale_failed_since": "…" | null,  // MIN(created_at) по failed outbox
+///   "last_push_ok_at": "…" | null,     // MAX(ts) sync_log kind='push_ok'
+///   "last_pull_ok_at": "…" | null,     // MAX(ts) kind='pull_ok'
+///   "last_push_fail_at": "…" | null,   // MAX(ts) kind='push_fail'
+///   "last_error": "…" | null,          // last_error останнього failed
+///   "degraded": false
+/// }
+/// ```
+///
+/// **degraded** (алерт на failed/стагнацію, дизайн розділ 9):
+///   1. `outbox_failed > 0` — агрегати, що потребують уваги (дизайн 4.3);
+///   2. АБО є pending, чий `next_attempt_at` прострочений більше ніж на
+///      [`BACKOFF_CAP_SECS`] (3600с — стеля exponential backoff): каса не
+///      пробувала слати понад 1 годину — цикл push мертвий/зупинений.
+pub fn sync_health(conn: &Connection) -> Result<serde_json::Value, String> {
+    let stats = outbox_stats(conn)?;
+    // MAX(ts) ЗАВЖДИ повертає рядок (можливо NULL) — без .optional().
+    let last_ts = |kind: &str| -> Result<Option<String>, String> {
+        conn.query_row(
+            "SELECT MAX(ts) FROM sync_log WHERE kind = ?1",
+            params![kind],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| format!("SELECT sync_log MAX(ts) '{kind}': {e}"))
+    };
+    let stale_failed_since: Option<String> = conn
+        .query_row(
+            "SELECT MIN(created_at) FROM outbox WHERE status = 'failed' AND created_at IS NOT NULL",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| format!("SELECT MIN(created_at) failed: {e}"))?
+        .flatten();
+    let stale_pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE status = 'pending' \
+             AND next_attempt_at IS NOT NULL \
+             AND next_attempt_at < datetime('now', ?1)",
+            params![format!("-{} seconds", BACKOFF_CAP_SECS)],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("COUNT stale pending (стагнація): {e}"))?;
+    let degraded = stats.failed > 0 || stale_pending > 0;
+    Ok(json!({
+        "outbox_pending": stats.pending,
+        "outbox_failed": stats.failed,
+        "stale_failed_since": stale_failed_since,
+        "last_push_ok_at": last_ts("push_ok")?,
+        "last_pull_ok_at": last_ts("pull_ok")?,
+        "last_push_fail_at": last_ts("push_fail")?,
+        "last_error": stats.last_error,
+        "degraded": degraded,
+    }))
+}
+
 // ─── Backoff ────────────────────────────────────────────────────────────────
 
 /// Затримка exponential backoff: min(2^attempts, BACKOFF_CAP_SECS) (дизайн 4.3).
@@ -396,7 +460,7 @@ pub async fn push_pending_batch(
     client: &reqwest::Client,
     cfg: &PushConfig,
 ) -> Result<PushSummary, String> {
-    let conn = open_connection(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let batch = pending_outbox(&conn, PUSH_BATCH_MAX)?;
     if batch.is_empty() {
         return Ok(PushSummary::default());
@@ -416,9 +480,15 @@ pub async fn push_pending_batch(
         .await;
 
     // Немає мережі / сервер недоступний: pending без змін (дизайн 4.3).
+    // Подія push_fail у sync_log — моніторинг бачить, що push не йде.
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => return Err(format!("push недоступний (сервер вимкнений?): {}", e)),
+        Err(e) => {
+            let msg = format!("push недоступний (сервер вимкнений?): {e}");
+            // Помилка журналу НЕ блокує основний push-цикл.
+            let _ = log_event(&conn, "push_fail", None, Some(&msg), None);
+            return Err(msg);
+        }
     };
 
     let status = resp.status();
@@ -431,7 +501,7 @@ pub async fn push_pending_batch(
     // (дизайн 4.3). Після MAX_ATTEMPTS — failed + алерт.
     if status.is_server_error() || status.as_u16() == 429 {
         for it in &batch {
-            defer_or_fail(&conn, it, None)?;
+            defer_or_fail(&mut conn, it, None)?;
         }
         summary.deferred = batch.len();
         return Ok(summary);
@@ -441,7 +511,7 @@ pub async fn push_pending_batch(
     if status.is_client_error() {
         let text = resp.text().await.unwrap_or_default();
         for it in &batch {
-            mark_failed(&conn, it, Some(format!("HTTP {status}: {text}")))?;
+            mark_failed(&mut conn, it, Some(format!("HTTP {status}: {text}")))?;
         }
         summary.failed = batch.len();
         return Ok(summary);
@@ -457,16 +527,16 @@ pub async fn push_pending_batch(
         match result {
             // created/already_exists → done + pushed_at (дизайн 3.2/4.4).
             Some(r) if r.status == "created" => {
-                mark_done(&conn, it)?;
+                mark_done(&mut conn, it)?;
                 summary.done += 1;
             }
             Some(r) if r.status == "already_exists" => {
-                mark_done(&conn, it)?;
+                mark_done(&mut conn, it)?;
                 summary.already_exists += 1;
             }
             // Валідаційна/бізнес-помилка сервера → failed (без retry).
             Some(r) => {
-                mark_failed(&conn, it, r.error.clone())?;
+                mark_failed(&mut conn, it, r.error.clone())?;
                 summary.failed += 1;
             }
             // Сервер не повернув результат для агрегата (аномалія):
@@ -481,66 +551,137 @@ pub async fn push_pending_batch(
 
 /// attempts += 1; якщо спроба 5xx/429: next_attempt_at = now + backoff;
 /// після MAX_ATTEMPTS невдалих спроб → failed (алерт — статус видимий).
-fn defer_or_fail(
-    conn: &Connection,
-    item: &OutboxItem,
-    error: Option<String>,
-) -> Result<(), String> {
+/// Поточна кількість спроб агрегата (SELECT attempts).
+fn outbox_attempts(conn: &Connection, item_id: i64) -> Result<i64, String> {
     let attempts: i64 = conn
         .query_row(
             "SELECT attempts FROM outbox WHERE id = ?1",
-            params![item.id],
+            params![item_id],
             |r| r.get(0),
         )
         .optional()
         .map_err(|e| format!("SELECT attempts outbox: {e}"))?
         .unwrap_or(0);
+    Ok(attempts)
+}
+
+/// Вставити подію в sync_log (ЕТАП 7, моніторинг).
+///
+/// Для подій ПОЗА транзакціями стану outbox (мережева помилка циклу).
+/// Події, що супроводжують зміну статусу outbox ([`mark_done`],
+/// [`mark_failed`], [`defer_or_fail`]), пишуться В ТІЙ САМІЙ транзакції:
+/// rollback статусу відкочує і подію — фейкового push_ok у log немає.
+pub fn log_event(
+    conn: &Connection,
+    kind: &str,
+    entity: Option<&str>,
+    detail: Option<&str>,
+    attempts: Option<i64>,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO sync_log (kind, entity, detail, attempts) VALUES (?1, ?2, ?3, ?4)",
+        params![kind, entity, detail, attempts],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("INSERT sync_log ({kind}): {e}"))
+}
+
+/// attempts += 1; якщо спроба 5xx/429: next_attempt_at = now + backoff;
+/// після MAX_ATTEMPTS невдалих спроб → failed (алерт — статус видимий).
+/// Кожна зміна статусу супроводжується подією sync_log у тій самій
+/// транзакції: 'retry' (відкладено) або 'push_fail' (failed).
+fn defer_or_fail(
+    conn: &mut Connection,
+    item: &OutboxItem,
+    error: Option<String>,
+) -> Result<(), String> {
+    let attempts = outbox_attempts(conn, item.id)?;
     let next_attempts = attempts + 1;
     let delay = backoff_delay_secs(next_attempts);
     let offset = format!("+{delay} seconds");
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN (backoff id={}): {e}", item.id))?;
 
     if next_attempts >= MAX_ATTEMPTS {
         // 10 невдалих спроб (5xx) → failed + last_error (дизайн 4.3).
-        conn.execute(
+        let msg = error.unwrap_or_else(|| format!("10 невдалих спроб (5xx)"));
+        tx.execute(
             "UPDATE outbox SET attempts = ?1, status = 'failed', last_error = ?2 \
              WHERE id = ?3",
-            params![
-                next_attempts,
-                error.unwrap_or_else(|| format!("10 невдалих спроб (5xx)")),
-                item.id
-            ],
+            params![next_attempts, msg, item.id],
         )
         .map_err(|e| format!("UPDATE outbox → failed: {e}"))?;
+        tx.execute(
+            "INSERT INTO sync_log (kind, entity, detail, attempts) \
+             VALUES ('push_fail', ?1, ?2, ?3)",
+            params![item.client_uuid, msg, next_attempts],
+        )
+        .map_err(|e| format!("INSERT sync_log (push_fail): {e}"))?;
     } else {
-        conn.execute(
+        tx.execute(
             "UPDATE outbox SET attempts = ?1, next_attempt_at = datetime('now', ?2), last_error = ?3 \
              WHERE id = ?4",
             params![next_attempts, offset, error, item.id],
         )
         .map_err(|e| format!("UPDATE outbox backoff: {e}"))?;
+        let detail = format!("5xx/429: спроба {next_attempts}, backoff {delay}с");
+        tx.execute(
+            "INSERT INTO sync_log (kind, entity, detail, attempts) \
+             VALUES ('retry', ?1, ?2, ?3)",
+            params![item.client_uuid, detail, next_attempts],
+        )
+        .map_err(|e| format!("INSERT sync_log (retry): {e}"))?;
     }
-    Ok(())
+    tx.commit()
+        .map_err(|e| format!("COMMIT (backoff id={}): {e}", item.id))
 }
 
-/// done + pushed_at (успішний прийом сервером).
-fn mark_done(conn: &Connection, item: &OutboxItem) -> Result<(), String> {
-    conn.execute(
+/// done + pushed_at (успішний прийом сервером) + подія push_ok у sync_log —
+/// в тій самій транзакції: rollback статусу відкочує і подію.
+fn mark_done(conn: &mut Connection, item: &OutboxItem) -> Result<(), String> {
+    let attempts = outbox_attempts(conn, item.id)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN (push_ok id={}): {e}", item.id))?;
+    tx.execute(
         "UPDATE outbox SET status = 'done', pushed_at = datetime('now'), last_error = NULL \
          WHERE id = ?1",
         params![item.id],
     )
-    .map(|_| ())
-    .map_err(|e| format!("UPDATE outbox → done: {e}"))
+    .map_err(|e| format!("UPDATE outbox → done: {e}"))?;
+    tx.execute(
+        "INSERT INTO sync_log (kind, entity, detail, attempts) VALUES ('push_ok', ?1, NULL, ?2)",
+        params![item.client_uuid, attempts],
+    )
+    .map_err(|e| format!("INSERT sync_log (push_ok): {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("COMMIT (push_ok id={}): {e}", item.id))
 }
 
-/// failed + last_error (без retry — потрібне втручання, дизайн 4.3).
-fn mark_failed(conn: &Connection, item: &OutboxItem, error: Option<String>) -> Result<(), String> {
-    conn.execute(
+/// failed + last_error (без retry — потрібне втручання, дизайн 4.3) +
+/// подія push_fail у sync_log (в тій самій транзакції).
+fn mark_failed(
+    conn: &mut Connection,
+    item: &OutboxItem,
+    error: Option<String>,
+) -> Result<(), String> {
+    let attempts = outbox_attempts(conn, item.id)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN (push_fail id={}): {e}", item.id))?;
+    tx.execute(
         "UPDATE outbox SET status = 'failed', last_error = ?1 WHERE id = ?2",
         params![error, item.id],
     )
-    .map(|_| ())
-    .map_err(|e| format!("UPDATE outbox → failed: {e}"))
+    .map_err(|e| format!("UPDATE outbox → failed: {e}"))?;
+    tx.execute(
+        "INSERT INTO sync_log (kind, entity, detail, attempts) VALUES ('push_fail', ?1, ?2, ?3)",
+        params![item.client_uuid, error, attempts],
+    )
+    .map_err(|e| format!("INSERT sync_log (push_fail): {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("COMMIT (push_fail id={}): {e}", item.id))
 }
 
 /// Відкриває SQLite-БД каси з міграціями до актуальної версії (0001-0004).
@@ -831,7 +972,7 @@ mod tests {
 
         // 9 defer_or_fail — pending зростаючий backoff.
         for _ in 0..9 {
-            defer_or_fail(&conn, &item, None).expect("defer");
+            defer_or_fail(&mut conn, &item, None).expect("defer");
         }
         let (status, attempts): (String, i64) = conn
             .query_row(
@@ -845,7 +986,7 @@ mod tests {
         assert_eq!(backoff_delay_secs(9), 512, "9-та спроба: 2^9 = 512с");
 
         // 10-та невдала спроба → failed.
-        defer_or_fail(&conn, &item, None).expect("10-та спроба");
+        defer_or_fail(&mut conn, &item, None).expect("10-та спроба");
         let (status, attempts, err): (String, i64, Option<String>) = conn
             .query_row(
                 "SELECT status, attempts, last_error FROM outbox WHERE id = ?1",
@@ -873,8 +1014,8 @@ mod tests {
 
         let items = pending_outbox(&conn, 10).expect("batch");
         assert_eq!(items.len(), 2);
-        mark_done(&conn, &items[0]).expect("done");
-        mark_failed(&conn, &items[1], Some("тестова помилка".to_string())).expect("failed");
+        mark_done(&mut conn, &items[0]).expect("done");
+        mark_failed(&mut conn, &items[1], Some("тестова помилка".to_string())).expect("failed");
 
         assert_eq!(
             pending_count(&conn).expect("count"),
@@ -1007,5 +1148,149 @@ mod tests {
             stock_level(&c, store, "t-1"),
         );
         assert_eq!(counts, (0, 0, 0, 1000), "ROLLBACK: жодного часткового стану");
+    }
+
+    // ── ЕТАП 7: sync_log (моніторинг) ──────────────────────────────────────
+
+    /// mark_done/mark_failed пишуть події push_ok/push_fail у sync_log.
+    #[test]
+    fn sync_log_records_push_ok_and_fail() {
+        let mut conn = test_conn();
+        let a = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("a");
+        let b = enqueue_receipt(&mut conn, &sale_receipt_json(2), None).expect("b");
+        let items = pending_outbox(&conn, 10).expect("batch");
+
+        mark_done(&mut conn, &items[0]).expect("done");
+        mark_failed(&mut conn, &items[1], Some("бізнес-помилка".to_string())).expect("failed");
+
+        let log: Vec<(String, String, Option<String>, Option<i64>)> = conn
+            .prepare("SELECT kind, entity, detail, attempts FROM sync_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(log.len(), 2, "дві події: push_ok + push_fail");
+        assert_eq!(log[0].0, "push_ok");
+        assert_eq!(log[0].1, a.client_uuid, "entity = client_uuid агрегата");
+        assert_eq!(log[1].0, "push_fail");
+        assert_eq!(log[1].1, b.client_uuid);
+        assert_eq!(log[1].2.as_deref(), Some("бізнес-помилка"));
+    }
+
+    /// ROLLBACK push-операції НЕ лишає фейкового push_ok у sync_log:
+    /// подія пишеться в тій самій транзакції, що й зміна статусу outbox.
+    #[test]
+    fn sync_log_rollback_leaves_no_fake_push_ok() {
+        let mut conn = test_conn();
+        let a = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("a");
+        let item = pending_outbox(&conn, 10).expect("batch").remove(0);
+
+        // Імітація транзакції push, що відкотилась: статус done + подія
+        // push_ok — потім ROLLBACK (як при збої після часткового запису).
+        {
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            tx.execute(
+                "UPDATE outbox SET status = 'done', pushed_at = datetime('now') WHERE id = ?1",
+                params![item.id],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO sync_log (kind, entity) VALUES ('push_ok', ?1)",
+                params![item.client_uuid],
+            )
+            .unwrap();
+            // tx drop без commit = ROLLBACK.
+        }
+
+        let n_log: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_log, 0, "ROLLBACK: sync_log порожній — фейкового push_ok немає");
+        let status: String = conn
+            .query_row("SELECT status FROM outbox WHERE id = ?1", params![a.outbox_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending", "ROLLBACK: статус outbox не змінився");
+    }
+
+    /// sync_health: degraded=true при failed>0; поля заповнені.
+    #[test]
+    fn sync_health_degraded_when_failed() {
+        let mut conn = test_conn();
+        let h0 = sync_health(&conn).expect("health (порожня каса)");
+        assert_eq!(h0["degraded"], false, "чиста каса — не degraded");
+        assert_eq!(h0["outbox_pending"], 0);
+
+        let a = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("a");
+        let _ = a;
+        let items = pending_outbox(&conn, 10).expect("batch");
+        mark_done(&mut conn, &items[0]).expect("done");
+
+        let h1 = sync_health(&conn).expect("health (після успіху)");
+        assert_eq!(h1["degraded"], false);
+        assert!(h1["last_push_ok_at"].is_string(), "last_push_ok_at записано");
+        assert!(h1["last_push_ok_at"].as_str().unwrap().len() >= 19);
+
+        let b = enqueue_receipt(&mut conn, &sale_receipt_json(2), None).expect("b");
+        let _ = b;
+        let items = pending_outbox(&conn, 10).expect("batch");
+        mark_failed(&mut conn, &items[0], Some("помилка валідації".to_string())).expect("failed");
+
+        let h2 = sync_health(&conn).expect("health (після failed)");
+        assert_eq!(h2["degraded"], true, "degraded: outbox_failed > 0");
+        assert_eq!(h2["outbox_failed"], 1);
+        assert_eq!(h2["last_error"].as_str(), Some("помилка валідації"));
+        assert!(h2["stale_failed_since"].is_string(), "stale_failed_since = MIN(created_at)");
+    }
+
+    /// sync_health: degraded=true при стагнації (pending з next_attempt_at,
+    /// простроченим більше BACKOFF_CAP_SECS); нормальний backoff — ні.
+    #[test]
+    fn sync_health_degraded_on_stale_pending_only() {
+        let mut conn = test_conn();
+        // 1. pending зі свіжим next_attempt_at (backoff у розумних межах) —
+        //    каса активно пробує — degraded=false.
+        let a = enqueue_receipt(&mut conn, &sale_receipt_json(1), None).expect("a");
+        conn.execute(
+            "UPDATE outbox SET next_attempt_at = datetime('now', '+300 seconds') \
+             WHERE id = ?1",
+            params![a.outbox_id],
+        )
+        .unwrap();
+        let h1 = sync_health(&conn).expect("health");
+        assert_eq!(h1["degraded"], false, "backoff < капу — не стагнація");
+
+        // 2. pending, що не рухається понад кап (3600с) — цикл мертвий.
+        conn.execute(
+            "UPDATE outbox SET next_attempt_at = datetime('now', '-7200 seconds') \
+             WHERE id = ?1",
+            params![a.outbox_id],
+        )
+        .unwrap();
+        let h2 = sync_health(&conn).expect("health");
+        assert_eq!(h2["degraded"], true, "стагнація: pending не рухається > 1 год");
+        assert_eq!(h2["outbox_failed"], 0, "degraded саме через стагнацію, не failed");
+    }
+
+    /// log_event приймає pull-події (pull_ok/pull_fail) — той самий журнал.
+    #[test]
+    fn sync_log_accepts_pull_events() {
+        let mut conn = test_conn();
+        log_event(&conn, "pull_ok", Some("products"), Some("→ v7"), None).expect("pull_ok");
+        log_event(&conn, "pull_fail", Some("suppliers"), Some("GET: мережа"), None).expect("pull_fail");
+        let h = sync_health(&conn).expect("health");
+        assert!(h["last_pull_ok_at"].is_string());
+        let kinds: Vec<String> = conn
+            .prepare("SELECT kind FROM sync_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kinds, vec!["pull_ok".to_string(), "pull_fail".to_string()]);
     }
 }

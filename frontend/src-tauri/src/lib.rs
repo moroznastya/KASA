@@ -336,6 +336,7 @@ pub fn run() {
             torgashka_infrastructure::offline::commands::mark_receipt_synced,
             torgashka_infrastructure::offline::commands::sync_now,
             torgashka_infrastructure::offline::commands::sync_status,
+            torgashka_infrastructure::offline::commands::sync_health,
             torgashka_infrastructure::offline::commands::get_setting,
             torgashka_infrastructure::offline::commands::set_setting,
             torgashka_infrastructure::offline::commands::clear_product_cache,
