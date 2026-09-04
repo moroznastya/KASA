@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS public.products (
 
 CREATE TABLE IF NOT EXISTS public.prro_queue_items (
     id uuid NOT NULL,
+    store_id uuid NOT NULL,
     receipt_id uuid,
     shift_id uuid,
     local_number integer NOT NULL,
@@ -255,6 +256,7 @@ CREATE TABLE IF NOT EXISTS public.prro_queue_items (
 
 CREATE TABLE IF NOT EXISTS public.prro_settings (
     id integer NOT NULL,
+    store_id uuid NOT NULL,
     key_name character varying(100) NOT NULL,
     value text,
     updated_at timestamp without time zone NOT NULL
@@ -272,6 +274,7 @@ ALTER SEQUENCE public.prro_settings_id_seq OWNED BY public.prro_settings.id;
 
 CREATE TABLE IF NOT EXISTS public.prro_shifts (
     id uuid NOT NULL,
+    store_id uuid NOT NULL,
     shift_number integer NOT NULL,
     opened_at timestamp without time zone NOT NULL,
     closed_at timestamp without time zone,
@@ -738,9 +741,13 @@ CREATE INDEX ix_prro_queue_items_shift_id ON public.prro_queue_items USING btree
 
 CREATE INDEX ix_prro_queue_items_status ON public.prro_queue_items USING btree (status);
 
-CREATE UNIQUE INDEX ix_prro_settings_key_name ON public.prro_settings USING btree (key_name);
+CREATE INDEX ix_prro_queue_items_store_status ON public.prro_queue_items USING btree (store_id, status, created_at);
+
+CREATE UNIQUE INDEX ux_prro_settings_store_key ON public.prro_settings USING btree (store_id, key_name);
 
 CREATE INDEX ix_prro_shifts_shift_number ON public.prro_shifts USING btree (shift_number);
+
+CREATE INDEX ix_prro_shifts_store_opened ON public.prro_shifts USING btree (store_id, opened_at);
 
 CREATE INDEX ix_purchase_order_items_product_id ON public.purchase_order_items USING btree (product_id);
 
@@ -960,6 +967,15 @@ ALTER TABLE ONLY public.prro_queue_items
 
 ALTER TABLE ONLY public.prro_queue_items
     ADD CONSTRAINT prro_queue_items_shift_id_fkey FOREIGN KEY (shift_id) REFERENCES public.prro_shifts(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.prro_settings
+    ADD CONSTRAINT prro_settings_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.prro_shifts
+    ADD CONSTRAINT prro_shifts_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.prro_queue_items
+    ADD CONSTRAINT prro_queue_items_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.purchase_order_items
     ADD CONSTRAINT purchase_order_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE RESTRICT;
@@ -1227,6 +1243,32 @@ CREATE POLICY write_off_items_store_isolation ON public.write_off_items USING ((
 ALTER TABLE public.write_offs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY write_offs_store_isolation ON public.write_offs USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+
+
+ALTER TABLE public.prro_settings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_settings_store_isolation ON public.prro_settings USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+ALTER TABLE public.prro_shifts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_shifts_store_isolation ON public.prro_shifts USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+ALTER TABLE public.prro_queue_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_queue_items_store_isolation ON public.prro_queue_items USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
    FROM public.user_stores
   WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
    FROM public.user_stores

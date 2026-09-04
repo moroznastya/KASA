@@ -3507,8 +3507,11 @@ impl PosService for SqlxPos {
 
     // ── Зміни ПРРО ──────────────────────────────────────────────────────────
     async fn list_shifts(&self, page: i64, size: i64) -> Result<ShiftListDto, PosError> {
-        let total: i64 = sqlx::query("SELECT count(*) FROM prro_shifts")
-            .fetch_one(&self.pool)
+        let total: i64 = sqlx::query(
+            "SELECT count(*) FROM prro_shifts \
+             WHERE store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
+        )
+        .fetch_one(&self.pool)
             .await
             .pe()?
             .get("count");
@@ -3516,7 +3519,9 @@ impl PosService for SqlxPos {
         let rows = sqlx::query(
             "SELECT id, shift_number, opened_at::text, closed_at::text, signer_name, status::text, \
              receipt_count, total_amount::text, zreport_number \
-             FROM prro_shifts ORDER BY opened_at DESC LIMIT $1 OFFSET $2",
+             FROM prro_shifts \
+             WHERE store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+             ORDER BY opened_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(size).bind(offset).fetch_all(&self.pool).await.pe()?;
         let mut items = Vec::new();
@@ -3562,7 +3567,10 @@ impl PosService for SqlxPos {
     async fn close_shift(&self, _comment: Option<String>) -> Result<PrroShiftDto, PosError> {
         // Спершу — перевірка відкритої зміни (локальна, як Python).
         let open: Option<i64> = sqlx::query(
-            "SELECT shift_number FROM prro_shifts WHERE status = 'open' ORDER BY opened_at DESC LIMIT 1",
+            "SELECT shift_number FROM prro_shifts \
+             WHERE status = 'open' AND \
+                   store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+             ORDER BY opened_at DESC LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await

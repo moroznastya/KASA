@@ -1,11 +1,11 @@
 /**
- * «ПРРО централізовано» (Етап 5 адмін-панелі, ТЗ 5.7) — типи відповіді
- * GET /api/v1/admin/stores/:store_id/prro-settings.
+ * «Один магазин — один ПРРО» (адмін-панель) — типи
+ * GET/PUT /api/v1/admin/stores/:store_id/prro-settings.
  *
- * ВАЖЛИВО (аномалія, зафіксована в admin_prro.rs): фактична модель зберігає
- * ОДИН глобальний ПРРО-реєстр на сервер (prro_settings/prro_shifts без
- * store_id), КЕП — файл ключа поза БД. Тому вкладка READ-ONLY: editable=false,
- * per-store PUT моделлю не підтримується (потрібна зміна моделі + sync).
+ * Модель per-store: prro_settings/prro_shifts/prro_queue_items мають
+ * store_id NOT NULL + RLS; конфіг точки пишеться ключами (store_id, key_name);
+ * КЕП точки — окреме сховище (PrroKeyStore::for_store) — ключ/пароль
+ * НІКОЛИ не повертаються у plaintext.
  */
 
 export interface PrroSettingsView {
@@ -42,14 +42,26 @@ export interface PrroLastShift {
 export interface StorePrroSettings {
   store_id: string;
   store_name: string;
-  /** "global" — модель: один реєстр на сервер. */
+  /** "store" — модель: окремий ПРРО-конфіг/зміни/черга на точку. */
   scope: string;
-  /** false: per-store PUT не підтримується моделлю (read-only). */
+  /** true — per-store PUT підтримується (аномалію Етапа 5 закрито). */
   editable: boolean;
-  reason: string;
+  reason: string | null;
   configured: boolean;
   settings: PrroSettingsView;
   key: PrroKeyStatus;
   last_shift: PrroLastShift | null;
   settings_updated_at: string | null;
+}
+
+/** Тіло PUT /admin/stores/:store_id/prro-settings (multipart). */
+export interface PrroSettingsUpdateInput {
+  prro_fn?: string;
+  prro_tn?: string;
+  prro_zn?: string;
+  mode?: 'test' | 'prod';
+  url?: string;
+  key_password?: string;
+  /** Файл ключа КЕП (опційно). */
+  keyFile?: File | null;
 }

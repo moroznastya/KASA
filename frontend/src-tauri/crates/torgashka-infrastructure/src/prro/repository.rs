@@ -1,6 +1,6 @@
 //! SqlxPrroRepository — PostgreSQL-реалізація `torgashka_prro::prro::PrroRepository`.
 
-use crate::store_ctx::StorePool;
+use crate::store_ctx::{current_store_ctx, StorePool};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rust_decimal::Decimal;
@@ -123,6 +123,23 @@ impl SqlxPrroRepository {
     fn naive(dt: DateTime<Utc>) -> NaiveDateTime {
         dt.naive_utc()
     }
+
+    /// store_id поточного запиту (StoreCtx, X-Store-Id) — ОБОВ'ЯЗКОВИЙ для
+    /// per-store ізоляції (prro-таблиці мають store_id NOT NULL + RLS).
+    /// Репозиторій викликається лише з HTTP-хендлерів під store_middleware;
+    /// поза HTTP (sync/фон) контексту немає — чесна помилка, а не запис у
+    /// «глобальний» рядок (мультиточкових глобальних таблиць більше немає).
+    fn ctx_store_id(&self) -> Result<Uuid, PrroRepoError> {
+        current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| {
+                PrroRepoError::Validation(
+                    "ПРРО-операція поза контекстом торговельної точки (StoreCtx не встановлено); \
+                     передайте store_id через X-Store-Id або with_store_ctx"
+                        .to_string(),
+                )
+            })
+    }
 }
 
 /// SELECT: статус кастується в text (для FromRow String).
@@ -134,17 +151,18 @@ const QUEUE_COLS: &str =
 /// INSERT: без касту — значення передаються параметрами ($n::enum).
 const SHIFT_INSERT_COLS: &str =
     "id, shift_number, opened_at, closed_at, signer_serial, signer_name, \
-     closed_by, zreport_number, status, receipt_count, total_amount, last_local_number, last_mac";
+     closed_by, zreport_number, status, receipt_count, total_amount, last_local_number, last_mac, store_id";
 const QUEUE_INSERT_COLS: &str =
     "id, receipt_id, shift_id, local_number, check_type, xml_body, check_sign, id_offline, mac, \
-     status, error, created_at, sent_at";
+     status, error, created_at, sent_at, store_id";
 
 #[async_trait]
 impl PrroRepository for SqlxPrroRepository {
     async fn create_shift(&self, shift: PrroShift) -> Result<PrroShift, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         sqlx::query(&format!(
             "INSERT INTO prro_shifts ({SHIFT_INSERT_COLS}) VALUES \
-             ($1,$2,$3,$4,$5,$6,$7,$8,$9::prro_shift_status,$10,$11,$12,$13)"
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9::prro_shift_status,$10,$11,$12,$13,$14)"
         ))
         .bind(shift.id)
         .bind(shift.shift_number)
@@ -159,6 +177,7 @@ impl PrroRepository for SqlxPrroRepository {
         .bind(shift.total_amount)
         .bind(shift.last_local_number as i32)
         .bind(&shift.last_mac)
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -166,10 +185,12 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn get_shift(&self, shift_id: Uuid) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
-            "SELECT {SHIFT_COLS} FROM prro_shifts WHERE id = $1"
+            "SELECT {SHIFT_COLS} FROM prro_shifts WHERE id = $1 AND store_id = $2"
         ))
         .bind(shift_id)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -180,10 +201,12 @@ impl PrroRepository for SqlxPrroRepository {
         &self,
         shift_number: i64,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
-            "SELECT {SHIFT_COLS} FROM prro_shifts WHERE shift_number = $1"
+            "SELECT {SHIFT_COLS} FROM prro_shifts WHERE shift_number = $1 AND store_id = $2"
         ))
         .bind(shift_number)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -191,10 +214,12 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn get_open_shift(&self) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
             "SELECT {SHIFT_COLS} FROM prro_shifts WHERE status = 'open'::prro_shift_status \
-             ORDER BY opened_at DESC LIMIT 1"
+             AND store_id = $1 ORDER BY opened_at DESC LIMIT 1"
         ))
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -206,15 +231,18 @@ impl PrroRepository for SqlxPrroRepository {
         page: u32,
         size: u32,
     ) -> Result<(Vec<PrroShift>, u64), PrroRepoError> {
-        let total: (i64,) = sqlx::query_as("SELECT count(*) FROM prro_shifts")
+        let store_id = self.ctx_store_id()?;
+        let total: (i64,) = sqlx::query_as("SELECT count(*) FROM prro_shifts WHERE store_id = $1")
+            .bind(store_id)
             .fetch_one(&self.pool)
             .await
             .map_err(Self::map_err)?;
         let offset = (page.saturating_sub(1) * size) as i64;
         let rows = sqlx::query_as::<_, ShiftRow>(&format!(
-            "SELECT {SHIFT_COLS} FROM prro_shifts ORDER BY shift_number DESC \
-             LIMIT $1 OFFSET $2"
+            "SELECT {SHIFT_COLS} FROM prro_shifts WHERE store_id = $1 \
+             ORDER BY shift_number DESC LIMIT $2 OFFSET $3"
         ))
+        .bind(store_id)
         .bind(size as i64)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -235,11 +263,12 @@ impl PrroRepository for SqlxPrroRepository {
         signer_serial: Option<String>,
         signer_name: Option<String>,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
             "UPDATE prro_shifts SET status = 'closed'::prro_shift_status, closed_at = $2, \
              closed_by = $3, zreport_number = $4, \
              signer_serial = COALESCE($5, signer_serial), signer_name = COALESCE($6, signer_name) \
-             WHERE id = $1 RETURNING {SHIFT_COLS}"
+             WHERE id = $1 AND store_id = $7 RETURNING {SHIFT_COLS}"
         ))
         .bind(shift_id)
         .bind(Self::naive(closed_at))
@@ -247,6 +276,7 @@ impl PrroRepository for SqlxPrroRepository {
         .bind(zreport_number)
         .bind(signer_serial)
         .bind(signer_name)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -260,17 +290,19 @@ impl PrroRepository for SqlxPrroRepository {
         last_local_number: Option<i64>,
         last_mac: Option<String>,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
             "UPDATE prro_shifts SET receipt_count = receipt_count + 1, \
              total_amount = total_amount + $2, \
              last_local_number = COALESCE($3, last_local_number), \
              last_mac = COALESCE($4, last_mac) \
-             WHERE id = $1 RETURNING {SHIFT_COLS}"
+             WHERE id = $1 AND store_id = $5 RETURNING {SHIFT_COLS}"
         ))
         .bind(shift_id)
         .bind(amount)
         .bind(last_local_number)
         .bind(last_mac)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -280,10 +312,12 @@ impl PrroRepository for SqlxPrroRepository {
     async fn next_local_number(&self, shift_id: Uuid) -> Result<i64, PrroRepoError> {
         // M1: атомарний local_number — інкремент + збереження в одній SQL-операції
         // (UPDATE ... RETURNING), без read-then-write race.
+        let store_id = self.ctx_store_id()?;
         let row: Option<(i64,)> = sqlx::query_as(
-            "UPDATE prro_shifts SET last_local_number = COALESCE(last_local_number, 0) + 1              WHERE id = $1 AND status = 'open'::prro_shift_status              RETURNING last_local_number",
+            "UPDATE prro_shifts SET last_local_number = COALESCE(last_local_number, 0) + 1              WHERE id = $1 AND store_id = $2 AND status = 'open'::prro_shift_status              RETURNING last_local_number",
         )
         .bind(shift_id)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -295,11 +329,13 @@ impl PrroRepository for SqlxPrroRepository {
         shift_id: Uuid,
         last_mac: String,
     ) -> Result<Option<PrroShift>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, ShiftRow>(&format!(
-            "UPDATE prro_shifts SET last_mac = $2 WHERE id = $1 RETURNING {SHIFT_COLS}"
+            "UPDATE prro_shifts SET last_mac = $2 WHERE id = $1 AND store_id = $3 RETURNING {SHIFT_COLS}"
         ))
         .bind(shift_id)
         .bind(last_mac)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -307,9 +343,10 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn add_to_queue(&self, item: PrroQueueItem) -> Result<PrroQueueItem, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         sqlx::query(&format!(
             "INSERT INTO prro_queue_items ({QUEUE_INSERT_COLS}) VALUES \
-             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::prro_queue_status,$11,$12,$13)"
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::prro_queue_status,$11,$12,$13,$14)"
         ))
         .bind(item.id)
         .bind(item.receipt_id)
@@ -324,6 +361,7 @@ impl PrroRepository for SqlxPrroRepository {
         .bind(&item.error)
         .bind(Self::naive(item.created_at))
         .bind(item.sent_at.map(Self::naive))
+        .bind(store_id)
         .execute(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -331,10 +369,12 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn get_queue_item(&self, item_id: Uuid) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, QueueRow>(&format!(
-            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE id = $1"
+            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE id = $1 AND store_id = $2"
         ))
         .bind(item_id)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -342,11 +382,14 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn list_pending(&self, limit: u32) -> Result<Vec<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let rows = sqlx::query_as::<_, QueueRow>(&format!(
             "SELECT {QUEUE_COLS} FROM prro_queue_items \
-             WHERE status IN ('pending'::prro_queue_status, 'failed'::prro_queue_status) \
-             ORDER BY (status = 'failed'::prro_queue_status) ASC, created_at ASC LIMIT $1"
+             WHERE store_id = $1 AND \
+                   status IN ('pending'::prro_queue_status, 'failed'::prro_queue_status) \
+             ORDER BY (status = 'failed'::prro_queue_status) ASC, created_at ASC LIMIT $2"
         ))
+        .bind(store_id)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
@@ -355,10 +398,13 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn list_by_shift(&self, shift_id: Uuid) -> Result<Vec<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let rows = sqlx::query_as::<_, QueueRow>(&format!(
-            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE shift_id = $1 ORDER BY local_number ASC"
+            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE shift_id = $1 AND store_id = $2 \
+             ORDER BY local_number ASC"
         ))
         .bind(shift_id)
+        .bind(store_id)
         .fetch_all(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -366,10 +412,13 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn list_by_receipt(&self, receipt_id: Uuid) -> Result<Vec<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let rows = sqlx::query_as::<_, QueueRow>(&format!(
-            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE receipt_id = $1 ORDER BY created_at ASC"
+            "SELECT {QUEUE_COLS} FROM prro_queue_items WHERE receipt_id = $1 AND store_id = $2 \
+             ORDER BY created_at ASC"
         ))
         .bind(receipt_id)
+        .bind(store_id)
         .fetch_all(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -381,12 +430,15 @@ impl PrroRepository for SqlxPrroRepository {
         item_id: Uuid,
         sent_at: Option<DateTime<Utc>>,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, QueueRow>(&format!(
             "UPDATE prro_queue_items SET status = 'sent'::prro_queue_status, \
-             sent_at = COALESCE($2, now()), error = NULL WHERE id = $1 RETURNING {QUEUE_COLS}"
+             sent_at = COALESCE($2, now()), error = NULL \
+             WHERE id = $1 AND store_id = $3 RETURNING {QUEUE_COLS}"
         ))
         .bind(item_id)
         .bind(sent_at.map(Self::naive))
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -398,12 +450,14 @@ impl PrroRepository for SqlxPrroRepository {
         item_id: Uuid,
         error: String,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, QueueRow>(&format!(
             "UPDATE prro_queue_items SET status = 'failed'::prro_queue_status, error = $2 \
-             WHERE id = $1 RETURNING {QUEUE_COLS}"
+             WHERE id = $1 AND store_id = $3 RETURNING {QUEUE_COLS}"
         ))
         .bind(item_id)
         .bind(error)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -415,11 +469,14 @@ impl PrroRepository for SqlxPrroRepository {
         item_id: Uuid,
         check_sign: String,
     ) -> Result<Option<PrroQueueItem>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row = sqlx::query_as::<_, QueueRow>(&format!(
-            "UPDATE prro_queue_items SET check_sign = $2 WHERE id = $1 RETURNING {QUEUE_COLS}"
+            "UPDATE prro_queue_items SET check_sign = $2 \
+             WHERE id = $1 AND store_id = $3 RETURNING {QUEUE_COLS}"
         ))
         .bind(item_id)
         .bind(check_sign)
+        .bind(store_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -427,9 +484,12 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn count_pending(&self) -> Result<u64, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let (n,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM prro_queue_items WHERE status = 'pending'::prro_queue_status",
+            "SELECT count(*) FROM prro_queue_items \
+             WHERE store_id = $1 AND status = 'pending'::prro_queue_status",
         )
+        .bind(store_id)
         .fetch_one(&self.pool)
         .await
         .map_err(Self::map_err)?;
@@ -437,8 +497,10 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn delete_queue_item(&self, item_id: Uuid) -> Result<bool, PrroRepoError> {
-        let res = sqlx::query("DELETE FROM prro_queue_items WHERE id = $1")
+        let store_id = self.ctx_store_id()?;
+        let res = sqlx::query("DELETE FROM prro_queue_items WHERE id = $1 AND store_id = $2")
             .bind(item_id)
+            .bind(store_id)
             .execute(&self.pool)
             .await
             .map_err(Self::map_err)?;
@@ -446,8 +508,10 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn get_setting(&self, key: &str) -> Result<Option<String>, PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM prro_settings WHERE key_name = $1")
+            sqlx::query_as("SELECT value FROM prro_settings WHERE store_id = $1 AND key_name = $2")
+                .bind(store_id)
                 .bind(key)
                 .fetch_optional(&self.pool)
                 .await
@@ -456,10 +520,14 @@ impl PrroRepository for SqlxPrroRepository {
     }
 
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), PrroRepoError> {
+        let store_id = self.ctx_store_id()?;
         sqlx::query(
-            "INSERT INTO prro_settings (key_name, value, updated_at) VALUES ($1, $2, now()) \
-             ON CONFLICT (key_name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            "INSERT INTO prro_settings (store_id, key_name, value, updated_at) \
+             VALUES ($1, $2, $3, now()) \
+             ON CONFLICT (store_id, key_name) \
+             DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
         )
+        .bind(store_id)
         .bind(key)
         .bind(value)
         .execute(&self.pool)

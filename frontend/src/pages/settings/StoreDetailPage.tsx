@@ -130,10 +130,20 @@ const StoreDetailPage: React.FC = () => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
 
-  // ПРРО (Етап 5: read-only стан спільного реєстру).
+  // ПРРО (per-store: редагована форма «один магазин — один ПРРО»).
   const [prro, setPrro] = useState<StorePrroSettings | null>(null);
   const [prroLoading, setPrroLoading] = useState(false);
   const [prroError, setPrroError] = useState<string | null>(null);
+  const [prroSaving, setPrroSaving] = useState(false);
+  const [prroForm, setPrroForm] = useState({
+    prro_fn: '',
+    prro_tn: '',
+    prro_zn: '',
+    mode: 'test' as 'test' | 'prod',
+    url: '',
+  });
+  const [prroKeyPassword, setPrroKeyPassword] = useState('');
+  const [prroKeyFile, setPrroKeyFile] = useState<File | null>(null);
 
   const [tab, setTab] = useState<TabKey>('general');
 
@@ -147,7 +157,18 @@ const StoreDetailPage: React.FC = () => {
     adminPrroService
       .getStorePrro(storeId)
       .then((data) => {
-        if (!cancelled) setPrro(data);
+        if (!cancelled) {
+          setPrro(data);
+          setPrroForm({
+            prro_fn: data.settings.prro_fn || '',
+            prro_tn: data.settings.prro_tn || '',
+            prro_zn: data.settings.prro_zn || '',
+            mode: data.settings.mode === 'prod' ? 'prod' : 'test',
+            url: data.settings.url || '',
+          });
+          setPrroKeyPassword('');
+          setPrroKeyFile(null);
+        }
       })
       .catch((err) => {
         if (!cancelled) setPrroError(extractApiError(err, 'Не вдалося завантажити стан ПРРО'));
@@ -221,6 +242,45 @@ const StoreDetailPage: React.FC = () => {
   useEffect(() => {
     if (tab === 'devices') void loadDevices();
   }, [tab, loadDevices]);
+
+  // ── Збереження ПРРО точки (PUT /admin/stores/:id/prro-settings) ──
+  const handleSavePrro = async () => {
+    if (!storeId) return;
+    const hasFormValue =
+      prroForm.prro_fn.trim() || prroForm.prro_tn.trim() || prroForm.prro_zn.trim() ||
+      prroForm.url.trim() || prroKeyPassword || prroKeyFile;
+    if (!hasFormValue) {
+      toast.error('Немає даних для збереження — заповніть хоча б одне поле');
+      return;
+    }
+    setPrroSaving(true);
+    try {
+      const updated = await adminPrroService.updateStorePrro(storeId, {
+        prro_fn: prroForm.prro_fn.trim() || undefined,
+        prro_tn: prroForm.prro_tn.trim() || undefined,
+        prro_zn: prroForm.prro_zn.trim() || undefined,
+        mode: prroForm.mode,
+        url: prroForm.url.trim() || undefined,
+        key_password: prroKeyPassword || undefined,
+        keyFile: prroKeyFile,
+      });
+      setPrro(updated);
+      setPrroForm({
+        prro_fn: updated.settings.prro_fn || '',
+        prro_tn: updated.settings.prro_tn || '',
+        prro_zn: updated.settings.prro_zn || '',
+        mode: updated.settings.mode === 'prod' ? 'prod' : 'test',
+        url: updated.settings.url || '',
+      });
+      setPrroKeyPassword('');
+      setPrroKeyFile(null);
+      toast.success('Налаштування ПРРО точки збережено');
+    } catch (err) {
+      toast.error(extractApiError(err, 'Не вдалося зберегти налаштування ПРРО'));
+    } finally {
+      setPrroSaving(false);
+    }
+  };
 
   // ── Збереження «Загальне» (PUT /admin/stores/:id) ──
   const handleSaveGeneral = async () => {
@@ -783,7 +843,7 @@ const StoreDetailPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Вкладка: ПРРО (Етап 5: read-only стан реєстру) ─── */}
+      {/* ── Вкладка: ПРРО (per-store, «один магазин — один ПРРО») ── */}
       {tab === 'prro' && (
         <div className="space-y-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 p-6">
@@ -800,16 +860,16 @@ const StoreDetailPage: React.FC = () => {
                 </div>
               </div>
             ) : prro ? (
-              <>
+              <div className="space-y-5">
                 <div className="flex items-start justify-between gap-4 flex-wrap">
                   <div className="flex items-center gap-3">
                     <FileText className="w-6 h-6 text-primary-600" />
                     <div>
                       <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                        ПРРО — реєстр сервера
+                        ПРРО точки — окремий реєстр
                       </h3>
                       <p className="text-sm text-gray-500 dark:text-gray-400">
-                        {prro.configured ? 'Реєстр налаштований і готовий до фіскалізації' : 'Реєстр не налаштований'}
+                        Конфіг, зміни та офлайн-черга цієї точки ізольовані від інших магазинів
                       </p>
                     </div>
                   </div>
@@ -820,63 +880,109 @@ const StoreDetailPage: React.FC = () => {
                   )}
                 </div>
 
-                {/* Пояснення обмеження (аномалія моделі) */}
-                <div className="mt-4 flex items-start gap-3 p-4 rounded-xl bg-warning-50 dark:bg-warning-900/20 text-warning-700 dark:text-warning-300 text-sm">
-                  <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-semibold">
-                      Запис per-store не підтримується моделлю (режим перегляду)
-                    </p>
-                    <p className="mt-1 leading-relaxed opacity-95">{prro.reason}</p>
+                {/* Реквізити ПРРО — редагована форма */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Input
+                    label="Фіскальний номер ФН (prro_fn)"
+                    value={prroForm.prro_fn}
+                    onChange={(e) => setPrroForm({ ...prroForm, prro_fn: e.target.value })}
+                    placeholder="5–15 цифр"
+                    disabled={!prro.editable}
+                  />
+                  <Input
+                    label="Податковий номер (prro_tn)"
+                    value={prroForm.prro_tn}
+                    onChange={(e) => setPrroForm({ ...prroForm, prro_tn: e.target.value })}
+                    placeholder="5–20 символів"
+                    disabled={!prro.editable}
+                  />
+                  <Input
+                    label="Заводський номер (prro_zn)"
+                    value={prroForm.prro_zn}
+                    onChange={(e) => setPrroForm({ ...prroForm, prro_zn: e.target.value })}
+                    placeholder="3–30 символів"
+                    disabled={!prro.editable}
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <Select
+                      label="Режим"
+                      value={prroForm.mode}
+                      onChange={(e) =>
+                        setPrroForm({ ...prroForm, mode: e.target.value === 'prod' ? 'prod' : 'test' })
+                      }
+                      options={[
+                        { value: 'test', label: 'Тест' },
+                        { value: 'prod', label: 'Продакшн' },
+                      ]}
+                      disabled={!prro.editable}
+                    />
+                    <div className="flex items-end pb-0.5 text-sm text-gray-400">
+                      {prro.settings.mode === 'prod' ? 'prod' : 'test'}
+                    </div>
                   </div>
+                  <Input
+                    label="URL фіскального сервера"
+                    value={prroForm.url}
+                    onChange={(e) => setPrroForm({ ...prroForm, url: e.target.value })}
+                    placeholder="cabinet.tax.gov.ua:9443"
+                    disabled={!prro.editable}
+                  />
                 </div>
 
-                {/* Параметри реєстру */}
-                <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">RRO-номер (ФН)</p>
-                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
-                      {prro.settings.prro_fn || '—'}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Податковий №</p>
-                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
-                      {prro.settings.prro_tn || '—'}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Заводський №</p>
-                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
-                      {prro.settings.prro_zn || '—'}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Режим</p>
-                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">
-                      {prro.settings.mode === 'prod' ? 'Продакшн' : 'Тест'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Ключ ЕЦП — статус БЕЗ секретів */}
-                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Ключ ЕЦП точки: завантаження (файл) + пароль; секрети НЕ повертаються */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Ключ ЕЦП (файл)</p>
-                    <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                      Ключ ЕЦП (файл)
+                    </p>
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
                       {prro.key.file_configured ? (
-                        <>
-                          <Badge variant="success">Завантажено</Badge>
-                          <span className="ml-2 font-mono">{prro.key.file_name || ''}</span>
-                        </>
+                        <Badge variant="success">Завантажено</Badge>
                       ) : (
                         <Badge variant="danger">Не завантажено</Badge>
                       )}
-                    </p>
+                      {prro.key.file_name && (
+                        <span className="text-sm font-mono text-gray-800 dark:text-gray-200">
+                          {prro.key.file_name}
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-1 text-xs text-gray-400">
                       джерело: {prro.key.source === 'env' ? 'env' : prro.key.source === 'keystore' ? 'keystore' : '—'}
                     </p>
+                    <input
+                      type="file"
+                      className="mt-3 block w-full text-sm text-gray-600 dark:text-gray-300 file:mr-3 file:rounded-lg file:border-0 file:bg-primary-50 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary-700 hover:file:bg-primary-100 dark:file:bg-primary-900/30 dark:file:text-primary-300"
+                      onChange={(e) => setPrroKeyFile(e.target.files?.[0] || null)}
+                      accept=".jks,.dat,.key,.pfx,.p12"
+                      disabled={!prro.editable}
+                    />
+                    {prroKeyFile && (
+                      <p className="mt-1 text-xs text-primary-600">Обрано: {prroKeyFile.name}</p>
+                    )}
                   </div>
+                  <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                      Пароль ключа КЕП
+                    </p>
+                    <Input
+                      type="password"
+                      value={prroKeyPassword}
+                      onChange={(e) => setPrroKeyPassword(e.target.value)}
+                      placeholder={prro.key.password_configured ? 'Змінити пароль (опційно)' : 'Введіть пароль ключа'}
+                      disabled={!prro.editable}
+                      className="mt-2"
+                    />
+                    <p className="mt-1 text-xs text-gray-400">
+                      {prro.key.password_configured
+                        ? 'Пароль збережено (Fernet, per-store). У відповідях API пароль ніколи не передається.'
+                        : 'Не збережено — укажіть пароль, якщо завантажуєте ключ.'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Стан: сертифікат/остання зміна (публічні атрибути) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600">
                     <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Сертифікат КЕП</p>
                     <p className="mt-1 text-sm text-gray-800 dark:text-gray-200 font-mono">
@@ -884,23 +990,38 @@ const StoreDetailPage: React.FC = () => {
                     </p>
                     <p className="mt-1 text-xs text-gray-400">{prro.key.signer_name || ''}</p>
                   </div>
+                  {prro.last_shift && (
+                    <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                      <span className="text-gray-500 dark:text-gray-400">Остання зміна:</span>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">№ {prro.last_shift.shift_number}</span>
+                      <Badge variant={prro.last_shift.status === 'open' ? 'success' : 'default'}>
+                        {prro.last_shift.status === 'open' ? 'Відкрита' : 'Закрита'}
+                      </Badge>
+                      <span className="text-gray-500 dark:text-gray-400">чеків: {prro.last_shift.receipt_count}</span>
+                      {prro.last_shift.zreport_number && (
+                        <span className="text-gray-500 dark:text-gray-400">Z-звіт: {prro.last_shift.zreport_number}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {/* Остання зміна */}
-                {prro.last_shift && (
-                  <div className="mt-4 p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                    <span className="text-gray-500 dark:text-gray-400">Остання зміна:</span>
-                    <span className="font-medium text-gray-900 dark:text-gray-100">№ {prro.last_shift.shift_number}</span>
-                    <Badge variant={prro.last_shift.status === 'open' ? 'success' : 'default'}>
-                      {prro.last_shift.status === 'open' ? 'Відкрита' : 'Закрита'}
-                    </Badge>
-                    <span className="text-gray-500 dark:text-gray-400">чеків: {prro.last_shift.receipt_count}</span>
-                    {prro.last_shift.zreport_number && (
-                      <span className="text-gray-500 dark:text-gray-400">Z-звіт: {prro.last_shift.zreport_number}</span>
-                    )}
-                  </div>
-                )}
-              </>
+                {/* Збереження */}
+                <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-200 dark:border-slate-700">
+                  <p className="text-xs text-gray-400 mr-auto">
+                    {prro.settings_updated_at
+                      ? `Оновлено: ${formatDateTime(prro.settings_updated_at)}`
+                      : 'Налаштувань ще не було'}
+                  </p>
+                  <Button
+                    onClick={() => void handleSavePrro()}
+                    isLoading={prroSaving}
+                    disabled={!prro.editable || prroLoading}
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    Зберегти ПРРО
+                  </Button>
+                </div>
+              </div>
             ) : null}
           </div>
         </div>

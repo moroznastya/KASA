@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::Json};
+use torgashka_infrastructure::store_ctx::current_store_ctx;
 use serde::Deserialize;
 use serde_json::json;
 use torgashka_infrastructure::prro::SqlxPrroRepository;
@@ -83,17 +84,28 @@ pub struct PrroFacade {
     repo: SqlxPrroRepository,
     /// shadow-режим: готуємо чек, але НЕ надсилаємо (Python виконує).
     shadow: bool,
-    /// Сховище ключа КЕП (шлях/пароль) — 1:1 Python PrroKeyStore.
-    key_store: PrroKeyStore,
 }
 
 impl PrroFacade {
     pub fn new(repo: SqlxPrroRepository, shadow: bool) -> Self {
-        Self {
-            repo,
-            shadow,
-            key_store: PrroKeyStore::default(),
-        }
+        Self { repo, shadow }
+    }
+
+    /// Сховище ключа КЕП ПОТОЧНОЇ точки («один магазин — один ПРРО»):
+    /// окремий keystore-файл і окремий master-ключ на store_id (X-Store-Id,
+    /// current_store_ctx). ENV PRRO_KEY_FILE/PRRO_KEY_PASSWORD — лише fallback
+    /// для legacy-одиночної інсталяції (context()).
+    fn key_store(&self) -> Result<PrroKeyStore, PrroApiError> {
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| {
+                PrroApiError::Config(
+                    "ПРРО-операція поза контекстом торговельної точки (StoreCtx відсутній); \
+                     укажіть X-Store-Id"
+                        .to_string(),
+                )
+            })?;
+        Ok(PrroKeyStore::for_store(store_id))
     }
 
     pub fn repo(&self) -> &SqlxPrroRepository {
@@ -164,11 +176,10 @@ impl PrroFacade {
             ));
         }
 
-        // Ключ КЕП: keystore (1:1 Python PrroKeyStore) → env PRRO_KEY_* fallback.
-        let (key_file, key_password) = match (
-            self.key_store.get_key_path(),
-            self.key_store.decrypt_password(),
-        ) {
+        // Ключ КЕП: per-store keystore (PrroKeyStore::for_store) →
+        // env PRRO_KEY_* fallback (legacy одиночна інсталяція).
+        let ks = self.key_store()?;
+        let (key_file, key_password) = match (ks.get_key_path(), ks.decrypt_password()) {
             (Ok(kp), Ok(pw)) => (kp, pw),
             _ => {
                 let kf = std::env::var("PRRO_KEY_FILE").ok();
@@ -338,7 +349,7 @@ impl PrroFacade {
 
     /// GET /api/v2/prro/settings — 1:1 Python get_settings.
     pub async fn get_settings(&self) -> Result<PrroSettingsDto, PrroApiError> {
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         // _check_online: окремий gRPC-клієнт (без ключа — лише statusRro,
         // 1:1 Python _check_online через context.grpc_client()).
         let grpc = self.grpc_only().await.ok();
@@ -395,12 +406,22 @@ impl PrroFacade {
         mode: Option<String>,
         auto_fiscalize: Option<bool>,
     ) -> Result<PrroSettingsDto, PrroApiError> {
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let store_id = current_store_ctx()
+            .map(|c| c.store_id)
+            .ok_or_else(|| {
+                PrroApiError::Config(
+                    "PUT /prro/settings поза контекстом точки (StoreCtx відсутній); \
+                     укажіть X-Store-Id"
+                        .to_string(),
+                )
+            })?;
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         let grpc = self.grpc_only().await.ok();
         Ok(uc
             .save_settings(
                 &self.repo,
                 grpc.as_ref(),
+                store_id,
                 key_file_content.as_deref(),
                 key_file_name.as_deref(),
                 key_file_path.as_deref(),
@@ -417,7 +438,7 @@ impl PrroFacade {
     /// POST /api/v2/prro/test-connection — 1:1 Python test_connection (ping).
     pub async fn test_connection(&self) -> Result<serde_json::Value, PrroApiError> {
         let mut ctx = self.context().await?;
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         Ok(uc
             .test_connection(&ctx.grpc, &mut ctx.builder, Some(ctx.signer.as_ref()))
             .await)
@@ -430,9 +451,10 @@ impl PrroFacade {
         manual: bool,
     ) -> Result<PrroFiscalizeDtoOut, PrroApiError> {
         let mut ctx = self.context().await?;
+        let ks = self.key_store()?;
         let dto = FiscalizeReceiptUseCase::fiscalize_receipt(
             &self.repo,
-            &self.key_store,
+            &ks,
             &ctx.grpc,
             &mut ctx.builder,
             ctx.signer.as_ref(),

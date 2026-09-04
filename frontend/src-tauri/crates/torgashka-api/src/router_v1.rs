@@ -745,7 +745,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/admin/audit-log", get(admin_audit::audit_log))
         .route(
             "/api/v1/admin/stores/:store_id/prro-settings",
-            get(admin_prro::prro_settings),
+            get(admin_prro::prro_settings).put(admin_prro::prro_settings_put),
         )
         // Міграція існуючих інсталяцій (Етап 6, §9): одиночна каса → мережа.
         .route(

@@ -123,6 +123,32 @@ impl PrroKeyStore {
         }
     }
 
+    /// Сховище ключа КЕП ОКРЕМОЇ ТОЧКИ («один магазин — один ПРРО»).
+    ///
+    /// Шлях залежить від store_id: env `PRRO_KEYSTORE_PATH` трактується як
+    /// БАЗОВИЙ шлях, файл отримує суфікс `_{store_id}` перед розширенням
+    /// (напр. `.prro_keystore_<id>.json`); якщо env вказує на каталог —
+    /// файл `.prro_keystore_<id>.json` створюється всередині. Без env —
+    /// CWD + суфікс. Майстер-ключ: значення `PRRO_MASTER_KEY` (env) спільне
+    /// для всіх точок, файл `.prro_master_<id>.key` — окремий на точку.
+    /// Різні магазини мають різні ключі КЕП (і різні паролі ключів).
+    pub fn for_store(store_id: Uuid) -> Self {
+        let tag = store_id.simple().to_string();
+        let ks_base = std::env::var("PRRO_KEYSTORE_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| ".prro_keystore.json".to_string());
+        let mk_base = std::env::var("PRRO_MASTER_KEY_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| ".prro_master.key".to_string());
+        Self {
+            keystore_path: store_suffixed(Path::new(&ks_base), &tag),
+            master_key_path: store_suffixed(Path::new(&mk_base), &tag),
+            master_key: None,
+        }
+    }
+
     /// Створює Fernet-ключ (аргумент → env → файл → генерація) — 1:1 Python.
     fn fernet(&self) -> Result<fernet::Fernet, PrroKeyStoreError> {
         let key_bytes: Vec<u8> = if let Some(k) = &self.master_key {
@@ -260,6 +286,23 @@ impl PrroKeyStore {
     }
 }
 
+/// Per-store шлях: суфікс `_{tag}` перед розширенням (якщо воно є).
+fn store_suffixed(p: &Path, tag: &str) -> std::path::PathBuf {
+    let Some(file) = p.file_name().map(|f| f.to_string_lossy().into_owned()) else {
+        // PRRO_KEYSTORE_PATH/PRRO_MASTER_KEY_PATH як каталог (закінчується /).
+        return p.join(format!(".prro_keystore_{tag}.json"));
+    };
+    let parent = p.parent().unwrap_or_else(|| Path::new("."));
+    match p.extension().map(|e| e.to_string_lossy().into_owned()) {
+        Some(ext) => {
+            let suffix = format!(".{ext}");
+            let stem = file.strip_suffix(&suffix).unwrap_or(&file);
+            parent.join(format!("{stem}_{tag}.{ext}"))
+        }
+        None => parent.join(format!("{file}_{tag}")),
+    }
+}
+
 /// Use case налаштувань ПРРО — 1:1 `PrroSettingsUseCase`.
 pub struct PrroSettingsUseCase {
     key_store: PrroKeyStore,
@@ -343,6 +386,7 @@ impl PrroSettingsUseCase {
         &self,
         repo: &dyn PrroRepository,
         grpc: Option<&crate::grpc::PrroGrpcClient>,
+        store_id: Uuid,
         key_file_content: Option<&[u8]>,
         key_file_name: Option<&str>,
         key_file_path: Option<&str>,
@@ -373,10 +417,10 @@ impl PrroSettingsUseCase {
             let name = key_file_name.ok_or_else(|| {
                 PrroSettingsError::new("Не вказано ім'я файлу ключа (key_file_name)")
             })?;
-            Some(save_uploaded_key(content, name, target_mode)?)
+            Some(save_uploaded_key(content, name, target_mode, store_id)?)
         } else if let Some(path) = key_file_path {
             if !path.is_empty() {
-                Some(copy_key_file(path, target_mode)?)
+                Some(copy_key_file(path, target_mode, store_id)?)
             } else {
                 None
             }
@@ -585,21 +629,28 @@ pub fn parse_bool(value: Option<&str>) -> bool {
     }
 }
 
-/// Директорія для ключів: backend/certs/prro-{mode}/ — 1:1 Python `_certs_dir`.
-fn certs_dir(mode: &str) -> PathBuf {
+/// Директорія для ключів: backend/certs/prro-{mode}/{store_id}/ — per-store.
+/// Підкаталог точки — щоб однакові імена файлів різних магазинів (Key-6.dat)
+/// не перезаписували одне одного: «один магазин — один ПРРО».
+fn certs_dir(mode: &str, store_id: Uuid) -> PathBuf {
     let root = std::env::var("PRRO_CERTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("certs"));
-    let dir = root.join(format!("prro-{mode}"));
+    let dir = root
+        .join(format!("prro-{mode}"))
+        .join(store_id.simple().to_string());
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
-/// Зберігає завантажений файл ключа у certs/prro-{mode}/ — 1:1 `_save_uploaded_key`.
-fn save_uploaded_key(
+/// Зберігає завантажений файл ключа у certs/prro-{mode}/{store_id}/ —
+/// 1:1 `_save_uploaded_key` + per-store підкаталог. Публічне: адмін-ПРРО
+/// (PUT /admin/stores/:id/prro-settings) зберігає ключ точки тим самим шляхом.
+pub fn save_uploaded_key(
     content: &[u8],
     filename: &str,
     mode: &str,
+    store_id: Uuid,
 ) -> Result<String, PrroSettingsError> {
     // захист від path traversal: беремо лише ім'я файлу (1:1 Python Path.name)
     let safe_name = Path::new(filename)
@@ -609,7 +660,7 @@ fn save_uploaded_key(
     if safe_name.is_empty() {
         return Err(PrroSettingsError::new("Порожнє ім'я файлу ключа"));
     }
-    let dest = certs_dir(mode).join(&safe_name);
+    let dest = certs_dir(mode, store_id).join(&safe_name);
     std::fs::write(&dest, content).map_err(|e| {
         PrroSettingsError::new(format!(
             "Не вдалося зберегти ключ у {}: {e}",
@@ -619,8 +670,13 @@ fn save_uploaded_key(
     Ok(dest.to_string_lossy().to_string())
 }
 
-/// Копіює файл ключа у certs/prro-{mode}/ — 1:1 `_copy_key_file`.
-pub fn copy_key_file(src_path: &str, mode: &str) -> Result<String, PrroSettingsError> {
+/// Копіює файл ключа у certs/prro-{mode}/{store_id}/ — 1:1 `_copy_key_file`
+/// + per-store підкаталог. Публічне: використовується адмін-PUT та каса.
+pub fn copy_key_file(
+    src_path: &str,
+    mode: &str,
+    store_id: Uuid,
+) -> Result<String, PrroSettingsError> {
     let src = Path::new(src_path);
     if !src.is_file() {
         return Err(PrroSettingsError::new(format!(
@@ -631,7 +687,7 @@ pub fn copy_key_file(src_path: &str, mode: &str) -> Result<String, PrroSettingsE
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let dest = certs_dir(mode).join(&name);
+    let dest = certs_dir(mode, store_id).join(&name);
     std::fs::copy(src, &dest).map_err(|e| {
         PrroSettingsError::new(format!(
             "Не вдалося скопіювати ключ у {}: {e}",

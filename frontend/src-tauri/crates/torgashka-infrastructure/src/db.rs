@@ -396,6 +396,12 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;
+    // «Один магазин — один ПРРО»: per-store міграція prro_settings/shifts/queue
+    // (store_id + бекфіл до першого активного магазину + RLS). Ідемпотентно:
+    // виконується ЗАВЖДИ при старті (fresh schema.sql уже містить store_id).
+    crate::prro::ensure_prro_schema(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
     Ok(())
 }
 
