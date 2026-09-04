@@ -35,6 +35,7 @@ const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const NetworkDevicesPage = lazy(() => import('@/pages/network/DevicesPage'));
 const NetworkReportsPage = lazy(() => import('@/pages/network/NetworkReportsPage'));
 const NetworkFinancesPage = lazy(() => import('@/pages/network/NetworkFinancesPage'));
+const AuditLogPage = lazy(() => import('@/pages/network/AuditLogPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
 const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
@@ -286,6 +287,11 @@ const App: React.FC = () => {
             <Route path="network/finances" element={
               <RoleRoute roles={['admin']}>
                 <NetworkFinancesPage />
+              </RoleRoute>
+            } />
+            <Route path="network/audit" element={
+              <RoleRoute roles={['admin']}>
+                <AuditLogPage />
               </RoleRoute>
             } />
             <Route path="settings" element={

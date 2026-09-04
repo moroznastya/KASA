@@ -23,6 +23,7 @@ import {
   PackageSearch,
   Database,
   Landmark,
+  FileClock,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
@@ -133,6 +134,13 @@ const navItems: NavItem[] = [
     label: 'Фінанси мережі',
     icon: <Landmark className="w-5 h-5" />,
     module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/audit',
+    label: 'Аудит-лог',
+    icon: <FileClock className="w-5 h-5" />,
+    module: 'network',
     roles: ['admin'],
   },
   {

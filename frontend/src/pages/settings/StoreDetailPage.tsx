@@ -32,8 +32,10 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import { adminService } from '@/services/adminService';
+import { adminPrroService } from '@/services/adminPrroService';
 import { deviceAdminService, DeviceInfo, extractApiError } from '@/services/deviceAdminService';
 import { Store, StoreWorker } from '@/types/store';
+import { StorePrroSettings } from '@/types/adminPrro';
 import { formatDateTime } from '@/utils/format';
 
 // ── Ролі (Етап 1: адмінка owner/store_manager; каса admin/cashier) ─────────
@@ -128,7 +130,35 @@ const StoreDetailPage: React.FC = () => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
 
+  // ПРРО (Етап 5: read-only стан спільного реєстру).
+  const [prro, setPrro] = useState<StorePrroSettings | null>(null);
+  const [prroLoading, setPrroLoading] = useState(false);
+  const [prroError, setPrroError] = useState<string | null>(null);
+
   const [tab, setTab] = useState<TabKey>('general');
+
+
+  // ── ПРРО: read-only стан (Етап 5) ────────────────
+  useEffect(() => {
+    if (tab !== 'prro' || !storeId) return;
+    let cancelled = false;
+    setPrroLoading(true);
+    setPrroError(null);
+    adminPrroService
+      .getStorePrro(storeId)
+      .then((data) => {
+        if (!cancelled) setPrro(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setPrroError(extractApiError(err, 'Не вдалося завантажити стан ПРРО'));
+      })
+      .finally(() => {
+        if (!cancelled) setPrroLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, storeId]);
 
   // ── Завантаження точки ─────────────────────────
   const loadStore = useCallback(async () => {
@@ -753,19 +783,126 @@ const StoreDetailPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Вкладка: ПРРО (заглушка Етап 4) ───────── */}
+      {/* ── Вкладка: ПРРО (Етап 5: read-only стан реєстру) ─── */}
       {tab === 'prro' && (
-        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 p-8 text-center">
-          <FileText className="w-12 h-12 mx-auto text-gray-300 dark:text-gray-600 mb-3" />
-          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
-            ПРРО точки — Етап 4
-          </h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 max-w-lg mx-auto leading-relaxed">
-            Налаштування програмних реєстраторів розрахункових операцій (ПРРО) для
-            цієї точки з'являться на Етапі 4. Юрособа/ФОП ({form.legal_name || '—'}) та
-            ЄДРПОУ ({form.edrpou || '—'}) вже зберігаються в картці точки (вкладка
-            «Загальне») і будуть використані для фіскалізації.
-          </p>
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 p-6">
+            {prroLoading ? (
+              <div className="flex items-center justify-center py-10">
+                <Spinner size="lg" />
+              </div>
+            ) : prroError ? (
+              <div className="flex items-start gap-3 p-4 rounded-xl bg-danger-50 dark:bg-danger-900/20 text-danger-600 dark:text-danger-300 text-sm">
+                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium">Не вдалося завантажити стан ПРРО</p>
+                  <p className="mt-1 text-xs opacity-90">{prroError}</p>
+                </div>
+              </div>
+            ) : prro ? (
+              <>
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <FileText className="w-6 h-6 text-primary-600" />
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                        ПРРО — реєстр сервера
+                      </h3>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {prro.configured ? 'Реєстр налаштований і готовий до фіскалізації' : 'Реєстр не налаштований'}
+                      </p>
+                    </div>
+                  </div>
+                  {prro.configured ? (
+                    <Badge variant="success">Готовий</Badge>
+                  ) : (
+                    <Badge variant="danger">Не налаштований</Badge>
+                  )}
+                </div>
+
+                {/* Пояснення обмеження (аномалія моделі) */}
+                <div className="mt-4 flex items-start gap-3 p-4 rounded-xl bg-warning-50 dark:bg-warning-900/20 text-warning-700 dark:text-warning-300 text-sm">
+                  <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold">
+                      Запис per-store не підтримується моделлю (режим перегляду)
+                    </p>
+                    <p className="mt-1 leading-relaxed opacity-95">{prro.reason}</p>
+                  </div>
+                </div>
+
+                {/* Параметри реєстру */}
+                <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">RRO-номер (ФН)</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
+                      {prro.settings.prro_fn || '—'}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Податковий №</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
+                      {prro.settings.prro_tn || '—'}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Заводський №</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100 font-mono">
+                      {prro.settings.prro_zn || '—'}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Режим</p>
+                    <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">
+                      {prro.settings.mode === 'prod' ? 'Продакшн' : 'Тест'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Ключ ЕЦП — статус БЕЗ секретів */}
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Ключ ЕЦП (файл)</p>
+                    <p className="mt-1 text-sm text-gray-800 dark:text-gray-200">
+                      {prro.key.file_configured ? (
+                        <>
+                          <Badge variant="success">Завантажено</Badge>
+                          <span className="ml-2 font-mono">{prro.key.file_name || ''}</span>
+                        </>
+                      ) : (
+                        <Badge variant="danger">Не завантажено</Badge>
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      джерело: {prro.key.source === 'env' ? 'env' : prro.key.source === 'keystore' ? 'keystore' : '—'}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600">
+                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Сертифікат КЕП</p>
+                    <p className="mt-1 text-sm text-gray-800 dark:text-gray-200 font-mono">
+                      {prro.key.signer_serial || '—'}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400">{prro.key.signer_name || ''}</p>
+                  </div>
+                </div>
+
+                {/* Остання зміна */}
+                {prro.last_shift && (
+                  <div className="mt-4 p-4 rounded-lg bg-gray-50 dark:bg-slate-700/50 border border-gray-100 dark:border-slate-600 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+                    <span className="text-gray-500 dark:text-gray-400">Остання зміна:</span>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">№ {prro.last_shift.shift_number}</span>
+                    <Badge variant={prro.last_shift.status === 'open' ? 'success' : 'default'}>
+                      {prro.last_shift.status === 'open' ? 'Відкрита' : 'Закрита'}
+                    </Badge>
+                    <span className="text-gray-500 dark:text-gray-400">чеків: {prro.last_shift.receipt_count}</span>
+                    {prro.last_shift.zreport_number && (
+                      <span className="text-gray-500 dark:text-gray-400">Z-звіт: {prro.last_shift.zreport_number}</span>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
         </div>
       )}
 
