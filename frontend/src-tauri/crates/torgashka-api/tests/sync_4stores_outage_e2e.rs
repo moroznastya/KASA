@@ -52,8 +52,38 @@ async fn api_pool() -> sqlx::PgPool {
         .expect("pool")
 }
 
+/// Застосувати схему БД (довідники + sync-таблиці + owner-DDL) ОДИН раз на
+/// процес. ensure_schema ідемпотентний: порожня БД отримує повну схему
+/// (SCHEMA_SQL), мігрована — лише додатки. Без цього ensure_seed падає на
+/// порожній тестовій БД («relation "stores" does not exist»), бо ensure_schema
+/// виконується фасадом лише при старті (run_facade).
+/// Один виклик на процес (OnceCell) — паралельні тести не конкурують за
+/// CREATE TABLE на fresh-БД.
+#[path = "common/sync_schema.rs"]
+mod sync_schema;
+
+static SCHEMA_ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn apply_schema() {
+    SCHEMA_ONCE
+        .get_or_init(|| async {
+            let p = torgashka_infrastructure::db::connect_test_pool(5)
+                .await
+                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+            torgashka_infrastructure::db::ensure_schema(&p)
+                .await
+                .expect("ensure_schema на тестовій БД");
+            // Sync-шар (Alembic 0011-0014): server_version, sync_meta,
+            // soft-delete, client_uuid — ensure_schema (schema.sql) їх не має.
+            sync_schema::apply(&p).await;
+            p.close().await;
+        })
+        .await;
+}
+
 /// Seed: адмін + user_stores для 4 точок + продукт із залишком на точку.
 async fn ensure_seed(pool: &sqlx::PgPool) -> Vec<(Uuid, Uuid, Uuid)> {
+    apply_schema().await;
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed)
          VALUES ($1, 'E2E Admin', 'admin', $2, 'owner'::public.user_role, true, now(), now(), true)
@@ -313,7 +343,7 @@ async fn four_stores_outage_then_sync_consistent() {
         let cfg = PushConfig {
             base_url: base.clone(),
             token: "неважливо".to_string(),
-            store_id: store.to_string(),
+            store_id: Some(store.to_string()),
             db_path: db_path.clone(),
             interval_secs: 30,
         };
@@ -335,7 +365,7 @@ async fn four_stores_outage_then_sync_consistent() {
         let cfg = PushConfig {
             base_url: base.clone(),
             token: token.clone(),
-            store_id: store.to_string(),
+            store_id: Some(store.to_string()),
             db_path: db_path.clone(),
             interval_secs: 30,
         };
@@ -366,7 +396,7 @@ async fn four_stores_outage_then_sync_consistent() {
         let cfg = PushConfig {
             base_url: base.clone(),
             token: token.clone(),
-            store_id: store.to_string(),
+            store_id: Some(store.to_string()),
             db_path: db_path.clone(),
             interval_secs: 30,
         };

@@ -26,7 +26,37 @@ async fn free_port() -> u16 {
     p
 }
 
+/// Застосувати схему БД (довідники + sync-таблиці + owner-DDL) ОДИН раз на
+/// процес. ensure_schema ідемпотентний: порожня БД отримує повну схему
+/// (SCHEMA_SQL), мігрована — лише додатки. Без цього ensure_seed падає на
+/// порожній тестовій БД («relation "stores" does not exist»), бо ensure_schema
+/// виконується фасадом лише при старті (run_facade).
+/// Один виклик на процес (OnceCell) — паралельні тести не конкурують за
+/// CREATE TABLE на fresh-БД.
+#[path = "common/sync_schema.rs"]
+mod sync_schema;
+
+static SCHEMA_ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn apply_schema() {
+    SCHEMA_ONCE
+        .get_or_init(|| async {
+            let p = torgashka_infrastructure::db::connect_test_pool(5)
+                .await
+                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+            torgashka_infrastructure::db::ensure_schema(&p)
+                .await
+                .expect("ensure_schema на тестовій БД");
+            // Sync-шар (Alembic 0011-0014): server_version, sync_meta,
+            // soft-delete, client_uuid — ensure_schema (schema.sql) їх не має.
+            sync_schema::apply(&p).await;
+            p.close().await;
+        })
+        .await;
+}
+
 async fn ensure_seed(pool: &sqlx::PgPool) {
+    apply_schema().await;
     sqlx::query(
         "INSERT INTO stores (id, name) VALUES ($1, 'E2E Pull Точка') ON CONFLICT (id) DO NOTHING",
     )
@@ -65,6 +95,8 @@ async fn pull_client_initial_and_repeat_sync() {
     // ── Фасад + seed + login ──────────────────────────────────────────────
     let _ = torgashka_infrastructure::db::resolve_database_url()
         .expect("БД недоступна: задайте DATABASE_URL або DB_* у backend/.env");
+    // Схема ДО старту фасаду (гонка ensure_schema фасаду + seed — див. нижче).
+    apply_schema().await;
     let port = free_port().await;
     let handle = run_facade(&format!("127.0.0.1:{port}"));
     let base = format!("http://127.0.0.1:{port}");
@@ -136,7 +168,7 @@ async fn pull_client_initial_and_repeat_sync() {
     let cfg = PullConfig {
         base_url: base.clone(),
         token: token.clone(),
-        store_id: STORE1.to_string(),
+        store_id: Some(STORE1.to_string()),
         interval_secs: 30,
         db_path: db_path.clone(),
     };

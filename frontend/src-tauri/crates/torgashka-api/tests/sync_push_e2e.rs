@@ -48,8 +48,38 @@ async fn api_pool() -> sqlx::PgPool {
         .expect("pool")
 }
 
+/// Застосувати схему БД (довідники + sync-таблиці + owner-DDL) ОДИН раз на
+/// процес. ensure_schema ідемпотентний: порожня БД отримує повну схему
+/// (SCHEMA_SQL), мігрована — лише додатки. Без цього ensure_seed падає на
+/// порожній тестовій БД («relation "stores" does not exist»), бо ensure_schema
+/// виконується фасадом лише при старті (run_facade).
+/// Один виклик на процес (OnceCell) — паралельні тести не конкурують за
+/// CREATE TABLE на fresh-БД.
+#[path = "common/sync_schema.rs"]
+mod sync_schema;
+
+static SCHEMA_ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn apply_schema() {
+    SCHEMA_ONCE
+        .get_or_init(|| async {
+            let p = torgashka_infrastructure::db::connect_test_pool(5)
+                .await
+                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+            torgashka_infrastructure::db::ensure_schema(&p)
+                .await
+                .expect("ensure_schema на тестовій БД");
+            // Sync-шар (Alembic 0011-0014): server_version, sync_meta,
+            // soft-delete, client_uuid — ensure_schema (schema.sql) їх не має.
+            sync_schema::apply(&p).await;
+            p.close().await;
+        })
+        .await;
+}
+
 /// Seed: точка + адмін + user_stores + продукт із залишком (для чека sale).
 async fn ensure_seed(pool: &sqlx::PgPool) -> Uuid {
+    apply_schema().await;
     sqlx::query(
         "INSERT INTO stores (id, name) VALUES ($1, 'E2E Push Точка') ON CONFLICT (id) DO NOTHING",
     )
@@ -145,7 +175,7 @@ fn push_cfg(db_path: &PathBuf, base: &str, token: &str) -> PushConfig {
     PushConfig {
         base_url: base.to_string(),
         token: token.to_string(),
-        store_id: STORE1.to_string(),
+        store_id: Some(STORE1.to_string()),
         db_path: db_path.clone(),
         interval_secs: 30,
     }
@@ -276,7 +306,7 @@ async fn server_down_outbox_grows_then_flushes_fifo() {
     let cfg0 = PushConfig {
         base_url: base.clone(),
         token: "неважливо".to_string(),
-        store_id: STORE1.to_string(),
+        store_id: Some(STORE1.to_string()),
         db_path: db_path.clone(),
         interval_secs: 30,
     };
