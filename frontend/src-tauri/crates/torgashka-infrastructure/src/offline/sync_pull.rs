@@ -73,10 +73,12 @@ pub struct Change {
 pub struct PullConfig {
     /// Базовий URL сервера (напр. `http://127.0.0.1:8000`).
     pub base_url: String,
-    /// JWT access_token (Bearer) — з логіну каси (PIN/пароль).
+    /// Bearer-токен: JWT касира (legacy) АБО device_token (Етап 2b).
     pub token: String,
-    /// store_id каси (X-Store-Id) — RLS-контур сервера.
-    pub store_id: String,
+    /// store_id каси. Some = legacy JWT-режим (X-Store-Id шлеться);
+    /// None = device-режим (сервер визначає точку з device_token,
+    /// X-Store-Id НЕ шлеться).
+    pub store_id: Option<String>,
     /// Інтервал циклу pull (сек; нижче MIN_INTERVAL_SECS — обрізається).
     pub interval_secs: u64,
     /// Шлях до SQLite-БД каси.
@@ -346,10 +348,13 @@ pub async fn pull_entity(
             entity,
             since
         );
-        let resp = client
-            .get(&url)
-            .bearer_auth(&cfg.token)
-            .header("X-Store-Id", &cfg.store_id)
+        let mut req = client.get(&url).bearer_auth(&cfg.token);
+        // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
+        // сервер визначає точку з device_token (StoreCtx у task-local).
+        if let Some(sid) = &cfg.store_id {
+            req = req.header("X-Store-Id", sid);
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("GET {entity} since={since}: мережа: {e}"))?;
@@ -651,4 +656,104 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
     }
+
+    // ── Етап 2b: HTTP-заголовки (device vs legacy) ──────────────────────────
+    // Одноразовий локальний HTTP-сервер на std::net (без tokio net feature):
+    // приймає 1 з'єднання, читає запит до кінця заголовків, відповідає 200 +
+    // `body`, сирий запит віддає в канал.
+    fn spawn_one_shot_http_server(body: String) -> (u16, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).expect("read");
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&raw).to_string());
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+        });
+        (port, rx)
+    }
+
+    fn pull_cfg(base_url: String, store_id: Option<String>) -> PullConfig {
+        PullConfig {
+            base_url,
+            token: "device-token-abc".to_string(),
+            store_id,
+            interval_secs: 5,
+            db_path: std::path::PathBuf::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_device_mode_omits_x_store_id() {
+        let body = json!({"entity": "categories", "since": 0, "to": 7, "has_more": false, "changes": []})
+            .to_string();
+        let (port, rx) = spawn_one_shot_http_server(body);
+        let mut conn = test_conn();
+        let client = reqwest::Client::new();
+        let cfg = pull_cfg(format!("http://127.0.0.1:{port}"), None); // device-режим
+
+        let to = pull_entity(&mut conn, &client, &cfg, "categories")
+            .await
+            .expect("pull у device-режимі");
+        assert_eq!(to, 7, "дельта застосована (since_version просунулась)");
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("сервер отримав запит");
+        let low = raw.to_lowercase();
+        assert!(
+            !low.contains("x-store-id"),
+            "device-режим НЕ повинен слати X-Store-Id:\n{raw}"
+        );
+        assert!(
+            low.contains("bearer device-token-abc"),
+            "Bearer device_token має бути в запиті:\n{raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_legacy_mode_sends_x_store_id() {
+        let body = json!({"entity": "categories", "since": 0, "to": 3, "has_more": false, "changes": []})
+            .to_string();
+        let (port, rx) = spawn_one_shot_http_server(body);
+        let mut conn = test_conn();
+        let client = reqwest::Client::new();
+        let cfg = pull_cfg(
+            format!("http://127.0.0.1:{port}"),
+            Some("22222222-2222-2222-2222-222222222222".to_string()), // legacy
+        );
+
+        let to = pull_entity(&mut conn, &client, &cfg, "categories")
+            .await
+            .expect("pull у legacy-режимі");
+        assert_eq!(to, 3);
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("сервер отримав запит");
+        let low = raw.to_lowercase();
+        assert!(
+            low.contains("x-store-id: 22222222-2222-2222-2222-222222222222"),
+            "legacy-режим має слати X-Store-Id:\n{raw}"
+        );
+    }
+
 }

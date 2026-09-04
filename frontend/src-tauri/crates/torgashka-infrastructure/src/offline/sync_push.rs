@@ -440,10 +440,12 @@ pub struct PushSummary {
 pub struct PushConfig {
     /// Базовий URL сервера (напр. `http://127.0.0.1:8000`).
     pub base_url: String,
-    /// JWT access_token (Bearer) — з логіну каси (PIN/пароль).
+    /// Bearer-токен: JWT касира (legacy) АБО device_token (Етап 2b).
     pub token: String,
-    /// store_id каси (X-Store-Id) — RLS-контур сервера.
-    pub store_id: String,
+    /// store_id каси. Some = legacy JWT-режим (X-Store-Id шлеться);
+    /// None = device-режим (сервер визначає точку з device_token,
+    /// X-Store-Id НЕ шлеться).
+    pub store_id: Option<String>,
     /// Шлях до SQLite-БД каси.
     pub db_path: std::path::PathBuf,
     /// Інтервал циклу push (сек; нижче MIN_INTERVAL_SECS — обрізається).
@@ -474,13 +476,15 @@ pub async fn push_pending_batch(
         .map(|it| serde_json::from_str(&it.payload).unwrap_or(Value::Null))
         .collect();
 
-    let resp = client
+    let mut req = client
         .post(format!("{}/api/v1/sync/push", cfg.base_url))
-        .bearer_auth(&cfg.token)
-        .header("X-Store-Id", &cfg.store_id)
-        .json(&body)
-        .send()
-        .await;
+        .bearer_auth(&cfg.token);
+    // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
+    // сервер визначає точку з device_token (StoreCtx у task-local).
+    if let Some(sid) = &cfg.store_id {
+        req = req.header("X-Store-Id", sid);
+    }
+    let resp = req.json(&body).send().await;
 
     // Немає мережі / сервер недоступний: pending без змін (дизайн 4.3).
     // Подія push_fail у sync_log — моніторинг бачить, що push не йде.

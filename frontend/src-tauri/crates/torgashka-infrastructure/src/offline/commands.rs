@@ -52,6 +52,61 @@ fn get_setting_conn(conn: &rusqlite::Connection, key: &str) -> Result<Option<Str
     })
 }
 
+/// Авторизаційні параметри sync-клієнта каси (server_url + токен + точка).
+///
+/// Два режими (Етап 2b; серверна Частина 4 — коміт 892d075):
+///   * device-режим: `server_url` + `device_token` → `store_id: None` —
+///     сервер визначає точку з device_token (X-Store-Id не шлеться);
+///   * legacy JWT-режим: `server_url` + `api_token` + `store_id` →
+///     `store_id: Some(...)` (X-Store-Id для RLS-контуру сервера).
+///
+/// Пріоритет device: каса після активації може мати залишковий `api_token`
+/// у settings — `device_token` перемагає. Якщо `server_url` порожній або
+/// жоден режим не сконфігурований повністю — `Ok(None)` (не налаштовано).
+struct SyncAuth {
+    base_url: String,
+    token: String,
+    store_id: Option<String>,
+}
+
+/// Читає auth-налаштування sync з SQLite settings (логіка вище).
+fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncAuth>, String> {
+    let Some(base_url) = get_setting_conn(conn, "server_url")? else {
+        return Ok(None);
+    };
+    if base_url.trim().is_empty() {
+        return Ok(None);
+    }
+    let base_url = base_url.trim().to_string();
+
+    // Device-режим має ПРІОРИТЕТ: після активації каси device_token —
+    // головний токен sync; залишковий api_token у settings ігнорується.
+    if let Some(t) = get_setting_conn(conn, "device_token")? {
+        if !t.trim().is_empty() {
+            return Ok(Some(SyncAuth {
+                base_url,
+                token: t.trim().to_string(),
+                store_id: None,
+            }));
+        }
+    }
+
+    // Legacy JWT-режим: api_token + store_id (X-Store-Id для RLS).
+    match (
+        get_setting_conn(conn, "api_token")?,
+        get_setting_conn(conn, "store_id")?,
+    ) {
+        (Some(t), Some(s)) if !t.trim().is_empty() && !s.trim().is_empty() => {
+            Ok(Some(SyncAuth {
+                base_url,
+                token: t.trim().to_string(),
+                store_id: Some(s.trim().to_string()),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Фоновий push-цикл (один на процес; налаштування з SQLite settings)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +114,8 @@ fn get_setting_conn(conn: &rusqlite::Connection, key: &str) -> Result<Option<Str
 static PUSH_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Запустити фоновий циклічний push (spawn_push_task), якщо:
-///   * налаштування вже збережені (server_url + api_token + store_id) і
+///   * налаштування вже збережені (device-режим: server_url + device_token;
+///     legacy: server_url + api_token + store_id — див. read_sync_auth) і
 ///   * таск ще не запущено (один на процес).
 ///
 /// Викликається з `setup` (lib.rs) і після `set_setting` — коли фронт
@@ -72,20 +128,14 @@ pub fn ensure_push_task_started() -> Result<bool, String> {
     }
     let path = OfflineDatabase::default_db_path()?;
     let conn = sync_push::open_connection(&path)?;
-    let (Some(base_url), Some(token), Some(store_id)) = (
-        get_setting_conn(&conn, "server_url")?,
-        get_setting_conn(&conn, "api_token")?,
-        get_setting_conn(&conn, "store_id")?,
-    ) else {
+    // Режим auth: device (server_url+device_token) або legacy (api_token+store_id).
+    let Some(auth) = read_sync_auth(&conn)? else {
         return Ok(false); // не налаштовано — фоновий цикл пізніше
     };
-    if base_url.trim().is_empty() || token.trim().is_empty() || store_id.trim().is_empty() {
-        return Ok(false);
-    }
     let cfg = PushConfig {
-        base_url,
-        token,
-        store_id,
+        base_url: auth.base_url,
+        token: auth.token,
+        store_id: auth.store_id,
         db_path: path,
         interval_secs: sync_push::DEFAULT_INTERVAL_SECS,
     };
@@ -112,8 +162,9 @@ pub fn ensure_push_task_started() -> Result<bool, String> {
 
 static PULL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Запустити фоновий циклічний pull (spawn_pull_task), якщо налаштування
-/// server_url/api_token/store_id збережені і таск ще не запущено.
+/// Запустити фоновий циклічний pull (spawn_pull_task), якщо auth-налаштування
+/// збережені (device: server_url+device_token; legacy: api_token+store_id —
+/// див. read_sync_auth) і таск ще не запущено.
 /// Викликається з setup (lib.rs) і після set_setting (разом з push).
 pub fn ensure_pull_task_started() -> Result<bool, String> {
     if PULL_TASK_STARTED.load(Ordering::Relaxed) {
@@ -121,16 +172,10 @@ pub fn ensure_pull_task_started() -> Result<bool, String> {
     }
     let path = OfflineDatabase::default_db_path()?;
     let conn = sync_push::open_connection(&path)?;
-    let (Some(base_url), Some(token), Some(store_id)) = (
-        get_setting_conn(&conn, "server_url")?,
-        get_setting_conn(&conn, "api_token")?,
-        get_setting_conn(&conn, "store_id")?,
-    ) else {
+    // Режим auth: device (server_url+device_token) або legacy (api_token+store_id).
+    let Some(auth) = read_sync_auth(&conn)? else {
         return Ok(false); // не налаштовано — фоновий цикл пізніше
     };
-    if base_url.trim().is_empty() || token.trim().is_empty() || store_id.trim().is_empty() {
-        return Ok(false);
-    }
     if PULL_TASK_STARTED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -138,9 +183,9 @@ pub fn ensure_pull_task_started() -> Result<bool, String> {
         return Ok(false); // хтось уже запустив
     }
     let cfg = PullConfig {
-        base_url,
-        token,
-        store_id,
+        base_url: auth.base_url,
+        token: auth.token,
+        store_id: auth.store_id,
         db_path: path,
         interval_secs: sync_pull::DEFAULT_PULL_INTERVAL_SECS,
     };
@@ -264,9 +309,14 @@ pub fn get_setting(key: String) -> Result<Option<String>, String> {
 
 /// Зберегти налаштування.
 ///
-/// Після збереження ключів синхронізації (server_url/api_token/store_id)
-/// пробує запустити фоновий push-цикл (якщо всі три присутні і таск ще не
-/// запущено). Помилка spawn не валить збереження.
+/// Підтримувані ключі синхронізації (Етап 2b):
+///   * device-режим: `server_url` + `device_token` (store_id не потрібен —
+///     сервер визначає точку з токена);
+///   * legacy JWT-режим: `server_url` + `api_token` + `store_id`.
+///
+/// Після збереження пробує запустити фоновий push- і pull-цикл (якщо режим
+/// auth повністю сконфігурований і таск ще не запущено). Помилка spawn не
+/// валить збереження.
 #[tauri::command]
 pub fn set_setting(key: String, value: String) -> Result<(), String> {
     let db = get_db()?;
@@ -419,8 +469,10 @@ pub fn sync_health() -> Result<serde_json::Value, String> {
 /// Вивантажити outbox на сервер зараз (ручний тригер синхронізації).
 ///
 /// Налаштування читаються з SQLite settings (ключі кладе фронт через
-/// set_setting): `server_url`, `api_token`, `store_id`. Якщо хоча б одного
-/// немає — `last_error = "not_configured"` (не помилка команди).
+/// set_setting) через [`read_sync_auth`]: device-режим (`server_url` +
+/// `device_token`, без точки) або legacy (`server_url` + `api_token` +
+/// `store_id`). Якщо режим не сконфігурований повністю —
+/// `last_error = "not_configured"` (не помилка команди).
 ///
 /// Повторює батчі (до 5 × 50 агрегатів), поки є pending і попередній батч
 /// успішний (created/already_exists). Мережева помилка → зупинка, статуси
@@ -441,24 +493,16 @@ pub async fn sync_now() -> Result<serde_json::Value, String> {
     let path = OfflineDatabase::default_db_path()?;
     let conn = sync_push::open_connection(&path)?;
 
-    // Налаштування з SQLite settings (фронт кладе через set_setting).
-    let cfg = match (
-        get_setting_conn(&conn, "server_url")?,
-        get_setting_conn(&conn, "api_token")?,
-        get_setting_conn(&conn, "store_id")?,
-    ) {
-        (Some(u), Some(t), Some(s))
-            if !u.trim().is_empty() && !t.trim().is_empty() && !s.trim().is_empty() =>
-        {
-            PushConfig {
-                base_url: u.trim().to_string(),
-                token: t.trim().to_string(),
-                store_id: s.trim().to_string(),
-                db_path: path.clone(),
-                interval_secs: sync_push::DEFAULT_INTERVAL_SECS,
-            }
-        }
-        _ => {
+    // Режим auth з SQLite settings (фронт кладе через set_setting).
+    let cfg = match read_sync_auth(&conn)? {
+        Some(a) => PushConfig {
+            base_url: a.base_url,
+            token: a.token,
+            store_id: a.store_id,
+            db_path: path.clone(),
+            interval_secs: sync_push::DEFAULT_INTERVAL_SECS,
+        },
+        None => {
             let stats = sync_push::outbox_stats(&conn)?;
             return Ok(serde_json::json!({
                 "pushed": 0,
@@ -534,3 +578,107 @@ pub fn get_offline_stats(store_id: Option<String>) -> Result<serde_json::Value, 
         "db_path": db.get_db_path(),
     }))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit-тести (Етап 2b): read_sync_auth — режими device/legacy
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// In-memory БД з міграціями + задані settings-ключі.
+    fn conn_with_settings(settings: &[(&str, &str)]) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory БД");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").expect("FK");
+        crate::offline::migrations::migrate(&conn).expect("міграції");
+        for (k, v) in settings {
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) \
+                 VALUES (?1, ?2, datetime('now'))",
+                rusqlite::params![k, v],
+            )
+            .expect("INSERT settings");
+        }
+        conn
+    }
+
+    #[test]
+    fn device_mode_no_store_id() {
+        let conn = conn_with_settings(&[
+            ("server_url", "http://127.0.0.1:8000"),
+            ("device_token", "dev-token-123"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("device-режим сконфігурований");
+        assert_eq!(a.base_url, "http://127.0.0.1:8000");
+        assert_eq!(a.token, "dev-token-123");
+        assert_eq!(a.store_id, None, "device-режим: точка визначається сервером з токена");
+    }
+
+    #[test]
+    fn legacy_mode_with_store_id() {
+        let conn = conn_with_settings(&[
+            ("server_url", "http://127.0.0.1:8000"),
+            ("api_token", "jwt-legacy"),
+            ("store_id", "22222222-2222-2222-2222-222222222222"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("legacy сконфігурований");
+        assert_eq!(a.token, "jwt-legacy");
+        assert_eq!(
+            a.store_id.as_deref(),
+            Some("22222222-2222-2222-2222-222222222222"),
+            "legacy: X-Store-Id шлеться"
+        );
+    }
+
+    #[test]
+    fn device_mode_has_priority_over_legacy() {
+        // Каса після активації може мати залишковий api_token — device перемагає.
+        let conn = conn_with_settings(&[
+            ("server_url", "http://127.0.0.1:8000"),
+            ("device_token", "dev-token-123"),
+            ("api_token", "jwt-legacy"),
+            ("store_id", "22222222-2222-2222-2222-222222222222"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("device сконфігурований");
+        assert_eq!(a.token, "dev-token-123");
+        assert_eq!(a.store_id, None, "device-режим пріоритетний");
+    }
+
+    #[test]
+    fn not_configured_returns_none() {
+        // Без server_url.
+        assert!(read_sync_auth(&conn_with_settings(&[("api_token", "t"), ("store_id", "s")]))
+            .unwrap()
+            .is_none());
+        // Порожній server_url.
+        assert!(read_sync_auth(&conn_with_settings(&[
+            ("server_url", "  "),
+            ("device_token", "dev-token-123"),
+        ]))
+        .unwrap()
+        .is_none());
+        // Порожній device_token і legacy без store_id.
+        assert!(read_sync_auth(&conn_with_settings(&[
+            ("server_url", "http://x"),
+            ("device_token", ""),
+            ("api_token", "jwt"),
+        ]))
+        .unwrap()
+        .is_none());
+        // Зовсім без налаштувань.
+        assert!(read_sync_auth(&conn_with_settings(&[])).unwrap().is_none());
+    }
+
+    #[test]
+    fn values_are_trimmed() {
+        let conn = conn_with_settings(&[
+            ("server_url", "  http://127.0.0.1:8000  "),
+            ("device_token", "  dev-token-123  "),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("device сконфігурований");
+        assert_eq!(a.base_url, "http://127.0.0.1:8000");
+        assert_eq!(a.token, "dev-token-123");
+    }
+}
+
