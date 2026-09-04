@@ -33,6 +33,8 @@ const ReceiptDetailPage = lazy(() => import('@/pages/receipts/ReceiptDetailPage'
 const DebtorsPage = lazy(() => import('@/pages/debtors/DebtorsPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const NetworkDevicesPage = lazy(() => import('@/pages/network/DevicesPage'));
+const NetworkReportsPage = lazy(() => import('@/pages/network/NetworkReportsPage'));
+const NetworkFinancesPage = lazy(() => import('@/pages/network/NetworkFinancesPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
 const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
@@ -274,6 +276,16 @@ const App: React.FC = () => {
             <Route path="network/devices" element={
               <RoleRoute roles={['admin', 'owner']}>
                 <NetworkDevicesPage />
+              </RoleRoute>
+            } />
+            <Route path="network/reports" element={
+              <RoleRoute roles={['admin']}>
+                <NetworkReportsPage />
+              </RoleRoute>
+            } />
+            <Route path="network/finances" element={
+              <RoleRoute roles={['admin']}>
+                <NetworkFinancesPage />
               </RoleRoute>
             } />
             <Route path="settings" element={

@@ -22,6 +22,7 @@ import {
   Network,
   PackageSearch,
   Database,
+  Landmark,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
@@ -117,6 +118,20 @@ const navItems: NavItem[] = [
     path: '/reports',
     label: 'Звіти',
     icon: <BarChart3 className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/reports',
+    label: 'Звіти мережі',
+    icon: <BarChart3 className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/finances',
+    label: 'Фінанси мережі',
+    icon: <Landmark className="w-5 h-5" />,
     module: 'reports',
     roles: ['admin'],
   },

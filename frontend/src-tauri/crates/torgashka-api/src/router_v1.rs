@@ -19,7 +19,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    admin, admin_db_sources, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    admin, admin_db_sources, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
     network, ocr,
     pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
     setup, store_context, stores, suppliers, sync, AppState,
@@ -710,6 +710,19 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/db-sources/import-dump",
             post(admin_db_sources::import_dump),
+        )
+        // Звітність мережі (Етап 4, ТЗ 5.5/5.6): дашборд, каса, постачальники.
+        .route(
+            "/api/v1/admin/reports/network-sales",
+            get(admin_reports::network_sales),
+        )
+        .route(
+            "/api/v1/admin/reports/cash-operations",
+            get(admin_reports::cash_operations),
+        )
+        .route(
+            "/api/v1/admin/reports/supplier-ledger",
+            get(admin_reports::supplier_ledger),
         )        .route(
             "/api/v1/admin/devices/:device_id",
             delete(network::delete_device),
