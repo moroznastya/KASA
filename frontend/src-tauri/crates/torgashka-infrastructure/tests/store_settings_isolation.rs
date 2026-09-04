@@ -101,6 +101,8 @@ async fn create_store_copies_settings_and_templates_per_store() {
         name,
         address: None,
         phone: None,
+        legal_name: None,
+        edrpou: None,
     };
     let svc = SqlxStoreService::new(store_pool.clone());
     let dto = with_store_ctx(source_ctx.clone(), async { svc.create_store(&input).await })

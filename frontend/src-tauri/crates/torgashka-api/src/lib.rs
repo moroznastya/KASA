@@ -15,6 +15,7 @@
 //                              └──► LEGACY-шляхи → 410 Gone
 // ─────────────────────────────────────────────────────────────────────────────
 
+pub mod admin;
 pub mod auth;
 pub mod auth_routes;
 pub mod categories_v2;

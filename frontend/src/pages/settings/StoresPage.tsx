@@ -25,6 +25,7 @@ import { toast } from 'react-hot-toast';
 // ── Конфігурація ролей ────────────────────────
 const ROLE_LABELS: Record<string, string> = {
   owner: 'Власник',
+  store_manager: 'Керуючий мережею',
   admin: 'Адміністратор',
   manager: 'Менеджер',
   cashier: 'Касир',
@@ -32,6 +33,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const ROLE_COLORS: Record<string, string> = {
   owner: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
+  store_manager: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
   admin: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
   manager: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
   cashier: 'bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300',
@@ -39,6 +41,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 const ROLE_OPTIONS: SelectOption[] = [
   { value: 'owner', label: 'Власник' },
+  { value: 'store_manager', label: 'Керуючий мережею' },
   { value: 'admin', label: 'Адміністратор' },
   { value: 'manager', label: 'Менеджер' },
   { value: 'cashier', label: 'Касир' },
@@ -215,7 +218,9 @@ const StoresPage: React.FC = () => {
           {storeList.map((store) => (
             <div
               key={store.id}
-              className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden hover:shadow-md transition-shadow"
+              onClick={() => navigate(`/settings/stores/${store.id}`)}
+              className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
+              title="Відкрити картку точки"
             >
               <div className="p-5">
                 <div className="flex items-start justify-between gap-2 mb-3">
@@ -233,7 +238,12 @@ const StoresPage: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
-                    {store.id === activeStoreId && (
+                    {!store.is_active && (
+                      <Badge variant="default" size="sm">
+                        Архів
+                      </Badge>
+                    )}
+                    {store.is_active && store.id === activeStoreId && (
                       <Badge variant="success" size="sm">
                         Активна
                       </Badge>
@@ -273,11 +283,25 @@ const StoresPage: React.FC = () => {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => openAssign(store)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openAssign(store);
+                    }}
                     icon={<UserPlus className="w-3.5 h-3.5" />}
                     className="text-gray-600 dark:text-gray-400"
                   >
                     Призначити користувача
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/settings/stores/${store.id}`);
+                    }}
+                    className="text-primary-600 dark:text-primary-400 ml-auto"
+                  >
+                    Картка точки →
                   </Button>
                 </div>
               )}

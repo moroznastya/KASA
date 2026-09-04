@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import {Users, Search, Loader2, UserPlus, Shield, Pencil, Trash2, Key, CheckCircle, XCircle, Lock, } from 'lucide-react';
+import {Users, Search, Loader2, UserPlus, Shield, Pencil, Power, PowerOff, Key, CheckCircle, XCircle, Lock, } from 'lucide-react';
 import { userService, UserCreate, UserUpdate } from '@/services/userService';
 import { User } from '@/types/auth';
 import { Button } from '@/components/ui/Button';
@@ -69,7 +69,7 @@ const UsersPage: React.FC = () => {
       name: user.name,
       password: '',
       pin_code: '',
-      role: user.role as 'admin' | 'cashier',
+      role: user.role as 'admin' | 'cashier' | 'store_manager',
       is_active: user.is_active,
     });
     setShowFormModal(true);
@@ -88,9 +88,18 @@ const UsersPage: React.FC = () => {
     setIsSaving(true);
     try {
       if (editingUser) {
+        // Роль 'owner' (власник мережі) через API не редагується — сервер
+        // приймає store_manager|admin|cashier. Якщо відкрито власника —
+        // роль не передаємо (лишається без змін).
+        const role =
+          formData.role === 'store_manager' ||
+          formData.role === 'admin' ||
+          formData.role === 'cashier'
+            ? formData.role
+            : undefined;
         const updateData: UserUpdate = {
           name: formData.name,
-          role: formData.role,
+          ...(role ? { role } : {}),
           is_active: formData.is_active,
         };
         if (formData.password) updateData.password = formData.password;
@@ -122,18 +131,31 @@ const UsersPage: React.FC = () => {
     }
   };
 
-  const handleDelete = async () => {
+  // Етап 1 адмін-панелі: деактивація ЗАМІСТЬ фізичного видалення (рядок у БД
+  // зберігається; is_active=false). Фізичний DELETE /users/:id лишився на
+  // бекенді лише для сумісності (Python parity) — в UI не використовується.
+  const handleDeactivate = async () => {
     if (!deleteTarget) return;
     setIsDeleting(true);
     try {
-      await userService.delete(deleteTarget.id);
-      toast.success(`Користувача "${deleteTarget.name}" видалено`);
+      await userService.deactivate(deleteTarget.id);
+      toast.success(`Користувача "${deleteTarget.name}" деактивовано`);
       setDeleteTarget(null);
       loadUsers();
-    } catch {
-      toast.error('Помилка видалення користувача');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Помилка деактивації користувача');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleActivate = async (user: User) => {
+    try {
+      await userService.activate(user.id);
+      toast.success(`Користувача "${user.name}" активовано`);
+      loadUsers();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Помилка активації користувача');
     }
   };
 
@@ -144,6 +166,20 @@ const UsersPage: React.FC = () => {
 
   const roleBadge = (role: string) => {
     switch (role) {
+      case 'owner':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+            <Shield className="w-3 h-3" />
+            Власник мережі
+          </span>
+        );
+      case 'store_manager':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+            <Shield className="w-3 h-3" />
+            Керуючий мережею
+          </span>
+        );
       case 'admin':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
@@ -281,14 +317,27 @@ const UsersPage: React.FC = () => {
                 >
                   <Pencil className="w-4 h-4" />
                 </Button>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={() => setDeleteTarget(user)}
-                  title="Видалити користувача"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                {user.is_active ? (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setDeleteTarget(user)}
+                    title="Деактивувати (без видалення)"
+                  >
+                    <PowerOff className="w-4 h-4 mr-1" />
+                    Деактивувати
+                  </Button>
+                ) : (
+                  <Button
+                    variant="success"
+                    size="sm"
+                    onClick={() => handleActivate(user)}
+                    title="Активувати користувача"
+                  >
+                    <Power className="w-4 h-4 mr-1" />
+                    Активувати
+                  </Button>
+                )}
               </div>
             </div>
           ))}
@@ -337,10 +386,11 @@ const UsersPage: React.FC = () => {
           <Select
             label="Роль"
             value={formData.role}
-            onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'cashier' })}
+            onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'cashier' | 'store_manager' })}
             options={[
-              { value: 'cashier', label: 'Касир' },
+              { value: 'store_manager', label: 'Керуючий мережею (адмінка)' },
               { value: 'admin', label: 'Адміністратор' },
+              { value: 'cashier', label: 'Касир' },
             ]}
             id="user-role"
             name="user-role"
@@ -376,14 +426,14 @@ const UsersPage: React.FC = () => {
       <ConfirmDialog
         isOpen={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
-        onConfirm={handleDelete}
-        title="Видалити користувача"
+        onConfirm={handleDeactivate}
+        title="Деактивувати користувача?"
         message={
           deleteTarget
-            ? `Ви впевнені, що хочете видалити користувача "${deleteTarget.name}"?`
+            ? `Працівник «${deleteTarget.name}» втратить доступ. Запис НЕ видаляється — користувача можна активувати пізніше.`
             : ''
         }
-        confirmText="Видалити"
+        confirmText="Деактивувати"
         isLoading={isDeleting}
         variant="danger"
       />

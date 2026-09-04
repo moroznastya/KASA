@@ -7,7 +7,7 @@ export interface UserCreate {
   login?: string;
   password: string;
   pin_code?: string;
-  role: 'admin' | 'cashier';
+  role: 'admin' | 'cashier' | 'store_manager';
   is_active?: boolean;
   permissions?: string[];
 }
@@ -17,7 +17,7 @@ export interface UserUpdate {
   login?: string;
   password?: string;
   pin_code?: string;
-  role?: 'admin' | 'cashier';
+  role?: 'admin' | 'cashier' | 'store_manager';
   is_active?: boolean;
   onboarding_completed?: boolean;
   permissions?: string[];
@@ -51,6 +51,30 @@ export const userService = {
 
   async delete(id: string): Promise<void> {
     await api.delete(`/users/${id}`);
+  },
+
+  /** Деактивація працівника: is_active=false, БЕЗ фізичного видалення (Етап 1 адмін-панелі). */
+  async deactivate(id: string): Promise<User> {
+    const response = await api.post<User>(`/admin/users/${id}/deactivate`);
+    return response.data;
+  },
+
+  /** Повторна активація працівника. */
+  async activate(id: string): Promise<User> {
+    const response = await api.post<User>(`/admin/users/${id}/activate`);
+    return response.data;
+  },
+
+  /** Скинути пароль працівника. */
+  async resetPassword(id: string, password: string): Promise<User> {
+    const response = await api.post<User>(`/admin/users/${id}/reset-password`, { password });
+    return response.data;
+  },
+
+  /** Скинути PIN-код працівника. */
+  async resetPin(id: string, pinCode: string): Promise<User> {
+    const response = await api.post<User>(`/admin/users/${id}/reset-pin`, { pin_code: pinCode });
+    return response.data;
   },
 
   /**

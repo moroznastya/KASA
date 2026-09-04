@@ -31,7 +31,7 @@ interface NavItem {
   label: string;
   icon: React.ReactNode;
   module: string;
-  roles?: ('admin' | 'cashier' | 'owner')[];
+  roles?: ('admin' | 'cashier' | 'owner' | 'store_manager')[];
 }
 
 const navItems: NavItem[] = [
@@ -172,10 +172,11 @@ export const Sidebar: React.FC = () => {
   const visibleItems = navItems.filter((item) => {
     if (!item.roles) return true;
     if (!user) return false;
-    // owner/manager прирівнюються до admin (адмін-пункти).
-    const privileged = user.role === 'owner' || user.role === 'manager';
+    // owner/store_manager/manager прирівнюються до admin (адмін-пункти).
+    const privileged =
+      user.role === 'owner' || user.role === 'store_manager' || user.role === 'manager';
     if (privileged) return item.roles.includes('admin');
-    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner');
+    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner' | 'store_manager');
   });
 
   return (
@@ -241,7 +242,7 @@ export const Sidebar: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                  {user.name} ({user.role === 'admin' ? 'Адміністратор' : 'Касир'})
+                  {user.name} ({user.role === 'owner' ? 'Власник мережі' : user.role === 'store_manager' || user.role === 'manager' ? 'Керуючий мережею' : user.role === 'admin' ? 'Адміністратор' : 'Касир'})
                 </p>
               </div>
             </div>

@@ -311,6 +311,24 @@ CREATE INDEX IF NOT EXISTS ix_audit_log_store_id_created_at
     ON public.audit_log USING btree (store_id, created_at);
 "#;
 
+/// DDL адмін-панелі власника (Етап 1): юрособа/ЄДРПОУ точки + роль
+/// `store_manager` в enum user_role. Ідемпотентно — виконується ЗАВЖДИ при
+/// старті: і fresh-схема (schema.sql уже містить колонки/значення), і вже
+/// мігровані БД (alembic 0001–0014 без цих змін) отримують їх без fresh-install.
+const STORE_LEGAL_COLUMNS_DDL: &str = r#"
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS
+    legal_name character varying(255);
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS
+    edrpou character varying(20);
+DO $$
+BEGIN
+    ALTER TYPE public.user_role ADD VALUE IF NOT EXISTS 'store_manager';
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END
+$$;
+"#;
+
 /// Ідемпотентне застосування схеми при старті фасаду.
 ///
 /// - Якщо таблиці `users` немає (fresh-БД) → виконується повна схема.
@@ -338,6 +356,10 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
         .await
         .map_err(DbError::Sqlx)?;
     sqlx::raw_sql(NETWORK_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(STORE_LEGAL_COLUMNS_DDL)
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;

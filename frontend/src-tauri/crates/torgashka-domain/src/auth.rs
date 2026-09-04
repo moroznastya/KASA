@@ -24,10 +24,19 @@ use uuid::Uuid;
 // Ролі
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Роль користувача (Enum user_role у БД). Python має ТІЛЬКИ admin|cashier.
+/// Роль користувача (Enum user_role у БД).
+///
+/// Етап 1 адмін-панелі власника мережі (Torgashka ТЗ 5.1–5.3):
+///   - адмінка (панель власника): `owner` (власник мережі),
+///     `store_manager` (керуючий мережею);
+///   - каса: `admin` (адміністратор точки), `cashier` (касир).
+/// Python v1 мав ТІЛЬКИ admin|cashier; owner додано Етапом 3 мультиточковості,
+/// store_manager — Етапом 1 адмін-панелі (enum user_role у БД розширено).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
+    Owner,
+    StoreManager,
     Admin,
     Cashier,
 }
@@ -35,12 +44,16 @@ pub enum UserRole {
 impl UserRole {
     pub fn as_str(self) -> &'static str {
         match self {
+            UserRole::Owner => "owner",
+            UserRole::StoreManager => "store_manager",
             UserRole::Admin => "admin",
             UserRole::Cashier => "cashier",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "owner" => Some(UserRole::Owner),
+            "store_manager" => Some(UserRole::StoreManager),
             "admin" => Some(UserRole::Admin),
             "cashier" => Some(UserRole::Cashier),
             _ => None,
@@ -281,7 +294,11 @@ pub const PERMISSION_GROUPS: &[(&str, &str, &[&str])] = &[
 /// Дефолтні права для ролі (Python get_default_permissions).
 pub fn default_permissions(role: UserRole) -> Vec<String> {
     match role {
-        UserRole::Admin => ALL_PERMISSIONS.iter().map(|s| s.to_string()).collect(),
+        // Власник мережі та керуючий мережею (адмінка) — повний набір прав,
+        // як адміністратор (JWT permissions; RBAC сторінок додатково за роллю).
+        UserRole::Owner | UserRole::StoreManager | UserRole::Admin => {
+            ALL_PERMISSIONS.iter().map(|s| s.to_string()).collect()
+        }
         UserRole::Cashier => CASHIER_PERMISSIONS.iter().map(|s| s.to_string()).collect(),
     }
 }

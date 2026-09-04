@@ -90,7 +90,8 @@ CREATE TYPE public.transfer_status AS ENUM (
 CREATE TYPE public.user_role AS ENUM (
     'admin',
     'cashier',
-    'owner'
+    'owner',
+    'store_manager'
 );
 
 CREATE TABLE IF NOT EXISTS public.barcodes (
@@ -408,6 +409,8 @@ CREATE TABLE IF NOT EXISTS public.stores (
     name character varying(255) NOT NULL,
     address character varying(500),
     phone character varying(50),
+    legal_name character varying(255),
+    edrpou character varying(20),
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL

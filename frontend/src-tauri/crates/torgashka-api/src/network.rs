@@ -272,7 +272,7 @@ fn device_name(fingerprint: &str) -> String {
 // ─── Audit-слід admin-дій (таблиця audit_log, коміт 5621f1e) ────────────────
 
 #[allow(clippy::too_many_arguments)]
-async fn audit(
+pub(crate) async fn audit(
     pool: &PgPool,
     actor_user_id: Uuid,
     action: &str,

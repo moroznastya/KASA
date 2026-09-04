@@ -34,6 +34,12 @@ pub struct StoreDto {
     pub address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phone: Option<String>,
+    /// Юрособа/ФОП (для ПРРО-вкладки; Етап 1 адмін-панелі, Етапи 4-6 — ПРРО).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legal_name: Option<String>,
+    /// Код ЄДРПОУ/ІПН (для ПРРО-вкладки; nullable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edrpou: Option<String>,
     pub is_active: bool,
     pub created_at: NaiveDateTime,
     /// Роль користувача НА ЦІЙ ТОЧЦІ (з user_stores).
@@ -50,6 +56,12 @@ pub struct StoreCreateInput {
     pub address: Option<String>,
     #[serde(default)]
     pub phone: Option<String>,
+    /// Юрособа/ФОП (для ПРРО-вкладки; Етапи 4-6).
+    #[serde(default)]
+    pub legal_name: Option<String>,
+    /// Код ЄДРПОУ/ІПН (для ПРРО-вкладки).
+    #[serde(default)]
+    pub edrpou: Option<String>,
 }
 
 /// Призначення користувача на точку.

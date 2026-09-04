@@ -19,7 +19,8 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, network, ocr,
+    admin, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    network, ocr,
     pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
     setup, store_context, stores, suppliers, sync, AppState,
 };
@@ -638,6 +639,37 @@ pub fn build_router(state: AppState) -> Router {
         post(network::activate_device),
     );
     let admin_network = Router::new()
+        // Адмін-панель власника мережі (Етап 1): точки + працівники + деактивація.
+        .route(
+            "/api/v1/admin/stores",
+            get(admin::list_stores).post(admin::create_store),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id",
+            get(admin::get_store)
+                .put(admin::update_store)
+                .delete(admin::archive_store),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id/workers",
+            get(admin::list_workers).post(admin::create_worker),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/deactivate",
+            post(admin::deactivate_user),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/activate",
+            post(admin::activate_user),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/reset-password",
+            post(admin::reset_password),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/reset-pin",
+            post(admin::reset_pin),
+        )
         .route(
             "/api/v1/admin/stores/:store_id/activation-code",
             post(network::generate_activation_code),

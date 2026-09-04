@@ -46,6 +46,8 @@ fn store_dto_from_row(row: &sqlx::postgres::PgRow) -> StoreDto {
         name: row.get("name"),
         address: row.try_get("address").ok().flatten(),
         phone: row.try_get("phone").ok().flatten(),
+        legal_name: row.try_get("legal_name").ok().flatten(),
+        edrpou: row.try_get("edrpou").ok().flatten(),
         is_active: row.try_get("is_active").unwrap_or(true),
         created_at: row
             .try_get("created_at")
@@ -65,7 +67,8 @@ impl StoreService for SqlxStoreService {
         })?;
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.address, s.phone, s.is_active, s.created_at,
+            SELECT s.id, s.name, s.address, s.phone, s.legal_name, s.edrpou,
+                   s.is_active, s.created_at,
                    us.role, us.is_default
             FROM stores s
             JOIN user_stores us ON us.store_id = s.id
@@ -98,15 +101,18 @@ impl StoreService for SqlxStoreService {
         let mut tx = self.pool.begin().await.se()?;
         let row = sqlx::query(
             r#"
-            INSERT INTO stores (name, address, phone, is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, true, (now() AT TIME ZONE 'UTC')::timestamp,
+            INSERT INTO stores (name, address, phone, legal_name, edrpou, is_active,
+                               created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, true, (now() AT TIME ZONE 'UTC')::timestamp,
                     (now() AT TIME ZONE 'UTC')::timestamp)
-            RETURNING id, name, address, phone, is_active, created_at
+            RETURNING id, name, address, phone, legal_name, edrpou, is_active, created_at
             "#,
         )
         .bind(name)
         .bind(input.address.as_deref())
         .bind(input.phone.as_deref())
+        .bind(input.legal_name.as_deref())
+        .bind(input.edrpou.as_deref())
         .fetch_one(&mut *tx)
         .await
         .se()?;
@@ -174,7 +180,7 @@ impl StoreService for SqlxStoreService {
         } else {
             input.role.trim()
         };
-        if !matches!(role, "owner" | "admin" | "cashier") {
+        if !matches!(role, "owner" | "store_manager" | "admin" | "cashier") {
             return Err(StoreError::BadRequest(format!(
                 "Невідома роль на точці: {role}"
             )));
@@ -198,7 +204,8 @@ impl StoreService for SqlxStoreService {
         .se()?;
         let row = sqlx::query(
             r#"
-            SELECT s.id, s.name, s.address, s.phone, s.is_active, s.created_at,
+            SELECT s.id, s.name, s.address, s.phone, s.legal_name, s.edrpou,
+                   s.is_active, s.created_at,
                    us.role, us.is_default
             FROM stores s
             JOIN user_stores us ON us.store_id = s.id

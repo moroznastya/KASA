@@ -41,6 +41,7 @@ const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPag
 const DevicesPage = lazy(() => import('@/pages/settings/DevicesPage'));
 const DeviceSyncPage = lazy(() => import('@/pages/settings/DeviceSyncPage'));
 const StoresPage = lazy(() => import('@/pages/settings/StoresPage'));
+const StoreDetailPage = lazy(() => import('@/pages/settings/StoreDetailPage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
 const OnboardingPage = lazy(() => import('@/pages/onboarding/OnboardingPage'));
 const SetupPage = lazy(() => import('@/pages/setup/SetupPage'));
@@ -300,8 +301,13 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
             <Route path="settings/stores" element={
-              <RoleRoute roles={['admin']}>
+              <RoleRoute roles={['admin', 'store_manager']}>
                 <StoresPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/stores/:storeId" element={
+              <RoleRoute roles={['admin', 'store_manager']}>
+                <StoreDetailPage />
               </RoleRoute>
             } />
             <Route path="prro" element={

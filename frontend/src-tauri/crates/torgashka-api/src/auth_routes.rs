@@ -140,7 +140,13 @@ pub(crate) async fn require_admin(
     // НЕ з БД. Це дозволяє токену з role=admin працювати незалежно від БД.
     let _ = state;
     let user_id = sub_uuid(claims)?;
-    if !matches!(claims.role.as_str(), "admin" | "owner") {
+    // Адмін-панель власника мережі (Етап 1): owner | store_manager | admin.
+    // store_manager (керуючий мережею) додано до enum user_role; admin зберіг
+    // доступ як раніше (не ламаємо наявні роути /users, /settings, /admin/*).
+    if !matches!(
+        claims.role.as_str(),
+        "admin" | "owner" | "store_manager"
+    ) {
         return Err(AuthError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
         )
@@ -154,7 +160,7 @@ async fn ensure_settings_admin(state: &AppState, claims: &Claims) -> Result<Uuid
     let repo = auth_repo(state)?;
     let user_id = sub_uuid(claims)?;
     let user = repo.get_user_by_id(user_id).await?;
-    if !matches!(user.role.as_str(), "admin" | "owner") {
+    if !matches!(user.role.as_str(), "admin" | "owner" | "store_manager") {
         return Err(AuthError::Forbidden(
             "Тільки адміністратор може змінювати налаштування".to_string(),
         )
@@ -332,14 +338,17 @@ fn parse_login_pin(body: &Value) -> Result<LoginPinRequest, AuthRouteError> {
 
 fn parse_role(value: &Value) -> Result<UserRole, AuthRouteError> {
     match value.as_str() {
+        // Адмін-панель (Етап 1): store_manager створюється через API;
+        // owner — лише через setup/БД (роль власника мережі).
         Some("admin") => Ok(UserRole::Admin),
         Some("cashier") => Ok(UserRole::Cashier),
+        Some("store_manager") => Ok(UserRole::StoreManager),
         _ => Err(AuthRouteError::Validation(json!({"detail": [v422_err(
             "enum",
             &["body", "role"],
-            "Input should be 'admin' or 'cashier'",
+            "Input should be 'admin', 'cashier' or 'store_manager'",
             value.clone(),
-            Some(json!({"expected": "'admin' or 'cashier'"})),
+            Some(json!({"expected": "'admin', 'cashier' or 'store_manager'"})),
         )]}))),
     }
 }
