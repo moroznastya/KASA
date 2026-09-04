@@ -19,6 +19,7 @@ import {
   Clock,
   Printer,
   FileCheck2,
+  Network,
   PackageSearch,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
@@ -138,6 +139,13 @@ const navItems: NavItem[] = [
     icon: <UserCog className="w-5 h-5" />,
     module: 'users',
     roles: ['admin'],
+  },
+  {
+    path: '/network/devices',
+    label: 'Каси мережі',
+    icon: <Network className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
   },
   {
     path: '/prro',
