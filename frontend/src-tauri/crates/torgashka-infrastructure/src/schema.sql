@@ -593,8 +593,6 @@ ALTER TABLE ONLY public.invoices
 ALTER TABLE ONLY public.print_templates
     ADD CONSTRAINT print_templates_pkey PRIMARY KEY (id);
 
-ALTER TABLE ONLY public.print_templates
-    ADD CONSTRAINT fk_print_templates_store FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.product_images
     ADD CONSTRAINT product_images_pkey PRIMARY KEY (id);
@@ -1035,6 +1033,8 @@ ALTER TABLE ONLY public.write_off_items
 ALTER TABLE ONLY public.write_off_items
     ADD CONSTRAINT write_off_items_write_off_id_fkey FOREIGN KEY (write_off_id) REFERENCES public.write_offs(id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.print_templates
+    ADD CONSTRAINT fk_print_templates_store FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
 ALTER TABLE public.barcodes ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY barcodes_store_isolation ON public.barcodes USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
@@ -1242,3 +1242,111 @@ CREATE TABLE IF NOT EXISTS public.owners_db (
     CONSTRAINT owners_db_owner_id_fkey FOREIGN KEY (owner_id)
         REFERENCES public.users(id) ON DELETE CASCADE
 );
+
+-- ============================================================================
+-- Мережевий рівень власника (Частина 3): devices, store_activation_codes,
+-- store_product_prices, audit_log, store_sync_state.
+-- Створюються ідемпотентно: fresh (schema.sql) і вже мігровані БД (NETWORK_DDL).
+-- ============================================================================
+
+-- device_status: PG не має CREATE TYPE IF NOT EXISTS — через DO-блок.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'device_status') THEN
+        CREATE TYPE public.device_status AS ENUM ('pending', 'active', 'blocked', 'deleted');
+    END IF;
+END
+$$;
+
+-- Фізичні каси/пристрої мережі. store_id → точка; status — життєвий цикл
+-- пристрою (pending → active → blocked/deleted). device_token_hash — токен
+-- аутентифікації пристрою (зберігається лише хеш).
+CREATE TABLE IF NOT EXISTS public.devices (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    store_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    device_token_hash character varying(255) NOT NULL,
+    status public.device_status DEFAULT 'pending'::public.device_status NOT NULL,
+    app_version character varying(50),
+    last_seen_at timestamp without time zone,
+    activated_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT devices_pkey PRIMARY KEY (id),
+    CONSTRAINT devices_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Код активації точки (8 символів; колонка varchar(9) — резерв під префікс).
+-- Один рядок на магазин: повторна генерація оновлює код (regenerated_at).
+CREATE TABLE IF NOT EXISTS public.store_activation_codes (
+    store_id uuid NOT NULL,
+    code character varying(9) NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    regenerated_at timestamp without time zone,
+    CONSTRAINT store_activation_codes_pkey PRIMARY KEY (store_id),
+    CONSTRAINT store_activation_codes_code_key UNIQUE (code),
+    CONSTRAINT store_activation_codes_created_by_fkey FOREIGN KEY (created_by)
+        REFERENCES public.users(id) ON DELETE SET NULL,
+    CONSTRAINT store_activation_codes_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Перевизначення ціни товару по конкретній точці (owner-рівень; на відміну
+-- від stock.price — окрема сутність, не залежить від залишків).
+CREATE TABLE IF NOT EXISTS public.store_product_prices (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    store_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    price numeric(10,2) NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT store_product_prices_pkey PRIMARY KEY (id),
+    CONSTRAINT store_product_prices_store_id_product_id_key UNIQUE (store_id, product_id),
+    CONSTRAINT store_product_prices_product_id_fkey FOREIGN KEY (product_id)
+        REFERENCES public.products(id) ON DELETE CASCADE,
+    CONSTRAINT store_product_prices_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Аудит дій адмінки (хто/що/коли; payload — контекст дії в JSON).
+-- FK з ON DELETE SET NULL: аудит-слід зберігається при видаленні юзера/точки.
+CREATE TABLE IF NOT EXISTS public.audit_log (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    actor_user_id uuid,
+    action character varying(100) NOT NULL,
+    entity_type character varying(50),
+    entity_id uuid,
+    store_id uuid,
+    payload jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT audit_log_pkey PRIMARY KEY (id),
+    CONSTRAINT audit_log_actor_user_id_fkey FOREIGN KEY (actor_user_id)
+        REFERENCES public.users(id) ON DELETE SET NULL,
+    CONSTRAINT audit_log_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE SET NULL
+);
+
+-- Стан синхронізації точки (офлайн-first): час останньої синхронізації та
+-- останній локальний seq, до якого сервер отримав дані точки.
+CREATE TABLE IF NOT EXISTS public.store_sync_state (
+    store_id uuid NOT NULL,
+    device_id uuid,
+    last_synced_at timestamp without time zone,
+    last_local_seq bigint DEFAULT 0 NOT NULL,
+    status character varying(20) DEFAULT 'unknown'::character varying NOT NULL,
+    CONSTRAINT store_sync_state_pkey PRIMARY KEY (store_id),
+    CONSTRAINT store_sync_state_device_id_fkey FOREIGN KEY (device_id)
+        REFERENCES public.devices(id) ON DELETE SET NULL,
+    CONSTRAINT store_sync_state_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_devices_store_id ON public.devices USING btree (store_id);
+
+CREATE INDEX IF NOT EXISTS ix_store_product_prices_product_id
+    ON public.store_product_prices USING btree (product_id);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_store_id_created_at
+    ON public.audit_log USING btree (store_id, created_at);
