@@ -23,6 +23,7 @@ pub mod debtors;
 pub mod documents;
 pub mod invoices;
 pub mod ledger;
+pub mod network;
 pub mod ocr;
 pub mod pos;
 pub mod print_templates;

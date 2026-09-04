@@ -19,9 +19,9 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
-    print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, setup,
-    store_context, stores, suppliers, sync, AppState,
+    auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, network, ocr,
+    pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
+    setup, store_context, stores, suppliers, sync, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -618,7 +618,7 @@ pub fn build_router(state: AppState) -> Router {
     // Порядок шарів: cors → auth (JWT) → store (X-Store-Id + RLS-контекст) → handler.
     // StoreContext ПІСЛЯ auth: Claims доступні в extensions; контекст точки
     // проставляється в task-local для всіх запитів хендлера (RLS set_config).
-    router
+    let private = router
         .fallback(proxy::proxy_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -627,7 +627,42 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
-        ))
+        ));
+
+    // Мережевий рівень власника (Частина 3): активація каси — ПУБЛІЧНА
+    // (без JWT: каса ще не має токена). /admin/* — глобальні дії власника,
+    // НЕ прив'язані до X-Store-Id точки → окремий роутер БЕЗ store_middleware,
+    // але З auth (роль admin|owner перевіряється в require_admin хендлерів).
+    let activate = Router::new().route(
+        "/api/v1/devices/activate",
+        post(network::activate_device),
+    );
+    let admin_network = Router::new()
+        .route(
+            "/api/v1/admin/stores/:store_id/activation-code",
+            post(network::generate_activation_code),
+        )
+        .route("/api/v1/admin/devices", get(network::list_devices))
+        .route(
+            "/api/v1/admin/devices/:device_id/block",
+            post(network::block_device),
+        )
+        .route(
+            "/api/v1/admin/devices/:device_id/unblock",
+            post(network::unblock_device),
+        )
+        .route(
+            "/api/v1/admin/devices/:device_id",
+            delete(network::delete_device),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    activate
+        .merge(admin_network)
+        .merge(private)
         .layer(cors)
         .with_state(state)
 }
