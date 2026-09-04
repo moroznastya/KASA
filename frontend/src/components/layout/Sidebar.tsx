@@ -21,6 +21,7 @@ import {
   FileCheck2,
   Network,
   PackageSearch,
+  Database,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
@@ -160,6 +161,13 @@ const navItems: NavItem[] = [
     icon: <Settings className="w-5 h-5" />,
     module: 'settings',
     roles: ['admin'],
+  },
+  {
+    path: '/settings/data-source',
+    label: 'Джерело даних',
+    icon: <Database className="w-5 h-5" />,
+    module: 'settings',
+    roles: ['admin', 'store_manager'],
   },
 ];
 

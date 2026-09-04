@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod admin;
+pub mod admin_db_sources;
 pub mod auth;
 pub mod auth_routes;
 pub mod categories_v2;

@@ -39,6 +39,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 qrcode = { version = "0.14.1", default-features = false }
 barcoders = "2.0.0"
 futures-util = "0.3"
+# ── Джерело даних (Етап 3 адмін-панелі, ТЗ 2.4/5.8): db_sources.toml ──
+# toml preserve_order — порядок [sources.*] у файлі = порядок створення.
+# aes-gcm — AES-256-GCM для password_encrypted (ключ TORGASHKA_DBKEY/.dbkey).
+toml = { version = "0.8", features = ["preserve_order"] }
+aes-gcm = "0.10"
+rand = "0.8"
+percent-encoding = "2.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "process"] }

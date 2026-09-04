@@ -18,6 +18,8 @@ pub enum DbError {
     Sqlx(#[from] sqlx::Error),
     #[error("невірний DATABASE_URL: {0}")]
     BadUrl(String),
+    #[error("помилка джерел даних (db_sources.toml): {0}")]
+    DbSources(String),
 }
 
 /// Кандидати шляхів до `backend/.env` (залежно від CWD запуску).
@@ -50,12 +52,32 @@ pub(crate) fn parse_env_value(content: &str, key: &str) -> Option<String> {
     })
 }
 
-/// Резолв DATABASE_URL: env `DATABASE_URL` → `backend/.env` (DB_*) → Err.
+/// Резолв DATABASE_URL (порядок пріоритету):
+///   1. env `DATABASE_URL` (явний override — тести/CI/embedded PG bootstrap);
+///   2. активне джерело з `db_sources.toml` (Етап 3 адмін-панелі, ТЗ 2.4/5.8) —
+///      UI «Джерело даних» зберігає `active`, яке застосовується ПРИ СТАРТІ
+///      (stability_first: гарячого перепідключення пулів немає, див.
+///      torgashka_infrastructure::db_sources);
+///   3. `backend/.env` (DB_*) → Err.
+///
+/// db_sources.toml без `active` або без файлу — мовчазно пропускається
+/// (робота як раніше). Якщо `active` задано, але джерело/ключ некоректні —
+/// повертається чесна помилка (без мовчазного fallback на іншу БД).
 pub fn resolve_database_url() -> Result<String, DbError> {
     if let Ok(url) = std::env::var("DATABASE_URL") {
         if !url.trim().is_empty() {
             return Ok(url);
         }
+    }
+    match crate::db_sources::active_source_url() {
+        Ok(Some(url)) => {
+            eprintln!(
+                "[torgashka-infrastructure] активне джерело даних (db_sources.toml): використовується конфігурована БД"
+            );
+            return Ok(url);
+        }
+        Ok(None) => {}
+        Err(e) => return Err(DbError::DbSources(e.to_string())),
     }
     for candidate in env_file_candidates() {
         if let Ok(content) = std::fs::read_to_string(&candidate) {

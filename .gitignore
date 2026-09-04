@@ -141,3 +141,12 @@ flatpak/
 .devices_tmp.json
 
 # ── DB dumps (never commit) ────────────────
+
+# ── Джерело даних (Етап 3 адмін-панелі): конфіг + ключ шифрування + дампи ──
+# db_sources.toml містить зашифровані паролі БД; .dbkey — ключ розшифрування;
+# dumps/ — резервні копії БД. Жоден із цих файлів не має потрапити в git!
+config.toml
+db_sources.toml
+.dbkey
+dumps/
+*.sql.dump

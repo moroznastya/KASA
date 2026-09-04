@@ -42,6 +42,7 @@ const DevicesPage = lazy(() => import('@/pages/settings/DevicesPage'));
 const DeviceSyncPage = lazy(() => import('@/pages/settings/DeviceSyncPage'));
 const StoresPage = lazy(() => import('@/pages/settings/StoresPage'));
 const StoreDetailPage = lazy(() => import('@/pages/settings/StoreDetailPage'));
+const DataSourcePage = lazy(() => import('@/pages/settings/DataSourcePage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
 const OnboardingPage = lazy(() => import('@/pages/onboarding/OnboardingPage'));
 const SetupPage = lazy(() => import('@/pages/setup/SetupPage'));
@@ -308,6 +309,11 @@ const App: React.FC = () => {
             <Route path="settings/stores/:storeId" element={
               <RoleRoute roles={['admin', 'store_manager']}>
                 <StoreDetailPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/data-source" element={
+              <RoleRoute roles={['admin', 'store_manager']}>
+                <DataSourcePage />
               </RoleRoute>
             } />
             <Route path="prro" element={

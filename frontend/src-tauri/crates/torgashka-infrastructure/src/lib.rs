@@ -14,6 +14,7 @@
 
 pub mod cash_drawer;
 pub mod db;
+pub mod db_sources;
 pub mod devices;
 pub mod embedded_pg;
 pub mod ocr;

@@ -19,7 +19,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    admin, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    admin, admin_db_sources, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
     network, ocr,
     pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
     setup, store_context, stores, suppliers, sync, AppState,
@@ -684,6 +684,33 @@ pub fn build_router(state: AppState) -> Router {
             post(network::unblock_device),
         )
         .route(
+            "/api/v1/admin/db-sources",
+            get(admin_db_sources::list_sources).post(admin_db_sources::create_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/dumps",
+            get(admin_db_sources::list_dumps),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id",
+            put(admin_db_sources::update_source).delete(admin_db_sources::delete_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id/test",
+            post(admin_db_sources::test_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id/activate",
+            post(admin_db_sources::activate_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/export-dump",
+            post(admin_db_sources::export_dump),
+        )
+        .route(
+            "/api/v1/admin/db-sources/import-dump",
+            post(admin_db_sources::import_dump),
+        )        .route(
             "/api/v1/admin/devices/:device_id",
             delete(network::delete_device),
         )
