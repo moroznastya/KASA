@@ -150,3 +150,6 @@ db_sources.toml
 .dbkey
 dumps/
 *.sql.dump
+
+# Веб-адмінка (Етап 6 §6): окрема збірка build:admin
+frontend/dist-admin/

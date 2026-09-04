@@ -29,7 +29,7 @@ import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
 import logo from '@/assets/logo.png';
 
-interface NavItem {
+export interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
@@ -194,13 +194,20 @@ const navItems: NavItem[] = [
   },
 ];
 
-export const Sidebar: React.FC = () => {
+export interface SidebarProps {
+  /** Кастомна навігація (веб-адмінка §6: без POS/cash-пунктів). Якщо
+   *  не задано — стандартний набір navItems (поведінка без змін). */
+  items?: NavItem[];
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ items }) => {
   const { sidebarOpen, toggleSidebar, setActiveModule } = useUIStore();
   const user = useAuthStore((state) => state.user);
+  const sourceItems = items ?? navItems;
 
   // Видимість — тільки за ролями (admin/owner/manager бачать адмін-пункти;
   // cashier — свої). Дані на сторінках обмежені RLS/user_stores на бекенді.
-  const visibleItems = navItems.filter((item) => {
+  const visibleItems = sourceItems.filter((item) => {
     if (!item.roles) return true;
     if (!user) return false;
     // owner/store_manager/manager прирівнюються до admin (адмін-пункти).

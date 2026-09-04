@@ -9,6 +9,7 @@ import {
   KeyRound,
   Loader2,
   AlertTriangle,
+  Rocket,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/Button';
@@ -17,6 +18,8 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { storeService } from '@/services/storeService';
 import { Store } from '@/types/store';
 import { deviceAdminService, DeviceInfo, DeviceStatus, extractApiError } from '@/services/deviceAdminService';
+import { adminMigrateService } from '@/services/adminMigrateService';
+import { useAuthStore } from '@/store/authStore';
 import { formatDate, formatRelativeTime } from '@/utils/format';
 
 /**
@@ -47,10 +50,14 @@ const STATUS_META: Record<DeviceStatus, { label: string; badgeClass: string; ico
 };
 
 const NetworkDevicesPage: React.FC = () => {
+  const user = useAuthStore((state) => state.user);
   const [stores, setStores] = useState<Store[]>([]);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Етап 6 (§9): міграція legacy-інсталяції — доступна лише owner|admin.
+  const [isMigrating, setIsMigrating] = useState(false);
+  const canMigrate = !!user && (user.role === 'owner' || user.role === 'admin');
 
   // Фільтр списку кас по торговій точці ('' = всі точки).
   const [filterStoreId, setFilterStoreId] = useState<string>('');
@@ -66,6 +73,15 @@ const NetworkDevicesPage: React.FC = () => {
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   // ── Точки (для фільтра і генерації коду) ──
+  const loadStores = useCallback(async () => {
+    try {
+      const data = await storeService.list();
+      setStores(data);
+    } catch {
+      toast.error('Не вдалося завантажити список торгових точок');
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -186,6 +202,27 @@ const NetworkDevicesPage: React.FC = () => {
     }
   };
 
+  // ── Етап 6 §9: «Перетворити на мережу» (міграція legacy-інсталяції) ──
+  const handleMigrateLegacy = async () => {
+    setIsMigrating(true);
+    try {
+      const result = await adminMigrateService.migrateLegacy();
+      toast.success(
+        result.created_device
+          ? 'Касу зареєстровано як мережевий пристрій (без коду активації)'
+          : 'Мережа вже налаштована — каса не дублювалась'
+      );
+      // Точка могла бути створена міграцією — оновлюємо обидва списки.
+      await Promise.all([loadStores(), loadDevices()]);
+    } catch (err) {
+      toast.error(
+        extractApiError(err, 'Не вдалося виконати міграцію локальної інсталяції')
+      );
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
   const emptyText = filterStoreId
     ? 'Для обраної точки кас не знайдено'
     : 'Жодної каси не активовано';
@@ -206,6 +243,47 @@ const NetworkDevicesPage: React.FC = () => {
           Оновити
         </Button>
       </div>
+
+      {/* ── Етап 6 §9: майстер міграції одиночної інсталяції ── */}
+      {canMigrate && devices.length === 0 && !isLoading && !loadError && !filterStoreId && (
+        <div className="bg-gradient-to-br from-primary-50 to-indigo-50 dark:from-primary-900/10 dark:to-indigo-900/10 border border-primary-200 dark:border-primary-800 rounded-xl p-6 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+            <div className="w-11 h-11 rounded-lg bg-primary-600 text-white flex items-center justify-center flex-shrink-0">
+              <Rocket className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Перетворити на мережу
+              </h2>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 leading-relaxed">
+                Виявлено встановлення без жодної зареєстрованої каси мережі — схоже на
+                одиночну інсталяцію (локальна каса без адмін-панелі). Майстер:
+              </p>
+              <ul className="mt-2 text-sm text-gray-600 dark:text-gray-300 space-y-1 list-disc list-inside">
+                <li>
+                  створює першу торгову точку (або використовує наявну, якщо майстер
+                  налаштування вже виконувався);
+                </li>
+                <li>
+                  реєструє цю каса як мережевий пристрій <b>автоматично — без коду
+                  активації</b> (вона вже «своя»);
+                </li>
+                <li>наявні дані лишаються без змін і стають видимі через адмін-панель.</li>
+              </ul>
+              <div className="mt-4">
+                <Button onClick={() => void handleMigrateLegacy()} isLoading={isMigrating}>
+                  {isMigrating ? null : <Rocket className="w-4 h-4 mr-2" />}
+                  Перетворити на мережу
+                </Button>
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  Для додавання <b>віддалених</b> кас використовуйте код активації
+                  (блок нижче) — він діє лише для нових пристроїв.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Код активації для точки ── */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-gray-200 dark:border-slate-700 p-5 mb-6">

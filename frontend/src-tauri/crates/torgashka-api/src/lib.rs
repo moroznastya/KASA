@@ -18,6 +18,7 @@
 pub mod admin;
 pub mod admin_db_sources;
 pub mod admin_audit;
+pub mod admin_migrate;
 pub mod admin_prro;
 pub mod admin_reports;
 pub mod auth;

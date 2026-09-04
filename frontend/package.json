@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:admin": "tsc --noEmit && vite build --config vite.admin.config.ts",
     "preview": "vite preview",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",

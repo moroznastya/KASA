@@ -1269,6 +1269,7 @@ CREATE TABLE IF NOT EXISTS public.devices (
     store_id uuid NOT NULL,
     name character varying(255) NOT NULL,
     device_token_hash character varying(255) NOT NULL,
+    source character varying(50),
     status public.device_status DEFAULT 'pending'::public.device_status NOT NULL,
     app_version character varying(50),
     last_seen_at timestamp without time zone,
@@ -1347,6 +1348,11 @@ CREATE TABLE IF NOT EXISTS public.store_sync_state (
 );
 
 CREATE INDEX IF NOT EXISTS ix_devices_store_id ON public.devices USING btree (store_id);
+
+-- Не більше одного legacy-пристрою (source='legacy_migration') на точку:
+-- ідемпотентність POST /admin/migrate/legacy на рівні БД (race-safe).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_migration_store
+    ON public.devices (store_id) WHERE (source = 'legacy_migration');
 
 CREATE INDEX IF NOT EXISTS ix_store_product_prices_product_id
     ON public.store_product_prices USING btree (product_id);

@@ -19,7 +19,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    admin, admin_audit, admin_db_sources, admin_prro, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    admin, admin_audit, admin_db_sources, admin_migrate, admin_prro, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
     network, ocr,
     pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
     setup, store_context, stores, suppliers, sync, AppState,
@@ -29,15 +29,33 @@ use crate::{
 pub fn build_router(state: AppState) -> Router {
     // CORS-шар (GUI Tauri webview: tauri://localhost → http://127.0.0.1:8000).
     // Найзовніший шар: preflight OPTIONS обробляється до auth_middleware.
+    // Додаткові дозволені origin для ВЕБ-адмінки (Етап 6, §6): окрема SPA
+    // в браузері (build:admin) говорить з тим самим API. Origin веб-збірки
+    // задається при запуску сервера: TORGASHKA_CORS_ORIGINS=comma,separated
+    // (напр. https://admin.example.com). За замовчуванням — локальні + Tauri.
+    let mut origins = vec![
+        HeaderValue::from_static("tauri://localhost"),
+        HeaderValue::from_static("http://tauri.localhost"),
+        HeaderValue::from_static("http://localhost:5173"),
+        HeaderValue::from_static("http://127.0.0.1:5173"),
+        HeaderValue::from_static("http://localhost:8000"),
+        HeaderValue::from_static("http://127.0.0.1:8000"),
+    ];
+    if let Ok(extra) = std::env::var("TORGASHKA_CORS_ORIGINS") {
+        for origin in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(v) = HeaderValue::from_str(origin) {
+                if !origins.contains(&v) {
+                    origins.push(v);
+                }
+            } else {
+                eprintln!(
+                    "[torgashka-api] TORGASHKA_CORS_ORIGINS: невірний origin пропущено: {origin}"
+                );
+            }
+        }
+    }
     let cors = CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("tauri://localhost"),
-            HeaderValue::from_static("http://tauri.localhost"),
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-            HeaderValue::from_static("http://localhost:8000"),
-            HeaderValue::from_static("http://127.0.0.1:8000"),
-        ])
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -728,7 +746,13 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/stores/:store_id/prro-settings",
             get(admin_prro::prro_settings),
-        )        .route(
+        )
+        // Міграція існуючих інсталяцій (Етап 6, §9): одиночна каса → мережа.
+        .route(
+            "/api/v1/admin/migrate/legacy",
+            post(admin_migrate::migrate_legacy),
+        )
+        .route(
             "/api/v1/admin/devices/:device_id",
             delete(network::delete_device),
         )
