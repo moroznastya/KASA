@@ -30,6 +30,29 @@ use uuid::Uuid;
 
 mod common;
 
+/// Застосувати схему БД (users/stores + owner-таблиці Частини 3) ОДИН раз на
+/// процес. ensure_schema ідемпотентний: порожня БД отримує повну схему
+/// (SCHEMA_SQL), мігрована — лише owner-DDL додатки. Без цього seed_store_and_users
+/// падає на порожній тестовій БД («relation "stores" does not exist»), бо
+/// ensure_schema виконується фасадом лише при старті (run_facade).
+/// Один виклик на процес (OnceCell) — паралельні тести не конкурують за
+/// CREATE TABLE на fresh-БД.
+static SCHEMA_ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+async fn apply_schema() {
+    SCHEMA_ONCE
+        .get_or_init(|| async {
+            let p = torgashka_infrastructure::db::connect_test_pool(5)
+                .await
+                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+            torgashka_infrastructure::db::ensure_schema(&p)
+                .await
+                .expect("ensure_schema на тестовій БД");
+            p.close().await;
+        })
+        .await;
+}
+
 /// Унікальний XFF-ключ rate limit на кожен тест-сценарій (ізоляція).
 const XFF_MAIN: &str = "203.0.113.10";
 const XFF_INVALID: &str = "203.0.113.77";
@@ -178,6 +201,7 @@ fn sha256_hex(s: &str) -> String {
 async fn activate_valid_code_returns_token_and_persists_hash() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
@@ -236,6 +260,7 @@ async fn activate_valid_code_returns_token_and_persists_hash() {
 async fn activate_invalid_code_404_then_rate_limit_429() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
@@ -267,6 +292,7 @@ async fn activate_invalid_code_404_then_rate_limit_429() {
 async fn regenerate_activation_code_changes_code() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
@@ -309,6 +335,7 @@ async fn regenerate_activation_code_changes_code() {
 async fn admin_devices_list_block_unblock_archive() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
@@ -433,6 +460,7 @@ async fn admin_devices_list_block_unblock_archive() {
 async fn admin_endpoints_require_owner_or_admin() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
@@ -476,6 +504,7 @@ async fn admin_endpoints_require_owner_or_admin() {
 async fn activate_missing_fields_400() {
     common::force_test_db();
     let pool = api_pool().await;
+    apply_schema().await;
     let _store = seed_store_and_users(&pool).await;
 
     let port = free_port().await;
