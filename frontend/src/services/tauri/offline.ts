@@ -302,6 +302,44 @@ export async function persistSyncStore(storeId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Увімкнути device-режим синхронізації (`server_url` + `device_token`).
+ * Викликається після успішної активації каси як мережевого пристрою
+ * (POST /api/v1/devices/activate — Етап 3).
+ *
+ * Rust (read_sync_auth): непустий `device_token` має ПРІОРИТЕТ над
+ * `api_token` (store_id не потрібен — сервер визначає точку з токена).
+ * `set_setting` автоматично (пере)запускає фонові push/pull-цикли —
+ * додаткових дій після виклику не потрібно.
+ *
+ * @returns true — збережено; false — не Tauri/помилка invoke
+ */
+export async function persistSyncDevice(serverUrl: string, deviceToken: string): Promise<boolean> {
+  try {
+    await invoke<void>('set_setting', { key: 'server_url', value: serverUrl });
+    await invoke<void>('set_setting', { key: 'device_token', value: deviceToken });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Вимкнути device-режим: `device_token` = порожній рядок (ключ не
+ * налаштовано; Rust повернеться до legacy api_token, якщо він є).
+ * `server_url` не чіпаємо — він спільний для обох режимів.
+ *
+ * @returns true — збережено; false — не Tauri/помилка invoke
+ */
+export async function clearSyncDevice(): Promise<boolean> {
+  try {
+    await invoke<void>('set_setting', { key: 'device_token', value: '' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 // ─── Статистика ─────────────────────────────────────────────────────────────
 
