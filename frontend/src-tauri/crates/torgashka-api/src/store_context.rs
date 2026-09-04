@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
 
-use crate::auth::Claims;
+use crate::auth::{Claims, DeviceCtx};
 use crate::AppState;
 
 /// Шляхи, що НЕ вимагають X-Store-Id (але потребують JWT-контексту).
@@ -85,6 +85,45 @@ pub async fn store_middleware(
             )
         }
     };
+    // Device-каса (Частина 4): Claims(role="device") поставлені
+    // auth_middleware за Bearer device_token на sync-шляхах. X-Store-Id
+    // ІГНОРУЄТЬСЯ — точка береться з DeviceCtx (захист від підміни точки
+    // касою). user_stores не перевіряємо: пристрій — не користувач, його
+    // немає в user_stores (check_store_access давав би 403).
+    if claims.role == "device" {
+        let dctx = match req.extensions().get::<DeviceCtx>().cloned() {
+            Some(c) => c,
+            None => {
+                return json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Відсутній контекст пристрою",
+                )
+            }
+        };
+        let ctx = StoreCtx {
+            user_id, // == dctx.device_id (claims.sub = device_id)
+            store_id: dctx.store_id,
+            role: "device".to_string(),
+        };
+        let pool = state.store_pool.clone();
+        return with_store_ctx(ctx, async move {
+            // Живість каси: last_seen_at=now() на кожен запит. devices БЕЗ RLS
+            // (політик немає) — оновлення безпечне в будь-якому контексті.
+            if let Some(sp) = pool {
+                if let Err(e) = sqlx::query(
+                    "UPDATE devices SET last_seen_at = now() WHERE id = $1",
+                )
+                .bind(user_id)
+                .execute(&sp)
+                .await
+                {
+                    eprintln!("[torgashka-api] store_middleware: оновлення last_seen_at: {e}");
+                }
+            }
+            next.run(req).await
+        })
+        .await;
+    }
     // Управління точками: X-Store-Id опційний.
     //   - POST /stores (створення нової точки) виконується З активної точки —
     //     заголовок несе джерело для копіювання налаштувань/шаблонів у нову;

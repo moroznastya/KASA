@@ -113,6 +113,7 @@ impl IntoResponse for SyncError {
 /// GET /api/v1/sync/master
 pub async fn master(
     State(state): State<AppState>,
+    Extension(claims): Extension<crate::auth::Claims>,
     Query(q): Query<MasterQuery>,
 ) -> Result<Json<MasterDelta>, SyncError> {
     // Валідація entity.
@@ -145,6 +146,20 @@ pub async fn master(
 
     let (changes, to, has_more) = fetch_delta(&pool, &q.entity, since).await?;
 
+    // Частина 4: device-каса — після УСПІШНОГО pull фіксуємо стан точки в
+    // store_sync_state (last_local_seq НЕ чіпаємо). JWT-каси/admin — без змін.
+    if claims.role == "device" {
+        let store_id = torgashka_infrastructure::store_ctx::current_store_ctx()
+            .map(|c| c.store_id);
+        if let (Some(store_id), Ok(device_id)) =
+            (store_id, uuid::Uuid::parse_str(&claims.sub))
+        {
+            if let Err(e) = upsert_store_sync_state(&pool, store_id, device_id).await {
+                eprintln!("[torgashka-api] sync/master: store_sync_state: {e}");
+            }
+        }
+    }
+
     Ok(Json(MasterDelta {
         entity: q.entity.clone(),
         since,
@@ -152,6 +167,27 @@ pub async fn master(
         has_more,
         changes,
     }))
+}
+
+/// Частина 4: фіксація стану sync точки після УСПІШНОЇ операції device-каси.
+/// Оновлюємо лише last_synced_at/status/device_id; last_local_seq НЕ чіпаємо
+/// (його просувають інші механізми). Таблиця БЕЗ RLS — звичайний UPSERT.
+async fn upsert_store_sync_state(
+    pool: &StorePool,
+    store_id: Uuid,
+    device_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO store_sync_state (store_id, device_id, last_synced_at, status) \
+         VALUES ($1, $2, now(), 'ok') \
+         ON CONFLICT (store_id) DO UPDATE \
+         SET device_id = EXCLUDED.device_id, last_synced_at = now(), status = 'ok'",
+    )
+    .bind(store_id)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // ─── Запити дельти по сутностях ─────────────────────────────────────────────
@@ -480,6 +516,16 @@ pub async fn push(
         results.push(
             process_push_item(&svc, &pool, item, cashier, ctx_store).await,
         );
+    }
+
+    // Частина 4: device-каса — після успішного прийому пакета (усі агрегати
+    // отримали результат) фіксуємо стан точки. JWT-каси/admin — без змін.
+    if claims.role == "device" {
+        if let Ok(device_id) = Uuid::parse_str(&claims.sub) {
+            if let Err(e) = upsert_store_sync_state(&pool, ctx_store, device_id).await {
+                eprintln!("[torgashka-api] sync/push: store_sync_state: {e}");
+            }
+        }
     }
     Ok(Json(results))
 }
