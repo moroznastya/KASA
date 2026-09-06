@@ -421,3 +421,22 @@ pub fn replace_dbname(url: &str, new_db: &str) -> Result<String, DbError> {
     }
     Ok(out)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Спільні SQL-хелпери провіжинінгу БД (використовуються repositories/setup.rs
+// та repositories/provision.rs — без дублів).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Quote SQL-ідентифікатора (для db_name / role у DDL; захист від ін'єкцій).
+pub fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Чи існує БД у PostgreSQL (pg_database).
+pub async fn database_exists(pool: &PgPool, db_name: &str) -> Result<bool, sqlx::Error> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+        .bind(db_name)
+        .fetch_one(pool)
+        .await?;
+    Ok(exists)
+}

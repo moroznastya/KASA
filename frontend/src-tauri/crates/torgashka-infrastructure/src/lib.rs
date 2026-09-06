@@ -21,6 +21,7 @@ pub mod ocr;
 pub mod offline;
 pub mod print;
 pub mod prro;
+pub mod provision;
 pub mod repositories;
 pub mod store_ctx;
 pub mod terminal;

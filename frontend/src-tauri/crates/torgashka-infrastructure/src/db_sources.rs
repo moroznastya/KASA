@@ -102,6 +102,11 @@ pub struct DbSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub password_encrypted: Option<String>,
+    /// Статус джерела (Етап «provisioning»): Some("provisioned_pending_activation")
+    /// = БД створено провіжинінгом, але джерело ще НЕ активоване власником.
+    /// None = звичайне джерело (старі файли читаються — backward compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 /// Вміст db_sources.toml. `sources` — Vec, щоб зберегти порядок таблиць
@@ -128,6 +133,8 @@ pub struct DbSourceView {
     pub has_password: bool,
     /// Чи є це джерело активним.
     pub is_active: bool,
+    /// Статус провіжинінгу (None для звичайних джерел / старих файлів).
+    pub status: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,6 +500,7 @@ mod tests {
                         database: "pos_system".to_string(),
                         user: "postgres".to_string(),
                         password_encrypted: None,
+                        status: None,
                     },
                 ),
                 (
@@ -504,6 +512,7 @@ mod tests {
                         database: "torgashka_dump".to_string(),
                         user: "backup".to_string(),
                         password_encrypted: None,
+                        status: None,
                     },
                 ),
             ],
@@ -637,6 +646,7 @@ mod tests {
             database: "mydb".to_string(),
             user: "u:ser".to_string(),
             password_encrypted: None,
+            status: None,
         };
         let url = build_url(&src, "p@ss/word");
         assert_eq!(url, "postgresql://u%3Aser:p%40ss%2Fword@db.internal/mydb");

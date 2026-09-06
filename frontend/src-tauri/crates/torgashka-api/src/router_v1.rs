@@ -722,6 +722,10 @@ pub fn build_router(state: AppState) -> Router {
             post(admin_db_sources::activate_source),
         )
         .route(
+            "/api/v1/admin/db-sources/provision",
+            post(admin_db_sources::provision_source),
+        )
+        .route(
             "/api/v1/admin/db-sources/export-dump",
             post(admin_db_sources::export_dump),
         )

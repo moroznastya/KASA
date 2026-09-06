@@ -52,6 +52,7 @@ use sqlx::postgres::PgPoolOptions;
 use torgashka_infrastructure::db_sources::{
     self, build_url, decrypt_password, encrypt_password, DbSource, DbSourcesError,
 };
+use torgashka_infrastructure::provision::{self, ProvisionError};
 
 use crate::{auth::Claims, auth_routes, AppState};
 
@@ -75,6 +76,17 @@ impl From<auth_routes::AuthRouteError> for DbSrcErr {
 impl From<DbSourcesError> for DbSrcErr {
     fn from(e: DbSourcesError) -> Self {
         DbSrcErr::BadRequest(e.to_string())
+    }
+}
+
+impl From<ProvisionError> for DbSrcErr {
+    fn from(e: ProvisionError) -> Self {
+        match e {
+            ProvisionError::DatabaseExists(db) => DbSrcErr::Conflict(format!(
+                "База даних '{db}' уже існує на цільовому сервері — виберіть інше ім'я"
+            )),
+            other => DbSrcErr::BadRequest(other.to_string()),
+        }
     }
 }
 
@@ -112,6 +124,9 @@ pub struct DbSourceDto {
     pub user: String,
     pub has_password: bool,
     pub is_active: bool,
+    /// Статус провіжинінгу: Some("provisioned_pending_activation") = БД створено
+    /// через /provision, але джерело ще НЕ активоване власником. None = звичайне.
+    pub status: Option<String>,
 }
 
 /// POST /db-sources — створення. `id` — ключ таблиці [sources.<id>] у toml.
@@ -211,6 +226,34 @@ pub struct ImportResponse {
     pub file: String,
 }
 
+/// Одноразові суперкористувацькі кредити (провіжинінг). НЕ зберігаються,
+/// НЕ логуються, НЕ включаються у відповідь.
+#[derive(Debug, Deserialize)]
+pub struct ProvisionSuperuser {
+    pub user: String,
+    pub password: String,
+}
+
+/// POST /admin/db-sources/provision — створення НОВОЇ БД на цільовому кластері
+/// + повна схема + роль torgashka_app (див. torgashka_infrastructure::provision).
+#[derive(Debug, Deserialize)]
+pub struct DbSourceProvision {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub host: String,
+    pub port: u16,
+    /// Ім'я НОВОЇ БД: ^[a-z_][a-z0-9_]{0,62}$ (має бути ВІЛЬНИМ на сервері).
+    pub database: String,
+    pub superuser: ProvisionSuperuser,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProvisionResponse {
+    pub source: DbSourceDto,
+    pub message: String,
+}
+
 // ─── Хелпери ────────────────────────────────────────────────────────────────
 
 async fn actor_claims(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr> {
@@ -220,12 +263,51 @@ async fn actor_claims(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr>
         .map_err(DbSrcErr::Auth)
 }
 
+/// Owner-only для НЕзворотних операцій власника мережі (provision):
+/// require_admin (401/403 для не-адміністраторів) + жорстка вимога role=owner
+/// (admin/store_manager → 403). require_admin лишається для старих ендпоінтів.
+async fn require_owner(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr> {
+    auth_routes::require_admin(state, claims)
+        .await
+        .map_err(DbSrcErr::Auth)?;
+    if claims.role != "owner" {
+        return Err(DbSrcErr::Auth(
+            torgashka_domain::AuthError::Forbidden(
+                "Доступ заборонено: операція доступна лише власнику мережі (role=owner)"
+                    .to_string(),
+            )
+            .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn id_valid(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Безпечне ім'я НОВОЇ БД: ^[a-z_][a-z0-9_]{0,62}$ (PG limit 63).
+fn db_name_valid(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+        _ => return false,
+    }
+    let mut n = 1usize;
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return false;
+        }
+        n += 1;
+        if n > 63 {
+            return false;
+        }
+    }
+    !name.is_empty()
 }
 
 fn path_source_id(raw: String) -> Result<String, DbSrcErr> {
@@ -276,6 +358,7 @@ fn dto(cfg: &db_sources::DbSourcesFile, id: &str, src: &DbSource) -> DbSourceDto
             .map(|p| !p.is_empty())
             .unwrap_or(false),
         is_active: cfg.active.as_deref() == Some(id),
+        status: src.status.clone(),
     }
 }
 
@@ -431,6 +514,7 @@ pub async fn create_source(
         database: body.database.trim().to_string(),
         user: body.user.trim().to_string(),
         password_encrypted,
+        status: None,
     };
     cfg.sources.push((body.id.clone(), src));
     db_sources::save(&cfg)?;
@@ -879,4 +963,125 @@ pub async fn import_dump(
         source_id: body.source_id,
         file: body.file,
     }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/v1/admin/db-sources/provision — Бекенд provisioning БД (Етап 1
+// sync-offline). Owner-only (require_owner: admin/store_manager → 403).
+// ─────────────────────────────────────────────────────────────────────────────
+// Логіка (деталі — torgashka_infrastructure::provision):
+//   1. валідація id / database / host / port / superuser;
+//   2. підключення суперкористувачем до host:port (БД postgres) + SELECT 1
+//      (не-localhost → sslmode=require);
+//   3. CREATE DATABASE <database> TEMPLATE template0 (існує → 409);
+//   4. повна схема SCHEMA_SQL (перевикористання, без копій);
+//   5. роль torgashka_app (NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE,
+//      автогенерований пароль) + GRANT-и на НОВУ БД;
+//   6. при частковому збої — DROP DATABASE IF EXISTS (cleanup у provision);
+//   7. збереження джерела у db_sources.toml: пароль ЛИШЕ через encrypt_password
+//      (AES-256-GCM), user=torgashka_app, status=provisioned_pending_activation;
+//   8. активація — НЕ автоматична: окремим POST /:id/activate (старий роут).
+// Суперкредити: одноразові, у відповідь/файл/логи НЕ потрапляють.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn provision_source(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<DbSourceProvision>,
+) -> Result<(StatusCode, Json<ProvisionResponse>), DbSrcErr> {
+    require_owner(&state, &claims).await?;
+
+    // ── 1. Валідація ────────────────────────────────────────────────────────
+    if !id_valid(&body.id) {
+        return Err(DbSrcErr::BadRequest(format!(
+            "Невірний id '{}' (дозволені літери/цифри/_/-, до 64 символів)",
+            body.id
+        )));
+    }
+    if !db_name_valid(&body.database) {
+        return Err(DbSrcErr::BadRequest(format!(
+            "Невірне ім'я нової БД '{}' (дозволені: ^[a-z_][a-z0-9_]{{0,62}}$ — малі літери/цифри/підкреслення, початок з літери або _)",
+            body.database
+        )));
+    }
+    if body.host.trim().is_empty() {
+        return Err(DbSrcErr::BadRequest(
+            "host не може бути порожнім".to_string(),
+        ));
+    }
+    if body.port == 0 {
+        return Err(DbSrcErr::BadRequest("port має бути 1..65535".to_string()));
+    }
+    if body.superuser.user.trim().is_empty() || body.superuser.password.is_empty() {
+        return Err(DbSrcErr::BadRequest(
+            "superuser.user і superuser.password обов'язкові (одноразові кредити, не зберігаються)"
+                .to_string(),
+        ));
+    }
+    // Джерело з таким id не має існувати у локальному конфігу.
+    let mut cfg = cfg_or_empty()?;
+    if cfg.sources.iter().any(|(sid, _)| sid == &body.id) {
+        return Err(DbSrcErr::Conflict(format!(
+            "Джерело '{}' уже існує",
+            body.id
+        )));
+    }
+
+    // ── 2–6. Провіжинінг БД (інфраструктура; cleanup при збої — там) ───────
+    let target = provision::ProvisionTarget {
+        host: body.host.trim().to_string(),
+        port: body.port,
+        database: body.database.trim().to_string(),
+        superuser: provision::SuperuserCreds {
+            user: body.superuser.user.trim().to_string(),
+            password: body.superuser.password.clone(),
+        },
+    };
+    let outcome = provision::provision_database(&target).await?;
+    // ← суперкредити більше не потрібні; у жодній гілці нижче не логуються.
+
+    // ── 7. Збереження джерела: пароль ЛИШЕ зашифрований (AES-256-GCM) ──────
+    let cfg_path = db_sources::write_path();
+    let encrypted = match encrypt_password(&cfg_path, &outcome.app_password) {
+        Ok(e) => e,
+        Err(e) => {
+            // БД вже створена на сервері — прибрати, щоб повтор був чистим.
+            provision::cleanup_provisioned_database(&target).await;
+            return Err(DbSrcErr::Internal(format!(
+                "не вдалося зашифрувати пароль джерела (БД '{0}' прибрано): {e}",
+                outcome.database
+            )));
+        }
+    };
+    let src = DbSource {
+        label: body.label.filter(|l| !l.trim().is_empty()),
+        host: target.host.clone(),
+        port: target.port,
+        database: outcome.database.clone(),
+        user: outcome.app_user.clone(),
+        password_encrypted: Some(encrypted),
+        status: Some("provisioned_pending_activation".to_string()),
+    };
+    cfg.sources.push((body.id.clone(), src));
+    if let Err(e) = db_sources::save(&cfg) {
+        provision::cleanup_provisioned_database(&target).await;
+        return Err(DbSrcErr::Internal(format!(
+            "не вдалося зберегти db_sources.toml (БД '{0}' прибрано): {e}",
+            outcome.database
+        )));
+    }
+    let created = dto(&cfg, &body.id, find_source(&cfg, &body.id)?);
+    eprintln!(
+        "[torgashka-api] db-sources: provision створено джерело '{}' (БД '{}', НЕ активовано)",
+        body.id, outcome.database
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(ProvisionResponse {
+            source: created,
+            message:
+                "Базу даних створено та схему накатано. Джерело НЕ активовано: активація — окремим підтвердженням власника (POST /:id/activate) після перевірки з'єднання."
+                    .to_string(),
+        }),
+    ))
 }

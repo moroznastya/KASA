@@ -30,7 +30,7 @@ use chrono::Utc;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-use crate::db::{replace_dbname, resolve_database_url, SCHEMA_SQL};
+use crate::db::{database_exists, quote_ident, replace_dbname, resolve_database_url, SCHEMA_SQL};
 use crate::store_ctx::StorePool;
 use torgashka_domain::{
     owner_permissions, owner_user_dto, LoginResult, SetupError, SetupRequest, SetupService,
@@ -63,27 +63,10 @@ impl<T> SqlxResultExt<T> for Result<T, sqlx::Error> {
     }
 }
 
-/// Quote SQL-ідентифікатора (для db_name — генерується з hex UUID, але
-/// захищаємось від ін'єкцій на майбутнє).
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
-/// Чи існує БД у PostgreSQL.
-async fn database_exists(pool: &StorePool, db_name: &str) -> Result<bool, SetupError> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-            .bind(db_name)
-            .fetch_one(pool)
-            .await
-            .se()?;
-    Ok(exists)
-}
-
 /// Створює шаблонну БД torgashka_template (TEMPLATE template0) і застосовує
 /// повну схему. Ідемпотентно: якщо вже існує — нічого не робить.
 async fn ensure_template_database(pool: &StorePool) -> Result<(), SetupError> {
-    if database_exists(pool, TEMPLATE_DB_NAME).await? {
+    if database_exists(&pool.0, TEMPLATE_DB_NAME).await.se()? {
         return Ok(());
     }
     // CREATE DATABASE неможливий у транзакції — окремий запит на з'єднанні пулу.
@@ -138,7 +121,7 @@ async fn create_owner_database(pool: &StorePool, owner_id: Uuid) -> Result<Strin
     ensure_template_database(pool).await?;
     let short = owner_id.simple().to_string();
     let db_name = format!("torgashka_owner_{}", &short[..8]);
-    if !database_exists(pool, &db_name).await? {
+    if !database_exists(&pool.0, &db_name).await.se()? {
         sqlx::raw_sql(&format!(
             "CREATE DATABASE {} TEMPLATE {}",
             quote_ident(&db_name),
