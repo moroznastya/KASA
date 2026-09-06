@@ -2,6 +2,8 @@ import api from './api';
 import {
   ActivateResult,
   DbSourceCreate,
+  DbSourceProvision,
+  DbSourceProvisionResult,
   DbSourcesList,
   DbSourceUpdate,
   DbSourceView,
@@ -17,6 +19,7 @@ import {
  * owner|store_manager|admin; поза store_middleware):
  *   GET    /admin/db-sources                 → { active, config_path, sources[] }
  *   POST   /admin/db-sources                 → створити джерело
+ *   POST   /admin/db-sources/provision      → створити НОВУ БД (superuser)
  *   PUT    /admin/db-sources/:id             → редагування (пароль — опційно)
  *   DELETE /admin/db-sources/:id             → видалити (НЕ активне)
  *   POST   /admin/db-sources/:id/test        → реальний пінг (TCP + SELECT 1)
@@ -49,6 +52,14 @@ export const dbSourcesService = {
 
   async create(body: DbSourceCreate): Promise<DbSourceView> {
     const response = await api.post<DbSourceView>('/admin/db-sources', body);
+    return response.data;
+  },
+
+  /** Провіжинінг: створити НОВУ порожню БД на PostgreSQL-кластері
+   *  (схема + роль додатку). Відповідь: source зі status
+   *  "provisioned_pending_activation" + message. */
+  async provision(body: DbSourceProvision): Promise<DbSourceProvisionResult> {
+    const response = await api.post<DbSourceProvisionResult>('/admin/db-sources/provision', body);
     return response.data;
   },
 

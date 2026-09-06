@@ -14,7 +14,6 @@ import {
   FileText,
   Tag,
   Plus,
-  Pencil,
   Power,
   PowerOff,
   KeyRound,

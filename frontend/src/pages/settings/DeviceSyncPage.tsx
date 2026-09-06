@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Radio, CheckCircle2, XCircle, Loader2, MonitorSmartphone } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Radio, CheckCircle2, XCircle, Loader2, MonitorSmartphone, KeyRound, FileCode2, FileUp } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -11,6 +11,8 @@ import {
   forgetDeviceActivation,
   readLocalDeviceState,
 } from '@/services/deviceActivationService';
+import { parseNetworkConfigFile } from '@/services/networkConfigService';
+import type { NetworkConfigFile } from '@/types/networkConfig';
 
 /**
  * «Мережева каса» — активація каси як мережевого пристрою (device-режим
@@ -36,6 +38,12 @@ const DeviceSyncPage: React.FC = () => {
   const [deactivating, setDeactivating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // ── Спосіб активації (неактивний стан) ──────
+  const [mode, setMode] = useState<'code' | 'file'>('code');
+  const [importedConfig, setImportedConfig] = useState<NetworkConfigFile | null>(null);
+  const [localName, setLocalName] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Первинний стан: префіл server_url + активність device-режиму ──
   useEffect(() => {
@@ -73,6 +81,33 @@ const DeviceSyncPage: React.FC = () => {
     };
   }, [isDesktop]);
 
+  // Локальний імпорт конфіг-файлу мережі (schema_version=1): лише парсинг,
+  // HTTP не викликаємо — заповнюємо serverUrl/code для існуючого activateDevice.
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // дозволяє повторно обрати той самий файл
+    if (!file) return;
+    setError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const cfg = parseNetworkConfigFile(String(reader.result ?? ''));
+        setImportedConfig(cfg);
+        setServerUrl(normalizeServerUrl(cfg.server_url));
+        setCode(cfg.store.activation_code);
+        setLocalName(cfg.store.name);
+      } catch (err) {
+        setImportedConfig(null);
+        setError(err instanceof Error ? err.message : 'Не вдалося прочитати конфігурацію');
+      }
+    };
+    reader.onerror = () => {
+      setImportedConfig(null);
+      setError('Не вдалося прочитати файл');
+    };
+    reader.readAsText(file);
+  };
+
   const handleActivate = async () => {
     setError(null);
     setSuccess(null);
@@ -94,12 +129,16 @@ const DeviceSyncPage: React.FC = () => {
       rememberDeviceActivation(result, normUrl);
 
       setDeviceActive(true);
-      setStoreName(result.store_name);
+      // Імпорт-режим: дозволяємо локальну назву каси (інакше — серверна).
+      const chosenName = mode === 'file' && localName.trim() ? localName.trim() : result.store_name;
+      setStoreName(chosenName);
       setStoreId(result.store_id);
       setCode('');
       if (saved) {
         setSuccess(
-          `Пристрій активовано: «${result.store_name}». Device-режим увімкнено, фонові синки запущено.`
+          mode === 'file'
+            ? 'Точку додано в мережу, синхронізацію запущено'
+            : `Пристрій активовано: «${result.store_name}». Device-режим увімкнено, фонові синки запущено.`
         );
       } else {
         // Браузер або стара версія без set_setting: сервер активацію підтвердив,
@@ -108,6 +147,10 @@ const DeviceSyncPage: React.FC = () => {
           `Сервер підтвердив активацію: «${result.store_name}». Але зберегти токен у налаштування каси не вдалося — повноцінний device-режим працює лише в десктоп-версії Torgashka.`
         );
       }
+      // Повертаємось до стандартного способу (код) на випадок повторної активації.
+      setMode('code');
+      setImportedConfig(null);
+      setLocalName('');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Помилка активації. Спробуйте ще раз.');
     } finally {
@@ -128,6 +171,9 @@ const DeviceSyncPage: React.FC = () => {
       setDeviceActive(false);
       setStoreName(null);
       setStoreId(null);
+      setMode('code');
+      setImportedConfig(null);
+      setLocalName('');
       setSuccess('Device-режим вимкнено. Каса повернулась до звичайного режиму синхронізації (JWT).');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Помилка деактивації');
@@ -229,35 +275,151 @@ const DeviceSyncPage: React.FC = () => {
               </Button>
             </div>
           ) : (
-            <div className="space-y-4">
-              <Input
-                label="Адреса сервера"
-                value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="http://192.168.1.10:8000"
-                helperText="Без /api/v1 — система додає шлях сама"
-                inputClassName="w-full"
-              />
-              <Input
-                label="Код активації"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="XXXXXXX (A-Z, 0-9)"
-                helperText="Видається адміністратором у панелі керування сервера"
-                inputClassName="w-full"
-                maxLength={9}
-              />
-              <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-200 dark:border-slate-700">
-                <Button
+            <div className="space-y-5">
+              {/* Вибір способу активації */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
                   type="button"
-                  onClick={handleActivate}
-                  isLoading={activating}
-                  className="flex items-center gap-2"
+                  onClick={() => setMode('code')}
+                  className={`text-left p-4 rounded-xl border-2 transition-colors ${
+                    mode === 'code'
+                      ? 'border-primary-500 bg-primary-50/60 dark:bg-primary-900/10'
+                      : 'border-gray-200 dark:border-slate-700 hover:border-gray-300 dark:hover:border-slate-600'
+                  }`}
                 >
-                  {activating ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Активувати пристрій
-                </Button>
+                  <KeyRound
+                    className={`w-5 h-5 mb-2 ${mode === 'code' ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'}`}
+                  />
+                  <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    Код активації
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Введіть код, виданий адміністратором сервера
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('file')}
+                  className={`text-left p-4 rounded-xl border-2 transition-colors ${
+                    mode === 'file'
+                      ? 'border-primary-500 bg-primary-50/60 dark:bg-primary-900/10'
+                      : 'border-gray-200 dark:border-slate-700 hover:border-gray-300 dark:hover:border-slate-600'
+                  }`}
+                >
+                  <FileCode2
+                    className={`w-5 h-5 mb-2 ${mode === 'file' ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'}`}
+                  />
+                  <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    Файл конфігурації мережі
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Імпортуйте .json, отриманий від власника мережі
+                  </div>
+                </button>
               </div>
+
+              {mode === 'code' ? (
+                /* ── Спосіб 1: ручний код (існуюча форма, без змін) ── */
+                <div className="space-y-4">
+                  <Input
+                    label="Адреса сервера"
+                    value={serverUrl}
+                    onChange={(e) => setServerUrl(e.target.value)}
+                    placeholder="http://192.168.1.10:8000"
+                    helperText="Без /api/v1 — система додає шлях сама"
+                    inputClassName="w-full"
+                  />
+                  <Input
+                    label="Код активації"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                    placeholder="XXXXXXX (A-Z, 0-9)"
+                    helperText="Видається адміністратором у панелі керування сервера"
+                    inputClassName="w-full"
+                    maxLength={9}
+                  />
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-200 dark:border-slate-700">
+                    <Button
+                      type="button"
+                      onClick={handleActivate}
+                      isLoading={activating}
+                      className="flex items-center gap-2"
+                    >
+                      {activating ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                      Активувати пристрій
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                /* ── Спосіб 2: конфіг-файл мережі (локальний імпорт) ── */
+                <div className="space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border border-dashed border-gray-300 dark:border-slate-600 bg-gray-50/60 dark:bg-slate-900/30">
+                    <FileUp className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                    <div className="flex-1 text-sm text-gray-600 dark:text-gray-300">
+                      Конфіг-файл мережі (.json) містить адресу сервера та код активації
+                      точки — назва та мережа підставляться автоматично.
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      icon={<FileUp className="w-3.5 h-3.5" />}
+                    >
+                      {importedConfig ? 'Замінити файл' : 'Імпортувати конфігурацію'}
+                    </Button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={handleFileSelected}
+                    />
+                  </div>
+
+                  {importedConfig && (
+                    <div className="space-y-4 p-4 rounded-xl border border-success-200 dark:border-success-800 bg-success-50/40 dark:bg-success-900/10">
+                      <div className="text-sm text-gray-700 dark:text-gray-200 space-y-1">
+                        <p>
+                          <span className="text-xs text-gray-400 dark:text-gray-500">Точка: </span>
+                          <b>{importedConfig.store.name}</b>
+                        </p>
+                        <p>
+                          <span className="text-xs text-gray-400 dark:text-gray-500">Мережа: </span>
+                          {importedConfig.network_id.slice(0, 8)}…
+                        </p>
+                      </div>
+                      <Input
+                        label="Адреса сервера"
+                        value={serverUrl}
+                        onChange={(e) => setServerUrl(e.target.value)}
+                        placeholder="http://192.168.1.10:8000"
+                        helperText="З файлу; можна змінити (без /api/v1)"
+                        inputClassName="w-full"
+                      />
+                      <Input
+                        label="Назва точки (локальна)"
+                        value={localName}
+                        onChange={(e) => setLocalName(e.target.value)}
+                        placeholder={importedConfig.store.name}
+                        helperText="Опційно; за замовчуванням — назва з файлу. Показується локально на цій касі."
+                        inputClassName="w-full"
+                      />
+                      <div className="flex items-center justify-end gap-3 pt-2 border-t border-success-200 dark:border-success-800">
+                        <Button
+                          type="button"
+                          onClick={handleActivate}
+                          isLoading={activating}
+                          className="flex items-center gap-2"
+                        >
+                          {activating ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                          Активувати
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

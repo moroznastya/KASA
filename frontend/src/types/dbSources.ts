@@ -8,6 +8,9 @@ export interface DbSourceView {
   user: string;
   has_password: boolean;
   is_active: boolean;
+  /** Статус провіжинінгу: "provisioned_pending_activation" = БД створено через
+   *  /provision, джерело ще НЕ активоване власником. None = звичайне. */
+  status?: string | null;
 }
 
 export interface DbSourcesList {
@@ -34,6 +37,27 @@ export interface DbSourceUpdate {
   user?: string;
   /** '' — очистити пароль; задане значення — перешифрувати; undefined — без змін. */
   password?: string;
+}
+
+export interface DbSourceProvisionSuperuser {
+  user: string;
+  password: string;
+}
+
+/** POST /admin/db-sources/provision — створити НОВУ БД на кластері. */
+export interface DbSourceProvision {
+  id: string;
+  label?: string;
+  host: string;
+  port: number;
+  /** Ім'я НОВОЇ БД (має бути вільним): ^[a-z_][a-z0-9_]{0,62}$ */
+  database: string;
+  superuser: DbSourceProvisionSuperuser;
+}
+
+export interface DbSourceProvisionResult {
+  source: DbSourceView;
+  message: string;
 }
 
 export interface ActivateResult {

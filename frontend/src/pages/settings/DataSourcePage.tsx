@@ -28,7 +28,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import { dbSourcesService, extractDetail } from '@/services/dbSourcesService';
-import type { DbSourceView } from '@/types/dbSources';
+import type { DbSourceProvision, DbSourceProvisionResult, DbSourceView } from '@/types/dbSources';
 
 const formatBytes = (b: number): string => {
   if (b < 1024) return `${b} Б`;
@@ -56,6 +56,175 @@ const emptyForm: SourceForm = {
   password: '',
 };
 
+interface ProvisionForm {
+  id: string;
+  label: string;
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  password: string;
+}
+
+const emptyProvisionForm: ProvisionForm = {
+  id: '',
+  label: '',
+  host: '127.0.0.1',
+  port: '5432',
+  database: '',
+  user: '',
+  password: '',
+};
+
+/** Ім'я НОВОї БД (серверне обмеження): ^[a-z_][a-z0-9_]{0,62}$ */
+const DB_NAME_RE = /^[a-z_][a-z0-9_]{0,62}$/;
+
+/**
+ * Вкладка «Створити нову БД» (POST /admin/db-sources/provision).
+ *
+ * Провіжинінг: на PostgreSQL-кластері (host:port) від імені superuser
+ * створюється НОВА порожня БД з повною схемою та роллю додатку.
+ * Superuser-креденшели — одноразові: сервер їх НЕ зберігає. Після успіху
+ * джерело з'являється у списку зі статусом «створено, не активовано»;
+ * активація — окремим підтвердженням власника («Зробити активним») +
+ * перезапуск сервісу (див. блок-попередження на сторінці).
+ */
+const ProvisionSourceCard: React.FC<{ onCreated: () => void }> = ({ onCreated }) => {
+  const [form, setForm] = useState<ProvisionForm>(emptyProvisionForm);
+
+  const provisionMutation = useMutation({
+    mutationFn: (body: DbSourceProvision) => dbSourcesService.provision(body),
+    onSuccess: (res: DbSourceProvisionResult) => {
+      toast.success(res.message || `Джерело «${form.id}» створено`);
+      setForm(emptyProvisionForm);
+      onCreated();
+    },
+    onError: (err: unknown) => toast.error(extractDetail(err)),
+  });
+
+  const valid =
+    !!form.id.trim() &&
+    !!form.host.trim() &&
+    Number(form.port) > 0 &&
+    Number(form.port) < 65536 &&
+    DB_NAME_RE.test(form.database.trim()) &&
+    !!form.user.trim() &&
+    !!form.password;
+
+  const submit = () => {
+    if (!valid) {
+      toast.error('Заповніть усі поля форми (ім\'я БД — латиниця, з літери або _)');
+      return;
+    }
+    provisionMutation.mutate({
+      id: form.id.trim(),
+      label: form.label.trim() || undefined,
+      host: form.host.trim(),
+      port: Number(form.port),
+      database: form.database.trim(),
+      superuser: { user: form.user.trim(), password: form.password },
+    });
+  };
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 p-5 space-y-4">
+      <div>
+        <h2 className="font-semibold text-gray-900 dark:text-white">Нова база даних на сервері</h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          PostgreSQL-кластер створює порожню БД зі схемою та роллю додатку — без
+          ручних дій на сервері БД.
+        </p>
+      </div>
+
+      <div className="flex items-start gap-2 p-3 rounded-lg border border-sky-200 dark:border-sky-900/40 bg-sky-50 dark:bg-sky-900/10 text-sm text-sky-800 dark:text-sky-200">
+        <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
+        <p>
+          Після створення джерело має статус <b>«створено, не активовано»</b>: активація —
+          окремим підтвердженням власника (кнопка «Зробити активним» на рядку джерела),
+          застосується після перезапуску сервісу.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Input
+          label="ID (ключ у db_sources.toml)"
+          value={form.id}
+          onChange={(e) => setForm({ ...form, id: e.target.value })}
+          placeholder="primary_new / office_kiev"
+          helperText="Літери, цифри, _ та - (до 64 символів)"
+          required
+        />
+        <Input
+          label="Назва (опційно)"
+          value={form.label}
+          onChange={(e) => setForm({ ...form, label: e.target.value })}
+          placeholder="Основна БД Київ"
+        />
+        <Input
+          label="Хост PostgreSQL"
+          value={form.host}
+          onChange={(e) => setForm({ ...form, host: e.target.value })}
+          placeholder="127.0.0.1"
+        />
+        <Input
+          label="Порт"
+          type="number"
+          value={form.port}
+          onChange={(e) => setForm({ ...form, port: e.target.value })}
+          placeholder="5432"
+        />
+        <div className="sm:col-span-2">
+          <Input
+            label="Ім'я НОВОЇ бази даних"
+            value={form.database}
+            onChange={(e) => setForm({ ...form, database: e.target.value })}
+            placeholder="torgashka_kiev"
+            helperText="Має бути вільним на сервері: латиниця, з літери або _ (до 63 символів)"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+          Суперкористувач кластера (створення БД)
+        </h4>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 mb-3">
+          Креденшели використовуються <b>одноразово</b> і не зберігаються сервером.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Input
+            label="Користувач"
+            value={form.user}
+            onChange={(e) => setForm({ ...form, user: e.target.value })}
+            placeholder="postgres"
+            required
+          />
+          <Input
+            label="Пароль"
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            placeholder="••••••••"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2 pt-2 border-t border-gray-200 dark:border-slate-700">
+        <Button
+          onClick={submit}
+          isLoading={provisionMutation.isPending}
+          disabled={!valid}
+          icon={provisionMutation.isPending ? undefined : <Database className="w-4 h-4" />}
+        >
+          {provisionMutation.isPending ? 'Створення…' : 'Створити та підготувати БД'}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
 // ═══════════════════════════════════════════════════════════════
 // СТОРІНКА: Налаштування → Джерело даних (Етап 3 адмін-панелі)
 // ═══════════════════════════════════════════════════════════════
@@ -75,6 +244,9 @@ const DataSourcePage: React.FC = () => {
   const sources = data?.sources ?? [];
   const active = data?.active ?? null;
   const activeSource = sources.find((s) => s.id === active) ?? null;
+
+  // ── Вкладки: «Підключити наявну» / «Створити нову БД» ──
+  const [tab, setTab] = useState<'connect' | 'provision'>('connect');
 
   // ── Форма (створення/редагування) ────────────
   const [formOpen, setFormOpen] = useState(false);
@@ -291,11 +463,43 @@ const DataSourcePage: React.FC = () => {
             </code>
           </p>
         </div>
-        <Button onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
-          Додати джерело
-        </Button>
       </div>
 
+      {/* Вкладки: два шляхи підключення БД */}
+      <div className="inline-flex items-center gap-1 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-100/70 dark:bg-slate-800 p-1">
+        <button
+          type="button"
+          onClick={() => setTab('connect')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            tab === 'connect'
+              ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+          }`}
+        >
+          Підключити наявну
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('provision')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            tab === 'provision'
+              ? 'bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-sm'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+          }`}
+        >
+          Створити нову БД
+        </button>
+      </div>
+
+      {tab === 'provision' ? (
+        <ProvisionSourceCard
+          onCreated={() => {
+            invalidate();
+            setTab('connect');
+          }}
+        />
+      ) : (
+        <>
       {/* Інформаційний блок: поведінка активації (stability_first) */}
       <div className="flex gap-3 p-4 rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/10 text-sm text-amber-800 dark:text-amber-200">
         <Info className="w-5 h-5 flex-shrink-0 mt-0.5" />
@@ -316,6 +520,17 @@ const DataSourcePage: React.FC = () => {
       </div>
 
       {/* Список джерел */}
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-semibold text-gray-900 dark:text-white">
+          Джерела даних
+          <span className="ml-2 text-sm font-normal text-gray-400 dark:text-gray-500">
+            ({sources.length})
+          </span>
+        </h2>
+        <Button onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+          Додати джерело
+        </Button>
+      </div>
       <div className="space-y-3">
         {sources.length === 0 && (
           <div className="text-center py-10 text-gray-500 dark:text-gray-400 border border-dashed border-gray-300 dark:border-slate-600 rounded-xl">
@@ -340,6 +555,9 @@ const DataSourcePage: React.FC = () => {
                       <CheckCircle2 className="w-3 h-3 mr-1 inline" /> Активне
                     </Badge>
                   )}
+                  {!s.is_active && s.status === 'provisioned_pending_activation' && (
+                    <Badge variant="warning">створено, не активовано</Badge>
+                  )}
                   <Badge variant="default">{s.id}</Badge>
                 </div>
                 <div className="mt-1 text-sm text-gray-600 dark:text-gray-300 flex items-center gap-1.5 flex-wrap">
@@ -354,6 +572,12 @@ const DataSourcePage: React.FC = () => {
                 {s.is_active && activeSource && (
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                     Застосується після перезапуску сервісу.
+                  </p>
+                )}
+                {!s.is_active && s.status === 'provisioned_pending_activation' && (
+                  <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    Створено провіжинінгом. Активація — кнопкою «Зробити активним»
+                    (сервер перевірить з'єднання; застосується після перезапуску).
                   </p>
                 )}
               </div>
@@ -477,6 +701,8 @@ const DataSourcePage: React.FC = () => {
           </div>
         )}
       </div>
+        </>
+      )}
 
       {/* Модалка: додати/редагувати джерело */}
       <Modal
