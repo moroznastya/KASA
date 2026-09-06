@@ -263,24 +263,8 @@ async fn actor_claims(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr>
         .map_err(DbSrcErr::Auth)
 }
 
-/// Owner-only для НЕзворотних операцій власника мережі (provision):
-/// require_admin (401/403 для не-адміністраторів) + жорстка вимога role=owner
-/// (admin/store_manager → 403). require_admin лишається для старих ендпоінтів.
-async fn require_owner(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr> {
-    auth_routes::require_admin(state, claims)
-        .await
-        .map_err(DbSrcErr::Auth)?;
-    if claims.role != "owner" {
-        return Err(DbSrcErr::Auth(
-            torgashka_domain::AuthError::Forbidden(
-                "Доступ заборонено: операція доступна лише власнику мережі (role=owner)"
-                    .to_string(),
-            )
-            .into(),
-        ));
-    }
-    Ok(())
-}
+/// Спільний owner-check — auth_routes::require_owner (без дублів):
+/// require_admin (401/403) + жорстка вимога role=owner (admin/store_manager → 403).
 
 fn id_valid(id: &str) -> bool {
     !id.is_empty()
@@ -989,7 +973,9 @@ pub async fn provision_source(
     Extension(claims): Extension<Claims>,
     Json(body): Json<DbSourceProvision>,
 ) -> Result<(StatusCode, Json<ProvisionResponse>), DbSrcErr> {
-    require_owner(&state, &claims).await?;
+    let _owner_id = auth_routes::require_owner(&state, &claims)
+        .await
+        .map_err(DbSrcErr::Auth)?;
 
     // ── 1. Валідація ────────────────────────────────────────────────────────
     if !id_valid(&body.id) {

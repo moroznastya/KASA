@@ -155,6 +155,25 @@ pub(crate) async fn require_admin(
     Ok(user_id)
 }
 
+/// Owner-only: require_admin + жорстка вимога role=owner
+/// (admin/store_manager → 403 Forbidden). Для незворотних операцій власника
+/// мережі (/admin/db-sources/provision, /admin/network-config/*), де навіть
+/// admin/store_manager не мають права діяти від імені власника мережі.
+pub(crate) async fn require_owner(
+    state: &AppState,
+    claims: &Claims,
+) -> Result<Uuid, AuthRouteError> {
+    let user_id = require_admin(state, claims).await?;
+    if claims.role != "owner" {
+        return Err(AuthError::Forbidden(
+            "Доступ заборонено: операція доступна лише власнику мережі (role=owner)"
+                .to_string(),
+        )
+        .into());
+    }
+    Ok(user_id)
+}
+
 /// Перевірка ролі admin для settings (Python: `current_user.!matches!(role.as_str(), "admin" | "owner")` → 403).
 async fn ensure_settings_admin(state: &AppState, claims: &Claims) -> Result<Uuid, AuthRouteError> {
     let repo = auth_repo(state)?;

@@ -410,11 +410,27 @@ pub async fn generate_activation_code(
     if exists.is_none() {
         return Err(NetworkErr::NotFound("Точку не знайдено".to_string()));
     }
+    // (Пере)генерація коду — спільний хелпер (без дублів з network-config export).
+    let code = ensure_activation_code(&pool, store_id, admin_id).await?;
+    Ok(Json(serde_json::json!({"code": code})))
+}
+
+/// Спільний (пере)генератор коду активації точки: upsert за store_id
+/// (новий код при кожному виклику, regenerated_at=now()); UNIQUE(code) може
+/// конфліктувати з кодом ІНШОЇ точки (23505) — генеруємо новий код і
+/// повторюємо (до 8 спроб). Використовується і
+/// POST /admin/stores/:store_id/activation-code (network.rs), і
+/// POST /admin/network-config/export (admin_network_config.rs) — без дублів.
+pub(crate) async fn ensure_activation_code(
+    pool: &PgPool,
+    store_id: Uuid,
+    admin_id: Uuid,
+) -> Result<String, NetworkErr> {
     let had_code: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM store_activation_codes WHERE store_id = $1)",
     )
     .bind(store_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await?;
 
     // Upsert за store_id; UNIQUE(code) може конфліктувати з кодом ІНШОЇ
@@ -431,13 +447,13 @@ pub async fn generate_activation_code(
         .bind(store_id)
         .bind(&code)
         .bind(admin_id)
-        .fetch_optional(&pool)
+        .fetch_optional(pool)
         .await;
 
         match res {
             Ok(Some(final_code)) => {
                 audit(
-                    &pool,
+                    pool,
                     admin_id,
                     "activation_code_generated",
                     "store",
@@ -449,7 +465,7 @@ pub async fn generate_activation_code(
                     }),
                 )
                 .await;
-                return Ok(Json(serde_json::json!({"code": final_code})));
+                return Ok(final_code);
             }
             Ok(None) => {
                 // INSERT ... RETURNING завжди повертає рядок — неочікувано.

@@ -19,7 +19,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    admin, admin_audit, admin_db_sources, admin_migrate, admin_prro, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    admin, admin_audit, admin_db_sources, admin_migrate, admin_network_config, admin_prro, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
     network, ocr,
     pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
     setup, store_context, stores, suppliers, sync, AppState,
@@ -728,6 +728,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/db-sources/export-dump",
             post(admin_db_sources::export_dump),
+        )
+        .route(
+            "/api/v1/admin/network-config/export",
+            post(admin_network_config::export_config),
+        )
+        .route(
+            "/api/v1/admin/network-config/import",
+            post(admin_network_config::import_config),
         )
         .route(
             "/api/v1/admin/db-sources/import-dump",
