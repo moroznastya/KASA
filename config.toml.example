@@ -63,3 +63,26 @@ resolve_ttl = 60
 # NOCREATEROLE) з паролем app_db_password, і на неї призначаються гранти
 # (мета-БД + шаблон + owner-БД). Окремий ручний запуск create_app_role.sql
 # потрібен лише якщо роль має існувати ДО першого setup.
+
+# ============================================================================
+# [server] — режим запуску (ЕТАП 0 «Мережева доступність сервера», sync-offline)
+# ============================================================================
+# Можливі значення mode:
+#   "desktop" — Tauri-застосунок на машині магазину (ЛОКАЛЬНИЙ фасад,
+#               слухає 127.0.0.1:8000);
+#   "server"  — виділений сервер мережі магазинів (VPS+VPN, фасад слухає
+#               VPN-IP:8000, до нього підключаються каси магазинів).
+#
+# ⚠️ ПРІОРИТЕТ: env TORGASHKA_FACADE_ADDR МАЄ ПРІОРИТЕТ над addr з цієї секції
+#    (bin/facade.rs: std::env::var("TORGASHKA_FACADE_ADDR")
+#    .unwrap_or(DEFAULT_FACADE_ADDR="127.0.0.1:8000")).
+#    Тобто:
+#      - задали TORGASHKA_FACADE_ADDR=<vpn-ip>:8000 у systemd/env → server-режим;
+#      - НЕ задали → фасад слухає 127.0.0.1:8000 (desktop/dev за замовчуванням).
+#    Ця секція — декларативний опис режиму; фактична адреса береться з env.
+#    На сервері задавайте через /etc/torgashka/facade.env (див.
+#    deploy/network/torgashka-facade.service та deploy/network/README.md).
+#
+# [server]
+# mode = "desktop"   # або "server"
+# addr = "127.0.0.1:8000"   # інформаційно: env TORGASHKA_FACADE_ADDR виграє
