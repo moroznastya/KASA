@@ -673,6 +673,10 @@ pub fn build_router(state: AppState) -> Router {
             get(admin::list_workers).post(admin::create_worker),
         )
         .route(
+            "/api/v1/admin/stores/:store_id/delete",
+            post(admin::delete_empty_store),
+        )
+        .route(
             "/api/v1/admin/users/:user_id/deactivate",
             post(admin::deactivate_user),
         )

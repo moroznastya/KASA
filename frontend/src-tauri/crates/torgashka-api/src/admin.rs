@@ -9,6 +9,9 @@
 //   GET    /api/v1/admin/stores/:store_id              → AdminStoreDto (з лічильниками)
 //   PUT    /api/v1/admin/stores/:store_id              → редагування (у т.ч. legal_name/edrpou)
 //   DELETE /api/v1/admin/stores/:store_id              → АРХІВАЦІЯ (is_active=false)
+//   POST   /api/v1/admin/stores/:store_id/delete       → ФІЗИЧНЕ видалення ЛИШЕ
+//                                                          порожньої точки (owner;
+//                                                          є дані → 409; 204)
 //   GET    /api/v1/admin/stores/:store_id/workers      → працівники точки
 //   POST   /api/v1/admin/stores/:store_id/workers      → створити працівника + прив'язка
 //   POST   /api/v1/admin/users/:user_id/deactivate     → is_active=false (БЕЗ видалення)
@@ -483,6 +486,115 @@ pub async fn archive_store(
         "archived_devices": archived,
         "warning": warning,
     })))
+}
+
+// ─── POST /api/v1/admin/stores/:store_id/delete (ФІЗИЧНЕ видалення) ─────────
+// Відрізняється від DELETE /admin/stores/:id (АРХІВАЦІЯ — is_active=false, дані
+// зберігаються; це публічний контракт UI archiveStore). Цей ендпоінт видаляє
+// ЛИШЕ «порожню» точку, створену помилково: фізичний DELETE рядка stores +
+// каскадні дані. Тому перед видаленням — перевірка «порожньості» по всіх
+// таблицях з FK→stores (ON DELETE CASCADE): перша ж знайдена прив'язка → 409,
+// тихе каскадне знищення даних неможливе.
+// Owner-only: require_owner (admin/store_manager/cashier → 403).
+
+pub async fn delete_empty_store(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(store_id): Path<String>,
+) -> Result<StatusCode, AdminErr> {
+    let actor = auth_routes::require_owner(&state, &claims)
+        .await
+        .map_err(AdminErr::Auth)?;
+    let db = pool(&state)?;
+    let store_id = path_uuid(store_id, "store_id")?;
+
+    let mut tx = db.begin().await?;
+
+    // Перевірка існування + «порожньості» одним запитом. Порядок CASE = порядок
+    // пріоритету повідомлень 409 (контрактні таблиці — перші). user_stores:
+    // прив'язка самого власника створюється автоматично при створенні точки і
+    // зникає каскадом — вона НЕ блокує; блокує лише прив'язка інших
+    // користувачів (працівників). cash_registers у схемі немає (див. schema.sql).
+    let blocker: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT CASE
+            WHEN EXISTS(SELECT 1 FROM user_stores WHERE store_id = $1 AND user_id <> $2)
+                THEN 'user_stores'
+            WHEN EXISTS(SELECT 1 FROM devices WHERE store_id = $1) THEN 'devices'
+            WHEN EXISTS(SELECT 1 FROM store_activation_codes WHERE store_id = $1)
+                THEN 'store_activation_codes'
+            WHEN EXISTS(SELECT 1 FROM stock WHERE store_id = $1) THEN 'stock'
+            WHEN EXISTS(SELECT 1 FROM receipts WHERE store_id = $1) THEN 'receipts'
+            WHEN EXISTS(SELECT 1 FROM receipt_items WHERE store_id = $1) THEN 'receipt_items'
+            WHEN EXISTS(SELECT 1 FROM invoices WHERE store_id = $1) THEN 'invoices'
+            WHEN EXISTS(SELECT 1 FROM invoice_items WHERE store_id = $1) THEN 'invoice_items'
+            WHEN EXISTS(SELECT 1 FROM transfers WHERE store_id = $1) THEN 'transfers'
+            WHEN EXISTS(SELECT 1 FROM transfer_items WHERE store_id = $1) THEN 'transfer_items'
+            WHEN EXISTS(SELECT 1 FROM write_offs WHERE store_id = $1) THEN 'write_offs'
+            WHEN EXISTS(SELECT 1 FROM write_off_items WHERE store_id = $1) THEN 'write_off_items'
+            WHEN EXISTS(SELECT 1 FROM return_invoices WHERE store_id = $1) THEN 'return_invoices'
+            WHEN EXISTS(SELECT 1 FROM return_invoice_items WHERE store_id = $1)
+                THEN 'return_invoice_items'
+            WHEN EXISTS(SELECT 1 FROM purchase_orders WHERE store_id = $1) THEN 'purchase_orders'
+            WHEN EXISTS(SELECT 1 FROM purchase_order_items WHERE store_id = $1)
+                THEN 'purchase_order_items'
+            WHEN EXISTS(SELECT 1 FROM inventories WHERE store_id = $1) THEN 'inventories'
+            WHEN EXISTS(SELECT 1 FROM inventory_items WHERE store_id = $1) THEN 'inventory_items'
+            WHEN EXISTS(SELECT 1 FROM work_sessions WHERE store_id = $1) THEN 'work_sessions'
+            WHEN EXISTS(SELECT 1 FROM store_sync_state WHERE store_id = $1) THEN 'store_sync_state'
+            WHEN EXISTS(SELECT 1 FROM store_product_prices WHERE store_id = $1)
+                THEN 'store_product_prices'
+            -- Решта таблиць з FK→stores ON DELETE CASCADE (повний захист від
+            -- тихого каскадного знищення даних поза контрактним списком).
+            WHEN EXISTS(SELECT 1 FROM sync_log WHERE store_id = $1) THEN 'sync_log'
+            WHEN EXISTS(SELECT 1 FROM stock_projection WHERE store_id = $1) THEN 'stock_projection'
+            WHEN EXISTS(SELECT 1 FROM prro_settings WHERE store_id = $1) THEN 'prro_settings'
+            WHEN EXISTS(SELECT 1 FROM prro_shifts WHERE store_id = $1) THEN 'prro_shifts'
+            WHEN EXISTS(SELECT 1 FROM prro_queue_items WHERE store_id = $1) THEN 'prro_queue_items'
+            WHEN EXISTS(SELECT 1 FROM supplier_ledger WHERE store_id = $1) THEN 'supplier_ledger'
+            WHEN EXISTS(SELECT 1 FROM system_settings WHERE store_id = $1) THEN 'system_settings'
+            WHEN EXISTS(SELECT 1 FROM print_templates WHERE store_id = $1) THEN 'print_templates'
+            WHEN EXISTS(SELECT 1 FROM barcodes WHERE store_id = $1) THEN 'barcodes'
+            WHEN EXISTS(SELECT 1 FROM categories WHERE store_id = $1) THEN 'categories'
+            WHEN EXISTS(SELECT 1 FROM product_images WHERE store_id = $1) THEN 'product_images'
+            WHEN EXISTS(SELECT 1 FROM debtors WHERE store_id = $1) THEN 'debtors'
+            WHEN EXISTS(SELECT 1 FROM debtor_payments WHERE store_id = $1) THEN 'debtor_payments'
+            ELSE NULL
+        END
+        "#,
+    )
+    .bind(store_id)
+    .bind(actor)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if let Some(t) = blocker {
+        return Err(AdminErr::Conflict(format!(
+            "Точку неможливо видалити: є дані у {t}"
+        )));
+    }
+    let deleted = sqlx::query("DELETE FROM stores WHERE id = $1")
+        .bind(store_id)
+        .execute(&mut *tx)
+        .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(AdminErr::NotFound("Точку не знайдено".to_string()));
+    }
+    tx.commit().await?;
+
+    // Аудит після видалення: store_id=None (рядок stores вже видалено; FK
+    // audit_log.store_id → SET NULL), entity_id зберігає ідентифікатор.
+    network::audit(
+        &db,
+        actor,
+        "store_deleted",
+        "store",
+        store_id,
+        None,
+        serde_json::json!({"store_id": store_id}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── GET /api/v1/admin/stores/:store_id/workers ─────────────────────────────
