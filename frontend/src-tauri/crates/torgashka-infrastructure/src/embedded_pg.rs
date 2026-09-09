@@ -484,6 +484,15 @@ impl EmbeddedPostgres {
             return Err(Error::Missing(pg_ctl.display().to_string()));
         }
         std::fs::create_dir_all(&self.data_dir)?;
+        // B3: зовнішній доступ (listen/SSL/HBA з env) — перед кожним стартом.
+        // Помилка застосування НЕ валить старт: pg_ctl дасть точну діагностику,
+        // а torgashka.log — наш WARN.
+        if let Err(e) = apply_external_config(&self.data_dir) {
+            pg_log(
+                "WARN",
+                &format!("зовнішній конфіг PG (SSL/HBA) не застосовано: {e}"),
+            );
+        }
         let log = self.data_dir.join("postgres.log");
         let cmd = "pg_ctl start";
         let mut c = Command::new(&pg_ctl);
@@ -500,7 +509,7 @@ impl EmbeddedPostgres {
             .arg("-l")
             .arg(&log)
             .arg("-o")
-            .arg(format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1"))
+            .arg(pg_ctl_opts())
             .arg("-w")
             .arg("start")
             .output()
@@ -724,6 +733,130 @@ impl EmbeddedPostgres {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Конфігурація зовнішнього доступу (B3, рішення Творця): TORGASHKA_PG_LISTEN_
+// ADDRESSES, TORGASHKA_PG_SSL_CERT/KEY, TORGASHKA_PG_HBA_EXTRA. Чисті функції
+// (без env) — покриті юніт-тестами; env-обгортки делегують їм.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Аргументи `-o` для `pg_ctl start` за значенням listen-адрес.
+///
+/// * `127.0.0.1` (або порожньо) — поточна поведінка: `-p 5433 -h 127.0.0.1`;
+/// * інакше — `-p 5433 -c listen_addresses='<val>'` БЕЗ `-h` (val може бути
+///   `*` або список IP через кому — PG слухає всі зазначені).
+fn pg_ctl_opts_for(listen: &str) -> String {
+    let l = listen.trim();
+    if l.is_empty() || l == "127.0.0.1" {
+        format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1")
+    } else {
+        format!("-p {EMBEDDED_PG_PORT} -c listen_addresses='{l}'")
+    }
+}
+
+/// Env-обгортка [`pg_ctl_opts_for`] (TORGASHKA_PG_LISTEN_ADDRESSES).
+fn pg_ctl_opts() -> String {
+    pg_ctl_opts_for(&std::env::var("TORGASHKA_PG_LISTEN_ADDRESSES").unwrap_or_default())
+}
+
+/// Дописує рядки у конфіг-файл без дублювання (ідемпотентно): наявні
+/// (trim-співпадіння) рядки пропускаються, порожні — ігноруються.
+/// Повертає true, якщо файл змінено.
+fn append_conf_lines(path: &Path, lines: &[String]) -> Result<bool, std::io::Error> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out = existing;
+    let mut changed = false;
+    for line in lines {
+        let needle = line.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        if out.lines().any(|l| l.trim() == needle) {
+            continue; // уже є — не дублюємо
+        }
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push('\n');
+        changed = true;
+    }
+    if changed {
+        std::fs::write(path, out.as_bytes())?;
+    }
+    Ok(changed)
+}
+
+/// Застосовує конфігурацію зовнішнього доступу до конфігів `data_dir`
+/// (чиста функція — env читає [`apply_external_config`]):
+///
+/// * `ssl = Some((cert, key))` → postgresql.conf: `ssl=on`,
+///   `ssl_cert_file='<cert>'`, `ssl_key_file='<key>'`;
+/// * `hba_extra = Some(...)` (рядки через `\n`) → pg_hba.conf (напр.
+///   `hostssl replication replicator_xxx <IP_standby>/32 md5` для віддаленої
+///   реплікації зі standby через інтернет).
+///
+/// Ідемпотентно: повторне застосування не дублює рядки. None — файли не
+/// чіпаються (повна зворотна сумісність). Викликається перед КОЖНИМ стартом
+/// сервера (start_once) — зміни підхоплює наступний запуск.
+fn apply_external_config_files(
+    data_dir: &Path,
+    ssl: Option<(&str, &str)>,
+    hba_extra: Option<&str>,
+) -> Result<(), std::io::Error> {
+    if let Some((cert, key)) = ssl {
+        let cert = cert.trim();
+        let key = key.trim();
+        if !cert.is_empty() && !key.is_empty() {
+            let conf = data_dir.join("postgresql.conf");
+            let lines = vec![
+                "# --- Torgashka B3: зовнішній SSL (TORGASHKA_PG_SSL_CERT/KEY) ---".to_string(),
+                "ssl = on".to_string(),
+                format!("ssl_cert_file = '{cert}'"),
+                format!("ssl_key_file = '{key}'"),
+            ];
+            let _ = append_conf_lines(&conf, &lines)?;
+        }
+    }
+    if let Some(extra) = hba_extra {
+        let lines: Vec<String> = extra
+            .split('\n')
+            .map(|l| l.trim_end().to_string())
+            .collect();
+        if lines.iter().any(|l| !l.trim().is_empty()) {
+            let hba = data_dir.join("pg_hba.conf");
+            let _ = append_conf_lines(&hba, &lines)?;
+        }
+    }
+    Ok(())
+}
+
+/// Env-обгортка [`apply_external_config_files`]:
+/// TORGASHKA_PG_SSL_CERT + TORGASHKA_PG_SSL_KEY (обидва обов'язкові) та
+/// TORGASHKA_PG_HBA_EXTRA.
+fn apply_external_config(data_dir: &Path) -> Result<(), Error> {
+    // cert/key — Option<String>, живуть до кінця функції: &str-позики валідні.
+    let cert = std::env::var("TORGASHKA_PG_SSL_CERT")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let key = std::env::var("TORGASHKA_PG_SSL_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let hba = std::env::var("TORGASHKA_PG_HBA_EXTRA").ok();
+    let (cert_ref, key_ref) = (cert.as_deref(), key.as_deref());
+    let ssl = match (cert_ref, key_ref) {
+        (Some(c), Some(k)) if !c.trim().is_empty() && !k.trim().is_empty() => Some((c, k)),
+        (None, None) => None,
+        _ => {
+            pg_log(
+                "WARN",
+                "TORGASHKA_PG_SSL_CERT/TORGASHKA_PG_SSL_KEY: задано лише один з двох — SSL-конфіг пропущено (потрібні обидва)",
+            );
+            None
+        }
+    };
+    apply_external_config_files(data_dir, ssl, hba.as_deref()).map_err(Error::Io)
+}
+
 /// Вільна обгортка: знайти бінарники → initdb → старт → БД → DATABASE_URL.
 /// (Викликається з torgashka-api serve_listener перед підключенням до БД.)
 pub fn bootstrap_if_needed() -> Result<EmbeddedPostgres, Error> {
@@ -927,5 +1060,142 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         let _ = std::fs::remove_dir_all(pg.data_dir());
+    }
+
+    // ── B3: формування -o (listen) ──────────────────────────────────────
+
+    #[test]
+    fn pg_ctl_opts_default_is_localhost_only() {
+        assert_eq!(
+            pg_ctl_opts_for("127.0.0.1"),
+            format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1")
+        );
+        assert_eq!(
+            pg_ctl_opts_for(""),
+            format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1")
+        );
+        assert_eq!(
+            pg_ctl_opts_for("   "),
+            format!("-p {EMBEDDED_PG_PORT} -h 127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn pg_ctl_opts_external_listen_uses_listen_addresses() {
+        assert_eq!(
+            pg_ctl_opts_for("*"),
+            format!("-p {EMBEDDED_PG_PORT} -c listen_addresses='*'")
+        );
+        assert_eq!(
+            pg_ctl_opts_for("0.0.0.0"),
+            format!("-p {EMBEDDED_PG_PORT} -c listen_addresses='0.0.0.0'")
+        );
+        assert_eq!(
+            pg_ctl_opts_for("127.0.0.1,192.168.1.5"),
+            format!("-p {EMBEDDED_PG_PORT} -c listen_addresses='127.0.0.1,192.168.1.5'")
+        );
+    }
+
+    // ── B3: SSL + HBA у data_dir (ідемпотентність) ──────────────────────
+
+    fn fake_data_dir() -> PathBuf {
+        let dir = temp_data_dir();
+        std::fs::create_dir_all(&dir).expect("data_dir");
+        std::fs::write(
+            dir.join("postgresql.conf"),
+            "# PostgreSQL configuration\nlisten_addresses = 'localhost'\n",
+        )
+        .expect("conf");
+        std::fs::write(
+            dir.join("pg_hba.conf"),
+            "# TYPE DATABASE USER ADDRESS METHOD\nhost all all 127.0.0.1/32 trust\n",
+        )
+        .expect("hba");
+        dir
+    }
+
+    #[test]
+    fn apply_external_config_writes_ssl_and_hba() {
+        let dir = fake_data_dir();
+        apply_external_config_files(
+            &dir,
+            Some(("/certs/server.crt", "/certs/server.key")),
+            Some(
+                "hostssl replication replicator_ab12 203.0.113.5/32 md5\nhost all all 10.0.0.0/8 scram-sha-256",
+            ),
+        )
+        .expect("apply");
+
+        let conf = std::fs::read_to_string(dir.join("postgresql.conf")).expect("conf");
+        assert!(conf.contains("ssl = on"), "ssl=on має бути: {conf}");
+        assert!(
+            conf.contains("ssl_cert_file = '/certs/server.crt'"),
+            "cert: {conf}"
+        );
+        assert!(
+            conf.contains("ssl_key_file = '/certs/server.key'"),
+            "key: {conf}"
+        );
+        // оригінальний вміст недоторканий
+        assert!(
+            conf.contains("listen_addresses = 'localhost'"),
+            "оригінал: {conf}"
+        );
+
+        let hba = std::fs::read_to_string(dir.join("pg_hba.conf")).expect("hba");
+        assert!(
+            hba.contains("hostssl replication replicator_ab12 203.0.113.5/32 md5"),
+            "hba: {hba}"
+        );
+        assert!(
+            hba.contains("host all all 10.0.0.0/8 scram-sha-256"),
+            "hba: {hba}"
+        );
+    }
+
+    #[test]
+    fn apply_external_config_does_not_duplicate_on_restart() {
+        let dir = fake_data_dir();
+        let ssl = Some(("/certs/server.crt", "/certs/server.key"));
+        let hba = Some("hostssl replication replicator_ab12 203.0.113.5/32 md5");
+        apply_external_config_files(&dir, ssl, hba).expect("перше застосування");
+        apply_external_config_files(&dir, ssl, hba).expect("повторне застосування (рестарт)");
+        apply_external_config_files(&dir, ssl, hba).expect("третє (рестарт)");
+
+        let conf = std::fs::read_to_string(dir.join("postgresql.conf")).expect("conf");
+        assert_eq!(
+            conf.matches("ssl = on").count(),
+            1,
+            "ssl=on не дублюється: {conf}"
+        );
+        assert_eq!(
+            conf.matches("ssl_cert_file").count(),
+            1,
+            "ssl_cert_file не дублюється: {conf}"
+        );
+        assert_eq!(
+            conf.matches("ssl_key_file").count(),
+            1,
+            "ssl_key_file не дублюється: {conf}"
+        );
+
+        let hba = std::fs::read_to_string(dir.join("pg_hba.conf")).expect("hba");
+        assert_eq!(
+            hba.matches("hostssl replication replicator_ab12").count(),
+            1,
+            "hba не дублюється: {hba}"
+        );
+    }
+
+    #[test]
+    fn apply_external_config_noop_when_nothing_configured() {
+        let dir = fake_data_dir();
+        let conf_before = std::fs::read_to_string(dir.join("postgresql.conf")).expect("before");
+        let hba_before = std::fs::read_to_string(dir.join("pg_hba.conf")).expect("hba before");
+        apply_external_config_files(&dir, None, None).expect("noop");
+        let conf_after = std::fs::read_to_string(dir.join("postgresql.conf")).expect("after");
+        let hba_after = std::fs::read_to_string(dir.join("pg_hba.conf")).expect("hba after");
+        assert_eq!(conf_before, conf_after, "без env конфіг не чіпається");
+        assert_eq!(hba_before, hba_after, "без env hba не чіпається");
     }
 }

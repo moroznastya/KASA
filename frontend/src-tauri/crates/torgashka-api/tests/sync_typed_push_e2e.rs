@@ -36,7 +36,9 @@ const STORES: usize = 4;
 const TS_OLD: &str = "2026-08-30T10:00:00+03:00"; // = 07:00:00Z
 
 async fn free_port() -> u16 {
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let p = l.local_addr().expect("addr").port();
     drop(l);
     p
@@ -65,7 +67,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -205,8 +209,8 @@ fn build_cash_db(
                    "price": "100.00"}],
     })
     .to_string();
-    let o = transactions::enqueue_transaction(&mut conn, TYPE_WRITE_OFF, &wo, &sid)
-        .expect("write_off");
+    let o =
+        transactions::enqueue_transaction(&mut conn, TYPE_WRITE_OFF, &wo, &sid).expect("write_off");
     fix_outbox_created_at(&conn, &o.client_uuid, TS_OLD);
 
     // 4) transfer: парні каси — out (−4 у свою точку), непарні — in (+4).
@@ -223,19 +227,25 @@ fn build_cash_db(
                    "price": "100.00"}],
     })
     .to_string();
-    let o = transactions::enqueue_transaction(&mut conn, TYPE_TRANSFER, &tr, &sid)
-        .expect("transfer");
+    let o =
+        transactions::enqueue_transaction(&mut conn, TYPE_TRANSFER, &tr, &sid).expect("transfer");
     fix_outbox_created_at(&conn, &o.client_uuid, TS_OLD);
 
     // Кожен агрегат в outbox (pending) — «не synced=0 в нікуди».
-    assert_eq!(pending_count(&conn).expect("pending"), 4, "каса {k}: 4 агрегати в outbox");
+    assert_eq!(
+        pending_count(&conn).expect("pending"),
+        4,
+        "каса {k}: 4 агрегати в outbox"
+    );
     drop(conn);
     db_path
 }
 
 async fn flush_outbox(db_path: &Path, client: &reqwest::Client, cfg: &PushConfig) {
     for _ in 0..20 {
-        let s = push_pending_batch(db_path, client, cfg).await.expect("push");
+        let s = push_pending_batch(db_path, client, cfg)
+            .await
+            .expect("push");
         if s.sent == 0 {
             break;
         }
@@ -244,7 +254,11 @@ async fn flush_outbox(db_path: &Path, client: &reqwest::Client, cfg: &PushConfig
         }
     }
     let conn = open_connection(db_path).expect("БД");
-    assert_eq!(pending_count(&conn).expect("pending"), 0, "outbox спорожнів");
+    assert_eq!(
+        pending_count(&conn).expect("pending"),
+        0,
+        "outbox спорожнів"
+    );
     drop(conn);
 }
 
@@ -436,5 +450,7 @@ async fn typed_operations_push_idempotent_and_consistent() {
         before_total, after_total,
         "КРИТЕРІЙ: повторний push усіх типів → already_exists, 0 дублікатів"
     );
-    eprintln!("[sync_typed_push_e2e] ✅ 4 каси × 4 типи: 0 дублікатів, created_at з каси, stock точний");
+    eprintln!(
+        "[sync_typed_push_e2e] ✅ 4 каси × 4 типи: 0 дублікатів, created_at з каси, stock точний"
+    );
 }

@@ -1401,3 +1401,139 @@ CREATE INDEX IF NOT EXISTS ix_store_product_prices_product_id
 
 CREATE INDEX IF NOT EXISTS ix_audit_log_store_id_created_at
     ON public.audit_log USING btree (store_id, created_at);
+
+-- ============================================================================
+-- Мережа магазинів (ЕТАП 15, network-replication-etap15-20.md §3.1):
+-- реєстр вузлів мережі (standby-копії primary). Реплікація — ЕТАП 16+.
+-- Створюються ідемпотентно: fresh (schema.sql) і вже мігровані БД (db.rs
+-- NETWORK_NODES_DDL).
+-- ============================================================================
+
+-- node_role: primary — сам сервер; standby — копія в магазині.
+-- PG не має CREATE TYPE IF NOT EXISTS — через DO-блок.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_role') THEN
+        CREATE TYPE public.node_role AS ENUM ('primary', 'standby');
+    END IF;
+END
+$$;
+
+-- node_status: життєвий цикл вузла (§4 стану-машина):
+-- provisioning → syncing → active/lagging → offline/archived.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_status') THEN
+        CREATE TYPE public.node_status AS ENUM (
+            'provisioning', 'syncing', 'active', 'lagging', 'offline', 'archived'
+        );
+    END IF;
+END
+$$;
+
+-- Вузол мережі. store_id NULL — сам сервер (primary). join_token_hash —
+-- SHA-256 одноразового join-коду (TTL 30 хв); node_token_hash — SHA-256
+-- довготривалого токена вузла для heartbeat. Секрети зберігаються лише
+-- хешами (як device_token_hash у network.rs).
+CREATE TABLE IF NOT EXISTS public.network_nodes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id uuid REFERENCES public.stores(id),  -- NULL для самого сервера (primary)
+    name text NOT NULL,
+    role public.node_role NOT NULL DEFAULT 'standby',
+    status public.node_status NOT NULL DEFAULT 'provisioning',
+
+    -- Провіжинінг (одноразовий код, аналог store_activation_codes)
+    join_token_hash text,               -- SHA-256, як device_token_hash
+    join_token_expires_at timestamp,    -- TTL 30 хв
+
+    -- Довготривалий токен вузла для heartbeat (окремо від JWT користувача)
+    node_token_hash text,
+
+    -- Реплікація (креденшли створюються в ЕТАП 16; імена резервуються тут)
+    replication_role_name text,         -- напр. replicator_a1b2c3
+    replication_slot_name text,         -- напр. standby_a1b2c3
+
+    -- Телеметрія (оновлюється heartbeat-ом)
+    host text,
+    app_version text,
+    last_seen_at timestamp,
+    replication_lag_bytes bigint,
+    db_size_bytes bigint,
+
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc'),
+    updated_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS network_nodes_replication_slot_uq
+    ON public.network_nodes (replication_slot_name)
+    WHERE replication_slot_name IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS network_nodes_store_id_idx
+    ON public.network_nodes (store_id);
+
+-- ============================================================================
+-- ЕТАП 7: FORCE ROW LEVEL SECURITY (реальний RLS)
+-- ----------------------------------------------------------------------------
+-- Політики визначені вище. FORCE змушує проходити політики навіть власника
+-- таблиць — єдиний шлях, коли фасад працює під роллю torgashka_app.
+-- Суперкористувач (postgres) обходить RLS і далі — адмін-операції безпечні.
+-- ============================================================================
+ALTER TABLE public.barcodes FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.categories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtor_payments FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtors FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.product_images FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_order_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_orders FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipt_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.supplier_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfer_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfers FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.user_stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.work_sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_off_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_offs FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_shifts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_queue_items FORCE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- ЕТАП 8: ідемпотентність синхронізації чеків (client_uuid)
+-- ----------------------------------------------------------------------------
+-- Клієнт (каса/офлайн-черга) генерує client_uuid один раз на чек і передає при
+-- push (sync.rs PushItem.client_uuid). UNIQUE-індекс ловить гонку двох
+-- одночасних push з тим самим client_uuid (Alembic 0013/0014, назва client_uuid).
+-- ============================================================================
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_client_uuid
+    ON public.receipts (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+
+-- ============================================================================
+-- Мережеві події (рішення Творця): діагностичний журнал взаємодії вузлів.
+-- Той самий ідемпотентний DDL, що й NETWORK_EVENTS_DDL у db.rs (для fresh БД).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.network_events (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    node_id uuid,
+    event character varying(64) NOT NULL,
+    level character varying(16) NOT NULL DEFAULT 'info',
+    detail jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT network_events_pkey PRIMARY KEY (id),
+    CONSTRAINT network_events_node_id_fkey FOREIGN KEY (node_id)
+        REFERENCES public.network_nodes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_network_events_node_id_created_at
+    ON public.network_events (node_id, created_at DESC);

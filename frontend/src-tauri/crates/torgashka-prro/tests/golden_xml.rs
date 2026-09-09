@@ -1,8 +1,9 @@
-//! GOLDEN PARITY: Rust == Python `xml_builder.py` — байт-ідентично.
+//! GOLDEN PARITY: Rust == Python `xml_builder.py` — байт-ідентично
+//! (спека prro_fix_spec_2026-09-08: RQ+MAC windows-1251, hex sha256
+//! попереднього RQ, службові чеки за зразками 262576.docx).
 //!
-//! Вектори згенеровані з Python-еталона (backend/venv/bin/python,
-//! 2026-08-07, фіксовані дати/лічильники) і зафіксовані тут як очікувані.
-//! Якщо Rust-реалізація відхиляється хоча б на байт — тест падає.
+//! Вектори згенеровані з Python-еталона (2026-09-08, фіксовані дати/
+//! лічильники) і зафіксовані тут як очікувані.
 
 use torgashka_prro::xml::{
     canonicalize, compute_mac, to_cents, to_thousandths, Discount, DiscountKind, Payment,
@@ -62,7 +63,6 @@ fn golden_v1_receipt_sale() {
             &[],
             None,
             None,
-            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -110,7 +110,6 @@ fn golden_v2_receipt_return() {
             &[],
             None,
             Some("0"),
-            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -164,7 +163,6 @@ fn golden_v3_receipt_discount_comment() {
             }],
             Some("Знижка за акцією"),
             None,
-            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -227,7 +225,6 @@ fn golden_v4_receipt_tax_groups() {
             &[],
             None,
             None,
-            None, // prev_hash (B1)
         )
         .unwrap();
     assert_eq!(
@@ -313,63 +310,60 @@ fn golden_v5_zreport() {
 
 #[test]
 fn golden_v6_service_open_shift() {
+    // Зразок ДПС: 108 → `<C T="108"></C>` (БЕЗ <E N="1">); MAC ID="" + ланцюг.
     let mut b = builder_from(5);
-    let out = b.build_service_check_xml("108", TS).unwrap();
+    let out = b.build_service_check_xml("108", TS, 150).unwrap();
     assert_eq!(
         out,
-        r#"<DAT DI="6" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="108"><E N="1"></E></C><TS>20260807112601</TS></DAT>"#
+        r#"<DAT DI="6" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="108"></C><TS>20260807112601</TS></DAT>"#
     );
+    let msg = b.build_message(&out, Some(""), "", true).unwrap();
+    assert!(
+        msg.starts_with("<?xml version=\"1.0\" encoding=\"windows-1251\"?>"),
+        "{msg}"
+    );
+    assert!(msg.contains("<C T=\"108\"></C>"));
+    assert!(msg.contains("<MAC ID=\"\"></MAC>"), "{msg}");
 }
 
 #[test]
 fn golden_v7_service_ping() {
+    // Зразок ДПС: 111 → `<C T="111"></C>` + `<MAC></MAC>` (без ID/значення).
     let mut b = builder_from(6);
-    let out = b.build_service_check_xml("111", TS).unwrap();
+    let out = b.build_service_check_xml("111", TS, 150).unwrap();
     assert_eq!(
         out,
-        r#"<DAT DI="7" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="111"><E N="1"></E></C><TS>20260807112601</TS></DAT>"#
+        r#"<DAT DI="7" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="111"></C><TS>20260807112601</TS></DAT>"#
     );
+    let msg = b.build_message(&out, Some("abc"), "", true).unwrap();
+    assert!(msg.contains("<C T=\"111\"></C>"));
+    assert!(msg.contains("<MAC></MAC>"), "ping: <MAC></MAC>: {msg}");
+    assert!(!msg.contains("<MAC ID"), "{msg}");
 }
 
 #[test]
-fn golden_mac_of_v1() {
+fn golden_message_v1_full_rq() {
+    // Спека A: повне RQ з XML-декларацією windows-1251, MAC ID="" = hex
+    // sha256 попереднього RQ (для першого документа — порожнє).
+    let b = builder();
     let dat = r#"<DAT DI="1" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><P C="120" CD="4820000000001" N="1" NM="Хліб" PRC="370" Q="370" SM="137" TX="1"></P><M N="2" NM="ГОТІВКА" RM="363" SM="500" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="3" NO="3" SE="114" SM="137" TS="20260807112601" TX="1" TXAL="0" TXPR="20.00" TXSM="23" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#;
-    assert_eq!(
-        compute_mac(dat, None),
-        "ts1jV7GpNqH3C28M4Sl8izXtergBzaeXVVSE3gQBYqc="
-    );
-}
-
-#[test]
-fn golden_message_v1() {
-    let mut b = builder();
-    let dat = r#"<DAT DI="1" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><P C="120" CD="4820000000001" N="1" NM="Хліб" PRC="370" Q="370" SM="137" TX="1"></P><M N="2" NM="ГОТІВКА" RM="363" SM="500" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="3" NO="3" SE="114" SM="137" TS="20260807112601" TX="1" TXAL="0" TXPR="20.00" TXSM="23" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#;
-    let mac = compute_mac(dat, None);
-    let msg = b.build_message(dat, Some(&mac), true).unwrap();
+    let msg = b.build_message(dat, None, "", true).unwrap();
     assert_eq!(
         msg,
-        r#"<RQ V="1"><DAT DI="1" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><P C="120" CD="4820000000001" N="1" NM="Хліб" PRC="370" Q="370" SM="137" TX="1"></P><M N="2" NM="ГОТІВКА" RM="363" SM="500" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="3" NO="3" SE="114" SM="137" TS="20260807112601" TX="1" TXAL="0" TXPR="20.00" TXSM="23" TXTY="0"></E></C><TS>20260807112601</TS></DAT><MAC DI="1" NT="1">ts1jV7GpNqH3C28M4Sl8izXtergBzaeXVVSE3gQBYqc=</MAC></RQ>"#
+        r#"<?xml version="1.0" encoding="windows-1251"?><RQ V="1"><DAT DI="1" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><P C="120" CD="4820000000001" N="1" NM="Хліб" PRC="370" Q="370" SM="137" TX="1"></P><M N="2" NM="ГОТІВКА" RM="363" SM="500" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="3" NO="3" SE="114" SM="137" TS="20260807112601" TX="1" TXAL="0" TXPR="20.00" TXSM="23" TXTY="0"></E></C><TS>20260807112601</TS></DAT><MAC ID=""></MAC></RQ>"#
+    );
+    // MAC цього повного RQ — hex sha256 cp1251-байтів (Python-вектор).
+    assert_eq!(
+        compute_mac(&msg).unwrap(),
+        "d94c997cf5331a5f3b9654780af2bc3860cabd1b9aed71dc3939338ded9168f8"
     );
 }
 
 #[test]
-fn golden_canonical_check() {
-    let out = canonicalize(r#"<C T="0">  <P N="1" C="120" NM="Хліб"/> </C>"#).unwrap();
-    assert_eq!(out, r#"<C T="0"><P C="120" N="1" NM="Хліб"></P></C>"#);
-}
-
-#[test]
-fn golden_to_cents() {
-    assert_eq!(to_cents("1.37").unwrap(), 137);
-}
-
-#[test]
-fn golden_hash_chain_python_parity() {
-    // B1: hash-ланцюжок попереднього Check. Вектор згенеровано з Python-еталона
-    // (xml_builder.py, date_time=2026-08-27 12:00:00, DI=2/3):
-    //   c1 без prev_hash → H1 = MAC(c1);
-    //   c2 = build_receipt_xml(prev_hash=H1) → містить <H N="1">H1</H>;
-    //   c3 = build_receipt_xml(prev_hash=H2) → містить <H N="1">H2</H>.
+fn golden_hash_chain_message_python_parity() {
+    // D: ланцюг контролюється <MAC>. Вектор з Python-еталона 2026-09-08
+    // (date_time=2026-08-07 11:26:01, DI=2/3): c1 (DI=2) MAC порожній;
+    // c2 (DI=3) MAC = hex sha256 повного RQ(c1).
     let mut b = builder_from(1);
     let items = [ReceiptItem {
         code: Some("120".into()),
@@ -399,52 +393,61 @@ fn golden_hash_chain_python_parity() {
         tax_algorithm: Some("0".into()),
         ..Default::default()
     };
-    // c1 (DI=2, бо builder_from(1) → наступний DI=2)
+    // c1 (DI=2): без <H> в тілі; MAC порожній
     let c1 = b
-        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None, None)
+        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None)
         .unwrap();
-    let h1 = compute_mac(&c1, None);
-    assert_eq!(h1, "0XgkJ7hIRPH9haGEVCdpGOYFDdTc4zc9kCNW0Khc1g8=");
+    assert!(!c1.contains("<H "), "тіло чеку не містить <H>: {c1}");
+    let m1 = b.build_message(&c1, None, "", true).unwrap();
+    assert!(m1.contains("<MAC ID=\"\"></MAC>"), "{m1}");
+    let mac1 = compute_mac(&m1).unwrap();
+    assert_eq!(
+        mac1,
+        "7b427da3a6706ae9f30fce38ed92e3e6b7f9f934468aaf6fb2d1ae3a41fa2722"
+    );
 
-    // c2 (DI=3) — байт-ідентичний Python
+    // c2 (DI=3): MAC = hash повного RQ(c1)
     let c2 = b
-        .build_receipt_xml(
-            "0",
-            &items,
-            &payments,
-            &totals,
-            TS,
-            &[],
-            None,
-            None,
-            Some(&h1),
-        )
+        .build_receipt_xml("0", &items, &payments, &totals, TS, &[], None, None)
         .unwrap();
-    assert_eq!(
-        c2,
-        r#"<DAT DI="3" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><H N="1">0XgkJ7hIRPH9haGEVCdpGOYFDdTc4zc9kCNW0Khc1g8=</H><P C="120" N="2" NM="Хліб" PRC="100" Q="1000" SM="100" TX="0"></P><M N="3" NM="ГОТІВКА" SM="100" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="4" NO="1" SE="100" SM="100" TS="20260807112601" TX="0" TXAL="0" TXPR="20.00" TXSM="17" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#
+    assert!(!c2.contains("<H "), "тіло чеку не містить <H>: {c2}");
+    let m2 = b.build_message(&c2, Some(&mac1), "", true).unwrap();
+    assert!(
+        m2.contains(&format!("<MAC ID=\"\">{mac1}</MAC>")),
+        "MAC(c2)=hash RQ(c1): {m2}"
     );
-    let h2 = compute_mac(&c2, None);
-    assert_eq!(h2, "h6IONroxT7kzm85Se4XeIE4FeDLj9C2B03jZhLG2YnI=");
+    let mac2 = compute_mac(&m2).unwrap();
+    assert_eq!(
+        mac2,
+        "854824e258225f63c414553340c5bb32145f194ad87a90c3cd2a89256b543ce0"
+    );
+    assert_ne!(mac1, mac2);
+}
 
-    // c3 (DI=4)
-    let c3 = b
-        .build_receipt_xml(
-            "0",
-            &items,
-            &payments,
-            &totals,
-            TS,
-            &[],
-            None,
-            None,
-            Some(&h2),
-        )
-        .unwrap();
+#[test]
+fn golden_service_112_reserve() {
+    // F/I: 112 → `<C T="112"><H SIZE="150"></H></C>`; <MAC> без ID.
+    let mut b = builder_from(6);
+    let out = b.build_service_check_xml("112", TS, 150).unwrap();
     assert_eq!(
-        c3,
-        r#"<DAT DI="4" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><H N="1">h6IONroxT7kzm85Se4XeIE4FeDLj9C2B03jZhLG2YnI=</H><P C="120" N="2" NM="Хліб" PRC="100" Q="1000" SM="100" TX="0"></P><M N="3" NM="ГОТІВКА" SM="100" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="4" NO="1" SE="100" SM="100" TS="20260807112601" TX="0" TXAL="0" TXPR="20.00" TXSM="17" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#
+        out,
+        r#"<DAT DI="7" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="112"><H SIZE="150"></H></C><TS>20260807112601</TS></DAT>"#
     );
+    let chain = "7b427da3a6706ae9f30fce38ed92e3e6b7f9f934468aaf6fb2d1ae3a41fa2722";
+    let msg = b.build_message(&out, Some(chain), "", true).unwrap();
+    assert!(msg.contains(&format!("<MAC>{chain}</MAC>")), "{msg}");
+    assert!(!msg.contains("<MAC ID"), "{msg}");
+}
+
+#[test]
+fn golden_canonical_check() {
+    let out = canonicalize(r#"<C T="0">  <P N="1" C="120" NM="Хліб"/> </C>"#).unwrap();
+    assert_eq!(out, r#"<C T="0"><P C="120" N="1" NM="Хліб"></P></C>"#);
+}
+
+#[test]
+fn golden_to_cents() {
+    assert_eq!(to_cents("1.37").unwrap(), 137);
 }
 
 #[test]

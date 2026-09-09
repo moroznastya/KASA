@@ -44,7 +44,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -136,7 +138,10 @@ async fn login(base: &str, login_name: &str) -> String {
         {
             if r.status().is_success() {
                 let v: Value = r.json().await.expect("login json");
-                return v["access_token"].as_str().expect("access_token").to_string();
+                return v["access_token"]
+                    .as_str()
+                    .expect("access_token")
+                    .to_string();
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -177,7 +182,9 @@ async fn activate(base: &str, code: &str, fingerprint: &str, xff: &str) -> (u16,
 async fn gen_code(base: &str, token: &str, store: Uuid) -> (u16, Value) {
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{base}/api/v1/admin/stores/{store}/activation-code"))
+        .post(format!(
+            "{base}/api/v1/admin/stores/{store}/activation-code"
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -219,16 +226,19 @@ async fn activate_valid_code_returns_token_and_persists_hash() {
     let (as_, act) = activate(&base, &code, "KASA-ALPHA-7F3A9C", XFF_MAIN).await;
     assert_eq!(as_, 200, "активація валідним кодом: {act}");
 
-    let device_token = act["device_token"].as_str().expect("device_token").to_string();
+    let device_token = act["device_token"]
+        .as_str()
+        .expect("device_token")
+        .to_string();
     assert_eq!(device_token.len(), 48, "токен — 48 hex");
     assert!(
         device_token.chars().all(|c| c.is_ascii_hexdigit()),
         "токен hex: {device_token}"
     );
-    let device_id = Uuid::parse_str(act["device_id"].as_str().expect("device_id"))
-        .expect("device_id uuid");
-    let store_id = Uuid::parse_str(act["store_id"].as_str().expect("store_id"))
-        .expect("store_id uuid");
+    let device_id =
+        Uuid::parse_str(act["device_id"].as_str().expect("device_id")).expect("device_id uuid");
+    let store_id =
+        Uuid::parse_str(act["store_id"].as_str().expect("store_id")).expect("store_id uuid");
     assert_eq!(store_id, store, "каса прив'язана до точки коду");
     assert_eq!(act["store_name"], json!("E2E Network Точка"));
 
@@ -374,7 +384,11 @@ async fn admin_devices_list_block_unblock_archive() {
         .collect();
     assert_eq!(mine.len(), 2, "2 каси цієї точки у загальному списку");
     for d in &mine {
-        assert_eq!(d["store_name"], json!("E2E Network Точка"), "store_name додано");
+        assert_eq!(
+            d["store_name"],
+            json!("E2E Network Точка"),
+            "store_name додано"
+        );
         assert_eq!(d["status"], json!("active"));
     }
 
@@ -396,7 +410,12 @@ async fn admin_devices_list_block_unblock_archive() {
         .send()
         .await
         .expect("block");
-    assert_eq!(resp.status().as_u16(), 200, "block: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "block: {}",
+        resp.text().await.unwrap_or_default()
+    );
     let resp = client
         .get(format!("{base}/api/v1/admin/devices?store_id={store}"))
         .bearer_auth(&token)
@@ -430,16 +449,20 @@ async fn admin_devices_list_block_unblock_archive() {
         .send()
         .await
         .expect("delete");
-    assert_eq!(resp.status().as_u16(), 200, "delete: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "delete: {}",
+        resp.text().await.unwrap_or_default()
+    );
     let deleted: Value = resp.json().await.expect("delete json");
     assert_eq!(deleted["status"], json!("deleted"));
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE id = $1")
-            .bind(Uuid::parse_str(&dev2).unwrap())
-            .fetch_one(&pool)
-            .await
-            .expect("count");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE id = $1")
+        .bind(Uuid::parse_str(&dev2).unwrap())
+        .fetch_one(&pool)
+        .await
+        .expect("count");
     assert_eq!(count, 1, "архівація НЕ видаляє рядок");
 
     // block архівованого → 409.
@@ -449,7 +472,11 @@ async fn admin_devices_list_block_unblock_archive() {
         .send()
         .await
         .expect("block archived");
-    assert_eq!(resp.status().as_u16(), 409, "архівований пристрій не керується");
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "архівований пристрій не керується"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,7 +515,9 @@ async fn admin_endpoints_require_owner_or_admin() {
     assert_eq!(resp.status().as_u16(), 403, "cashier → 403");
 
     let resp = client
-        .post(format!("{base}/api/v1/admin/stores/{store}/activation-code"))
+        .post(format!(
+            "{base}/api/v1/admin/stores/{store}/activation-code"
+        ))
         .bearer_auth(&cashier_token)
         .send()
         .await
@@ -521,7 +550,11 @@ async fn activate_missing_fields_400() {
         .send()
         .await
         .expect("missing fp");
-    assert_eq!(resp.status().as_u16(), 422, "відсутній device_fingerprint → 422 (FastAPI-формат)");
+    assert_eq!(
+        resp.status().as_u16(),
+        422,
+        "відсутній device_fingerprint → 422 (FastAPI-формат)"
+    );
 
     // Порожній код → 400 (наша валідація, не rate limit).
     let resp = client

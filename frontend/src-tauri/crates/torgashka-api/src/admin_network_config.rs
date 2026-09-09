@@ -411,9 +411,8 @@ pub async fn import_config(
             "Непідтримувана schema_version — очікується 1".to_string(),
         ));
     }
-    let f: NetCfgFileIn = serde_json::from_value(v).map_err(|e| {
-        NetCfgErr::BadRequest(format!("Невірний формат конфіг-файлу мережі: {e}"))
-    })?;
+    let f: NetCfgFileIn = serde_json::from_value(v)
+        .map_err(|e| NetCfgErr::BadRequest(format!("Невірний формат конфіг-файлу мережі: {e}")))?;
 
     let store_id = Uuid::parse_str(f.store.id.trim()).map_err(|_| {
         NetCfgErr::BadRequest("Невірний store.id у конфіг-файлі — очікується UUID".to_string())
@@ -430,8 +429,7 @@ pub async fn import_config(
     let code = f.store.activation_code.trim().to_uppercase();
     if code.is_empty() || code.len() > 9 {
         return Err(NetCfgErr::BadRequest(
-            "Невірний activation_code у конфіг-файлі (очікується до 9 символів A-Z0-9)"
-                .to_string(),
+            "Невірний activation_code у конфіг-файлі (очікується до 9 символів A-Z0-9)".to_string(),
         ));
     }
 
@@ -498,21 +496,24 @@ mod tests {
 
     #[test]
     fn normalize_url_adds_scheme() {
-        assert_eq!(normalize_server_url("100.64.0.5:8000"), "http://100.64.0.5:8000");
+        assert_eq!(
+            normalize_server_url("100.64.0.5:8000"),
+            "http://100.64.0.5:8000"
+        );
         assert_eq!(
             normalize_server_url("https://vpn.example:8443"),
             "https://vpn.example:8443"
         );
-        assert_eq!(normalize_server_url("127.0.0.1:8000"), "http://127.0.0.1:8000");
+        assert_eq!(
+            normalize_server_url("127.0.0.1:8000"),
+            "http://127.0.0.1:8000"
+        );
     }
 
     #[test]
     fn server_url_priority_explicit_env_default() {
         // explicit wins
-        assert_eq!(
-            resolve_server_url(Some("https://x:8000")),
-            "https://x:8000"
-        );
+        assert_eq!(resolve_server_url(Some("https://x:8000")), "https://x:8000");
         // env wins over default
         std::env::set_var("TORGASHKA_FACADE_ADDR", "10.0.0.9:9000");
         assert_eq!(resolve_server_url(None), "http://10.0.0.9:9000");

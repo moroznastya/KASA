@@ -99,6 +99,9 @@ async fn real_state() -> AppState {
         store_pool: Some(store_pool),
         stores: None,
         setup: None,
+        // ЕТАП 18: AppState розширено (local-режим standby + node_config).
+        local: None,
+        node_config: torgashka_infrastructure::node_config::NodeConfig::default(),
     }
 }
 

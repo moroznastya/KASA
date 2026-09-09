@@ -81,11 +81,9 @@ impl IntoResponse for NetworkErr {
                 Json(serde_json::json!({"detail": m})),
             )
                 .into_response(),
-            NetworkErr::Conflict(m) => (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"detail": m})),
-            )
-                .into_response(),
+            NetworkErr::Conflict(m) => {
+                (StatusCode::CONFLICT, Json(serde_json::json!({"detail": m}))).into_response()
+            }
             NetworkErr::TooManyRequests(m) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({"detail": m})),
@@ -119,11 +117,8 @@ impl From<sqlx::Error> for NetworkErr {
 }
 
 fn parse_uuid(raw: &str, field: &str) -> Result<Uuid, NetworkErr> {
-    Uuid::parse_str(raw).map_err(|_| {
-        NetworkErr::BadRequest(format!(
-            "Невірний {field}: '{raw}' — очікується UUID"
-        ))
-    })
+    Uuid::parse_str(raw)
+        .map_err(|_| NetworkErr::BadRequest(format!("Невірний {field}: '{raw}' — очікується UUID")))
 }
 
 /// Пул PostgreSQL фасаду (мережеві таблиці — у тій самій public-схемі).
@@ -151,11 +146,8 @@ fn rate_buckets() -> &'static Mutex<HashMap<String, RateBucket>> {
 }
 
 /// Ключ клієнта: X-Forwarded-For (перший) → X-Real-IP → "unknown".
-fn client_key(headers: &HeaderMap) -> String {
-    if let Some(v) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-    {
+pub(crate) fn client_key(headers: &HeaderMap) -> String {
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         if let Some(ip) = v
             .split(',')
             .next()
@@ -193,9 +185,10 @@ fn rate_blocked(key: &str) -> bool {
 fn rate_register_fail(key: &str) {
     let mut m = rate_buckets().lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    let b = m
-        .entry(key.to_string())
-        .or_insert_with(|| RateBucket { fails: 0, window_started: now });
+    let b = m.entry(key.to_string()).or_insert_with(|| RateBucket {
+        fails: 0,
+        window_started: now,
+    });
     if now.duration_since(b.window_started) > RATE_WINDOW {
         b.fails = 0;
         b.window_started = now;
@@ -219,7 +212,7 @@ const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 /// 8 символів коду активації. Випадковість — Uuid::new_v4 (v4 → getrandom,
 /// 122 біти ентропії); rejection sampling (byte < 224 = 32×7) без bias.
-fn gen_code() -> String {
+pub(crate) fn gen_code() -> String {
     let mut out = String::with_capacity(8);
     while out.len() < 8 {
         for &byte in Uuid::new_v4().as_bytes() {
@@ -236,17 +229,13 @@ fn gen_code() -> String {
 
 /// Токен пристрою: 48 hex-символів (192 біти ентропії, 2× UUIDv4).
 fn gen_device_token() -> String {
-    let mut token = format!(
-        "{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    );
+    let mut token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     token.truncate(48);
     token
 }
 
 /// SHA-256 (hex) — device_token_hash (оригінал токена не зберігається).
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::Digest;
     let digest = sha2::Sha256::digest(s.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -298,6 +287,36 @@ pub(crate) async fn audit(
         eprintln!("[torgashka-api] network: audit_log не записано: {e}");
     }
 }
+/// Журнал мережевих подій (рішення Творця, таблиця network_events):
+/// діагностична стрічка взаємодії вузлів (join/status_change/promote/reject…).
+///
+/// Лог — ПОБІЧНИЙ ЕФЕКТ: будь-яка помилка запису глушиться (eprintln!) —
+/// ніколи не валить основний запит і не панікує. Викликається з хендлерів
+/// network_nodes/promote/route_local. node_id = None для подій без вузла
+/// (напр. degraded_local фасаду, коли self-вузол не ідентифіковано).
+pub async fn log_node_event(
+    pool: &PgPool,
+    node_id: Option<Uuid>,
+    event: &str,
+    level: &str,
+    detail: serde_json::Value,
+) {
+    if let Err(e) = sqlx::query(
+        "INSERT INTO network_events (node_id, event, level, detail) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(node_id)
+    .bind(event)
+    .bind(level)
+    .bind(detail)
+    .execute(pool)
+    .await
+    {
+        eprintln!(
+            "[torgashka-api] network: network_events не записано (event={event}, level={level}): {e}"
+        );
+    }
+}
 
 // ─── POST /api/v1/devices/activate (ПУБЛІЧНИЙ) ──────────────────────────────
 
@@ -332,8 +351,7 @@ pub async fn activate_device(
     let fingerprint = body.device_fingerprint.trim().to_string();
     if fingerprint.is_empty() || fingerprint.len() > 200 {
         return Err(NetworkErr::BadRequest(
-            "device_fingerprint: обов'язковий ідентифікатор пристрою (до 200 символів)"
-                .to_string(),
+            "device_fingerprint: обов'язковий ідентифікатор пристрою (до 200 символів)".to_string(),
         ));
     }
 
@@ -557,12 +575,11 @@ async fn set_device_status(
     let device_id = parse_uuid(&device_id, "device_id")?;
 
     // Поточний стан (для 404 та audit-контексту точки).
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT store_id, status::text FROM devices WHERE id = $1",
-    )
-    .bind(device_id)
-    .fetch_optional(&pool)
-    .await?;
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT store_id, status::text FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_optional(&pool)
+            .await?;
     let (store_id, current) = match row {
         Some(r) => r,
         None => return Err(NetworkErr::NotFound("Пристрій не знайдено".to_string())),
@@ -627,12 +644,11 @@ pub async fn delete_device(
         .map_err(NetworkErr::Auth)?;
     let device_id = parse_uuid(&device_id, "device_id")?;
 
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT store_id, status::text FROM devices WHERE id = $1",
-    )
-    .bind(device_id)
-    .fetch_optional(&pool)
-    .await?;
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT store_id, status::text FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_optional(&pool)
+            .await?;
     let (store_id, current) = match row {
         Some(r) => r,
         None => return Err(NetworkErr::NotFound("Пристрій не знайдено".to_string())),
@@ -697,7 +713,11 @@ mod tests {
         for _ in 0..200 {
             codes.insert(gen_code());
         }
-        assert!(codes.len() > 180, "коди не мають повторюватись ({} унікальних з 200)", codes.len());
+        assert!(
+            codes.len() > 180,
+            "коди не мають повторюватись ({} унікальних з 200)",
+            codes.len()
+        );
     }
 
     #[test]

@@ -153,7 +153,9 @@ async fn connect_pool(url: &str) -> Result<PgPool, String> {
     match tokio::time::timeout(Duration::from_secs(6), fut).await {
         Ok(Ok(p)) => Ok(p),
         Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err("таймаут з'єднання (6 c): host/port недосяжні або не відповідають".to_string()),
+        Err(_) => {
+            Err("таймаут з'єднання (6 c): host/port недосяжні або не відповідають".to_string())
+        }
     }
 }
 
@@ -198,13 +200,13 @@ pub async fn provision_database(
 
     // ── 1. Підключення суперкористувачем до БД postgres + SELECT 1 ─────────
     let admin_url = super_url(target, "postgres");
-    let admin_pool = connect_pool(&admin_url).await.map_err(|reason| {
-        ProvisionError::Connect {
+    let admin_pool = connect_pool(&admin_url)
+        .await
+        .map_err(|reason| ProvisionError::Connect {
             host: target.host.clone(),
             port: target.port,
             reason,
-        }
-    })?;
+        })?;
     select_one(&admin_pool)
         .await
         .map_err(|reason| ProvisionError::Connect {
@@ -261,23 +263,22 @@ pub async fn provision_database(
 
     // ── 5. Роль torgashka_app + автогенерований пароль (ідемпотентно) ───────
     let app_password = generate_app_password();
-    let role_exists: bool = match sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)",
-    )
-    .bind(APP_ROLE)
-    .fetch_one(&admin_pool)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            new_pool.close().await;
-            cleanup_drop(&admin_pool, db_name).await;
-            admin_pool.close().await;
-            return Err(ProvisionError::Failed(format!(
-                "перевірка pg_roles (cleanup виконано): {e}"
-            )));
-        }
-    };
+    let role_exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)")
+            .bind(APP_ROLE)
+            .fetch_one(&admin_pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                new_pool.close().await;
+                cleanup_drop(&admin_pool, db_name).await;
+                admin_pool.close().await;
+                return Err(ProvisionError::Failed(format!(
+                    "перевірка pg_roles (cleanup виконано): {e}"
+                )));
+            }
+        };
     let role_sql = if role_exists {
         format!(
             "ALTER ROLE {} WITH LOGIN PASSWORD '{app_password}' \

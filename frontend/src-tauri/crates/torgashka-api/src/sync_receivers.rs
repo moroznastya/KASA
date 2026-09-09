@@ -56,16 +56,20 @@ fn s(v: &Value, key: &str) -> Option<String> {
 }
 
 fn b(v: &Value, key: &str) -> Option<bool> {
-    v.get(key).filter(|x| !x.is_null()).and_then(|x| x.as_bool())
+    v.get(key)
+        .filter(|x| !x.is_null())
+        .and_then(|x| x.as_bool())
 }
 
 fn u(v: &Value, key: &str) -> Result<Option<Uuid>, String> {
     match v.get(key).filter(|x| !x.is_null()) {
         None => Ok(None),
-        Some(Value::String(s)) => Uuid::parse_str(s).map(Some).map_err(|e| {
-            format!("поле '{key}': невалідний UUID '{s}': {e}")
-        }),
-        Some(other) => Err(format!("поле '{key}': очікувався UUID-рядок, маємо {other}")),
+        Some(Value::String(s)) => Uuid::parse_str(s)
+            .map(Some)
+            .map_err(|e| format!("поле '{key}': невалідний UUID '{s}': {e}")),
+        Some(other) => Err(format!(
+            "поле '{key}': очікувався UUID-рядок, маємо {other}"
+        )),
     }
 }
 
@@ -121,20 +125,24 @@ fn dec2(v: i64) -> String {
 
 /// Позиції payload: усі мають product_id + quantity (Decimal). Повертає
 /// (product_id, quantity-scaled3, рядок quantity, cost_price?, price?).
-fn parse_items(v: &Value, kind: &str) -> Result<Vec<(Uuid, i64, String, Option<String>, Option<String>)>, String> {
+fn parse_items(
+    v: &Value,
+    kind: &str,
+) -> Result<Vec<(Uuid, i64, String, Option<String>, Option<String>)>, String> {
     let arr = match v.get("items") {
         Some(Value::Array(a)) if !a.is_empty() => a,
         _ => return Err(format!("{kind}: payload.items порожній або відсутній")),
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, it) in arr.iter().enumerate() {
-        let pid = u(it, "product_id")?.ok_or_else(|| {
-            format!("{kind}: items[{i}].product_id обов'язковий")
-        })?;
-        let qty_s = dec(it, "quantity")?.or_else(|| {
-            // inventory-фронт кладе quantity = факт; fallback actual_quantity.
-            dec(it, "actual_quantity").ok().flatten()
-        }).ok_or_else(|| format!("{kind}: items[{i}].quantity обов'язковий"))?;
+        let pid = u(it, "product_id")?
+            .ok_or_else(|| format!("{kind}: items[{i}].product_id обов'язковий"))?;
+        let qty_s = dec(it, "quantity")?
+            .or_else(|| {
+                // inventory-фронт кладе quantity = факт; fallback actual_quantity.
+                dec(it, "actual_quantity").ok().flatten()
+            })
+            .ok_or_else(|| format!("{kind}: items[{i}].quantity обов'язковий"))?;
         let qty3 = scaled3(&qty_s)
             .ok_or_else(|| format!("{kind}: items[{i}].quantity '{qty_s}' нечислове"))?;
         let cost = dec(it, "cost_price")?;
@@ -145,11 +153,7 @@ fn parse_items(v: &Value, kind: &str) -> Result<Vec<(Uuid, i64, String, Option<S
 }
 
 /// Генерація номера документа (як next_doc_number у repo pos.rs): {P}-{date}-{seq}.
-async fn next_doc_number(
-    pool: &PgPool,
-    table: &str,
-    prefix: &str,
-) -> Result<String, String> {
+async fn next_doc_number(pool: &PgPool, table: &str, prefix: &str) -> Result<String, String> {
     let today = Utc::now().format("%Y%m%d").to_string();
     let pfx = format!("{prefix}-{today}-");
     let q = format!("SELECT max(number) FROM {table} WHERE number LIKE $1");
@@ -161,7 +165,14 @@ async fn next_doc_number(
     let last_seq = row
         .0
         .and_then(|n| {
-            let tail: String = n.chars().rev().take(3).collect::<String>().chars().rev().collect();
+            let tail: String = n
+                .chars()
+                .rev()
+                .take(3)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
             tail.parse::<i64>().ok()
         })
         .unwrap_or(0);
@@ -185,7 +196,11 @@ async fn stock_add(
     )
     .bind(store_id)
     .bind(product_id)
-    .bind(if sign >= 0 { format!("{abs}") } else { format!("-{abs}") })
+    .bind(if sign >= 0 {
+        format!("{abs}")
+    } else {
+        format!("-{abs}")
+    })
     .bind(format!("{}", delta3 as f64 / 1000.0))
     .execute(&mut **tx)
     .await
@@ -234,8 +249,7 @@ pub async fn accept_purchase_order(
         .and_then(|d| parse_created_at_utc(Some(&d)))
         .or(created_at)
         .unwrap_or_else(|| Utc::now().naive_utc());
-    let expected_date = s(payload, "expected_date")
-        .and_then(|d| parse_created_at_utc(Some(&d)));
+    let expected_date = s(payload, "expected_date").and_then(|d| parse_created_at_utc(Some(&d)));
     let notes = s(payload, "notes");
     let is_fiscal = b(payload, "is_fiscal").unwrap_or(false);
     let items = parse_items(payload, "purchase_order")?;
@@ -258,10 +272,21 @@ pub async fn accept_purchase_order(
          VALUES ($1,$2,$3,$4::timestamp,$5::timestamp,'confirmed',$6,$7,$8::numeric, \
                  $9::timestamp,$9::timestamp,$10,$11,$12)",
     )
-    .bind(id).bind(&number).bind(supplier_id).bind(order_date).bind(expected_date)
-    .bind(is_fiscal).bind(notes.as_deref()).bind(dec2(total_cents as i64))
-    .bind(ts).bind(cashier).bind(store_id).bind(client_uuid)
-    .execute(&mut *tx).await.map_err(|e| format!("INSERT purchase_orders: {e}"))?;
+    .bind(id)
+    .bind(&number)
+    .bind(supplier_id)
+    .bind(order_date)
+    .bind(expected_date)
+    .bind(is_fiscal)
+    .bind(notes.as_deref())
+    .bind(dec2(total_cents as i64))
+    .bind(ts)
+    .bind(cashier)
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT purchase_orders: {e}"))?;
     for (pid, q3, _q, _, pr) in &items {
         let price = pr.as_deref().and_then(scaled2).unwrap_or(0);
         sqlx::query(
@@ -269,10 +294,17 @@ pub async fn accept_purchase_order(
                 (id, purchase_order_id, product_id, quantity, price, total, created_at, store_id) \
              VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7::timestamp,$8)",
         )
-        .bind(Uuid::new_v4()).bind(id).bind(pid).bind(format!("{}", *q3 as f64 / 1000.0))
-        .bind(dec2(price)).bind(dec2(((*q3 as i128) * price as i128 / 1000) as i64))
-        .bind(ts).bind(store_id)
-        .execute(&mut *tx).await.map_err(|e| format!("INSERT purchase_order_items: {e}"))?;
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(pid)
+        .bind(format!("{}", *q3 as f64 / 1000.0))
+        .bind(dec2(price))
+        .bind(dec2(((*q3 as i128) * price as i128 / 1000) as i64))
+        .bind(ts)
+        .bind(store_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("INSERT purchase_order_items: {e}"))?;
         stock_add(&mut tx, store_id, *pid, *q3).await?;
     }
     tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
@@ -308,11 +340,22 @@ pub async fn accept_inventory(
              created_by_id, store_id, client_uuid) \
          VALUES ($1,$2,$3,$4::timestamp,'confirmed',$5,$6::timestamp,$6::timestamp,$7,$8,$9)",
     )
-    .bind(id).bind(&number).bind(&location).bind(inv_date).bind(notes.as_deref())
-    .bind(ts).bind(cashier).bind(store_id).bind(client_uuid)
-    .execute(&mut *tx).await.map_err(|e| format!("INSERT inventories: {e}"))?;
+    .bind(id)
+    .bind(&number)
+    .bind(&location)
+    .bind(inv_date)
+    .bind(notes.as_deref())
+    .bind(ts)
+    .bind(cashier)
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT inventories: {e}"))?;
     for (pid, q3, qty_s, cost, price) in &items {
-        let acc = dec(&payload["items"], "accounting_quantity").ok().flatten()
+        let acc = dec(&payload["items"], "accounting_quantity")
+            .ok()
+            .flatten()
             .or_else(|| None);
         let _ = acc;
         // accounting_quantity/difference — з позиції (якщо є), інакше 0.
@@ -327,12 +370,19 @@ pub async fn accept_inventory(
              VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7::numeric,$8::numeric, \
                      $9::timestamp,$10)",
         )
-        .bind(Uuid::new_v4()).bind(id).bind(pid)
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(pid)
         .bind(format!("{}", *q3 as f64 / 1000.0))
-        .bind(acc_s).bind(diff_s)
-        .bind(dec2(cost_c)).bind(dec2(price_c))
-        .bind(ts).bind(store_id)
-        .execute(&mut *tx).await.map_err(|e| format!("INSERT inventory_items: {e}"))?;
+        .bind(acc_s)
+        .bind(diff_s)
+        .bind(dec2(cost_c))
+        .bind(dec2(price_c))
+        .bind(ts)
+        .bind(store_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("INSERT inventory_items: {e}"))?;
         stock_set(&mut tx, store_id, *pid, *q3).await?;
     }
     tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
@@ -375,7 +425,13 @@ pub async fn accept_transfer(
     let notes = s(payload, "notes");
     let items = parse_items(payload, "transfer")?;
     let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
-    let side = if store_id == from { 1 } else if store_id == to { -1 } else { 0 };
+    let side = if store_id == from {
+        1
+    } else if store_id == to {
+        -1
+    } else {
+        0
+    };
 
     let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
     let number = next_doc_number(pool, "transfers", "ПМ").await?;
@@ -386,9 +442,19 @@ pub async fn accept_transfer(
              created_at, updated_at, created_by_id, store_id, client_uuid) \
          VALUES ($1,$2,$3,$4,$5::timestamp,'confirmed',$6,$7::timestamp,$7::timestamp,$8,$9,$10)",
     )
-    .bind(id).bind(&number).bind(from.to_string()).bind(to.to_string()).bind(ts)
-    .bind(notes.as_deref()).bind(ts).bind(cashier).bind(store_id).bind(client_uuid)
-    .execute(&mut *tx).await.map_err(|e| format!("INSERT transfers: {e}"))?;
+    .bind(id)
+    .bind(&number)
+    .bind(from.to_string())
+    .bind(to.to_string())
+    .bind(ts)
+    .bind(notes.as_deref())
+    .bind(ts)
+    .bind(cashier)
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT transfers: {e}"))?;
     for (pid, q3, _q, cost, price) in &items {
         let cost_c = cost.as_deref().and_then(scaled2).unwrap_or(0);
         let price_c = price.as_deref().and_then(scaled2).unwrap_or(0);
@@ -397,9 +463,17 @@ pub async fn accept_transfer(
                 (id, transfer_id, product_id, quantity, cost_price, price, created_at, store_id) \
              VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7::timestamp,$8)",
         )
-        .bind(Uuid::new_v4()).bind(id).bind(pid).bind(format!("{}", *q3 as f64 / 1000.0))
-        .bind(dec2(cost_c)).bind(dec2(price_c)).bind(ts).bind(store_id)
-        .execute(&mut *tx).await.map_err(|e| format!("INSERT transfer_items: {e}"))?;
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(pid)
+        .bind(format!("{}", *q3 as f64 / 1000.0))
+        .bind(dec2(cost_c))
+        .bind(dec2(price_c))
+        .bind(ts)
+        .bind(store_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("INSERT transfer_items: {e}"))?;
         match side {
             1 => stock_add(&mut tx, from, *pid, -*q3).await?,
             -1 => stock_add(&mut tx, to, *pid, *q3).await?,
@@ -446,9 +520,19 @@ pub async fn accept_write_off(
          VALUES ($1,$2,$3,$4::timestamp,$5,'confirmed',$6::numeric, \
                  $7::timestamp,$7::timestamp,$8,$9,$10)",
     )
-    .bind(id).bind(&number).bind(&reason).bind(wo_date).bind(notes.as_deref())
-    .bind(dec2(total_cents as i64)).bind(ts).bind(cashier).bind(store_id).bind(client_uuid)
-    .execute(&mut *tx).await.map_err(|e| format!("INSERT write_offs: {e}"))?;
+    .bind(id)
+    .bind(&number)
+    .bind(&reason)
+    .bind(wo_date)
+    .bind(notes.as_deref())
+    .bind(dec2(total_cents as i64))
+    .bind(ts)
+    .bind(cashier)
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT write_offs: {e}"))?;
     for (pid, q3, _q, cost, price) in &items {
         let cost_c = cost.as_deref().and_then(scaled2).unwrap_or(0);
         let price_c = price.as_deref().and_then(scaled2).unwrap_or(0);
@@ -457,9 +541,17 @@ pub async fn accept_write_off(
                 (id, write_off_id, product_id, quantity, cost_price, price, created_at, store_id) \
              VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7::timestamp,$8)",
         )
-        .bind(Uuid::new_v4()).bind(id).bind(pid).bind(format!("{}", *q3 as f64 / 1000.0))
-        .bind(dec2(cost_c)).bind(dec2(price_c)).bind(ts).bind(store_id)
-        .execute(&mut *tx).await.map_err(|e| format!("INSERT write_off_items: {e}"))?;
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .bind(pid)
+        .bind(format!("{}", *q3 as f64 / 1000.0))
+        .bind(dec2(cost_c))
+        .bind(dec2(price_c))
+        .bind(ts)
+        .bind(store_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("INSERT write_off_items: {e}"))?;
         stock_add(&mut tx, store_id, *pid, -*q3).await?;
     }
     tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
@@ -474,10 +566,16 @@ mod tests {
     #[test]
     fn rfc3339_parses_to_utc_naive() {
         let d = parse_created_at_utc(Some("2026-09-10T09:31:05+03:00")).expect("rfc3339");
-        assert_eq!(d.format("%Y-%m-%dT%H:%M:%S").to_string(), "2026-09-10T06:31:05");
+        assert_eq!(
+            d.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-09-10T06:31:05"
+        );
         // ISO без таймзони — як є.
         let d2 = parse_created_at_utc(Some("2026-09-10T09:31:05")).expect("naive");
-        assert_eq!(d2.format("%Y-%m-%dT%H:%M:%S").to_string(), "2026-09-10T09:31:05");
+        assert_eq!(
+            d2.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-09-10T09:31:05"
+        );
         assert!(parse_created_at_utc(None).is_none());
         assert!(parse_created_at_utc(Some("not-a-date")).is_none());
     }

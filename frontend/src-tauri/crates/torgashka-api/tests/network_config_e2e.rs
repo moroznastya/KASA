@@ -334,7 +334,10 @@ async fn network_config_export_import_lifecycle() {
         .and_then(|s| s.strip_suffix(".json"))
         .expect("date part");
     assert_eq!(date_part.len(), 8, "дата YYYYmmdd: {date_part}");
-    assert!(date_part.chars().all(|c| c.is_ascii_digit()), "дата: {date_part}");
+    assert!(
+        date_part.chars().all(|c| c.is_ascii_digit()),
+        "дата: {date_part}"
+    );
 
     let content = exp["content"].as_str().expect("content").to_string();
     let cfg1: Value = serde_json::from_str(&content).expect("content — валідний JSON");
@@ -349,7 +352,10 @@ async fn network_config_export_import_lifecycle() {
     );
     assert_eq!(cfg1["store"]["id"].as_str().unwrap_or(""), store_id);
     assert_eq!(cfg1["store"]["name"].as_str().unwrap_or(""), store_name);
-    let code1 = cfg1["store"]["activation_code"].as_str().expect("code").to_string();
+    let code1 = cfg1["store"]["activation_code"]
+        .as_str()
+        .expect("code")
+        .to_string();
     assert!(code_alphabet_ok(&code1), "код активації: {code1}");
     assert!(
         cfg1["exported_at"].as_str().unwrap_or("").contains('T'),
@@ -391,7 +397,8 @@ async fn network_config_export_import_lifecycle() {
         .expect("password_encrypted присутній");
     assert!(!enc.is_empty(), "password_encrypted не порожній");
     assert!(
-        enc.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
+        enc.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
         "base64: {enc}"
     );
     assert!(
@@ -407,7 +414,10 @@ async fn network_config_export_import_lifecycle() {
     assert_eq!(decrypted, parts.password, "розшифрований пароль = оригінал");
 
     // Код активації пере-генеровано на кожному export (#2 ≠ #1).
-    let code2 = cfg2["store"]["activation_code"].as_str().expect("code2").to_string();
+    let code2 = cfg2["store"]["activation_code"]
+        .as_str()
+        .expect("code2")
+        .to_string();
     assert!(code_alphabet_ok(&code2), "код #2: {code2}");
     assert_ne!(code1, code2, "код має пере-генеруватись на кожному export");
 
@@ -464,7 +474,10 @@ async fn network_config_export_import_lifecycle() {
     );
     assert_eq!(imp["store"]["id"].as_str().unwrap_or(""), store_id);
     assert_eq!(imp["store"]["name"].as_str().unwrap_or(""), store_name);
-    assert_eq!(imp["server_url"].as_str().unwrap_or(""), "https://vpn.example:8443");
+    assert_eq!(
+        imp["server_url"].as_str().unwrap_or(""),
+        "https://vpn.example:8443"
+    );
 
     // ── Import СТАРОГО content (#1, з попереднім кодом) → 400 ──
     let (si2, imp2) = req(

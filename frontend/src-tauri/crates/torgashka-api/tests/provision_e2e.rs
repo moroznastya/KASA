@@ -107,8 +107,7 @@ fn url_of(parts: &PgParts, database: &str) -> String {
 fn sources_dir() -> &'static PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("torgashka_prov_e2e_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("torgashka_prov_e2e_{}", std::process::id()));
         let cfg = dir.join("db_sources.toml");
         let _ = std::fs::remove_file(&cfg);
         let _ = std::fs::remove_file(dir.join(".dbkey"));
@@ -288,10 +287,15 @@ async fn provision_full_lifecycle_owner_only() {
     assert_eq!(src["id"], json!("prov_src"), "{resp}");
     assert_eq!(src["user"], json!("torgashka_app"), "{resp}");
     assert_eq!(
-        src["status"], json!("provisioned_pending_activation"),
+        src["status"],
+        json!("provisioned_pending_activation"),
         "статус створено-не-активовано: {resp}"
     );
-    assert_eq!(src["is_active"], json!(false), "не активовано автоматично: {resp}");
+    assert_eq!(
+        src["is_active"],
+        json!(false),
+        "не активовано автоматично: {resp}"
+    );
     assert_eq!(src["has_password"], json!(true), "{resp}");
     assert!(
         src.get("password_encrypted").is_none() && src.get("password").is_none(),
@@ -322,12 +326,14 @@ async fn provision_full_lifecycle_owner_only() {
         .fetch_one(&ndb_pool)
         .await
         .expect("users у новій БД");
-    let has_stores: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.stores') IS NOT NULL")
-            .fetch_one(&ndb_pool)
-            .await
-            .expect("stores у новій БД");
-    assert!(has_users && has_stores, "повна схема (users/stores) у новій БД");
+    let has_stores: bool = sqlx::query_scalar("SELECT to_regclass('public.stores') IS NOT NULL")
+        .fetch_one(&ndb_pool)
+        .await
+        .expect("stores у новій БД");
+    assert!(
+        has_users && has_stores,
+        "повна схема (users/stores) у новій БД"
+    );
     let stores_count: i64 = sqlx::query_scalar("SELECT count(*) FROM stores")
         .fetch_one(&ndb_pool)
         .await
@@ -367,7 +373,11 @@ async fn provision_full_lifecycle_owner_only() {
     )
     .await;
     assert_eq!(st, 200, "test provisioned source: {tested}");
-    assert_eq!(tested["ok"], json!(true), "torgashka_app підключається: {tested}");
+    assert_eq!(
+        tested["ok"],
+        json!(true),
+        "torgashka_app підключається: {tested}"
+    );
 
     // ── 5. Повторний provision того самого database → 409 ──
     let dup_body = json!({
@@ -386,7 +396,10 @@ async fn provision_full_lifecycle_owner_only() {
         Some(dup_body),
     )
     .await;
-    assert_eq!(sd, 409, "повторний provision того самого database → 409: {dup}");
+    assert_eq!(
+        sd, 409,
+        "повторний provision того самого database → 409: {dup}"
+    );
     assert!(
         dup["detail"]
             .as_str()

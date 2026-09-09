@@ -11,7 +11,8 @@
 //! - SignatureMethod: rsa-sha256 (RSA PKCS#1 v1.5) / ecdsa-sha256 (EC);
 //! - KeyInfo/X509Data/X509Certificate — PEM base64 без маркерів, 64 симв/рядок;
 //! - `<ds:Signature>` вставляється ОСТАННІМ елементом кореня;
-//! - XML declaration: `<?xml version='1.0' encoding='UTF-8'?>` (одинарні лапки).
+//! - XML declaration: `<?xml version='1.0' encoding='windows-1251'?>` (одинарні
+//!   лапки; спека C — підписаний документ має бути у windows-1251).
 //!
 //! DigestValue = Base64(SHA-256(C14N11(документ без Signature))).
 //! SignatureValue = Base64(Sign(SHA-256(C14N11(SignedInfo)))).
@@ -113,11 +114,11 @@ impl XadesSigner {
         ))
     }
 
-    /// Підписаний XML (байт-в-байт як signxml, див. golden-тести).
+    /// Підписаний XML (1:1 Python `lxml etree.tostring(signed_root,
+    /// xml_declaration=True, encoding="windows-1251")` — спека C).
     pub fn sign_xml(&self, xml_bytes: &[u8]) -> Result<Vec<u8>, PrroCryptoError> {
-        let input = std::str::from_utf8(xml_bytes)
-            .map_err(|e| PrroCryptoError::Generic(format!("XML не UTF-8: {e}")))?;
-        let mut root = parse_xml(input)?;
+        let input = decode_cp1251(xml_bytes)?;
+        let mut root = parse_xml(&input)?;
 
         // enveloped-signature: якщо вже є ds:Signature — видалити (перепідпис)
         root.children.retain(|c| match c {
@@ -167,19 +168,19 @@ impl XadesSigner {
         let sig_node = parse_xml(&signature)?;
         root.children.push(XChild::Elem(sig_node));
 
-        // 5) Серіалізація: XML declaration + документ (порядок атрибутів — як у
-        //    вхідному; порожні елементи — самозакриття; 1:1 lxml tostring).
-        let mut out = String::from("<?xml version='1.0' encoding='UTF-8'?>\n");
+        // 5) Серіалізація: XML declaration (windows-1251) + документ — 1:1
+        //    Python `etree.tostring(..., xml_declaration=True,
+        //    encoding="windows-1251")` (lxml: одинарні лапки, без переносу).
+        let mut out = String::from("<?xml version='1.0' encoding='windows-1251'?>");
         serialize(&root, &mut out);
-        Ok(out.into_bytes())
+        encode_cp1251(&out).map_err(PrroCryptoError::Generic)
     }
 
     /// Перевірка XAdES-підпису (1:1 Python `XMLVerifier`): digest документа +
     /// криптографічна валідність SignatureValue публічним ключем з KeyInfo.
     pub fn verify_xml(&self, signed_xml: &[u8]) -> Result<bool, PrroCryptoError> {
-        let input = std::str::from_utf8(signed_xml)
-            .map_err(|e| PrroCryptoError::Generic(format!("XML не UTF-8: {e}")))?;
-        let root = parse_xml(input)?;
+        let input = decode_cp1251(signed_xml)?;
+        let root = parse_xml(&input)?;
 
         // знайти ds:Signature
         let sig = root
@@ -737,6 +738,23 @@ fn wrap64(s: &str) -> String {
     }
     out.push('\n');
     out
+}
+/// Декодує байти windows-1251 у текст для XML-парсера (спека C).
+fn decode_cp1251(bytes: &[u8]) -> Result<String, PrroCryptoError> {
+    let (cow, _, had_errors) = encoding_rs::WINDOWS_1251.decode(bytes);
+    if had_errors {
+        return Err(PrroCryptoError::Generic("XML не windows-1251".into()));
+    }
+    Ok(cow.into_owned())
+}
+
+/// Кодує текст у байти windows-1251 (XML-декларація windows-1251).
+fn encode_cp1251(text: &str) -> Result<Vec<u8>, String> {
+    let (bytes, _, had_errors) = encoding_rs::WINDOWS_1251.encode(text);
+    if had_errors {
+        return Err("XML містить символи поза windows-1251".to_string());
+    }
+    Ok(bytes.into_owned())
 }
 
 fn err(msg: &str) -> PrroCryptoError {

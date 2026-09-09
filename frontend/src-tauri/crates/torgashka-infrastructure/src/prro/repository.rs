@@ -130,15 +130,13 @@ impl SqlxPrroRepository {
     /// поза HTTP (sync/фон) контексту немає — чесна помилка, а не запис у
     /// «глобальний» рядок (мультиточкових глобальних таблиць більше немає).
     fn ctx_store_id(&self) -> Result<Uuid, PrroRepoError> {
-        current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| {
-                PrroRepoError::Validation(
-                    "ПРРО-операція поза контекстом торговельної точки (StoreCtx не встановлено); \
+        current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PrroRepoError::Validation(
+                "ПРРО-операція поза контекстом торговельної точки (StoreCtx не встановлено); \
                      передайте store_id через X-Store-Id або with_store_ctx"
-                        .to_string(),
-                )
-            })
+                    .to_string(),
+            )
+        })
     }
 }
 

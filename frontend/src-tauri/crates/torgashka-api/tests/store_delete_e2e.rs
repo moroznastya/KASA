@@ -305,12 +305,11 @@ async fn store_delete_empty_lifecycle() {
         detail.contains("stock"),
         "повідомлення згадує таблицю stock: {detail}"
     );
-    let still_there: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)")
-            .bind(stock_store_uuid)
-            .fetch_one(&pool)
-            .await
-            .expect("exists");
+    let still_there: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM stores WHERE id = $1)")
+        .bind(stock_store_uuid)
+        .fetch_one(&pool)
+        .await
+        .expect("exists");
     assert!(still_there, "точка з даними не видалена (409)");
 
     // ── 2b. Точка з devices → 409 «devices»

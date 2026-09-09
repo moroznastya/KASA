@@ -41,7 +41,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -121,7 +123,10 @@ async fn login(base: &str, login_name: &str) -> String {
         {
             if r.status().is_success() {
                 let v: Value = r.json().await.expect("login json");
-                return v["access_token"].as_str().expect("access_token").to_string();
+                return v["access_token"]
+                    .as_str()
+                    .expect("access_token")
+                    .to_string();
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -146,7 +151,9 @@ async fn wait_ready(base: &str) {
 async fn gen_code(base: &str, token: &str, store: Uuid) -> (u16, Value) {
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{base}/api/v1/admin/stores/{store}/activation-code"))
+        .post(format!(
+            "{base}/api/v1/admin/stores/{store}/activation-code"
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -249,8 +256,11 @@ async fn device_sync_master_auth_isolates_stores_and_tracks_state() {
          WHERE u.login = 'nsync_owner' AND s.id IN ($1, $2)
          ON CONFLICT DO NOTHING",
     )
-    .bind(store_a).bind(store_b)
-    .execute(&pool).await.expect("seed owner user_stores");
+    .bind(store_a)
+    .bind(store_b)
+    .execute(&pool)
+    .await
+    .expect("seed owner user_stores");
     sqlx::query(
         "INSERT INTO user_stores (user_id, store_id, role, permissions, is_default, created_at)
          SELECT u.id, s.id, u.role::text, '{}'::jsonb, true, now()
@@ -259,7 +269,9 @@ async fn device_sync_master_auth_isolates_stores_and_tracks_state() {
          ON CONFLICT DO NOTHING",
     )
     .bind(store_a)
-    .execute(&pool).await.expect("seed cashier user_stores");
+    .execute(&pool)
+    .await
+    .expect("seed cashier user_stores");
 
     // ── Категорії точок (server_version проставляє bump-тригер) ──────────
     let cat_a = Uuid::new_v4();
@@ -269,12 +281,16 @@ async fn device_sync_master_auth_isolates_stores_and_tracks_state() {
         .bind(cat_a)
         .bind(format!("__devsync_A_{suffix}"))
         .bind(store_a)
-        .execute(&pool).await.expect("seed category A");
+        .execute(&pool)
+        .await
+        .expect("seed category A");
     sqlx::query("INSERT INTO categories (id, name, store_id) VALUES ($1, $2, $3)")
         .bind(cat_b)
         .bind(format!("__devsync_B_{suffix}"))
         .bind(store_b)
-        .execute(&pool).await.expect("seed category B");
+        .execute(&pool)
+        .await
+        .expect("seed category B");
 
     // ── Фасад + активація каси точки A ─────────────────────────────────────
     let port = free_port().await;
@@ -289,9 +305,12 @@ async fn device_sync_master_auth_isolates_stores_and_tracks_state() {
 
     let (as_, act) = activate(&base, &code).await;
     assert_eq!(as_, 200, "активація каси A: {act}");
-    let device_token = act["device_token"].as_str().expect("device_token").to_string();
-    let device_id = Uuid::parse_str(act["device_id"].as_str().expect("device_id"))
-        .expect("device_id uuid");
+    let device_token = act["device_token"]
+        .as_str()
+        .expect("device_token")
+        .to_string();
+    let device_id =
+        Uuid::parse_str(act["device_id"].as_str().expect("device_id")).expect("device_id uuid");
     assert_eq!(
         Uuid::parse_str(act["store_id"].as_str().unwrap()).unwrap(),
         store_a,

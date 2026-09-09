@@ -142,9 +142,10 @@ pub fn enqueue_receipt_with_uuid(
                 let qty_milli = item.get("quantity").map(stock::qty_to_milli).unwrap_or(0);
                 // Нормалізована деталізація (локальний перегляд без парсингу data).
                 let price_v = item.get("price");
-                let price_s = price_v.and_then(|v| v.as_str()).map(|s| s.to_string()).or_else(
-                    || price_v.and_then(|v| v.as_f64()).map(|f| format!("{f:.2}")),
-                );
+                let price_s = price_v
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| price_v.and_then(|v| v.as_f64()).map(|f| format!("{f:.2}")));
                 let snap_v = item.get("price_snapshot").or(price_v);
                 let snap_s = snap_v
                     .and_then(|v| v.as_str())
@@ -155,11 +156,18 @@ pub fn enqueue_receipt_with_uuid(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .or_else(|| {
-                        item.get("sum").and_then(|v| v.as_f64()).map(|f| format!("{f:.2}"))
+                        item.get("sum")
+                            .and_then(|v| v.as_f64())
+                            .map(|f| format!("{f:.2}"))
                     })
                     .or_else(|| {
-                        let price_f = price_v.and_then(|v| v.as_f64())
-                            .or_else(|| price_v.and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()))
+                        let price_f = price_v
+                            .and_then(|v| v.as_f64())
+                            .or_else(|| {
+                                price_v
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                            })
                             .unwrap_or(0.0);
                         let q = stock::milli_to_units(qty_milli);
                         Some(format!("{:.2}", price_f * q))
@@ -187,7 +195,11 @@ pub fn enqueue_receipt_with_uuid(
                 // (локальний stock стартує порожнім; див. stock.rs).
                 if let (Some(sid), Some(pid), q) = (store_id, pid, qty_milli) {
                     if q != 0 {
-                        let delta = if outbox_type == TYPE_RETURN_RECEIPT { q } else { -q };
+                        let delta = if outbox_type == TYPE_RETURN_RECEIPT {
+                            q
+                        } else {
+                            -q
+                        };
                         stock::apply_stock_delta(&tx, sid, pid, delta)
                             .map_err(|e| format!("stock-ефект чека {client_uuid}: {e}"))?;
                     }
@@ -195,7 +207,9 @@ pub fn enqueue_receipt_with_uuid(
             }
         }
         Some(_) => {
-            return Err(format!("Чек каси (client_uuid={client_uuid}): поле items — не масив"));
+            return Err(format!(
+                "Чек каси (client_uuid={client_uuid}): поле items — не масив"
+            ));
         }
     }
 
@@ -1105,7 +1119,11 @@ mod tests {
             .expect("receipt_items");
         assert_eq!(pid.as_deref(), Some("t-1"));
         assert_eq!(qty, 2000, "quantity у міліодиницях");
-        assert_eq!(price, Some(50.0), "price — NUMERIC: \"50.00\" збережено REAL 50.0");
+        assert_eq!(
+            price,
+            Some(50.0),
+            "price — NUMERIC: \"50.00\" збережено REAL 50.0"
+        );
         assert_eq!(name.as_deref(), Some("Товар T"));
     }
 
@@ -1167,12 +1185,19 @@ mod tests {
         assert!(enqueue_receipt(&mut c, &bad, Some(store)).is_err());
 
         let counts: (i64, i64, i64, i64) = (
-            c.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0)).unwrap(),
-            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0)).unwrap(),
-            c.query_row("SELECT COUNT(*) FROM receipt_items", [], |r| r.get(0)).unwrap(),
+            c.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get(0))
+                .unwrap(),
+            c.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+                .unwrap(),
+            c.query_row("SELECT COUNT(*) FROM receipt_items", [], |r| r.get(0))
+                .unwrap(),
             stock_level(&c, store, "t-1"),
         );
-        assert_eq!(counts, (0, 0, 0, 1000), "ROLLBACK: жодного часткового стану");
+        assert_eq!(
+            counts,
+            (0, 0, 0, 1000),
+            "ROLLBACK: жодного часткового стану"
+        );
     }
 
     // ── ЕТАП 7: sync_log (моніторинг) ──────────────────────────────────────
@@ -1191,9 +1216,7 @@ mod tests {
         let log: Vec<(String, String, Option<String>, Option<i64>)> = conn
             .prepare("SELECT kind, entity, detail, attempts FROM sync_log ORDER BY id")
             .unwrap()
-            .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
@@ -1235,9 +1258,16 @@ mod tests {
         let n_log: i64 = conn
             .query_row("SELECT COUNT(*) FROM sync_log", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n_log, 0, "ROLLBACK: sync_log порожній — фейкового push_ok немає");
+        assert_eq!(
+            n_log, 0,
+            "ROLLBACK: sync_log порожній — фейкового push_ok немає"
+        );
         let status: String = conn
-            .query_row("SELECT status FROM outbox WHERE id = ?1", params![a.outbox_id], |r| r.get(0))
+            .query_row(
+                "SELECT status FROM outbox WHERE id = ?1",
+                params![a.outbox_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(status, "pending", "ROLLBACK: статус outbox не змінився");
     }
@@ -1257,7 +1287,10 @@ mod tests {
 
         let h1 = sync_health(&conn).expect("health (після успіху)");
         assert_eq!(h1["degraded"], false);
-        assert!(h1["last_push_ok_at"].is_string(), "last_push_ok_at записано");
+        assert!(
+            h1["last_push_ok_at"].is_string(),
+            "last_push_ok_at записано"
+        );
         assert!(h1["last_push_ok_at"].as_str().unwrap().len() >= 19);
 
         let b = enqueue_receipt(&mut conn, &sale_receipt_json(2), None).expect("b");
@@ -1269,7 +1302,10 @@ mod tests {
         assert_eq!(h2["degraded"], true, "degraded: outbox_failed > 0");
         assert_eq!(h2["outbox_failed"], 1);
         assert_eq!(h2["last_error"].as_str(), Some("помилка валідації"));
-        assert!(h2["stale_failed_since"].is_string(), "stale_failed_since = MIN(created_at)");
+        assert!(
+            h2["stale_failed_since"].is_string(),
+            "stale_failed_since = MIN(created_at)"
+        );
     }
 
     /// sync_health: degraded=true при стагнації (pending з next_attempt_at,
@@ -1297,8 +1333,14 @@ mod tests {
         )
         .unwrap();
         let h2 = sync_health(&conn).expect("health");
-        assert_eq!(h2["degraded"], true, "стагнація: pending не рухається > 1 год");
-        assert_eq!(h2["outbox_failed"], 0, "degraded саме через стагнацію, не failed");
+        assert_eq!(
+            h2["degraded"], true,
+            "стагнація: pending не рухається > 1 год"
+        );
+        assert_eq!(
+            h2["outbox_failed"], 0,
+            "degraded саме через стагнацію, не failed"
+        );
     }
 
     /// log_event приймає pull-події (pull_ok/pull_fail) — той самий журнал.
@@ -1306,7 +1348,14 @@ mod tests {
     fn sync_log_accepts_pull_events() {
         let mut conn = test_conn();
         log_event(&conn, "pull_ok", Some("products"), Some("→ v7"), None).expect("pull_ok");
-        log_event(&conn, "pull_fail", Some("suppliers"), Some("GET: мережа"), None).expect("pull_fail");
+        log_event(
+            &conn,
+            "pull_fail",
+            Some("suppliers"),
+            Some("GET: мережа"),
+            None,
+        )
+        .expect("pull_fail");
         let h = sync_health(&conn).expect("health");
         assert!(h["last_pull_ok_at"].is_string());
         let kinds: Vec<String> = conn

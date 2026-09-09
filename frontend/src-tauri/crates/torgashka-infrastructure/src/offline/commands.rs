@@ -16,9 +16,9 @@
 use crate::offline::db::OfflineDatabase;
 use crate::offline::snapshots;
 use crate::offline::stock;
-use crate::offline::transactions;
 use crate::offline::sync_pull::{self, PullConfig};
 use crate::offline::sync_push::{self, PushConfig};
+use crate::offline::transactions;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,13 +96,11 @@ fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncAuth>, Strin
         get_setting_conn(conn, "api_token")?,
         get_setting_conn(conn, "store_id")?,
     ) {
-        (Some(t), Some(s)) if !t.trim().is_empty() && !s.trim().is_empty() => {
-            Ok(Some(SyncAuth {
-                base_url,
-                token: t.trim().to_string(),
-                store_id: Some(s.trim().to_string()),
-            }))
-        }
+        (Some(t), Some(s)) if !t.trim().is_empty() && !s.trim().is_empty() => Ok(Some(SyncAuth {
+            base_url,
+            token: t.trim().to_string(),
+            store_id: Some(s.trim().to_string()),
+        })),
         _ => Ok(None),
     }
 }
@@ -337,7 +335,6 @@ pub fn clear_product_cache(store_id: Option<String>) -> Result<usize, String> {
         None => db.clear_product_cache(),
     }
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ЕТАП 6: самодостатні операції каси (закупка/інвентаризація/переміщення/
@@ -609,10 +606,15 @@ mod tests {
             ("server_url", "http://127.0.0.1:8000"),
             ("device_token", "dev-token-123"),
         ]);
-        let a = read_sync_auth(&conn).unwrap().expect("device-режим сконфігурований");
+        let a = read_sync_auth(&conn)
+            .unwrap()
+            .expect("device-режим сконфігурований");
         assert_eq!(a.base_url, "http://127.0.0.1:8000");
         assert_eq!(a.token, "dev-token-123");
-        assert_eq!(a.store_id, None, "device-режим: точка визначається сервером з токена");
+        assert_eq!(
+            a.store_id, None,
+            "device-режим: точка визначається сервером з токена"
+        );
     }
 
     #[test]
@@ -622,7 +624,9 @@ mod tests {
             ("api_token", "jwt-legacy"),
             ("store_id", "22222222-2222-2222-2222-222222222222"),
         ]);
-        let a = read_sync_auth(&conn).unwrap().expect("legacy сконфігурований");
+        let a = read_sync_auth(&conn)
+            .unwrap()
+            .expect("legacy сконфігурований");
         assert_eq!(a.token, "jwt-legacy");
         assert_eq!(
             a.store_id.as_deref(),
@@ -640,7 +644,9 @@ mod tests {
             ("api_token", "jwt-legacy"),
             ("store_id", "22222222-2222-2222-2222-222222222222"),
         ]);
-        let a = read_sync_auth(&conn).unwrap().expect("device сконфігурований");
+        let a = read_sync_auth(&conn)
+            .unwrap()
+            .expect("device сконфігурований");
         assert_eq!(a.token, "dev-token-123");
         assert_eq!(a.store_id, None, "device-режим пріоритетний");
     }
@@ -648,9 +654,12 @@ mod tests {
     #[test]
     fn not_configured_returns_none() {
         // Без server_url.
-        assert!(read_sync_auth(&conn_with_settings(&[("api_token", "t"), ("store_id", "s")]))
-            .unwrap()
-            .is_none());
+        assert!(read_sync_auth(&conn_with_settings(&[
+            ("api_token", "t"),
+            ("store_id", "s")
+        ]))
+        .unwrap()
+        .is_none());
         // Порожній server_url.
         assert!(read_sync_auth(&conn_with_settings(&[
             ("server_url", "  "),
@@ -676,9 +685,10 @@ mod tests {
             ("server_url", "  http://127.0.0.1:8000  "),
             ("device_token", "  dev-token-123  "),
         ]);
-        let a = read_sync_auth(&conn).unwrap().expect("device сконфігурований");
+        let a = read_sync_auth(&conn)
+            .unwrap()
+            .expect("device сконфігурований");
         assert_eq!(a.base_url, "http://127.0.0.1:8000");
         assert_eq!(a.token, "dev-token-123");
     }
 }
-

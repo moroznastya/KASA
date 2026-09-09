@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::crypto::PrroSigner;
 use crate::proto::CheckType;
-use crate::xml::{compute_mac, Payment, ReceiptItem, TaxGroup, Totals, XmlBuilder};
+use crate::xml::{Payment, ReceiptItem, TaxGroup, Totals, XmlBuilder};
 
 use super::chk_sender::ChkSender;
 use super::models::{
@@ -198,7 +198,9 @@ impl FiscalizeReceiptUseCase {
 
         let is_return = receipt.is_return;
 
-        // 3. Повернення (T=1): має посилатися на оригінальний фіскальний чек
+        // 3. Повернення (T=1): має посилатися на оригінальний фіскальний чек.
+        //    id_cancel = фіскальний номер (response.id) оригінального чека (спека E).
+        let mut id_cancel = String::new();
         if is_return {
             let original = match receipt.original_receipt_id {
                 Some(orig_id) => repo.load_receipt_with_items(orig_id).await?,
@@ -245,6 +247,29 @@ impl FiscalizeReceiptUseCase {
                     warning: None,
                 });
             }
+            // (спека E) id_cancel — фіскальний номер оригіналу; якщо його немає —
+            // зрозуміла помилка, а не мовчазне порожнє поле для повернення.
+            let original_fn = original.fiscal_number.clone().unwrap_or_default();
+            if original_fn.is_empty() {
+                return Ok(FiscalizeResponseDto {
+                    receipt_id,
+                    fiscal_status: "none".to_string(),
+                    status: "success".to_string(),
+                    fiscal_date: None,
+                    message: None,
+                    fiscal_number: None,
+                    fiscal_serial: None,
+                    fiscal_sent_at: None,
+                    error: Some(
+                        "Повернення не фіскалізується: оригінальний чек фіскалізований, але не має фіскального номера (fiscal_number) — неможливо заповнити id_cancel"
+                            .to_string(),
+                    ),
+                    split_receipt_id: None,
+                    fiscal_check_url: None,
+                    warning: None,
+                });
+            }
+            id_cancel = original_fn;
         }
 
         // 4. Валідація перед фіскалізацією
@@ -281,13 +306,17 @@ impl FiscalizeReceiptUseCase {
         }
 
         let (items_xml, total, tax_groups) = Self::build_receipt_payload(&planned);
-        // B4: offline-режим — local_number з резервного діапазону (T=112) +
-        // id_offline (не порожній); online — звичайна нумерація зміни.
-        let (local_number, id_offline) = if OfflineStateMachine::is_offline(repo).await? {
-            OfflineStateMachine::next_offline_local(repo).await?
+
+        // local_number — ЗАВЖДИ послідовний з початку зміни (онлайн і офлайн);
+        // id_offline — лише в офлайні: резервний фіскальний номер (T=112).
+        // (спека F/G: id_offline = номер з діапазону, не рядок "offline-{n}").
+        let local_number = repo.next_local_number(open_shift.id).await?;
+        let offline_id = if OfflineStateMachine::is_offline(repo).await? {
+            OfflineStateMachine::next_offline_number(repo)
+                .await?
+                .to_string()
         } else {
-            // M1: атомарний інкремент+збереження (в одній операції репозиторію).
-            (repo.next_local_number(open_shift.id).await?, String::new())
+            String::new()
         };
 
         let se = total - tax_groups.iter().map(|g| g.tax_total).sum::<Decimal>();
@@ -312,51 +341,173 @@ impl FiscalizeReceiptUseCase {
             ..Default::default()
         };
         let payments = Self::build_payments(&receipt, total);
-
-        let now = Utc::now();
-        let ts = now.format("%Y%m%d%H%M%S").to_string();
         let check_type = if is_return { "1" } else { "0" };
-        let dat_xml = xml_builder
-            .build_receipt_xml(
+
+        // Формує DAT/повне RQ/підпис/Check для поточного чеку.
+        // chain_mac — значення <MAC> цього чека (hex sha256 попереднього RQ);
+        // offline_id — резервний фіскальний номер ("" — онлайн).
+        fn build_document(
+            xml_builder: &mut XmlBuilder,
+            signer: &dyn PrroSigner,
+            check_type: &str,
+            items_xml: &[ReceiptItem],
+            payments: &[Payment],
+            totals: &Totals,
+            local_number: i64,
+            chain_mac: &str,
+            offline_id: &str,
+            id_cancel: &str,
+        ) -> Result<DocParts, PrroFiscalizeError> {
+            let now = Utc::now();
+            let ts = now
+                .with_timezone(&chrono::Local)
+                .format("%Y%m%d%H%M%S")
+                .to_string();
+            let dat_xml = xml_builder
+                .build_receipt_xml(
+                    check_type,
+                    items_xml,
+                    payments,
+                    totals,
+                    &ts,
+                    &[],
+                    None,
+                    Some("0"), // RT: 0 — повернення товару (для T=1)
+                )
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+            let message = xml_builder
+                .build_message(&dat_xml, Some(chain_mac), offline_id, true)
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+            let bytes = crate::xml::cp1251_bytes(&message)
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+            let signed = signer
+                .sign(&bytes)
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "SIGN_ERROR"))?;
+            // doc_mac = значення <MAC> цього чека (ланцюг попереднього RQ);
+            // next_mac = hash повного RQ цього чека — наступний Check.
+            let next_mac = crate::xml::compute_mac(&message)
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+            let check = make_check(
+                xml_builder,
+                signed.clone(),
+                local_number,
+                now,
+                offline_id.to_string(),
+                id_cancel.to_string(),
+            );
+            Ok(DocParts {
+                dat_xml,
+                doc_mac: chain_mac.to_string(),
+                next_mac,
+                signed,
+                check,
+            })
+        }
+
+        // Офлайн-режим: документ одразу в чергу (без мережевих спроб),
+        // ланцюг зміни зсувається на hash(повного RQ цього чека).
+        if !offline_id.is_empty() {
+            let doc = build_document(
+                xml_builder,
+                signer,
                 check_type,
                 &items_xml,
                 &payments,
                 &totals,
-                &ts,
-                &[],
-                None,
-                Some("0"),
-                open_shift.last_mac.as_deref(), // B1: хеш попереднього Check
+                local_number,
+                open_shift.last_mac.as_deref().unwrap_or(""),
+                &offline_id,
+                &id_cancel,
+            )?;
+            let check_sign = crate::xml::signed_bytes_to_text(&doc.signed);
+            PrroOfflineQueue::add_document(
+                repo,
+                Some(receipt.id),
+                Some(open_shift.id),
+                local_number,
+                CHECK_TYPE_CHK,
+                &doc.dat_xml,
+                Some(doc.doc_mac.clone()),
+                Some(check_sign),
+                Some(offline_id.clone()),
             )
-            .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
-        let message = xml_builder
-            .build_message(&dat_xml, None, true)
-            .map_err(|e| PrroFiscalizeError::new(e.to_string(), "XML_BUILD_ERROR"))?;
-        let signed = signer
-            .sign(message.as_bytes())
-            .map_err(|e| PrroFiscalizeError::new(e.to_string(), "SIGN_ERROR"))?;
-        let mac = compute_mac(&dat_xml, None);
+            .await
+            .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
+            // pending — документ очікує синхронізації (не "помилка")
+            repo.update_shift_last_mac(open_shift.id, doc.next_mac.clone())
+                .await
+                .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
+            let err_msg = format!(
+                "PRRO в офлайн-режимі: документ у черзі синхронізації (#{local_number}, id_offline={offline_id})"
+            );
+            repo.update_receipt_fiscal_state(
+                receipt.id,
+                "failed",
+                None,
+                None,
+                None,
+                Some(&err_msg),
+                None,
+            )
+            .await?;
+            repo.set_setting(
+                KEY_LAST_PACKET_ID,
+                &xml_builder.last_packet_id().to_string(),
+            )
+            .await?;
+            repo.set_setting(
+                KEY_LAST_MAC_NUMBER,
+                &xml_builder.last_mac_number().to_string(),
+            )
+            .await?;
+            tracing::info!(
+                "PRRO_FISCALIZE | OFFLINE: чек {} у черзі (local={local_number}, id_offline={offline_id})",
+                receipt.id
+            );
+            return Ok(FiscalizeResponseDto {
+                receipt_id: receipt.id,
+                fiscal_status: "failed".to_string(),
+                status: "success".to_string(),
+                fiscal_date: None,
+                message: None,
+                fiscal_number: None,
+                fiscal_serial: None,
+                fiscal_sent_at: None,
+                error: Some(
+                    "Чек передано в офлайн-чергу ПРРО; буде надіслано після відновлення зв'язку (синхронізація)"
+                        .to_string(),
+                ),
+                split_receipt_id,
+                fiscal_check_url: None,
+                warning: join_warnings(&warnings),
+            });
+        }
 
-        // 7. Надсилаємо чек (CHK)
-        // B2: signed (повний підписаний XML) зберігається у черзі as-is
-        let check = make_check(
+        // ── Онлайн: формуємо та надсилаємо ────────────────────────────────
+        let doc = build_document(
             xml_builder,
-            signed.clone(),
+            signer,
+            check_type,
+            &items_xml,
+            &payments,
+            &totals,
             local_number,
-            now,
-            id_offline.clone(),
-        );
-        let response = match sender.send_chk(check.clone()).await {
+            open_shift.last_mac.as_deref().unwrap_or(""),
+            "",
+            &id_cancel,
+        )?;
+        let check_sign = crate::xml::signed_bytes_to_text(&doc.signed);
+        let response = match sender.send_chk(doc.check.clone()).await {
             Ok(r) => r,
             Err(_e) => {
-                // H1: транспортний таймаут — НЕ сліпий retry. Спочатку lastChk:
-                // сервер міг зберегти чек, а відповідь загубилась.
+                // H1: НЕ сліпий retry — спочатку lastChk: сервер міг зберегти чек,
+                // а відповідь загубилась. Збіг NO (local_number) у XML останнього
+                // чека → чек уже там → SENT (без дубліката).
                 if let Ok(last) = sender_last_chk(sender).await {
                     let last_xml = String::from_utf8_lossy(&last.data_sign);
                     if last.status == 1
                         && crate::xml::extract_check_no(&last_xml) == Some(local_number)
                     {
-                        // Чек уже на сервері → SENT (без дубліката)
                         return Self::on_success(
                             repo,
                             xml_builder,
@@ -364,23 +515,24 @@ impl FiscalizeReceiptUseCase {
                             &planned,
                             total,
                             local_number,
-                            &dat_xml,
-                            &mac,
-                            &String::from_utf8_lossy(&signed),
-                            &id_offline, // B4
+                            &doc.dat_xml,
+                            &doc.doc_mac,
+                            &doc.next_mac,
+                            &check_sign,
+                            "", // B4: онлайн — id_offline порожній
                             &last.id,
                             &last.id_sign,
                             open_shift.id,
                             is_return,
                             split_receipt_id,
                             &warnings,
-                            now,
+                            Utc::now(),
                         )
                         .await;
                     }
                 }
                 // H1: чека немає → один контрольований повторний send
-                match sender.send_chk(check).await {
+                match sender.send_chk(doc.check).await {
                     Ok(r) if r.status == 1 => {
                         return Self::on_success(
                             repo,
@@ -389,17 +541,18 @@ impl FiscalizeReceiptUseCase {
                             &planned,
                             total,
                             local_number,
-                            &dat_xml,
-                            &mac,
-                            &String::from_utf8_lossy(&signed),
-                            &id_offline, // B4
+                            &doc.dat_xml,
+                            &doc.doc_mac,
+                            &doc.next_mac,
+                            &check_sign,
+                            "", // B4: онлайн — id_offline порожній
                             &r.id,
                             &r.id_sign,
                             open_shift.id,
                             is_return,
                             split_receipt_id,
                             &warnings,
-                            now,
+                            Utc::now(),
                         )
                         .await;
                     }
@@ -410,10 +563,10 @@ impl FiscalizeReceiptUseCase {
                             sender,
                             &receipt,
                             local_number,
-                            &dat_xml,
-                            &mac,
-                            &String::from_utf8_lossy(&signed),
-                            &id_offline, // B4
+                            &doc.dat_xml,
+                            &doc.doc_mac,
+                            &check_sign,
+                            "", // B4: онлайн — id_offline порожній
                             open_shift.id,
                             r.status,
                             &msg,
@@ -424,47 +577,166 @@ impl FiscalizeReceiptUseCase {
                         .await;
                     }
                     Err(e2) => {
-                        // B4: мережа впала (повторно) → документ у offline-чергу
-                        // (failed), ПРРО переходить в офлайн (T=109) і запитує
-                        // резервний діапазон (T=112). Документ НЕ втрачається.
-                        let err_msg2 =
+                        // Мережа впала (повторно): T=109 → T=112 → чек у чергу.
+                        // Черговість критична для ланцюжка (спека D/I/F/G):
+                        let transport_error =
                             format!("[GRPC_ERROR] gRPC send_chk повторно не вдався: {e2}");
-                        let res = Self::on_error(
+                        // 1. enter_offline (T=109) — кладе 109 у чергу/ланцюг.
+                        if !OfflineStateMachine::is_offline(repo).await? {
+                            if let Err(e109) = OfflineStateMachine::enter_offline(
+                                repo,
+                                sender,
+                                xml_builder,
+                                signer,
+                                Utc::now(),
+                                Some(open_shift.id),
+                            )
+                            .await
+                            {
+                                tracing::warn!("PRRO_OFFLINE | T=109 не вдалося: {e109}");
+                            }
+                        }
+                        // 2. Резервний діапазон (best-effort; MAC 112 = ланцюг до 109).
+                        let chain_before = open_shift.last_mac.clone().unwrap_or_default();
+                        if let Err(e112) = OfflineStateMachine::reserve_numbers(
                             repo,
                             sender,
-                            &receipt,
+                            xml_builder,
+                            signer,
+                            Utc::now(),
+                            &chain_before,
+                            crate::xml::DEFAULT_RESERVE_SIZE,
+                        )
+                        .await
+                        {
+                            tracing::warn!("PRRO_OFFLINE | T=112 не вдалося: {e112}");
+                        }
+                        // 3. Оновлена зміна: last_mac = hash(109) → чек на 109.
+                        let chain_mac = match repo.get_shift(open_shift.id).await? {
+                            Some(s) => s.last_mac.clone().unwrap_or_default(),
+                            None => String::new(),
+                        };
+                        // 4. id_offline з отриманого діапазону.
+                        let offline_id2 = match OfflineStateMachine::next_offline_number(repo).await
+                        {
+                            Ok(n) => n.to_string(),
+                            Err(e) => {
+                                // Немає діапазону (T=112 не вдався): документ у
+                                // черзі без id_offline неможливо фіскалізувати.
+                                let msg = format!("Немає резервних номерів (T=112): {e}");
+                                repo.update_receipt_fiscal_state(
+                                    receipt.id,
+                                    "failed",
+                                    None,
+                                    None,
+                                    None,
+                                    Some(&msg),
+                                    None,
+                                )
+                                .await?;
+                                repo.set_setting(
+                                    KEY_LAST_PACKET_ID,
+                                    &xml_builder.last_packet_id().to_string(),
+                                )
+                                .await?;
+                                repo.set_setting(
+                                    KEY_LAST_MAC_NUMBER,
+                                    &xml_builder.last_mac_number().to_string(),
+                                )
+                                .await?;
+                                return Ok(FiscalizeResponseDto {
+                                        receipt_id: receipt.id,
+                                        fiscal_status: "failed".to_string(),
+                                        status: "success".to_string(),
+                                        fiscal_date: None,
+                                        message: None,
+                                        fiscal_number: None,
+                                        fiscal_serial: None,
+                                        fiscal_sent_at: None,
+                                        error: Some(format!(
+                                            "Перехід в офлайн виконано, але отримати діапазон резервних номерів (T=112) не вдалося: {e}"
+                                        )),
+                                        split_receipt_id,
+                                        fiscal_check_url: None,
+                                        warning: join_warnings(&warnings),
+                                    });
+                            }
+                        };
+                        // 5. Документ ПЕРЕформовується: MAC посилається на hash(109),
+                        //    id_offline — номер з отриманого діапазону.
+                        let doc2 = build_document(
+                            xml_builder,
+                            signer,
+                            check_type,
+                            &items_xml,
+                            &payments,
+                            &totals,
                             local_number,
-                            &dat_xml,
-                            &mac,
-                            &String::from_utf8_lossy(&signed),
-                            &id_offline, // B4
-                            open_shift.id,
-                            -1,
-                            &err_msg2,
-                            &[],
-                            split_receipt_id,
-                            &warnings,
+                            &chain_mac,
+                            &offline_id2,
+                            &id_cancel,
+                        )?;
+                        let check_sign2 = crate::xml::signed_bytes_to_text(&doc2.signed);
+                        PrroOfflineQueue::add_document(
+                            repo,
+                            Some(receipt.id),
+                            Some(open_shift.id),
+                            local_number,
+                            CHECK_TYPE_CHK,
+                            &doc2.dat_xml,
+                            Some(doc2.doc_mac.clone()),
+                            Some(check_sign2),
+                            Some(offline_id2.clone()),
+                        )
+                        .await
+                        .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
+                        repo.update_shift_last_mac(open_shift.id, doc2.next_mac.clone())
+                            .await
+                            .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
+                        let err_msg = format!(
+                            "Транспортна помилка; документ у офлайн-черзі (id_offline={offline_id2}): {transport_error}"
+                        );
+                        repo.update_receipt_fiscal_state(
+                            receipt.id,
+                            "failed",
+                            None,
+                            None,
+                            None,
+                            Some(&err_msg),
+                            None,
                         )
                         .await?;
-                        if !OfflineStateMachine::is_offline(repo).await? {
-                            let _ = OfflineStateMachine::enter_offline(
-                                repo,
-                                sender,
-                                xml_builder,
-                                signer,
-                                now,
-                            )
-                            .await;
-                            let _ = OfflineStateMachine::reserve_numbers(
-                                repo,
-                                sender,
-                                xml_builder,
-                                signer,
-                                now,
-                            )
-                            .await;
-                        }
-                        return Ok(res);
+                        repo.set_setting(
+                            KEY_LAST_PACKET_ID,
+                            &xml_builder.last_packet_id().to_string(),
+                        )
+                        .await?;
+                        repo.set_setting(
+                            KEY_LAST_MAC_NUMBER,
+                            &xml_builder.last_mac_number().to_string(),
+                        )
+                        .await?;
+                        tracing::warn!(
+                            "PRRO_FISCALIZE | чек {} → офлайн-черга (local={local_number}, id_offline={offline_id2}): {transport_error}",
+                            receipt.id
+                        );
+                        return Ok(FiscalizeResponseDto {
+                            receipt_id: receipt.id,
+                            fiscal_status: "failed".to_string(),
+                            status: "success".to_string(),
+                            fiscal_date: None,
+                            message: None,
+                            fiscal_number: None,
+                            fiscal_serial: None,
+                            fiscal_sent_at: None,
+                            error: Some(
+                                "Чек передано в офлайн-чергу ПРРО (після переходу в офлайн); буде надіслано після відновлення зв'язку"
+                                    .to_string(),
+                            ),
+                            split_receipt_id,
+                            fiscal_check_url: None,
+                            warning: join_warnings(&warnings),
+                        });
                     }
                 }
             }
@@ -479,17 +751,18 @@ impl FiscalizeReceiptUseCase {
                 &planned,
                 total,
                 local_number,
-                &dat_xml,
-                &mac,
-                &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
-                &id_offline,                       // B4
+                &doc.dat_xml,
+                &doc.doc_mac,
+                &doc.next_mac,
+                &check_sign,
+                "", // B4: онлайн — id_offline порожній
                 &response.id,
                 &response.id_sign,
                 open_shift.id,
                 is_return,
                 split_receipt_id,
                 &warnings,
-                now,
+                Utc::now(),
             )
             .await;
         }
@@ -500,10 +773,10 @@ impl FiscalizeReceiptUseCase {
             sender,
             &receipt,
             local_number,
-            &dat_xml,
-            &mac,
-            &String::from_utf8_lossy(&signed), // B2: повний підписаний check_sign
-            &id_offline,                       // B4
+            &doc.dat_xml,
+            &doc.doc_mac,
+            &check_sign,
+            "", // B4: онлайн — id_offline порожній
             open_shift.id,
             response.status,
             &error_message,
@@ -838,6 +1111,9 @@ impl FiscalizeReceiptUseCase {
     }
 
     /// Обробка успіху — 1:1 `_on_success`.
+    ///
+    /// `doc_mac` — MAC цього чека (hex-значення з <MAC> = ланцюг попереднього
+    /// RQ); `next_mac` = hash(повного RQ цього чека) → shift.last_mac (спека D).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub async fn on_success(
         repo: &dyn PrroRepository,
@@ -847,9 +1123,10 @@ impl FiscalizeReceiptUseCase {
         total: Decimal,
         local_number: i64,
         dat_xml: &str,
-        mac: &str,
+        doc_mac: &str,
+        next_mac: &str,
         check_sign: &str, // B2: повний підписаний XML (RQ+MAC+підпис) — у чергу as-is
-        id_offline: &str, // B4: "offline-{n}" або ""
+        id_offline: &str, // B4: резервний фіскальний номер або ""
         response_id: &str,
         id_sign: &[u8],
         open_shift_id: Uuid,
@@ -885,7 +1162,7 @@ impl FiscalizeReceiptUseCase {
             }
         }
 
-        // Запис у чергу (sent)
+        // Запис у чергу (sent); mac = MAC цього чека (doc_mac)
         let queue_item = PrroOfflineQueue::add_document(
             repo,
             Some(receipt.id),
@@ -893,9 +1170,13 @@ impl FiscalizeReceiptUseCase {
             local_number,
             CHECK_TYPE_CHK,
             dat_xml,
-            Some(mac.to_string()),
+            Some(doc_mac.to_string()),
             Some(check_sign.to_string()), // B2: повний підписаний check_sign
-            Some(id_offline.to_string()), // B4: "offline-{n}" або ""
+            if id_offline.is_empty() {
+                None
+            } else {
+                Some(id_offline.to_string()) // B4: резервний фіскальний номер
+            },
         )
         .await
         .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -903,12 +1184,13 @@ impl FiscalizeReceiptUseCase {
             .await
             .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
 
-        // Лічильники зміни
+        // Лічильники зміни: last_mac = hash(повного RQ цього чека) — наступний
+        // Check посилатиметься на цей хеш (спека D).
         repo.increment_shift_counters(
             open_shift_id,
             total,
             Some(local_number),
-            Some(mac.to_string()),
+            Some(next_mac.to_string()),
         )
         .await?;
 
@@ -924,10 +1206,10 @@ impl FiscalizeReceiptUseCase {
         )
         .await?;
 
-        // QR-код: URL перевірки фіскального чеку (V1: mac = MAC чека,
-        // а НЕ id_sign — за офіційним описом ДПС §5 «Перевірка чеку»)
+        // QR-код: mac = MAC цього чека (hex-значення з <MAC>, doc_mac) —
+        // за офіційним описом ДПС §5 «Перевірка чеку» (спека H).
         let fiscal_check_url =
-            build_fiscal_check_url(response_id, total, xml_builder.rro_fn(), now, Some(mac));
+            build_fiscal_check_url(response_id, total, xml_builder.rro_fn(), now, Some(doc_mac));
 
         Ok(FiscalizeResponseDto {
             receipt_id: receipt.id,
@@ -946,7 +1228,7 @@ impl FiscalizeReceiptUseCase {
     }
 
     /// Обробка помилки; при ERROR_SAVE/-12 пробує lastChk (дедуплікація) —
-    /// 1:1 `_on_error`.
+    /// 1:1 `_on_error`. last_mac НЕ оновлюється (документ не успішний).
     #[allow(clippy::too_many_arguments)]
     pub async fn on_error(
         repo: &dyn PrroRepository,
@@ -954,9 +1236,9 @@ impl FiscalizeReceiptUseCase {
         receipt: &ReceiptFiscalRow,
         local_number: i64,
         dat_xml: &str,
-        mac: &str,
+        doc_mac: &str,
         check_sign: &str, // B2: повний підписаний XML — у чергу as-is
-        id_offline: &str, // B4: "offline-{n}" або ""
+        id_offline: &str, // B4: резервний фіскальний номер або ""
         open_shift_id: Uuid,
         response_status: i32,
         error_message: &str,
@@ -982,9 +1264,13 @@ impl FiscalizeReceiptUseCase {
             local_number,
             CHECK_TYPE_CHK,
             dat_xml,
-            Some(mac.to_string()),
+            Some(doc_mac.to_string()),
             Some(check_sign.to_string()), // B2: повний підписаний check_sign
-            Some(id_offline.to_string()), // B4: "offline-{n}" або ""
+            if id_offline.is_empty() {
+                None
+            } else {
+                Some(id_offline.to_string()) // B4: резервний фіскальний номер
+            },
         )
         .await
         .map_err(|e| PrroFiscalizeError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -1105,22 +1391,34 @@ pub fn id_sign_str(id_sign: &[u8], fallback: &str) -> String {
     }
 }
 
-/// Формує gRPC Check — 1:1 Python `context.build_check`.
+/// Сформований документ чеку: канонічний <DAT>, MAC-значення документа
+/// (doc_mac = ланцюг попереднього RQ), next_mac = hash(повного RQ цього
+/// документа), підписані байти та готовий gRPC Check.
+struct DocParts {
+    pub dat_xml: String,
+    pub doc_mac: String,
+    pub next_mac: String,
+    pub signed: Vec<u8>,
+    pub check: crate::proto::Check,
+}
+
+/// Формує gRPC Check — 1:1 Python `context.build_check` (спека B/E/G).
 fn make_check(
     xml_builder: &XmlBuilder,
     check_sign: Vec<u8>,
     local_number: i64,
     now: DateTime<Utc>,
-    id_offline: String, // B4: "offline-{n}" для offline-чеків, інакше ""
+    id_offline: String, // резервний фіскальний номер для offline-чеків, інакше ""
+    id_cancel: String,  // фіскальний номер оригінального чека для повернення (T=1)
 ) -> crate::proto::Check {
     crate::proto::Check {
         rro_fn: xml_builder.rro_fn().to_string(),
-        date_time: crate::grpc::check_date_time_from(now),
+        date_time: crate::grpc::check_date_time_from(now), // YYYYMMDDhhmmss, локальний
         check_sign,
         local_number: local_number as i32,
         check_type: CheckType::Chk as i32,
         id_offline,
-        id_cancel: String::new(),
+        id_cancel,
     }
 }
 

@@ -344,6 +344,110 @@ CREATE INDEX IF NOT EXISTS ix_audit_log_store_id_created_at
     ON public.audit_log USING btree (store_id, created_at);
 "#;
 
+/// DDL реєстру вузлів мережі магазинів (ЕТАП 15, network-replication-etap15-20.md
+/// §3.1) — ідемпотентний, виконується ЗАВЖДИ при старті: і fresh (schema.sql),
+/// і вже мігровані БД отримують network_nodes без fresh-install. node_role/
+/// node_status — через DO-блок (PG не має CREATE TYPE IF NOT EXISTS).
+const NETWORK_NODES_DDL: &str = r#"
+-- ============================================================================
+-- Мережа магазинів (ЕТАП 15): реєстр вузлів-standby (копії primary).
+-- Реплікація — ЕТАП 16+; тут лише реєстр + join/heartbeat/archive API.
+-- Створюються ідемпотентно: fresh (schema.sql) і вже мігровані БД (NETWORK_NODES_DDL).
+-- ============================================================================
+
+-- node_role: primary — сам сервер; standby — копія в магазині.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_role') THEN
+        CREATE TYPE public.node_role AS ENUM ('primary', 'standby');
+    END IF;
+END
+$$;
+
+-- node_status: життєвий цикл вузла (§4 стану-машина):
+-- provisioning → syncing → active/lagging → offline/archived.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_status') THEN
+        CREATE TYPE public.node_status AS ENUM (
+            'provisioning', 'syncing', 'active', 'lagging', 'offline', 'archived'
+        );
+    END IF;
+END
+$$;
+
+-- Вузол мережі. store_id NULL — сам сервер (primary). join_token_hash —
+-- SHA-256 одноразового join-коду (TTL 30 хв); node_token_hash — SHA-256
+-- довготривалого токена вузла для heartbeat. Секрети зберігаються лише
+-- хешами (як device_token_hash у network.rs).
+CREATE TABLE IF NOT EXISTS public.network_nodes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id uuid REFERENCES public.stores(id),  -- NULL для самого сервера (primary)
+    name text NOT NULL,
+    role public.node_role NOT NULL DEFAULT 'standby',
+    status public.node_status NOT NULL DEFAULT 'provisioning',
+
+    -- Провіжинінг (одноразовий код, аналог store_activation_codes)
+    join_token_hash text,               -- SHA-256, як device_token_hash
+    join_token_expires_at timestamp,    -- TTL 30 хв
+
+    -- Довготривалий токен вузла для heartbeat (окремо від JWT користувача)
+    node_token_hash text,
+
+    -- Реплікація (креденшли створюються в ЕТАП 16; імена резервуються тут)
+    replication_role_name text,         -- напр. replicator_a1b2c3
+    replication_slot_name text,         -- напр. standby_a1b2c3
+
+    -- Телеметрія (оновлюється heartbeat-ом)
+    host text,
+    app_version text,
+    last_seen_at timestamp,
+    replication_lag_bytes bigint,
+    db_size_bytes bigint,
+
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc'),
+    updated_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS network_nodes_replication_slot_uq
+    ON public.network_nodes (replication_slot_name)
+    WHERE replication_slot_name IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS network_nodes_store_id_idx
+    ON public.network_nodes (store_id);
+"#;
+
+/// DDL журналу мережевих подій (рішення Творця, додаток до
+/// network-replication-etap15-20.md): детальне логування взаємодії вузлів для
+/// діагностики. Ідемпотентний — виконується ЗАВЖДИ при старті (fresh БД
+/// отримують його з schema.sql, мігровані — звідси). event — один з
+/// контрольованого набору (join|joined|node_created|heartbeat|status_change|
+/// promoted|repoint_requested|archived|resync_requested|degraded_local|
+/// primary_restored|sync_error|reject_stale); detail — контекст (old_status,
+/// new_status, lag_bytes, помилка тощо). node_id NULL для подій без вузла.
+const NETWORK_EVENTS_DDL: &str = r#"
+-- ============================================================================
+-- Мережеві події (рішення Творця): діагностичний журнал взаємодії вузлів.
+-- Лог — побічний ефект: записи робляться через log_node_event (не панікує,
+-- не валить основний запит). node_id з ON DELETE SET NULL — журнал зберігається
+-- навіть якщо вузол видалено (архівація не видаляє; SET NULL — страхівка).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.network_events (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    node_id uuid,
+    event character varying(64) NOT NULL,
+    level character varying(16) NOT NULL DEFAULT 'info',
+    detail jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT network_events_pkey PRIMARY KEY (id),
+    CONSTRAINT network_events_node_id_fkey FOREIGN KEY (node_id)
+        REFERENCES public.network_nodes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_network_events_node_id_created_at
+    ON public.network_events (node_id, created_at DESC);
+"#;
+
 /// DDL адмін-панелі власника (Етап 1): юрособа/ЄДРПОУ точки + роль
 /// `store_manager` в enum user_role. Ідемпотентно — виконується ЗАВЖДИ при
 /// старті: і fresh-схема (schema.sql уже містить колонки/значення), і вже
@@ -368,6 +472,69 @@ $$;
 /// - `owners_db`, `cash_operations`, мережевий рівень (devices/audit_log/…)
 ///   створюються завжди (CREATE TABLE IF NOT EXISTS) — покривають і fresh,
 ///   і вже мігровані БД без них.
+
+const RLS_FORCE_DDL: &str = r#"
+-- ============================================================================
+-- ЕТАП 7: FORCE ROW LEVEL SECURITY для вже мігрованих БД.
+-- Ідемпотентно: виконується ЗАВЖДИ при старті (fresh schema.sql уже містить).
+-- Політики (app.store_id/app.user_id) визначені в schema.sql / попередніх
+-- міграціях; FORCE змушує проходити їх навіть власника таблиць.
+-- ============================================================================
+ALTER TABLE public.barcodes FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.categories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtor_payments FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtors FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.product_images FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_order_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_orders FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipt_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.supplier_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfer_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfers FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.user_stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.work_sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_off_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_offs FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_shifts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_queue_items FORCE ROW LEVEL SECURITY;
+"#;
+
+const RECEIPTS_CLIENT_UUID_DDL: &str = r#"
+-- ============================================================================
+-- ЕТАП 8: ідемпотентність синхронізації чеків (client_uuid) для наявних БД.
+-- Клієнт генерує client_uuid на чек і передає при push (sync.rs PushItem).
+-- UNIQUE-індекс ловить гонку двох одночасних push з тим самим client_uuid.
+-- ============================================================================
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_client_uuid
+    ON public.receipts (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+"#;
+/// ЕТАП 20 (§13 плану мережі): WAL-політика primary.
+/// `max_slot_wal_keep_size = 10GB` — захист диска primary від WAL-накопичення
+/// застарілими/відключеними replication-слотами: PG утримує WAL-хвіст слота
+/// щонайбільше 10 ГБ, після чого слот стає invalid і standby мусить пройти
+/// примусовий ресинк (новий pg_basebackup) — heartbeat зі старою позицією
+/// відхиляється (network_nodes.rs, requires_force_resync).
+///
+/// УВАГА: `ALTER SYSTEM` заборонено всередині транзакції (PostgreSQL виконує
+/// multi-statement simple query в одній неявній транзакції) — тому
+/// `pg_reload_conf()` виконується ОКРЕМИМ raw_sql-викликом у ensure_schema.
+const WAL_POLICY_DDL: &str = r#"
+ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
+"#;
+
 pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
     let has_users: bool = sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
         .fetch_one(pool)
@@ -392,6 +559,50 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(NETWORK_NODES_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(NETWORK_EVENTS_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(RLS_FORCE_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(RECEIPTS_CLIENT_UUID_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    // ЕТАП 20 §13: WAL-політика (10 ГБ на replication-слот). ALTER SYSTEM —
+    // поза транзакцією: два окремих raw_sql (multi-statement simple query PG
+    // виконав би в одній неявній транзакції). Потребує superuser БД; якщо роль
+    // не має прав (42501) — попередження без зупинки старту (застосує адмін).
+    match sqlx::raw_sql(WAL_POLICY_DDL).execute(pool).await {
+        Ok(_) => {
+            sqlx::raw_sql("SELECT pg_reload_conf();")
+                .execute(pool)
+                .await
+                .map_err(DbError::Sqlx)?;
+            eprintln!(
+                "[torgashka-infrastructure] WAL-політика застосована: max_slot_wal_keep_size=10GB (ЕТАП 20 §13)"
+            );
+        }
+        Err(e) => {
+            let no_privilege = e
+                .as_database_error()
+                .and_then(|d| d.code().map(|c| c.as_ref() == "42501"))
+                .unwrap_or(false);
+            if no_privilege {
+                eprintln!(
+                    "[torgashka-infrastructure] WAL_POLICY пропущено: роль БД не superuser ({e}).                      Застосуйте вручну: ALTER SYSTEM SET max_slot_wal_keep_size='10GB'; SELECT pg_reload_conf();"
+                );
+            } else {
+                return Err(DbError::Sqlx(e));
+            }
+        }
+    }
     sqlx::raw_sql(STORE_LEGAL_COLUMNS_DDL)
         .execute(pool)
         .await
@@ -434,9 +645,10 @@ pub fn quote_ident(name: &str) -> String {
 
 /// Чи існує БД у PostgreSQL (pg_database).
 pub async fn database_exists(pool: &PgPool, db_name: &str) -> Result<bool, sqlx::Error> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
-        .bind(db_name)
-        .fetch_one(pool)
-        .await?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(db_name)
+            .fetch_one(pool)
+            .await?;
     Ok(exists)
 }

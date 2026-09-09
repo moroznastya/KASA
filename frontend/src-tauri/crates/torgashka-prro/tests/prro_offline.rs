@@ -1,13 +1,13 @@
-//! Unit-тести B4: offline state machine (109/110/112 + id_offline).
-//! 1:1 Python `tests/unit/services/test_prro_offline_state.py`.
+//! Unit-тести offline state machine (109/110/112 + id_offline, спека F/I).
+//! 1:1 Python `tests/unit/services/test_prro_offline_state.py` (2026-09-08).
 
 mod common;
 
-use torgashka_prro::crypto::PrroSigner;
 use torgashka_prro::prro::{
     InMemoryPrroRepository, MockChkSender, OfflineStateMachine, PrroOfflineQueue, PrroRepository,
     SyncOfflineQueueUseCase, CHECK_TYPE_CHK,
 };
+use torgashka_prro::PrroSigner;
 
 use common::{test_builder, MockSigner};
 
@@ -17,10 +17,19 @@ fn ts_2026() -> chrono::DateTime<chrono::Utc> {
     "2026-08-27T12:00:00Z".parse().unwrap()
 }
 
+fn reserve_data(ids: &[i64]) -> Vec<u8> {
+    let mut xml = String::from("<?xml version=\"1.0\"?><RS V=\"1\"><C T=\"112\">");
+    for id in ids {
+        xml.push_str(&format!("<ID>{id}</ID>"));
+    }
+    xml.push_str("</C></RS>");
+    xml.into_bytes()
+}
+
 #[tokio::test]
 async fn offline_enter_reserve_exit_full_scenario() {
-    // B4 критерій: online → (мережа впала) → 109 → 112 → offline-чеки з
-    // id_offline → (мережа є) → 110 → sync; усі документи пройшли.
+    // online → (мережа впала) → 109 (у черзі) → 112 (діапазон <ID>) →
+    // offline-чек з id_offline=номер з діапазону → (мережа є) → 110 → sync.
     let repo = InMemoryPrroRepository::new();
     let sender = MockChkSender::new();
     let mut builder = test_builder();
@@ -30,7 +39,6 @@ async fn offline_enter_reserve_exit_full_scenario() {
     assert!(!OfflineStateMachine::is_offline(&repo).await.unwrap());
 
     // 1. Мережа впала → enter_offline (T=109; best-effort: sender падає)
-    //    push_fail з помилкою gRPC — імітація транспортного обриву.
     sender
         .responses
         .lock()
@@ -39,128 +47,147 @@ async fn offline_enter_reserve_exit_full_scenario() {
             status: tonic::Status::unavailable("net down"),
             max_retries: 0,
         }));
-    OfflineStateMachine::enter_offline(&repo, &sender, &mut builder, &MockSigner, now)
+    OfflineStateMachine::enter_offline(&repo, &sender, &mut builder, &MockSigner, now, None)
         .await
         .unwrap();
     assert!(
         OfflineStateMachine::is_offline(&repo).await.unwrap(),
         "стан → offline"
     );
-    // T=109 було надіслано (спроба) — owned-копія (guard не тримаємо)
+    // T=109 було надіслано (спроба)
     let xml109 = String::from_utf8_lossy(&sender.calls.lock().unwrap()[0].check_sign).into_owned();
     assert!(
         xml109.contains(r#"<C T="109">"#),
         "T=109 у check_sign: {xml109}"
     );
-
-    // 2. reserve_numbers (T=112) → сервер дає діапазон у data_sign
-    sender.push_ok_with_data(
-        "reserve-ok",
-        br#"<?xml version="1.0"?><RS V="1"><DAT><CNF TY="C" FR="1001" TO="1100" ER="0"/></DAT></RS>"#.to_vec(),
+    // 109 НЕ втрачається: лежить у черзі (pending — доставка не вдалась)
+    let q109 = PrroOfflineQueue::get_pending(&repo, 100).await.unwrap();
+    assert!(
+        q109.iter().any(|i| i.xml_body.contains(r#"T="109""#)),
+        "109 у черзі для синку ланцюга"
     );
-    let (start, end) =
-        OfflineStateMachine::reserve_numbers(&repo, &sender, &mut builder, &MockSigner, now)
-            .await
-            .unwrap();
-    assert_eq!((start, end), (1001, 1100), "діапазон з data_sign");
+
+    // 2. reserve_numbers (T=112) → сервер дає перелік <ID> (спека F)
+    sender.push_ok_with_data("reserve-ok", reserve_data(&[1001, 1002, 1003]));
+    let (start, end) = OfflineStateMachine::reserve_numbers(
+        &repo,
+        &sender,
+        &mut builder,
+        &MockSigner,
+        now,
+        "",
+        150,
+    )
+    .await
+    .unwrap();
+    assert_eq!((start, end), (1001, 1003), "діапазон з <ID> data_sign");
     let xml112 = String::from_utf8_lossy(&sender.calls.lock().unwrap()[1].check_sign).into_owned();
     assert!(xml112.contains(r#"<C T="112">"#));
+    assert!(
+        xml112.contains(r#"<H SIZE="150">"#),
+        "112: <H SIZE=\"150\">: {xml112}"
+    );
 
-    // 3. Offline-чек: резервний local_number + id_offline (не порожній)
-    let (offline_local, id_offline) = OfflineStateMachine::next_offline_local(&repo)
+    // 3. Наступний резервний номер → id_offline (не рядок "offline-{n}")
+    let offline_id = OfflineStateMachine::next_offline_number(&repo)
         .await
         .unwrap();
-    assert_eq!(offline_local, 1001);
-    assert_eq!(id_offline, "offline-1001");
-    assert!(!id_offline.is_empty(), "id_offline не порожній");
+    assert_eq!(offline_id, 1001);
+    let id_offline = offline_id.to_string();
 
     // Документ у чергу (як fiscalize в offline): check_sign + id_offline
-    let message = builder.build_message(XML, None, true).unwrap();
-    let signed = MockSigner.sign(message.as_bytes()).unwrap();
+    let message = builder
+        .build_message(XML, Some(""), &id_offline, true)
+        .unwrap();
+    let bytes = torgashka_prro::xml::cp1251_bytes(&message).unwrap();
+    let signed = MockSigner.sign(&bytes).unwrap();
     let item = PrroOfflineQueue::add_document(
         &repo,
         None,
         None,
-        offline_local,
+        1,
         CHECK_TYPE_CHK,
         XML,
-        None,
-        Some(String::from_utf8_lossy(&signed).into_owned()),
-        Some(id_offline.clone()), // B4: offline-чек — id_offline не порожній
+        Some(String::new()), // mac цього чека (doc_mac)
+        Some(torgashka_prro::xml::signed_bytes_to_text(&signed)),
+        Some(id_offline.clone()), // F: id_offline = резервний фіскальний номер
     )
     .await
     .unwrap();
 
     // 4. Мережа є → exit_offline (T=110) + sync → усі документи пройшли
     sender.push_ok("t110-ok");
+    sender.push_ok("sync-109"); // 109 з черги (pending)
     sender.push_ok("chk-offline-1001"); // sync відправляє offline-чек
     let res =
-        OfflineStateMachine::exit_offline(&repo, &sender, &mut builder, &MockSigner, 100, now)
+        OfflineStateMachine::exit_offline(&repo, &sender, &mut builder, &MockSigner, now, "", 100)
             .await
             .unwrap();
     assert!(
         !OfflineStateMachine::is_offline(&repo).await.unwrap(),
         "стан → online"
     );
-    assert_eq!(res.synced, 1, "offline-чек синхронізовано");
+    assert_eq!(res.synced, 2, "109 + offline-чек синхронізовано");
     assert_eq!(res.failed, 0);
-    assert_eq!(res.total, 1);
-    // T=110 надіслано
+    assert_eq!(res.total, 2);
+    // T=110 надіслано (call 2: 0=109, 1=112, 2=110)
     let xml110 = String::from_utf8_lossy(&sender.calls.lock().unwrap()[2].check_sign).into_owned();
     assert!(xml110.contains(r#"<C T="110">"#));
-    // offline-чек відправлено з id_offline (не порожнім)
-    let offline_check = sender.calls.lock().unwrap()[3].clone();
+    // offline-чек відправлено з id_offline = номер з діапазону (call 4)
+    let offline_check = sender.calls.lock().unwrap()[4].clone();
     assert_eq!(
-        offline_check.id_offline, "offline-1001",
-        "id_offline у Check"
+        offline_check.id_offline, "1001",
+        "id_offline = фіскальний номер з діапазону"
     );
-    assert_eq!(offline_check.local_number, 1001);
     // черга порожня
     assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 0);
     let _ = item; // item використано
 }
 
 #[tokio::test]
-async fn offline_local_number_increments_within_reserve_range() {
+async fn offline_reserve_number_increments_and_exhausts() {
     let repo = InMemoryPrroRepository::new();
     repo.set_setting("prro_reserve_start", "1001")
         .await
         .unwrap();
     repo.set_setting("prro_reserve_end", "1100").await.unwrap();
-    let (n1, id1) = OfflineStateMachine::next_offline_local(&repo)
+    let n1 = OfflineStateMachine::next_offline_number(&repo)
         .await
         .unwrap();
-    let (n2, id2) = OfflineStateMachine::next_offline_local(&repo)
+    let n2 = OfflineStateMachine::next_offline_number(&repo)
         .await
         .unwrap();
     assert_eq!((n1, n2), (1001, 1002));
-    assert_eq!(id1, "offline-1001");
-    assert_eq!(id2, "offline-1002");
-    assert!(!id1.is_empty() && !id2.is_empty());
+    // без діапазону → зрозуміла помилка (без фейкового дефолту, спека F)
+    let repo2 = InMemoryPrroRepository::new();
+    let err = OfflineStateMachine::next_offline_number(&repo2)
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("T=112"), "{err}");
 }
 
 #[tokio::test]
-async fn fiscalize_in_offline_uses_reserve_local_and_id_offline() {
-    // Перевірка, що fiscalize в offline-режимі не йде в мережу, а формує
-    // offline-чек з резервним local_number та id_offline (див. fiscalize.rs:
-    // OfflineStateMachine::is_offline → next_offline_local).
+async fn fiscalize_offline_state_helpers() {
+    // Перевірка допоміжних методів offline-режиму: is_offline та
+    // next_offline_number з резервного діапазону.
     let repo = InMemoryPrroRepository::new();
     repo.set_setting("prro_offline", "1").await.unwrap();
     repo.set_setting("prro_reserve_start", "500").await.unwrap();
     repo.set_setting("prro_reserve_end", "600").await.unwrap();
-    let (local, id_offline) = OfflineStateMachine::next_offline_local(&repo)
+    assert!(OfflineStateMachine::is_offline(&repo).await.unwrap());
+    let id_offline = OfflineStateMachine::next_offline_number(&repo)
         .await
         .unwrap();
-    assert_eq!(local, 500);
-    assert!(!id_offline.is_empty());
-    // у Check id_offline підставляється fiscalize.make_check — тест рівня
-    // модуля offline (інтеграцію fiscalize покрито Rust-тестами fiscalize).
-    let _ = SyncOfflineQueueUseCase::sync(
+    assert_eq!(id_offline, 500);
+    // sync порожньої черги — Ok(0)
+    let res = SyncOfflineQueueUseCase::sync(
         &repo,
         &MockChkSender::new(),
         &mut test_builder(),
         &MockSigner,
         10,
     )
-    .await;
+    .await
+    .unwrap();
+    assert_eq!(res.total, 0);
 }

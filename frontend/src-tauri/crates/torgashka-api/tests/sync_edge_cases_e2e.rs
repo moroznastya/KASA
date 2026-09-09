@@ -65,7 +65,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");

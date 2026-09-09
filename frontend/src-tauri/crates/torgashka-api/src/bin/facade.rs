@@ -146,10 +146,7 @@ app_db_user = "torgashka_app"
 
     #[test]
     fn config_server_addr_used_when_no_env() {
-        assert_eq!(
-            parse_server_addr(Some(CONFIG_SERVER), None),
-            "0.0.0.0:8443"
-        );
+        assert_eq!(parse_server_addr(Some(CONFIG_SERVER), None), "0.0.0.0:8443");
     }
 
     #[test]

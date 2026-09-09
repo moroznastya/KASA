@@ -75,12 +75,20 @@ impl Ctx {
             {
                 if r.status().is_success() {
                     let v: Value = r.json().await.expect("login json");
-                    break v["access_token"].as_str().expect("access_token").to_string();
+                    break v["access_token"]
+                        .as_str()
+                        .expect("access_token")
+                        .to_string();
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         };
-        Self { base, token, pool, _handle }
+        Self {
+            base,
+            token,
+            pool,
+            _handle,
+        }
     }
 
     async fn pull(&self, entity: &str, since: i64, store_id: &str) -> Value {
@@ -95,7 +103,11 @@ impl Ctx {
             .await
             .expect("sync request");
         if !resp.status().is_success() {
-            panic!("sync master {} since={since}: HTTP {}", entity, resp.status());
+            panic!(
+                "sync master {} since={since}: HTTP {}",
+                entity,
+                resp.status()
+            );
         }
         resp.json().await.expect("sync json")
     }
@@ -118,7 +130,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -252,7 +266,12 @@ async fn master_returns_upsert_then_delete_deltas() {
 
     // Cleanup: фізичне видалення тестових категорій.
     sqlx::query("DELETE FROM categories WHERE id = ANY($1)")
-        .bind(&[Uuid::parse_str(&id_a).unwrap(), Uuid::parse_str(&id_b).unwrap()][..])
+        .bind(
+            &[
+                Uuid::parse_str(&id_a).unwrap(),
+                Uuid::parse_str(&id_b).unwrap(),
+            ][..],
+        )
         .execute(&ctx.pool)
         .await
         .expect("cleanup categories");
@@ -272,11 +291,10 @@ async fn master_paginates_over_500() {
     let pool = ctx.pool.clone();
 
     // Поточний максимум версій products — pull лише НОВИХ змін.
-    let max_before: Option<i64> =
-        sqlx::query_scalar("SELECT max(server_version) FROM products")
-            .fetch_one(&pool)
-            .await
-            .expect("max version");
+    let max_before: Option<i64> = sqlx::query_scalar("SELECT max(server_version) FROM products")
+        .fetch_one(&pool)
+        .await
+        .expect("max version");
     let since = max_before.unwrap_or(0);
 
     // 520 нових товарів (BEFORE-тригер проставляє унікальні server_version).
@@ -295,13 +313,21 @@ async fn master_paginates_over_500() {
 
     // 1. Перша сторінка: 500 змін, has_more=true.
     let p1 = ctx.pull("products", since, STORE1).await;
-    assert_eq!(p1["changes"].as_array().map(|a| a.len()), Some(500), "сторінка = 500");
+    assert_eq!(
+        p1["changes"].as_array().map(|a| a.len()),
+        Some(500),
+        "сторінка = 500"
+    );
     assert_eq!(p1["has_more"], true, "є ще сторінки");
     let to1 = p1["to"].as_i64().expect("to1");
 
     // 2. Друга сторінка з since=to1: решта 20, has_more=false.
     let p2 = ctx.pull("products", to1, STORE1).await;
-    assert_eq!(p2["changes"].as_array().map(|a| a.len()), Some(20), "друга сторінка = 20");
+    assert_eq!(
+        p2["changes"].as_array().map(|a| a.len()),
+        Some(20),
+        "друга сторінка = 20"
+    );
     assert_eq!(p2["has_more"], false);
     assert!(p2["to"].as_i64().expect("to2") > to1);
 
@@ -353,7 +379,10 @@ async fn master_rls_isolates_stores() {
 
     // 2. Доступ до чужої точки через X-Store-Id без user_stores → 403.
     let resp = reqwest::Client::new()
-        .get(format!("{}/api/v1/sync/master?entity=categories&since_version=0", ctx.base))
+        .get(format!(
+            "{}/api/v1/sync/master?entity=categories&since_version=0",
+            ctx.base
+        ))
         .bearer_auth(&ctx.token)
         .header("X-Store-Id", store2.to_string())
         .send()

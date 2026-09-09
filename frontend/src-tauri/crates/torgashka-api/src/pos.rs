@@ -278,7 +278,10 @@ fn parse_receipt_item(v: &Value, idx: usize) -> Result<ReceiptItemInput, PosErr>
     })
 }
 
-pub(crate) fn parse_receipt_create(v: &Value, cashier_id: Option<Uuid>) -> Result<ReceiptCreateInput, PosErr> {
+pub(crate) fn parse_receipt_create(
+    v: &Value,
+    cashier_id: Option<Uuid>,
+) -> Result<ReceiptCreateInput, PosErr> {
     let items = match v.get("items") {
         Some(Value::Array(arr)) if !arr.is_empty() => arr,
         _ => {

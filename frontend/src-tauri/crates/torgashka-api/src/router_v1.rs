@@ -19,10 +19,11 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    admin, admin_audit, admin_db_sources, admin_migrate, admin_network_config, admin_prro, admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
-    network, ocr,
-    pos, print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices,
-    setup, store_context, stores, suppliers, sync, AppState,
+    admin, admin_audit, admin_db_sources, admin_migrate, admin_network_config, admin_prro,
+    admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    network, network_nodes, ocr, pos, print_templates, products_v2, proxy, prro, purchase_orders,
+    readdirs, return_invoices, route_local, setup, store_context, stores, suppliers, sync,
+    AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -652,10 +653,16 @@ pub fn build_router(state: AppState) -> Router {
     // (без JWT: каса ще не має токена). /admin/* — глобальні дії власника,
     // НЕ прив'язані до X-Store-Id точки → окремий роутер БЕЗ store_middleware,
     // але З auth (роль admin|owner перевіряється в require_admin хендлерів).
-    let activate = Router::new().route(
-        "/api/v1/devices/activate",
-        post(network::activate_device),
-    );
+    let activate = Router::new()
+        .route("/api/v1/devices/activate", post(network::activate_device))
+        // Мережа магазинів (ЕТАП 15): join — ПУБЛІЧНИЙ (як /devices/activate,
+        // rate-limit у хендлері); heartbeat автентифікується node_token (Bearer)
+        // САМИМ хендлером — поза JWT-шаром (вузол не є користувачем).
+        .route("/api/v1/network-nodes/join", post(network_nodes::join_node))
+        .route(
+            "/api/v1/network-nodes/:id/heartbeat",
+            put(network_nodes::heartbeat_node),
+        );
     let admin_network = Router::new()
         // Адмін-панель власника мережі (Етап 1): точки + працівники + деактивація.
         .route(
@@ -772,14 +779,43 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/admin/devices/:device_id",
             delete(network::delete_device),
         )
+        // Реєстр вузлів мережі магазинів (ЕТАП 15): owner-дії (create/archive/
+        // force-resync) + список (admin|owner через require_admin, як list_devices).
+        .route(
+            "/api/v1/admin/network-nodes",
+            get(network_nodes::list_nodes).post(network_nodes::create_node),
+        )
+        .route(
+            "/api/v1/admin/network-nodes/:node_id/archive",
+            post(network_nodes::archive_node),
+        )
+        .route(
+            "/api/v1/admin/network-nodes/:node_id/force-resync",
+            post(network_nodes::force_resync_node),
+        )
+        // Журнал мережевих подій (рішення Творця): діагностика взаємодії вузлів.
+        .route(
+            "/api/v1/admin/network-events",
+            get(network_nodes::list_network_events),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
         ));
 
+    // Локальний routing standby-вузла (ЕТАП 18): /api/v1/local/* — читання
+    // з локальної репліки (5433) + запис у SQLite-чергу, коли primary
+    // недоступний. Порожній Router, якщо вузол не standby або репліка не
+    // підключена (жодних маршрутів не додається). Auth+store шари — всередині
+    // route_local::router (як у private-гілки).
     activate
         .merge(admin_network)
         .merge(private)
+        .merge(route_local::router(state.clone()))
+        // ЕТАП 19 (DR): promote + repoint-primary — ОКРЕМО від route_local::router:
+        // ці адмін-маршрути НЕ проходять store-middleware (він ходить у primary-пул,
+        // недоступний у момент аварії) — авторизація stateless JWT owner у хендлерах.
+        .merge(crate::promote::admin_router(state.clone()))
         .layer(cors)
         .with_state(state)
 }
@@ -939,6 +975,9 @@ mod tests {
             store_pool: None,
             stores: None,
             setup: None,
+            // ЕТАП 18: тестовий стан — режим Primary (локальна гілка не монтується).
+            node_config: torgashka_infrastructure::node_config::NodeConfig::default(),
+            local: None,
         };
         state.auth = Some(Arc::new(MockAuth) as Arc<dyn AuthService + Send + Sync>);
         state

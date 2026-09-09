@@ -250,7 +250,11 @@ pub fn run() {
             // ще до завантаження webview, тож фронтенд не ловить ECONNREFUSED
             // (гонка: ініціалізація БД/роутів у serve триває секунди, а webview
             // одразу стріляє GET /auth/verify при відновленні сесії).
-            let facade_addr = torgashka_api::DEFAULT_FACADE_ADDR.to_string();
+            // B2 (рішення Творця): адреса фасаду з env TORGASHKA_LISTEN_ADDR
+            // (напр. 0.0.0.0:8000 на VPS, щоб standby-каси достукувались через
+            // інтернет); дефолт — 127.0.0.1:8000 (повна зворотна сумісність).
+            let facade_addr = std::env::var("TORGASHKA_LISTEN_ADDR")
+                .unwrap_or_else(|_| torgashka_api::DEFAULT_FACADE_ADDR.to_string());
             let std_listener = std::net::TcpListener::bind(&facade_addr).map_err(|e| {
                 format!(
                     "Torgashka: не вдалося зайняти порт {facade_addr} ({e}).\n\
@@ -318,6 +322,13 @@ pub fn run() {
                     Ok(false) => {}
                     Err(e) => eprintln!("[sync_pull] spawn при старті: {e}"),
                 }
+                // B1b: heartbeat standby-вузла — якщо node_* settings уже є
+                // (повторний старт після join+provision). Один на процес.
+                match torgashka_infrastructure::standby_heartbeat::start_standby_heartbeat() {
+                    Ok(true) => eprintln!("[standby_heartbeat] фоновий цикл запущено (B1b)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[standby_heartbeat] spawn при старті: {e}"),
+                }
             });
 
             Ok(())
@@ -364,6 +375,9 @@ pub fn run() {
             commands::system::get_system_status,
             commands::system::get_keyboard_layout,
             commands::system::send_notification,
+            // ── Команди standby-вузла мережі (B1a/B1c) ────────────────
+            commands::standby::start_standby_provision,
+            commands::standby::restart_app,
             // ── Команди підключених пристроїв (ваги, термінали) ─────────
             get_available_ports,
             torgashka_infrastructure::devices::get_devices,

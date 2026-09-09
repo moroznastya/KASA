@@ -17,10 +17,10 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use torgashka_infrastructure::store_ctx::current_store_ctx;
 use serde::Deserialize;
 use serde_json::json;
 use torgashka_infrastructure::prro::SqlxPrroRepository;
+use torgashka_infrastructure::store_ctx::current_store_ctx;
 use torgashka_prro::crypto::{signer_from_key_material, PrroSigner};
 use torgashka_prro::grpc::{PrroGrpcClient, TlsConfig};
 use torgashka_prro::keystore;
@@ -96,15 +96,13 @@ impl PrroFacade {
     /// current_store_ctx). ENV PRRO_KEY_FILE/PRRO_KEY_PASSWORD — лише fallback
     /// для legacy-одиночної інсталяції (context()).
     fn key_store(&self) -> Result<PrroKeyStore, PrroApiError> {
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| {
-                PrroApiError::Config(
-                    "ПРРО-операція поза контекстом торговельної точки (StoreCtx відсутній); \
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PrroApiError::Config(
+                "ПРРО-операція поза контекстом торговельної точки (StoreCtx відсутній); \
                      укажіть X-Store-Id"
-                        .to_string(),
-                )
-            })?;
+                    .to_string(),
+            )
+        })?;
         Ok(PrroKeyStore::for_store(store_id))
     }
 
@@ -226,8 +224,8 @@ impl PrroFacade {
         let mut ctx = self.context().await?;
         if self.shadow {
             // shadow: Rust готує чек+підпис, Python виконує (parity-лог)
-            let dat_xml = ctx.builder.build_service_check_xml("108", &ts_now())?;
-            let message = ctx.builder.build_message(&dat_xml, None, true)?;
+            let dat_xml = ctx.builder.build_service_check_xml("108", &ts_now(), 0)?;
+            let message = ctx.builder.build_message(&dat_xml, None, "", true)?;
             let signed = ctx.signer.sign(message.as_bytes())?;
             eprintln!(
                 "[torgashka-prro:shadow] open_shift готовий: dat_len={} signed_len={} di={}",
@@ -406,15 +404,13 @@ impl PrroFacade {
         mode: Option<String>,
         auto_fiscalize: Option<bool>,
     ) -> Result<PrroSettingsDto, PrroApiError> {
-        let store_id = current_store_ctx()
-            .map(|c| c.store_id)
-            .ok_or_else(|| {
-                PrroApiError::Config(
-                    "PUT /prro/settings поза контекстом точки (StoreCtx відсутній); \
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PrroApiError::Config(
+                "PUT /prro/settings поза контекстом точки (StoreCtx відсутній); \
                      укажіть X-Store-Id"
-                        .to_string(),
-                )
-            })?;
+                    .to_string(),
+            )
+        })?;
         let uc = PrroSettingsUseCase::new(self.key_store()?);
         let grpc = self.grpc_only().await.ok();
         Ok(uc

@@ -14,7 +14,7 @@ use torgashka_prro::prro::{
     ProductFiscalRow, PrroKeyStore, PrroRepository, PrroShift, ReceiptFiscalRow,
     ReceiptItemFiscalRow, KEY_PRRO_FN,
 };
-use torgashka_prro::xml::{compute_mac, extract_check_no};
+use torgashka_prro::xml::extract_check_no;
 
 use common::{test_builder, MockSigner};
 
@@ -262,7 +262,7 @@ async fn timeout_lastchk_not_found_then_retry_succeeds() {
 #[tokio::test]
 async fn timeout_retry_fails_document_queued_and_offline() {
     let repo = InMemoryPrroRepository::new();
-    seed_open_shift(&repo).await;
+    let shift_id = seed_open_shift(&repo).await;
     let rid = seed_sale_receipt(&repo);
     let (ks, _p) = tmp_keystore();
     let sender = H1Sender::new();
@@ -290,15 +290,20 @@ async fn timeout_retry_fails_document_queued_and_offline() {
     .await
     .unwrap();
 
-    assert_eq!(resp.fiscal_status, "failed", "документ у черзі (failed)");
+    assert_eq!(resp.fiscal_status, "failed", "документ не фіскалізовано");
     assert!(resp.error.is_some(), "помилка зафіксована");
-    // документ НЕ втрачений: лишився в черзі
-    let q = torgashka_prro::prro::PrroOfflineQueue::get_pending(&repo, 100)
+    // T=109 (перехід в офлайн) не втрачається — першим у черзі (спека D/I)
+    let items = torgashka_prro::prro::PrroOfflineQueue::list_by_shift(&repo, shift_id)
         .await
         .unwrap();
-    assert_eq!(q.len(), 1, "документ у черзі");
-    assert_eq!(q[0].local_number, 1);
-    // ПРРО перейшов в офлайн (B4)
+    assert!(!items.is_empty(), "109 у черзі");
+    assert_eq!(items[0].check_type, "SERVICECHK", "109 першим у черзі");
+    assert!(
+        items[0].xml_body.contains("T=\"109\""),
+        "{}",
+        items[0].xml_body
+    );
+    // ПРРО перейшов в офлайн
     assert!(torgashka_prro::prro::OfflineStateMachine::is_offline(&repo)
         .await
         .unwrap());
@@ -328,38 +333,49 @@ fn extract_check_no_parses_no_from_dat() {
 }
 
 #[test]
-fn v1_qr_uses_check_mac_not_fallback_sha1() {
-    let mac = compute_mac(
-        r#"<DAT FN="4000000001"><C T="0"><E N="1" NO="1" SM="2500" TX="0"></E></C></DAT>"#,
-        None,
-    );
+fn v1_qr_uses_check_mac_or_empty_no_sha1_fallback() {
+    // H: mac = hex-значення <MAC> цього чека; SHA-1 fallback прибрано.
+    let mac_hex = "d94c997cf5331a5f3b9654780af2bc3860cabd1b9aed71dc3939338ded9168f8";
+    let sent_at = chrono::DateTime::parse_from_rfc3339("2022-09-04T11:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
     let url = build_fiscal_check_url(
         "45",
         rust_decimal::Decimal::new(78000, 2),
         "3000898168",
-        chrono::DateTime::parse_from_rfc3339("2022-09-04T11:30:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-        Some(&mac),
+        sent_at,
+        Some(mac_hex),
     )
     .expect("URL є");
-    // Rust URL-енкодить параметри як Python urlencode (quote_plus): + / =
-    // у base64 MAC → %2B %2F %3D
-    let encoded_mac = mac
-        .replace('+', "%2B")
-        .replace('/', "%2F")
-        .replace('=', "%3D");
     assert!(
-        url.contains(&format!("mac={encoded_mac}")),
-        "QR mac = MAC чека (URL-encoded): {url}"
+        url.contains(&format!("mac={mac_hex}")),
+        "QR mac = hex MAC чека: {url}"
     );
     assert!(!url.contains("id_sign"), "id_sign не потрапляє в QR");
-    // ДПС §5: ?mac=...&date=20220904&time=1130&id=45&sm=780.00&fn=3000898168
-    assert!(url.contains("date=20220904"), "{url}");
-    assert!(url.contains("time=1130"), "{url}");
-    assert!(url.contains("id=45"), "{url}");
-    assert!(url.contains("sm=780.00"), "{url}");
-    assert!(url.contains("fn=3000898168"), "{url}");
+    assert!(!url.contains("sha1"), "SHA-1 fallback прибрано: {url}");
+    // без mac (None) → параметр mac ПОРОЖНІЙ (без фейкового хешу)
+    let url2 = build_fiscal_check_url(
+        "45",
+        rust_decimal::Decimal::new(78000, 2),
+        "3000898168",
+        sent_at,
+        None,
+    )
+    .expect("URL є");
+    assert!(url2.contains("mac=&date="), "порожній mac: {url2}");
+    // ДПС §5: параметри date/time/id/sm/fn (date/time — ЛОКАЛЬНИЙ час)
+    let local = sent_at.with_timezone(&chrono::Local);
+    assert!(
+        url2.contains(&format!("date={}", local.format("%Y%m%d"))),
+        "{url2}"
+    );
+    assert!(
+        url2.contains(&format!("time={}", local.format("%H%M"))),
+        "{url2}"
+    );
+    assert!(url2.contains("id=45"), "{url2}");
+    assert!(url2.contains("sm=780.00"), "{url2}");
+    assert!(url2.contains("fn=3000898168"), "{url2}");
 }
 
 /// V1: fiscalize on_success будує QR з MAC чека (не id_sign).
@@ -391,8 +407,8 @@ async fn v1_fiscalize_qr_contains_check_mac() {
         url.starts_with("https://cabinet.tax.gov.ua/cashregs/check?"),
         "{url}"
     );
-    // mac у QR == MAC чека (SHA-256 base64), а НЕ id_sign.
-    // Якби баг повернувся (serial=id_sign), тут було б "mac=id-sign-...".
+    // H: mac = hex-значення <MAC> цього чека; перший документ зміни (ланцюг
+    // порожній, shift.last_mac=None) → mac порожній — БЕЗ SHA-1 fallback.
     let mac_param = url
         .split("mac=")
         .nth(1)
@@ -402,15 +418,12 @@ async fn v1_fiscalize_qr_contains_check_mac() {
         !mac_param.contains("id-sign"),
         "id_sign не має потрапляти в QR: {url}"
     );
-    // URL-encode (як Python urlencode): %2B %2F %3D → + / =
-    let mac_unquoted = mac_param
-        .replace("%2B", "+")
-        .replace("%2F", "/")
-        .replace("%3D", "=");
-    // валідний base64 (SHA-256 → 32 байти)
-    use base64::Engine as _;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(mac_unquoted)
-        .expect("mac — валідний base64");
-    assert_eq!(decoded.len(), 32, "SHA-256 = 32 байти");
+    assert!(
+        !mac_param.contains("sha1"),
+        "SHA-1 fallback прибрано: {url}"
+    );
+    assert_eq!(
+        mac_param, "",
+        "перший чек зміни: MAC = \"\" (порожньо): {url}"
+    );
 }

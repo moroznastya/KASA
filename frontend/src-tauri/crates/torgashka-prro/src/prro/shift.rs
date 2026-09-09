@@ -8,12 +8,12 @@ use uuid::Uuid;
 
 use crate::crypto::PrroSigner;
 use crate::proto::CheckType;
-use crate::xml::{parse_receipt_xml_totals, ShiftData, ShiftPayment, TaxGroup, XmlBuilder};
+use crate::xml::{self, parse_receipt_xml_totals, ShiftData, ShiftPayment, TaxGroup, XmlBuilder};
 
 use super::chk_sender::ChkSender;
 use super::models::{
-    PrroQueueStatus, PrroShift, CHECK_TYPE_CHK, CHECK_TYPE_SERVICECHK, CHECK_TYPE_ZREPORT,
-    KEY_LAST_SHIFT_NUMBER,
+    PrroQueueStatus, PrroShift, PrroShiftStatus, CHECK_TYPE_CHK, CHECK_TYPE_SERVICECHK,
+    CHECK_TYPE_ZREPORT, KEY_LAST_SHIFT_NUMBER,
 };
 use super::queue::PrroOfflineQueue;
 use super::repository::{PrroRepoError, PrroRepository};
@@ -71,9 +71,12 @@ impl From<&PrroShift> for PrroShiftDto {
     }
 }
 
-/// TS для XML СЗЗД — 1:1 Python `_fmt_datetime(datetime.utcnow())`.
+/// TS для XML СЗЗД — ЛОКАЛЬНИЙ час YYYYMMDDhhmmss (спека B/J).
+/// 1:1 Python `_fmt_datetime(datetime.now())`.
 pub fn ts_now(now: DateTime<Utc>) -> String {
-    now.format("%Y%m%d%H%M%S").to_string()
+    now.with_timezone(&chrono::Local)
+        .format("%Y%m%d%H%M%S")
+        .to_string()
 }
 
 /// Use case змін ПРРО — безстатеві методи над repo + sender + signer.
@@ -108,17 +111,26 @@ impl PrroShiftUseCase {
             ));
         }
 
+        // Ланцюг (спека D): попередня (закрита) зміна → її last_mac = hash(Z).
+        // Для першої зміни ПРРО ланцюг порожній (MAC = "").
+        let doc_mac = last_closed_shift_mac(repo).await?.unwrap_or_default();
+
         // 2. Службовий чек T=108
         let dat_xml = xml_builder
-            .build_service_check_xml("108", &ts_now(now))
+            .build_service_check_xml("108", &ts_now(now), 0)
             .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
         let message = xml_builder
-            .build_message(&dat_xml, None, true)
+            .build_message(&dat_xml, Some(&doc_mac), "", true)
+            .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+        let cp1251 = xml::cp1251_bytes(&message)
             .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
         let signed = signer
-            .sign(message.as_bytes())
+            .sign(&cp1251)
             .map_err(|e| PrroShiftError::new(e.to_string(), "SIGN_ERROR"))?;
-        let mac = crate::xml::compute_mac(&dat_xml, None);
+        // next_mac = hash(повного RQ цього 108) — на нього посилатиметься
+        // перший чек зміни (спека D).
+        let next_mac = xml::compute_mac(&message)
+            .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
 
         // 3. Надсилаємо (SERVICECHK, local_number=0)
         // B2: signed (повний підписаний XML) зберігається у черзі as-is
@@ -128,6 +140,7 @@ impl PrroShiftUseCase {
             0,
             CheckType::Servicechk,
             now,
+            String::new(),
             String::new(),
         );
         let response = sender.send_chk(check).await.map_err(|e| {
@@ -144,17 +157,17 @@ impl PrroShiftUseCase {
             ));
         }
 
-        // 4. Створюємо зміну
+        // 4. Створюємо зміну; last_mac = hash(повного RQ цього 108)
         let shift_number = next_shift_number(repo).await?;
         let mut shift = PrroShift::new(shift_number, now);
         shift.signer_serial = signer.get_serial_number().ok();
         shift.signer_name = signer.get_signer_name().ok();
-        shift.last_mac = Some(mac.clone());
+        shift.last_mac = Some(next_mac.clone());
         repo.create_shift(shift.clone()).await?;
         repo.set_setting(KEY_LAST_SHIFT_NUMBER, &shift_number.to_string())
             .await?;
 
-        // 5. Запис у чергу (успішно передано)
+        // 5. Запис у чергу (успішно передано); mac = MAC цього документа
         let queue_item = PrroOfflineQueue::add_document(
             repo,
             None,
@@ -162,9 +175,9 @@ impl PrroShiftUseCase {
             0,
             CHECK_TYPE_SERVICECHK,
             &dat_xml,
-            Some(mac),
-            Some(String::from_utf8_lossy(&signed).into_owned()), // B2
-            None, // B4: службові чеки (108/Z) — без id_offline
+            Some(doc_mac),
+            Some(xml::signed_bytes_to_text(&signed)), // B2
+            None,                                     // B4: службові чеки (108/Z) — без id_offline
         )
         .await
         .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -199,17 +212,24 @@ impl PrroShiftUseCase {
         };
 
         // 2. Z-звіт з підсумками зміни (з фактично переданих чеків)
+        // Z у ланцюзі (спека D): doc_mac = поточний last_mac зміни.
+        let doc_mac = open_shift.last_mac.clone().unwrap_or_default();
         let z_data = Self::build_zreport_data(repo, &open_shift).await?;
         let dat_xml = xml_builder
             .build_zreport_xml(&z_data, &ts_now(now))
             .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
         let message = xml_builder
-            .build_message(&dat_xml, None, true)
+            .build_message(&dat_xml, Some(&doc_mac), "", true)
+            .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
+        let cp1251 = xml::cp1251_bytes(&message)
             .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
         let signed = signer
-            .sign(message.as_bytes())
+            .sign(&cp1251)
             .map_err(|e| PrroShiftError::new(e.to_string(), "SIGN_ERROR"))?;
-        let mac = crate::xml::compute_mac(&dat_xml, None);
+        // next_mac = hash(повного RQ Z) — відкриття НАСТУПНОЇ зміни
+        // посилатиметься на цей хеш.
+        let next_mac = xml::compute_mac(&message)
+            .map_err(|e| PrroShiftError::new(e.to_string(), "XML_BUILD_ERROR"))?;
 
         // 3. Надсилаємо (ZREPORT, local_number=0)
         // B2: signed (повний підписаний XML) зберігається у черзі as-is
@@ -219,6 +239,7 @@ impl PrroShiftUseCase {
             0,
             CheckType::Zreport,
             now,
+            String::new(),
             String::new(),
         );
         let response = sender.send_chk(check).await.map_err(|e| {
@@ -248,7 +269,7 @@ impl PrroShiftUseCase {
             .await?
             .ok_or_else(|| PrroShiftError::new("Зміну не знайдено", "SHIFT_NOT_FOUND"))?;
 
-        // Запис у чергу (Z-звіт успішно передано)
+        // Запис у чергу (Z-звіт успішно передано); mac = MAC цього документа
         let queue_item = PrroOfflineQueue::add_document(
             repo,
             None,
@@ -256,9 +277,9 @@ impl PrroShiftUseCase {
             0,
             CHECK_TYPE_ZREPORT,
             &dat_xml,
-            Some(mac.clone()),
-            Some(String::from_utf8_lossy(&signed).into_owned()), // B2
-            None, // B4: службові чеки (108/Z) — без id_offline
+            Some(doc_mac),
+            Some(xml::signed_bytes_to_text(&signed)), // B2
+            None,                                     // B4: службові чеки (108/Z) — без id_offline
         )
         .await
         .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
@@ -266,8 +287,9 @@ impl PrroShiftUseCase {
             .await
             .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
 
-        // B1: last_mac = MAC(Z) — останній успішно відправлений документ зміни.
-        repo.update_shift_last_mac(open_shift.id, mac)
+        // D: last_mac = hash(повного RQ Z) — відкриття наступної зміни
+        // посилатиметься на цей хеш.
+        repo.update_shift_last_mac(open_shift.id, next_mac)
             .await
             .map_err(|e| PrroShiftError::new(e.to_string(), "QUEUE_ERROR"))?;
 
@@ -463,6 +485,7 @@ pub struct ReminderInfo {
 }
 
 /// Формує gRPC Check — 1:1 Python `context.build_check`.
+#[allow(clippy::too_many_arguments)]
 fn make_check(
     xml_builder: &XmlBuilder,
     check_sign: Vec<u8>,
@@ -470,6 +493,7 @@ fn make_check(
     check_type: CheckType,
     now: DateTime<Utc>,
     id_offline: String,
+    id_cancel: String,
 ) -> crate::proto::Check {
     crate::proto::Check {
         rro_fn: xml_builder.rro_fn().to_string(),
@@ -478,7 +502,19 @@ fn make_check(
         local_number,
         check_type: check_type as i32,
         id_offline,
-        id_cancel: String::new(),
+        id_cancel,
+    }
+}
+
+/// last_mac останньої (закритої) зміни — hash її Z-звіту для ланцюга.
+/// 1:1 Python `_last_closed_shift_mac`.
+async fn last_closed_shift_mac(
+    repo: &dyn PrroRepository,
+) -> Result<Option<String>, PrroShiftError> {
+    let (shifts, _total) = repo.list_shifts(1, 1).await?;
+    match shifts.first() {
+        Some(s) if s.status == PrroShiftStatus::Closed => Ok(s.last_mac.clone()),
+        _ => Ok(None),
     }
 }
 

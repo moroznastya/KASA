@@ -175,6 +175,8 @@ fn is_public_path(path: &str) -> bool {
         "/api/v1/auth/refresh",
         "/api/v1/auth/users-list",
         "/api/v1/auth/verify",
+        // Мережа магазинів (ЕТАП 15): join — публічний (як /devices/activate).
+        "/api/v1/network-nodes/join",
     ];
     if PUBLIC.contains(&path) {
         return true;
@@ -303,7 +305,13 @@ async fn authenticate_device(
                 iat: now,
                 exp: now + 480 * 60,
             };
-            Ok(Some((claims, DeviceCtx { device_id, store_id })))
+            Ok(Some((
+                claims,
+                DeviceCtx {
+                    device_id,
+                    store_id,
+                },
+            )))
         }
         "blocked" | "deleted" => Err(DeviceAuthError::Forbidden(
             "Пристрій заблоковано або видалено",

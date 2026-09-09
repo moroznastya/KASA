@@ -102,7 +102,11 @@ fn fresh_db_migrates_to_v2_with_sync_tables() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "нова БД мігрується до актуальної версії");
+    assert_eq!(
+        v,
+        migrations::SCHEMA_VERSION as i64,
+        "нова БД мігрується до актуальної версії"
+    );
     assert!(table_exists(&db_file, "sync_meta"), "sync_meta існує");
     assert!(table_exists(&db_file, "outbox"), "outbox існує");
     assert!(table_exists(&db_file, "products"), "products існує");
@@ -143,11 +147,17 @@ fn legacy_db_migrates_without_data_loss() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "legacy БД → актуальна версія");
+    assert_eq!(
+        v,
+        migrations::SCHEMA_VERSION as i64,
+        "legacy БД → актуальна версія"
+    );
 
     // Дані не втрачені.
     let pid: String = conn
-        .query_row("SELECT id FROM products WHERE id='legacy-1'", [], |row| row.get(0))
+        .query_row("SELECT id FROM products WHERE id='legacy-1'", [], |row| {
+            row.get(0)
+        })
         .expect("продукт збережено");
     assert_eq!(pid, "legacy-1");
     let rn: i64 = conn
@@ -155,7 +165,11 @@ fn legacy_db_migrates_without_data_loss() {
         .expect("чеки");
     assert_eq!(rn, 1);
     let sv: String = conn
-        .query_row("SELECT value FROM settings WHERE key='shop_name'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key='shop_name'",
+            [],
+            |row| row.get(0),
+        )
         .expect("налаштування");
     assert_eq!(sv, "Магазин №1");
 
@@ -210,7 +224,11 @@ fn rerun_is_idempotent() {
     assert_eq!(v, migrations::SCHEMA_VERSION as i64, "версія не змінилась");
 
     let ver: i64 = conn
-        .query_row("SELECT version FROM sync_meta WHERE entity='products'", [], |row| row.get(0))
+        .query_row(
+            "SELECT version FROM sync_meta WHERE entity='products'",
+            [],
+            |row| row.get(0),
+        )
         .expect("sync_meta рядок");
     assert_eq!(ver, 7, "дані не затерті повторним запуском");
 }
@@ -232,7 +250,11 @@ fn engine_reports_current_version() {
         migrations::SCHEMA_VERSION,
         "двигун бачить актуальну версію"
     );
-    assert_eq!(migrations::SCHEMA_VERSION, 8, "двигун бачить актуальну версію (0008)");
+    assert_eq!(
+        migrations::SCHEMA_VERSION,
+        8,
+        "двигун бачить актуальну версію (0008)"
+    );
     drop(db);
 }
 
@@ -253,7 +275,11 @@ fn fresh_db_reaches_latest_with_stock_txn_and_sync_log() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "свіжа БД доходить до останньої версії");
+    assert_eq!(
+        v,
+        migrations::SCHEMA_VERSION as i64,
+        "свіжа БД доходить до останньої версії"
+    );
 
     // 0005: локальний stock.
     assert!(table_exists(&db_file, "stock"), "stock існує (0005)");
@@ -350,11 +376,18 @@ fn legacy_products_json_migrated_to_products_v2() {
     let after: i64 = conn
         .query_row("SELECT COUNT(*) FROM products_v2", [], |row| row.get(0))
         .expect("count products_v2 після");
-    assert_eq!(before, after, "КРИТЕРІЙ: COUNT до == COUNT після (без втрат)");
+    assert_eq!(
+        before, after,
+        "КРИТЕРІЙ: COUNT до == COUNT після (без втрат)"
+    );
 
     // Кожен legacy id мігрував з нормалізованими колонками.
     let name1: String = conn
-        .query_row("SELECT name FROM products_v2 WHERE id = 'legacy-1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT name FROM products_v2 WHERE id = 'legacy-1'",
+            [],
+            |row| row.get(0),
+        )
         .expect("legacy-1");
     assert_eq!(name1, "Тест", "name з data");
 
@@ -371,7 +404,11 @@ fn legacy_products_json_migrated_to_products_v2() {
     assert_eq!(price, Some(250.0), "price з data");
 
     let name3: String = conn
-        .query_row("SELECT name FROM products_v2 WHERE id = 'legacy-3'", [], |row| row.get(0))
+        .query_row(
+            "SELECT name FROM products_v2 WHERE id = 'legacy-3'",
+            [],
+            |row| row.get(0),
+        )
         .expect("legacy-3");
     assert_eq!(name3, "Старий формат", "title → name (старий формат)");
 
@@ -386,6 +423,9 @@ fn legacy_products_json_migrated_to_products_v2() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version");
-    assert_eq!(v, migrations::SCHEMA_VERSION as i64, "БД на останній версії");
+    assert_eq!(
+        v,
+        migrations::SCHEMA_VERSION as i64,
+        "БД на останній версії"
+    );
 }
-

@@ -28,8 +28,8 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use serde_json::{json, Value};
+use sqlx::Row;
 use uuid::Uuid;
 
 use torgashka_infrastructure::store_ctx::StorePool;
@@ -95,13 +95,17 @@ impl IntoResponse for SyncError {
             SyncError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, Json(json!({"detail": msg}))).into_response()
             }
-            SyncError::Unavailable => {
-                (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": "серверна база недоступна"})))
-                    .into_response()
-            }
+            SyncError::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"detail": "серверна база недоступна"})),
+            )
+                .into_response(),
             SyncError::Db(e) => {
                 eprintln!("[sync] DB помилка: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": "помилка бази даних"})))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"detail": "помилка бази даних"})),
+                )
                     .into_response()
             }
         }
@@ -139,21 +143,15 @@ pub async fn master(
         )));
     }
 
-    let pool = state
-        .store_pool
-        .clone()
-        .ok_or(SyncError::Unavailable)?;
+    let pool = state.store_pool.clone().ok_or(SyncError::Unavailable)?;
 
     let (changes, to, has_more) = fetch_delta(&pool, &q.entity, since).await?;
 
     // Частина 4: device-каса — після УСПІШНОГО pull фіксуємо стан точки в
     // store_sync_state (last_local_seq НЕ чіпаємо). JWT-каси/admin — без змін.
     if claims.role == "device" {
-        let store_id = torgashka_infrastructure::store_ctx::current_store_ctx()
-            .map(|c| c.store_id);
-        if let (Some(store_id), Ok(device_id)) =
-            (store_id, uuid::Uuid::parse_str(&claims.sub))
-        {
+        let store_id = torgashka_infrastructure::store_ctx::current_store_ctx().map(|c| c.store_id);
+        if let (Some(store_id), Ok(device_id)) = (store_id, uuid::Uuid::parse_str(&claims.sub)) {
             if let Err(e) = upsert_store_sync_state(&pool, store_id, device_id).await {
                 eprintln!("[torgashka-api] sync/master: store_sync_state: {e}");
             }
@@ -471,13 +469,28 @@ pub struct PushItemResult {
 
 impl PushItemResult {
     fn created(uuid: Uuid, server_id: Uuid) -> Self {
-        Self { client_uuid: uuid, status: "created", server_id: Some(server_id), error: None }
+        Self {
+            client_uuid: uuid,
+            status: "created",
+            server_id: Some(server_id),
+            error: None,
+        }
     }
     fn already_exists(uuid: Uuid, server_id: Uuid) -> Self {
-        Self { client_uuid: uuid, status: "already_exists", server_id: Some(server_id), error: None }
+        Self {
+            client_uuid: uuid,
+            status: "already_exists",
+            server_id: Some(server_id),
+            error: None,
+        }
     }
     fn error(uuid: Uuid, msg: impl Into<String>) -> Self {
-        Self { client_uuid: uuid, status: "error", server_id: None, error: Some(msg.into()) }
+        Self {
+            client_uuid: uuid,
+            status: "error",
+            server_id: None,
+            error: Some(msg.into()),
+        }
     }
 }
 
@@ -513,9 +526,7 @@ pub async fn push(
 
     let mut results = Vec::with_capacity(body.len());
     for item in &body {
-        results.push(
-            process_push_item(&svc, &pool, item, cashier, ctx_store).await,
-        );
+        results.push(process_push_item(&svc, &pool, item, cashier, ctx_store).await);
     }
 
     // Частина 4: device-каса — після успішного прийому пакета (усі агрегати
@@ -549,18 +560,27 @@ async fn process_push_item(
             log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
                 "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off)", item.kind
             ))).await;
-            return PushItemResult::error(item.client_uuid, format!(
-                "тип '{}' не підтримується push", item.kind
-            ));
+            return PushItemResult::error(
+                item.client_uuid,
+                format!("тип '{}' не підтримується push", item.kind),
+            );
         }
     };
 
     // 2. store_id агрегата має збігатися з точкою запиту (X-Store-Id).
     if item.store_id != ctx_store {
-        log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
-            "store_id агрегата {} не збігається з точкою запиту",
-            item.store_id
-        ))).await;
+        log_sync(
+            pool,
+            item,
+            ctx_store,
+            "error",
+            &hash,
+            Some(format!(
+                "store_id агрегата {} не збігається з точкою запиту",
+                item.store_id
+            )),
+        )
+        .await;
         return PushItemResult::error(
             item.client_uuid,
             "store_id агрегата не збігається з X-Store-Id",
@@ -580,10 +600,16 @@ async fn process_push_item(
     // 5. Прийом за типом (окрема транзакція на агрегат).
     match item.kind.as_str() {
         "receipt" | "return_receipt" => {
-            accept_receipt_kind(svc, pool, item, table, cashier, ctx_store, created_at, &hash).await
+            accept_receipt_kind(
+                svc, pool, item, table, cashier, ctx_store, created_at, &hash,
+            )
+            .await
         }
         kind => {
-            accept_non_receipt_kind(pool, item, table, kind, cashier, ctx_store, created_at, &hash).await
+            accept_non_receipt_kind(
+                pool, item, table, kind, cashier, ctx_store, created_at, &hash,
+            )
+            .await
         }
     }
 }
@@ -614,7 +640,11 @@ async fn accept_receipt_kind(
     created_at: Option<chrono::NaiveDateTime>,
     hash: &str,
 ) -> PushItemResult {
-    let receipt_kind = if item.kind == "receipt" { "sale" } else { "return" };
+    let receipt_kind = if item.kind == "receipt" {
+        "sale"
+    } else {
+        "return"
+    };
     // Парсинг payload → вхідні дані чека (та сама валідація, що v2 /sale).
     let mut input = match crate::pos::parse_receipt_create(&item.payload, cashier) {
         Ok(i) => i,
@@ -675,16 +705,48 @@ async fn accept_non_receipt_kind(
     };
     let res = match kind {
         "purchase_order" | "purchase" => {
-            crate::sync_receivers::accept_purchase_order(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+            crate::sync_receivers::accept_purchase_order(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
         }
         "inventory" => {
-            crate::sync_receivers::accept_inventory(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+            crate::sync_receivers::accept_inventory(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
         }
         "transfer" | "transfer_out" | "transfer_in" => {
-            crate::sync_receivers::accept_transfer(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+            crate::sync_receivers::accept_transfer(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
         }
         "write_off" => {
-            crate::sync_receivers::accept_write_off(pool, ctx_store, cashier, item.client_uuid, created_at, &item.payload).await
+            crate::sync_receivers::accept_write_off(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
         }
         _ => unreachable!("receiver_table пропустив тип"),
     };

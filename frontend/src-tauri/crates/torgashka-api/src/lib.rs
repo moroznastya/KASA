@@ -16,8 +16,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub mod admin;
-pub mod admin_db_sources;
 pub mod admin_audit;
+pub mod admin_db_sources;
 pub mod admin_migrate;
 pub mod admin_network_config;
 pub mod admin_prro;
@@ -31,22 +31,25 @@ pub mod documents;
 pub mod invoices;
 pub mod ledger;
 pub mod network;
+pub mod network_nodes;
 pub mod ocr;
 pub mod pos;
 pub mod print_templates;
 pub mod products_v2;
+pub mod promote;
 pub mod proxy;
 pub mod prro;
 pub mod purchase_orders;
 pub mod readdirs;
 pub mod return_invoices;
+pub mod route_local;
 pub mod router_v1;
 pub mod setup;
 pub mod store_context;
-pub mod sync;
-pub mod sync_receivers;
 pub mod stores;
 pub mod suppliers;
+pub mod sync;
+pub mod sync_receivers;
 
 use std::sync::Arc;
 
@@ -170,6 +173,12 @@ pub struct AppState {
     pub stores: Option<std::sync::Arc<dyn StoreService + Send + Sync>>,
     /// Rust-сервіс setup (Частина 1+2) — /api/v1/setup, перший власник + персональна БД.
     pub setup: Option<std::sync::Arc<dyn SetupService + Send + Sync>>,
+    /// Конфігурація вузла мережі (ЕТАП 18): mode Primary|Standby, local_port,
+    /// degrade_to_local. Завжди заповнена (default = Primary — стара поведінка).
+    pub node_config: torgashka_infrastructure::node_config::NodeConfig,
+    /// Локальний standby-стан (репліка 127.0.0.1:local_port + сервіси) —
+    /// `Some` лише коли mode=Standby І репліка доступна при старті фасаду.
+    pub local: Option<crate::route_local::LocalApiState>,
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
@@ -524,6 +533,65 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 ///
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
+/// ЕТАП 18: підключення локального standby-стану (репліка 127.0.0.1:local_port).
+///
+/// Викликається при старті фасаду. У режимі `Primary` (або коли репліка ще не
+/// provisioned / PG не запущено) повертає `None` — локальні маршрути
+/// `/api/v1/local/*` не монтуються, поведінка фасаду не змінюється.
+async fn init_local_standby(
+    cfg: &torgashka_infrastructure::node_config::NodeConfig,
+) -> Option<crate::route_local::LocalApiState> {
+    use sqlx::postgres::PgPoolOptions;
+    use torgashka_infrastructure::{
+        node_config as nc,
+        repositories::{directories::SqlxDirectories, pos::SqlxPos, write::SqlxWriteDirectories},
+        store_ctx::StorePool,
+    };
+    if !cfg.is_standby() {
+        return None;
+    }
+    // URL локальної репліки: той самий user/db, що й primary (з db_sources/
+    // env), host → 127.0.0.1, port → local_port. Fallback — локальні дефолти
+    // embedded PG (TORGASHKA_PG_USER/TORGASHKA_PG_DB).
+    let url = cfg
+        .resolve_primary_db_url()
+        .and_then(|u| nc::local_db_url(&u, cfg.local_port))
+        .unwrap_or_else(|| {
+            let user =
+                std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
+            let db = std::env::var("TORGASHKA_PG_DB").unwrap_or_else(|_| "torgashka".to_string());
+            nc::fallback_local_url(cfg.local_port, &db, &user)
+        });
+    let pool = match PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "[torgashka-api] standby: локальна репліка 127.0.0.1:{} недоступна ({e}) —                  локальний режим вимкнено (запустіть embedded PG / standby_provision)",
+                cfg.local_port
+            );
+            return None;
+        }
+    };
+    let sp = StorePool::new(pool);
+    eprintln!(
+        "[torgashka-api] standby: локальна репліка 127.0.0.1:{} підключена — /api/v1/local/* активні",
+        cfg.local_port
+    );
+    Some(crate::route_local::LocalApiState {
+        cfg: cfg.clone(),
+        pool: sp.clone(),
+        readdirs: Arc::new(SqlxDirectories::new(sp.clone()))
+            as Arc<dyn ReadDirectories + Send + Sync>,
+        pos: Arc::new(SqlxPos::new(sp.clone())) as Arc<dyn PosService + Send + Sync>,
+        write: Arc::new(SqlxWriteDirectories::new(sp)) as Arc<dyn WriteDirectories + Send + Sync>,
+    })
+}
+
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_listener(listener).await
@@ -661,6 +729,9 @@ pub async fn serve_listener(
             torgashka_infrastructure::repositories::setup::SqlxSetupService::new(StorePool::new(p)),
         ) as Arc<dyn SetupService + Send + Sync>
     });
+    // ЕТАП 18: режим вузла (Primary|Standby) + підключення локальної репліки.
+    let node_config = torgashka_infrastructure::node_config::NodeConfig::load();
+    let local = init_local_standby(&node_config).await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         readdirs,
@@ -690,7 +761,34 @@ pub async fn serve_listener(
         store_pool,
         stores,
         setup,
+        node_config,
+        local,
     };
+    // Фоновий job мережі магазинів (ЕТАП 15, план §5.4): кожні 60 с вузли
+    // active/lagging без heartbeat > 5 хв → offline (той самий поріг, що й
+    // isDeviceOnline кас). Вузли archived не чіпаємо (термінальний стан).
+    if let Some(pool) = state.write_pool.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                let res = sqlx::query(
+                    "UPDATE network_nodes \
+                     SET status = 'offline'::public.node_status, updated_at = now() \
+                     WHERE status IN ('active', 'lagging') \
+                       AND last_seen_at < now() - interval '5 minutes'",
+                )
+                .execute(&pool)
+                .await;
+                if let Err(e) = res {
+                    // Помилка може бути тимчасовою (БД недоступна) — логуємо
+                    // і продовжуємо наступний тик, а не виходимо.
+                    eprintln!("[torgashka-api] network_nodes offline-job: {e}");
+                }
+            }
+        });
+    }
+
     let app = router_v1::build_router(state);
     eprintln!(
         "[torgashka-api] фасад слухає http://{}",

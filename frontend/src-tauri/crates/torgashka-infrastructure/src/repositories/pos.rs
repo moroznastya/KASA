@@ -3512,9 +3512,9 @@ impl PosService for SqlxPos {
              WHERE store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
         )
         .fetch_one(&self.pool)
-            .await
-            .pe()?
-            .get("count");
+        .await
+        .pe()?
+        .get("count");
         let offset = (page - 1) * size;
         let rows = sqlx::query(
             "SELECT id, shift_number, opened_at::text, closed_at::text, signer_name, status::text, \

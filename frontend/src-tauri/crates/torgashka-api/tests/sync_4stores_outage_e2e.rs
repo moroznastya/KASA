@@ -69,7 +69,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -173,7 +175,8 @@ fn build_cash_db(
             "cash_amount": format!("{total:.2}"),
         })
         .to_string();
-        let er = enqueue_receipt(&mut conn, &receipt, Some(&store.to_string())).expect("enqueue sale");
+        let er =
+            enqueue_receipt(&mut conn, &receipt, Some(&store.to_string())).expect("enqueue sale");
         // БЛОКЕР 2: created_at чека — ЧАС КАСИ. Перший чек кожної каси
         // «пробитий» у минулому (багатоденний офлайн) — сервер має зберегти
         // його, не now(). Інші чеки — now() (перевірка «не старі»).
@@ -206,8 +209,9 @@ fn build_cash_db(
         "total_amount": "800.00",
     })
     .to_string();
-    let po_out = transactions::enqueue_transaction(&mut conn, TYPE_PURCHASE_ORDER, &po, &store.to_string())
-        .expect("enqueue purchase_order");
+    let po_out =
+        transactions::enqueue_transaction(&mut conn, TYPE_PURCHASE_ORDER, &po, &store.to_string())
+            .expect("enqueue purchase_order");
     // ЕТАП 7b (БЛОКЕР 2): created_at агрегата — ЧАС КАСИ. Фіксуємо конверт
     // у минулому (багатоденний офлайн) — сервер має зберегти його, не now().
     fix_outbox_created_at(&conn, &po_out.client_uuid, "2026-09-01T07:00:00+03:00");
@@ -231,7 +235,11 @@ fn build_cash_db(
     assert_eq!(po_cu, po_out.client_uuid, "каса {k}: той самий client_uuid");
     assert_eq!(po_status, "pending");
     let po_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM purchase_orders WHERE synced = 0", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM purchase_orders WHERE synced = 0",
+            [],
+            |r| r.get(0),
+        )
         .expect("purchase_orders");
     assert_eq!(po_rows, 0, "каса {k}: агрегат передано в outbox (synced=1)");
     // stock: sale −qty, return +qty (ЕТАП 6, локальний ефект).
@@ -305,7 +313,10 @@ async fn login(base: &str) -> String {
         {
             if r.status().is_success() {
                 let v: serde_json::Value = r.json().await.expect("login json");
-                return v["access_token"].as_str().expect("access_token").to_string();
+                return v["access_token"]
+                    .as_str()
+                    .expect("access_token")
+                    .to_string();
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -348,10 +359,17 @@ async fn four_stores_outage_then_sync_consistent() {
             interval_secs: 30,
         };
         let err = push_pending_batch(db_path, &client, &cfg).await;
-        assert!(err.is_err(), "вимкнений сервер → мережева помилка (каса {store})");
+        assert!(
+            err.is_err(),
+            "вимкнений сервер → мережева помилка (каса {store})"
+        );
         let conn = open_connection(db_path).expect("БД");
         let fail_events: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sync_log WHERE kind = 'push_fail'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sync_log WHERE kind = 'push_fail'",
+                [],
+                |r| r.get(0),
+            )
             .expect("sync_log push_fail");
         assert!(fail_events >= 1, "sync_log фіксує мережеву помилку push");
         drop(conn);
@@ -374,16 +392,16 @@ async fn four_stores_outage_then_sync_consistent() {
 
     // ── Фаза 3a: ідемпотентність — повторний push → already_exists, 0 дублікатів
     // (симуляція «відповідь загубилась після COMMIT сервера», дизайн 3.3).
-    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipts WHERE client_uuid IS NOT NULL")
-        .fetch_one(&pool)
-        .await
-        .expect("count receipts");
-    let before_po: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("count purchase_orders");
+    let before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM receipts WHERE client_uuid IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("count receipts");
+    let before_po: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("count purchase_orders");
     for (store, _product, db_path, _expected) in &stores {
         let conn = open_connection(db_path).expect("БД");
         conn.execute(
@@ -402,17 +420,20 @@ async fn four_stores_outage_then_sync_consistent() {
         };
         flush_outbox(db_path, &client, &cfg).await;
     }
-    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipts WHERE client_uuid IS NOT NULL")
-        .fetch_one(&pool)
-        .await
-        .expect("count receipts after");
-    assert_eq!(before, after, "КРИТЕРІЙ: повторний push не створив дублікатів чеків");
-    let after_po: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("count purchase_orders after");
+    let after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM receipts WHERE client_uuid IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("count receipts after");
+    assert_eq!(
+        before, after,
+        "КРИТЕРІЙ: повторний push не створив дублікатів чеків"
+    );
+    let after_po: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM purchase_orders WHERE client_uuid IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("count purchase_orders after");
     assert_eq!(
         before_po, after_po,
         "КРИТЕРІЙ: повторний push не створив дублікатів закупок"
@@ -440,7 +461,11 @@ async fn four_stores_outage_then_sync_consistent() {
         .await
         .expect("дублікати");
         assert_eq!(dups, 0, "точка {store}: дублікатів 0");
-        assert_eq!(n, expected_n(store, &seeds).await, "точка {store}: кількість чеків");
+        assert_eq!(
+            n,
+            expected_n(store, &seeds).await,
+            "точка {store}: кількість чеків"
+        );
         assert!(
             (sum - expected_total).abs() < 0.01,
             "точка {store}: сума total на сервері ({sum}) == згенерована ({expected_total})"
@@ -488,7 +513,9 @@ async fn four_stores_outage_then_sync_consistent() {
         .await
         .expect("created_at чека");
         assert_eq!(
-            first_receipt_created.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            first_receipt_created
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string(),
             "2026-08-29T07:00:00",
             "точка {store}: created_at чека = created_at каси (RFC3339→UTC), не now()"
         );

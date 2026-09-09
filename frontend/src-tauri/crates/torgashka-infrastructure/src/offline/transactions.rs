@@ -180,10 +180,13 @@ pub fn enqueue_transaction(
         .map_err(|e| format!("stock-ефект {kind} (client_uuid={client_uuid}): {e}"))?;
 
     // 4. COMMIT.
-    tx.commit()
-        .map_err(|e| format!("COMMIT ({kind}): {e}"))?;
+    tx.commit().map_err(|e| format!("COMMIT ({kind}): {e}"))?;
 
-    Ok(EnqueuedTransaction { id, client_uuid, outbox_id })
+    Ok(EnqueuedTransaction {
+        id,
+        client_uuid,
+        outbox_id,
+    })
 }
 
 /// Підмітає в outbox агрегати synced=0, накопичені СТАРОЮ версією коду
@@ -210,9 +213,7 @@ pub fn sweep_legacy_unsynced(conn: &mut Connection) -> Result<usize, String> {
                 ))
                 .map_err(|e| format!("sweep SELECT {table}: {e}"))?;
             let it = stmt
-                .query_map([], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .map_err(|e| format!("sweep query {table}: {e}"))?;
             let mut v = Vec::new();
             for row in it {
@@ -222,8 +223,8 @@ pub fn sweep_legacy_unsynced(conn: &mut Connection) -> Result<usize, String> {
         };
         for (client_uuid, data, sid) in rows {
             let store_id = sid.unwrap_or_default();
-            let payload: Value = serde_json::from_str(&data)
-                .map_err(|e| format!("sweep {table} data JSON: {e}"))?;
+            let payload: Value =
+                serde_json::from_str(&data).map_err(|e| format!("sweep {table} data JSON: {e}"))?;
             let envelope = serde_json::json!({
                 "type": kind,
                 "client_uuid": client_uuid,
@@ -314,14 +315,17 @@ mod tests {
         })
         .to_string();
 
-        let out = enqueue_transaction(&mut c, TYPE_PURCHASE_ORDER, &payload, STORE)
-            .expect("закупка");
+        let out =
+            enqueue_transaction(&mut c, TYPE_PURCHASE_ORDER, &payload, STORE).expect("закупка");
         assert_eq!(level(&c, "p1"), 10_000, "+10 шт");
         assert_eq!(level(&c, "p2"), 2500, "+2.5 шт");
 
         let (data, synced, sid) =
             get_transaction(&c, TYPE_PURCHASE_ORDER, &out.client_uuid).expect("читання");
-        assert_eq!(synced, 1, "агрегат передано в outbox (не synced=0 «в нікуди»)");
+        assert_eq!(
+            synced, 1,
+            "агрегат передано в outbox (не synced=0 «в нікуди»)"
+        );
         assert_eq!(sid.as_deref(), Some(STORE));
         let v: Value = serde_json::from_str(&data).expect("data JSON");
         assert_eq!(v["supplier_id"], "sup-1");
@@ -349,8 +353,8 @@ mod tests {
             "items": [{"product_id": "p1", "fact_quantity": 7}],
         })
         .to_string();
-        let out = enqueue_transaction(&mut c, TYPE_INVENTORY, &payload, STORE)
-            .expect("інвентаризація");
+        let out =
+            enqueue_transaction(&mut c, TYPE_INVENTORY, &payload, STORE).expect("інвентаризація");
         assert_eq!(level(&c, "p1"), 7000, "факт 7 шт (не 5+7)");
         assert_eq!(unsynced_count(&c, TYPE_INVENTORY).unwrap(), 0);
         assert!(out.outbox_id > 0, "інвентаризація теж в outbox (ЕТАП 7b)");
@@ -367,8 +371,7 @@ mod tests {
             "items": [{"product_id": "p1", "quantity": 3}],
         })
         .to_string();
-        let out = enqueue_transaction(&mut c, TYPE_WRITE_OFF, &payload, STORE)
-            .expect("списання");
+        let out = enqueue_transaction(&mut c, TYPE_WRITE_OFF, &payload, STORE).expect("списання");
         assert_eq!(level(&c, "p1"), 7000, "10 − 3 = 7 шт");
         assert!(out.outbox_id > 0);
     }
@@ -429,7 +432,11 @@ mod tests {
 
         let res = enqueue_transaction(&mut c, TYPE_PURCHASE_ORDER, "{не-json", STORE);
         assert!(res.is_err(), "невалідний payload → помилка");
-        assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 0, "агрегата немає");
+        assert_eq!(
+            unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(),
+            0,
+            "агрегата немає"
+        );
         let ob: i64 = c
             .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
             .expect("outbox count");
@@ -463,11 +470,19 @@ mod tests {
 
         let n = sweep_legacy_unsynced(&mut c).expect("sweep");
         assert_eq!(n, 2, "обидва легасі-агрегати підмітено");
-        assert_eq!(unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(), 0, "synced=1");
+        assert_eq!(
+            unsynced_count(&c, TYPE_PURCHASE_ORDER).unwrap(),
+            0,
+            "synced=1"
+        );
         assert_eq!(unsynced_count(&c, TYPE_WRITE_OFF).unwrap(), 0);
         // Outbox має обидва записи (type, client_uuid).
         let ob: i64 = c
-            .query_row("SELECT COUNT(*) FROM outbox WHERE status = 'pending'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
             .expect("outbox");
         assert_eq!(ob, 2);
         let (typ, cu): (String, String) = c

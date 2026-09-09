@@ -89,8 +89,8 @@ pub struct PullConfig {
 
 /// Відкриває SQLite-БД каси з міграціями до актуальної версії (двигун 0001-0003).
 pub fn open_connection(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("Не вдалося відкрити БД каси: {}", e))?;
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Не вдалося відкрити БД каси: {}", e))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;",
@@ -130,7 +130,12 @@ pub fn apply_delta(conn: &mut Connection, delta: &MasterDelta) -> Result<(), Str
          ON CONFLICT(entity) DO UPDATE SET version = excluded.version",
         params![delta.entity, delta.to],
     )
-    .map_err(|e| format!("оновлення sync_meta ({} → {}): {}", delta.entity, delta.to, e))?;
+    .map_err(|e| {
+        format!(
+            "оновлення sync_meta ({} → {}): {}",
+            delta.entity, delta.to, e
+        )
+    })?;
 
     tx.commit()
         .map_err(|e| format!("COMMIT (дельти {}): {}", delta.entity, e))
@@ -161,22 +166,36 @@ fn apply_upsert(
         data.get(key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| format!("upsert {} (id={}): поле '{}' відсутнє", entity, change.id, key))
+            .ok_or_else(|| {
+                format!(
+                    "upsert {} (id={}): поле '{}' відсутнє",
+                    entity, change.id, key
+                )
+            })
     };
     let get_opt_str = |key: &str| -> Option<String> {
-        data.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+        data.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     };
 
     match entity {
         "categories" => {
-            q(tx, 
+            q(
+                tx,
                 "INSERT INTO categories (id, name, parent_id, is_deleted, server_version, data)
                  VALUES (?1, ?2, ?3, 0, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name, parent_id = excluded.parent_id,
                     is_deleted = 0, server_version = excluded.server_version,
                     data = excluded.data",
-                params![change.id, get_str("name")?, get_opt_str("parent_id"), change.version, data_str],
+                params![
+                    change.id,
+                    get_str("name")?,
+                    get_opt_str("parent_id"),
+                    change.version,
+                    data_str
+                ],
             )?;
         }
         "products" => {
@@ -201,25 +220,40 @@ fn apply_upsert(
             )?;
         }
         "suppliers" => {
-            q(tx, 
+            q(
+                tx,
                 "INSERT INTO suppliers (id, name, phone, is_deleted, server_version, data)
                  VALUES (?1, ?2, ?3, 0, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name, phone = excluded.phone,
                     is_deleted = 0, server_version = excluded.server_version,
                     data = excluded.data",
-                params![change.id, get_str("name")?, get_opt_str("phone"), change.version, data_str],
+                params![
+                    change.id,
+                    get_str("name")?,
+                    get_opt_str("phone"),
+                    change.version,
+                    data_str
+                ],
             )?;
         }
         "employees" => {
-            q(tx, 
+            q(
+                tx,
                 "INSERT INTO employees (id, name, pin_hash, role, is_deleted, server_version, data)
                  VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name, pin_hash = excluded.pin_hash, role = excluded.role,
                     is_deleted = 0, server_version = excluded.server_version,
                     data = excluded.data",
-                params![change.id, get_str("name")?, get_opt_str("pin_hash"), get_opt_str("role"), change.version, data_str],
+                params![
+                    change.id,
+                    get_str("name")?,
+                    get_opt_str("pin_hash"),
+                    get_opt_str("role"),
+                    change.version,
+                    data_str
+                ],
             )?;
         }
         "stock_norms" => {
@@ -270,38 +304,47 @@ fn apply_delete(
         // Рядок позначається is_deleted=1. Якщо каса його ще не бачила
         // (delete до першого upsert) — no-op: товару немає, і не треба.
         "categories" => {
-            q(tx, 
+            q(
+                tx,
                 "UPDATE categories SET is_deleted = 1, server_version = ?2 WHERE id = ?1",
                 params![change.id, change.version],
             )?;
         }
         "products" => {
-            q(tx, 
+            q(
+                tx,
                 "UPDATE products_v2 SET is_deleted = 1, server_version = ?2 WHERE id = ?1",
                 params![change.id, change.version],
             )?;
         }
         "suppliers" => {
-            q(tx, 
+            q(
+                tx,
                 "UPDATE suppliers SET is_deleted = 1, server_version = ?2 WHERE id = ?1",
                 params![change.id, change.version],
             )?;
         }
         "employees" => {
-            q(tx, 
+            q(
+                tx,
                 "UPDATE employees SET is_deleted = 1, server_version = ?2 WHERE id = ?1",
                 params![change.id, change.version],
             )?;
         }
         "stock_norms" => {
-            q(tx, 
+            q(
+                tx,
                 "UPDATE stock_norms SET is_deleted = 1, server_version = ?2 WHERE product_id = ?1",
                 params![change.id, change.version],
             )?;
         }
         "settings" => {
             // Серверні налаштування без soft-delete: фізичне видалення ключа.
-            let key = change.data.as_ref().and_then(|d| d.get("key")).and_then(|v| v.as_str());
+            let key = change
+                .data
+                .as_ref()
+                .and_then(|d| d.get("key"))
+                .and_then(|v| v.as_str());
             if let Some(key) = key {
                 if !key.starts_with("local.") {
                     q(tx, "DELETE FROM settings WHERE key = ?1", params![key])?;
@@ -411,13 +454,8 @@ pub async fn pull_all(
                 // Незалежність: помилка не зупиняє цикл (дизайн 5).
                 eprintln!("[sync_pull] {entity}: ПОМИЛКА: {e}");
                 // ЕТАП 7: подія pull_fail у sync_log (моніторинг/алерти).
-                let _ = super::sync_push::log_event(
-                    &conn,
-                    "pull_fail",
-                    Some(entity),
-                    Some(&e),
-                    None,
-                );
+                let _ =
+                    super::sync_push::log_event(&conn, "pull_fail", Some(entity), Some(&e), None);
             }
         }
     }
@@ -513,7 +551,11 @@ mod tests {
             .query_row("SELECT count(*) FROM categories", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2, "обидві категорії застосовані");
-        assert_eq!(local_version(&conn, "categories"), 5, "since_version просунулась");
+        assert_eq!(
+            local_version(&conn, "categories"),
+            5,
+            "since_version просунулась"
+        );
     }
 
     #[test]
@@ -533,7 +575,11 @@ mod tests {
         apply_delta(&mut conn, &delta).expect("повторний pull (retry)");
 
         let count: i64 = conn
-            .query_row("SELECT count(*) FROM products_v2 WHERE id = 'prod-1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM products_v2 WHERE id = 'prod-1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "повторний pull не дублює рядок");
         assert_eq!(local_version(&conn, "products"), 3);
@@ -548,7 +594,12 @@ mod tests {
             &dlt(
                 "products",
                 1,
-                vec![ch("upsert", "p1", 1, Some(json!({"name": "Хліб", "price": "25.00"})))],
+                vec![ch(
+                    "upsert",
+                    "p1",
+                    1,
+                    Some(json!({"name": "Хліб", "price": "25.00"})),
+                )],
             ),
         )
         .expect("upsert");
@@ -575,7 +626,11 @@ mod tests {
     fn invalid_delta_rolls_back_version_untouched() {
         let mut conn = test_conn();
         // categories.name NOT NULL — data без "name" → SQL-помилка.
-        let bad = dlt("categories", 9, vec![ch("upsert", "cat-x", 7, Some(json!({"parent_id": null})))]);
+        let bad = dlt(
+            "categories",
+            9,
+            vec![ch("upsert", "cat-x", 7, Some(json!({"parent_id": null})))],
+        );
         let err = apply_delta(&mut conn, &bad).expect_err("дельта з помилкою має впасти");
         assert!(!err.is_empty(), "помилка не порожня");
 
@@ -583,12 +638,20 @@ mod tests {
             .query_row("SELECT count(*) FROM categories", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "ROLLBACK: жоден рядок не застосований");
-        assert_eq!(local_version(&conn, "categories"), 0, "since_version не просунулась");
+        assert_eq!(
+            local_version(&conn, "categories"),
+            0,
+            "since_version не просунулась"
+        );
 
         // Після помилки повторний pull з валідною дельтою працює.
         apply_delta(
             &mut conn,
-            &dlt("categories", 9, vec![ch("upsert", "cat-x", 9, Some(json!({"name": "Ок"})))]),
+            &dlt(
+                "categories",
+                9,
+                vec![ch("upsert", "cat-x", 9, Some(json!({"name": "Ок"})))],
+            ),
         )
         .expect("повторний pull після помилки");
         assert_eq!(local_version(&conn, "categories"), 9);
@@ -619,9 +682,16 @@ mod tests {
         )
         .expect("apply");
         let v: String = conn
-            .query_row("SELECT value FROM settings WHERE key = 'local.store_id'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'local.store_id'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(v, "casa-1", "local.* простір каси не зачіпається серверним pull");
+        assert_eq!(
+            v, "casa-1",
+            "local.* простір каси не зачіпається серверним pull"
+        );
 
         // Звичайний серверний ключ пишеться.
         apply_delta(
@@ -629,12 +699,21 @@ mod tests {
             &dlt(
                 "settings",
                 6,
-                vec![ch("upsert", "srv-row", 5, Some(json!({"key": "company_name", "value": "ФОП Тест"})))],
+                vec![ch(
+                    "upsert",
+                    "srv-row",
+                    5,
+                    Some(json!({"key": "company_name", "value": "ФОП Тест"})),
+                )],
             ),
         )
         .expect("apply server key");
         let v: String = conn
-            .query_row("SELECT value FROM settings WHERE key = 'company_name'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'company_name'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v, "ФОП Тест");
     }
@@ -643,12 +722,20 @@ mod tests {
     fn multi_page_delta_advances_in_steps() {
         let mut conn = test_conn();
         // Сторінка 1: 2 рядки, has_more=true, to=500.
-        let mut page1 = dlt("products", 500, vec![ch("upsert", "p1", 400, Some(json!({"name": "A"})))]);
+        let mut page1 = dlt(
+            "products",
+            500,
+            vec![ch("upsert", "p1", 400, Some(json!({"name": "A"})))],
+        );
         page1.has_more = true;
         apply_delta(&mut conn, &page1).expect("page1");
         assert_eq!(local_version(&conn, "products"), 500);
         // Сторінка 2: to=900.
-        let page2 = dlt("products", 900, vec![ch("upsert", "p2", 501, Some(json!({"name": "B"})))]);
+        let page2 = dlt(
+            "products",
+            900,
+            vec![ch("upsert", "p2", 501, Some(json!({"name": "B"})))],
+        );
         apply_delta(&mut conn, &page2).expect("page2");
         assert_eq!(local_version(&conn, "products"), 900);
         let count: i64 = conn
@@ -703,8 +790,9 @@ mod tests {
 
     #[tokio::test]
     async fn pull_device_mode_omits_x_store_id() {
-        let body = json!({"entity": "categories", "since": 0, "to": 7, "has_more": false, "changes": []})
-            .to_string();
+        let body =
+            json!({"entity": "categories", "since": 0, "to": 7, "has_more": false, "changes": []})
+                .to_string();
         let (port, rx) = spawn_one_shot_http_server(body);
         let mut conn = test_conn();
         let client = reqwest::Client::new();
@@ -731,8 +819,9 @@ mod tests {
 
     #[tokio::test]
     async fn pull_legacy_mode_sends_x_store_id() {
-        let body = json!({"entity": "categories", "since": 0, "to": 3, "has_more": false, "changes": []})
-            .to_string();
+        let body =
+            json!({"entity": "categories", "since": 0, "to": 3, "has_more": false, "changes": []})
+                .to_string();
         let (port, rx) = spawn_one_shot_http_server(body);
         let mut conn = test_conn();
         let client = reqwest::Client::new();
@@ -755,5 +844,4 @@ mod tests {
             "legacy-режим має слати X-Store-Id:\n{raw}"
         );
     }
-
 }

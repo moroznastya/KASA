@@ -43,7 +43,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -115,7 +117,10 @@ async fn pull_client_initial_and_repeat_sync() {
         {
             if r.status().is_success() {
                 let v: Value = r.json().await.expect("login json");
-                break v["access_token"].as_str().expect("access_token").to_string();
+                break v["access_token"]
+                    .as_str()
+                    .expect("access_token")
+                    .to_string();
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -187,7 +192,10 @@ async fn pull_client_initial_and_repeat_sync() {
             |r| r.get(0),
         )
         .expect("sync_meta categories");
-    assert!(version > 0, "categories since_version просунулась: {version}");
+    assert!(
+        version > 0,
+        "categories since_version просунулась: {version}"
+    );
 
     // Категорія з'явилась локально (із серверним id).
     let row: (String, i64) = conn

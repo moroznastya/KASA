@@ -65,7 +65,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -183,13 +185,11 @@ fn push_cfg(db_path: &PathBuf, base: &str, token: &str) -> PushConfig {
 
 /// Кількість записів у PG receipts за client_uuid (приймач push).
 async fn server_receipt_count(pool: &sqlx::PgPool, client_uuid: &str) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM receipts WHERE client_uuid = $1",
-    )
-    .bind(Uuid::parse_str(client_uuid).unwrap())
-    .fetch_one(pool)
-    .await
-    .expect("count receipts")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM receipts WHERE client_uuid = $1")
+        .bind(Uuid::parse_str(client_uuid).unwrap())
+        .fetch_one(pool)
+        .await
+        .expect("count receipts")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -240,7 +240,10 @@ async fn push_idempotent_single_server_record() {
     let s2 = push_pending_batch(&db_path, &client, &cfg)
         .await
         .expect("2-й push");
-    assert_eq!(s2.already_exists, 1, "повторний push → already_exists → done");
+    assert_eq!(
+        s2.already_exists, 1,
+        "повторний push → already_exists → done"
+    );
     assert_eq!(
         server_receipt_count(&pool, &client_uuid).await,
         1,
@@ -259,7 +262,10 @@ async fn push_idempotent_single_server_record() {
     .into_iter()
     .map(|r| r.get::<String, _>(0))
     .collect();
-    assert_eq!(log_statuses, vec!["ok".to_string(), "already_exists".to_string()]);
+    assert_eq!(
+        log_statuses,
+        vec!["ok".to_string(), "already_exists".to_string()]
+    );
 
     eprintln!("[sync_push_e2e] ✅ ідемпотентність: 2× push → 1 запис на сервері");
 }
@@ -297,7 +303,11 @@ async fn server_down_outbox_grows_then_flushes_fifo() {
         let out = enqueue_receipt(&mut conn, &receipt, Some(STORE1)).expect("enqueue чек");
         uuids.push(out.client_uuid);
     }
-    assert_eq!(pending_count(&conn).expect("count"), 3, "outbox росте офлайн");
+    assert_eq!(
+        pending_count(&conn).expect("count"),
+        3,
+        "outbox росте офлайн"
+    );
     drop(conn);
     let client = reqwest::Client::new();
 
@@ -313,7 +323,11 @@ async fn server_down_outbox_grows_then_flushes_fifo() {
     let err = push_pending_batch(&db_path, &client, &cfg0).await;
     assert!(err.is_err(), "вимкнений сервер → мережева помилка");
     let conn = open_connection(&db_path).expect("БД");
-    assert_eq!(pending_count(&conn).expect("count"), 3, "pending без змін (сервер вимкнений)");
+    assert_eq!(
+        pending_count(&conn).expect("count"),
+        3,
+        "pending без змін (сервер вимкнений)"
+    );
     drop(conn);
 
     // Запускаємо сервер — outbox вивантажується ОДНИМ пакетом FIFO (3 чеки).
@@ -324,7 +338,10 @@ async fn server_down_outbox_grows_then_flushes_fifo() {
     let s = push_pending_batch(&db_path, &client, &cfg)
         .await
         .expect("push після відновлення сервера");
-    assert_eq!(s.done, 3, "КРИТЕРІЙ: усі 3 чеки вивантажені FIFO після відновлення");
+    assert_eq!(
+        s.done, 3,
+        "КРИТЕРІЙ: усі 3 чеки вивантажені FIFO після відновлення"
+    );
     let conn = open_connection(&db_path).expect("БД");
     let done_n: i64 = conn
         .query_row(
@@ -344,5 +361,7 @@ async fn server_down_outbox_grows_then_flushes_fifo() {
             "запис {uuid} на сервері рівно 1"
         );
     }
-    eprintln!("[sync_push_e2e] ✅ вимкнений сервер → outbox росте → FIFO-вивантаження після відновлення");
+    eprintln!(
+        "[sync_push_e2e] ✅ вимкнений сервер → outbox росте → FIFO-вивантаження після відновлення"
+    );
 }

@@ -130,12 +130,7 @@ async fn req_json(
 }
 
 /// Запит каси з X-Store-Id (JSON-відповідь).
-async fn req_json_store(
-    base: &str,
-    path: &str,
-    token: &str,
-    store_id: &str,
-) -> (u16, Value) {
+async fn req_json_store(base: &str, path: &str, token: &str, store_id: &str) -> (u16, Value) {
     let client = reqwest::Client::new();
     let resp = client
         .get(format!("{base}{path}"))
@@ -179,9 +174,14 @@ async fn prro_put(
     }
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     let resp = reqwest::Client::new()
-        .put(format!("{base}/api/v1/admin/stores/{store_id}/prro-settings"))
+        .put(format!(
+            "{base}/api/v1/admin/stores/{store_id}/prro-settings"
+        ))
         .bearer_auth(token)
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(body)
         .send()
         .await
@@ -229,15 +229,13 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
         .fetch_one(&pool)
         .await
         .expect("owner id");
-    sqlx::query(
-        "INSERT INTO user_stores (user_id, store_id) VALUES ($1, $2), ($1, $3)",
-    )
-    .bind(owner_id)
-    .bind(store_a)
-    .bind(store_b)
-    .execute(&pool)
-    .await
-    .expect("owner user_stores");
+    sqlx::query("INSERT INTO user_stores (user_id, store_id) VALUES ($1, $2), ($1, $3)")
+        .bind(owner_id)
+        .bind(store_a)
+        .bind(store_b)
+        .execute(&pool)
+        .await
+        .expect("owner user_stores");
 
     // ─── Фасад ───────────────────────────────────────────────────────────────
     let port = free_port().await;
@@ -419,7 +417,11 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     assert_eq!(v["scope"], "store");
     assert_eq!(v["editable"], true);
     assert_eq!(v["configured"], false, "{v}");
-    assert_eq!(v["reason"], Value::Null, "аномалію закрито: reason має бути null");
+    assert_eq!(
+        v["reason"],
+        Value::Null,
+        "аномалію закрито: reason має бути null"
+    );
 
     // 5b. PUT налаштувань ТОЧКИ А (з валідацією per-store).
     let (s, v) = prro_put(
@@ -493,13 +495,11 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
 
     // 5e. Каса бачить оновлений конфіг через /api/v2/prro/settings
     //     (X-Store-Id) — критерій 4 приймання.
-    let (s, v) = req_json_store(&base, "/api/v2/prro/settings", &owner, &store_a.to_string())
-        .await;
+    let (s, v) = req_json_store(&base, "/api/v2/prro/settings", &owner, &store_a.to_string()).await;
     assert_eq!(s, 200, "каса А settings: {v}");
     assert_eq!(v["prro_fn"], "400000123456", "каса А бачить конфіг А: {v}");
     assert_eq!(v["mode"], "test", "{v}");
-    let (s, v) = req_json_store(&base, "/api/v2/prro/settings", &owner, &store_b.to_string())
-        .await;
+    let (s, v) = req_json_store(&base, "/api/v2/prro/settings", &owner, &store_b.to_string()).await;
     assert_eq!(s, 200, "каса Б settings: {v}");
     assert_eq!(v["prro_fn"], "400000222222", "каса Б бачить конфіг Б: {v}");
 
@@ -548,7 +548,10 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     )
     .await;
     assert_eq!(s, 200, "GET Б після ключа А: {v}");
-    assert_eq!(v["key"]["file_configured"], false, "ключ А не видно в Б: {v}");
+    assert_eq!(
+        v["key"]["file_configured"], false,
+        "ключ А не видно в Б: {v}"
+    );
     assert_eq!(v["key"]["password_configured"], false, "{v}");
 
     // 5g. Остання зміна точки А (signer — серійний № сертифіката).
@@ -593,7 +596,10 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     assert_eq!(v["total"], 3, "3 PUT prro: {v}");
     for it in v["items"].as_array().expect("items") {
         assert_eq!(it["action"], "prro_settings_updated", "{v}");
-        assert!(it["store_id"] == json!(store_a.to_string()) || it["store_id"] == json!(store_b.to_string()));
+        assert!(
+            it["store_id"] == json!(store_a.to_string())
+                || it["store_id"] == json!(store_b.to_string())
+        );
         assert_eq!(it["actor_name"], "E2E Audit Owner", "{v}");
     }
 
@@ -629,7 +635,10 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
         None,
     )
     .await;
-    assert_eq!(v["settings"]["prro_fn"], "400000123456", "конфіг не змінився: {v}");
+    assert_eq!(
+        v["settings"]["prro_fn"], "400000123456",
+        "конфіг не змінився: {v}"
+    );
 
     // Гігієна: прибрати per-store файли КЕП (keystore/master/файл ключа), які
     // тест створює у CWD (crates/torgashka-api/), щоб робоче дерево лишалось чистим.

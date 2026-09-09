@@ -59,7 +59,13 @@ async fn open_shift_creates_shift_and_queue() {
         "XML: {}",
         items[0].xml_body
     );
-    assert!(items[0].xml_body.contains("<E N=\"1\"></E>"));
+    // спека I: службовий 108 — `<C T="108"></C>` БЕЗ <E N="1">
+    assert!(
+        items[0].xml_body.contains("<C T=\"108\"></C>"),
+        "{}",
+        items[0].xml_body
+    );
+    assert!(!items[0].xml_body.contains("<E N=\"1\">"));
 
     // gRPC-виклик: SERVICECHK (enum=3), local_number=0, check_sign = RQ+MAC
     assert_eq!(sender.calls_len(), 1);
@@ -67,7 +73,15 @@ async fn open_shift_creates_shift_and_queue() {
     assert_eq!(call.check_type, 3);
     assert_eq!(call.local_number, 0);
     let sign = String::from_utf8(call.check_sign.clone()).unwrap();
-    assert!(sign.starts_with("<RQ V=\"1\">"), "{sign}");
+    // спека A/C: повне RQ з XML-декларацією windows-1251; MAC ID="" (перша
+    // зміна ПРРО — ланцюг порожній, без DI/NT у <MAC>).
+    assert!(
+        sign.starts_with("<?xml version=\"1.0\" encoding=\"windows-1251\"?>"),
+        "{sign}"
+    );
+    assert!(sign.contains("<RQ V=\"1\">"), "{sign}");
+    assert!(sign.contains("<MAC ID=\"\"></MAC>"), "{sign}");
+    assert!(!sign.contains("<MAC DI"), "MAC без DI/NT: {sign}");
     assert!(sign.contains("<MAC "), "{sign}");
 }
 

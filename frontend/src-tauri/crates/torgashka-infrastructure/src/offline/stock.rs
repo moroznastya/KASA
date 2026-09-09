@@ -210,12 +210,15 @@ mod tests {
             ]
         });
         let items = parse_items(&payload);
-        assert_eq!(items, vec![
-            ("p1".to_string(), 2000),
-            ("p2".to_string(), 500),
-            ("p3".to_string(), 7000),
-            ("p5".to_string(), 1000),
-        ]);
+        assert_eq!(
+            items,
+            vec![
+                ("p1".to_string(), 2000),
+                ("p2".to_string(), 500),
+                ("p3".to_string(), 7000),
+                ("p5".to_string(), 1000),
+            ]
+        );
         assert!(parse_items(&json!({})).is_empty());
         assert!(parse_items(&json!({"items": "no"})).is_empty());
     }

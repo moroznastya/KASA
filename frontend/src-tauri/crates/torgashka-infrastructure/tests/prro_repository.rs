@@ -46,10 +46,12 @@ async fn ensure_full_schema(p: &sqlx::PgPool) {
 
 /// Ізоляція тестів: чиста prro-схема (тестова БД, не production).
 async fn cleanup_prro(p: &sqlx::PgPool) {
-    sqlx::raw_sql("DELETE FROM prro_queue_items; DELETE FROM prro_shifts; DELETE FROM prro_settings;")
-        .execute(p)
-        .await
-        .expect("cleanup");
+    sqlx::raw_sql(
+        "DELETE FROM prro_queue_items; DELETE FROM prro_shifts; DELETE FROM prro_settings;",
+    )
+    .execute(p)
+    .await
+    .expect("cleanup");
 }
 
 /// Створює точку-фікстуру (FK store_id NOT NULL) і повертає її id.
@@ -264,15 +266,9 @@ async fn settings_upsert() {
             .expect("repo");
         let key = format!("test_key_{}", uniq());
         repo.set_setting(&key, "42").await.expect("set");
-        assert_eq!(
-            repo.get_setting(&key).await.unwrap().as_deref(),
-            Some("42")
-        );
+        assert_eq!(repo.get_setting(&key).await.unwrap().as_deref(), Some("42"));
         repo.set_setting(&key, "43").await.expect("upsert");
-        assert_eq!(
-            repo.get_setting(&key).await.unwrap().as_deref(),
-            Some("43")
-        );
+        assert_eq!(repo.get_setting(&key).await.unwrap().as_deref(), Some("43"));
         sqlx::query("DELETE FROM prro_settings WHERE key_name = $1")
             .bind(&key)
             .execute(&p)
@@ -379,7 +375,10 @@ async fn two_stores_fully_isolated() {
             .expect("repo A");
         repo.set_setting("prro_fn", "400000111111").await.unwrap();
         repo.set_setting("url", "api.test.a").await.unwrap();
-        let shift = repo.create_shift(PrroShift::new(1, Utc::now())).await.unwrap();
+        let shift = repo
+            .create_shift(PrroShift::new(1, Utc::now()))
+            .await
+            .unwrap();
         PrroOfflineQueue::add_document(
             &repo,
             None,
@@ -416,7 +415,10 @@ async fn two_stores_fully_isolated() {
             repo.get_setting("prro_fn").await.unwrap().as_deref(),
             Some("400000111111")
         );
-        assert_eq!(repo.get_open_shift().await.unwrap().unwrap().shift_number, 1);
+        assert_eq!(
+            repo.get_open_shift().await.unwrap().unwrap().shift_number,
+            1
+        );
         assert_eq!(PrroOfflineQueue::count_pending(&repo).await.unwrap(), 1);
     })
     .await;
@@ -524,12 +526,11 @@ async fn legacy_global_rows_migrate_to_first_active_store() {
         .expect("migration 2nd");
 
     // Усі глобальні рядки → store_first.
-    let (cnt_null,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM prro_settings WHERE store_id IS NULL",
-    )
-    .fetch_one(&p)
-    .await
-    .unwrap();
+    let (cnt_null,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM prro_settings WHERE store_id IS NULL")
+            .fetch_one(&p)
+            .await
+            .unwrap();
     assert_eq!(cnt_null, 0, "settings: NULL store_id має бути 0");
     let (sid,): (Uuid,) =
         sqlx::query_as("SELECT store_id FROM prro_settings WHERE key_name = 'prro_fn'")
@@ -537,12 +538,11 @@ async fn legacy_global_rows_migrate_to_first_active_store() {
             .await
             .unwrap();
     assert_eq!(sid, store_first);
-    let (shift_sid,): (Uuid,) =
-        sqlx::query_as("SELECT store_id FROM prro_shifts WHERE id = $1")
-            .bind(old_shift)
-            .fetch_one(&p)
-            .await
-            .unwrap();
+    let (shift_sid,): (Uuid,) = sqlx::query_as("SELECT store_id FROM prro_shifts WHERE id = $1")
+        .bind(old_shift)
+        .fetch_one(&p)
+        .await
+        .unwrap();
     assert_eq!(shift_sid, store_first);
     let (q_null,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM prro_queue_items WHERE store_id IS NULL")
@@ -552,12 +552,13 @@ async fn legacy_global_rows_migrate_to_first_active_store() {
     assert_eq!(q_null, 0, "queue: NULL store_id має бути 0");
 
     // NOT NULL знову активний: вставка без store_id тепер падає.
-    let insert_err = sqlx::query(
-        "INSERT INTO prro_settings (key_name, value) VALUES ('x', 'y')",
-    )
-    .execute(&p)
-    .await;
-    assert!(insert_err.is_err(), "NOT NULL має блокувати глобальний запис");
+    let insert_err = sqlx::query("INSERT INTO prro_settings (key_name, value) VALUES ('x', 'y')")
+        .execute(&p)
+        .await;
+    assert!(
+        insert_err.is_err(),
+        "NOT NULL має блокувати глобальний запис"
+    );
 
     cleanup_prro(&p).await;
     sqlx::query("DELETE FROM stores WHERE id = ANY($1)")

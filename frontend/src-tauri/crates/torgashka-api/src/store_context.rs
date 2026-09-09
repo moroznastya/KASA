@@ -93,12 +93,7 @@ pub async fn store_middleware(
     if claims.role == "device" {
         let dctx = match req.extensions().get::<DeviceCtx>().cloned() {
             Some(c) => c,
-            None => {
-                return json_error(
-                    StatusCode::UNAUTHORIZED,
-                    "Відсутній контекст пристрою",
-                )
-            }
+            None => return json_error(StatusCode::UNAUTHORIZED, "Відсутній контекст пристрою"),
         };
         let ctx = StoreCtx {
             user_id, // == dctx.device_id (claims.sub = device_id)
@@ -110,12 +105,10 @@ pub async fn store_middleware(
             // Живість каси: last_seen_at=now() на кожен запит. devices БЕЗ RLS
             // (політик немає) — оновлення безпечне в будь-якому контексті.
             if let Some(sp) = pool {
-                if let Err(e) = sqlx::query(
-                    "UPDATE devices SET last_seen_at = now() WHERE id = $1",
-                )
-                .bind(user_id)
-                .execute(&sp)
-                .await
+                if let Err(e) = sqlx::query("UPDATE devices SET last_seen_at = now() WHERE id = $1")
+                    .bind(user_id)
+                    .execute(&sp)
+                    .await
                 {
                     eprintln!("[torgashka-api] store_middleware: оновлення last_seen_at: {e}");
                 }

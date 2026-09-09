@@ -112,17 +112,13 @@ fn pool(state: &AppState) -> Result<PgPool, AdminPrroErr> {
 }
 
 /// RBAC адмін-ПРРО: лише owner|admin (store_manager та cashier → 403).
-async fn require_owner_or_admin(
-    state: &AppState,
-    claims: &Claims,
-) -> Result<Uuid, AdminPrroErr> {
+async fn require_owner_or_admin(state: &AppState, claims: &Claims) -> Result<Uuid, AdminPrroErr> {
     let actor_id = auth_routes::require_admin(state, claims)
         .await
         .map_err(AdminPrroErr::Auth)?;
     if !matches!(claims.role.as_str(), "owner" | "admin") {
         return Err(AdminPrroErr::Forbidden(
-            "Налаштування ПРРО точки доступні лише власнику або адміністратору мережі"
-                .to_string(),
+            "Налаштування ПРРО точки доступні лише власнику або адміністратору мережі".to_string(),
         ));
     }
     Ok(actor_id)
@@ -216,15 +212,14 @@ async fn read_store_prro(db: &PgPool, store_id: Uuid) -> Result<StorePrroDto, Ad
     let mode = vals.remove("mode").unwrap_or_else(empty);
     let url = vals.remove("url").unwrap_or_else(empty);
 
-    let (settings_updated_at,): (Option<NaiveDateTime>,) =
-        sqlx::query_as(
-            "SELECT max(updated_at)::timestamp FROM prro_settings \
+    let (settings_updated_at,): (Option<NaiveDateTime>,) = sqlx::query_as(
+        "SELECT max(updated_at)::timestamp FROM prro_settings \
              WHERE store_id = $1 AND key_name = ANY($2)",
-        )
-        .bind(store_id)
-        .bind(&keys_sql)
-        .fetch_one(db)
-        .await?;
+    )
+    .bind(store_id)
+    .bind(&keys_sql)
+    .fetch_one(db)
+    .await?;
 
     // Остання зміна ТОЧКИ (signer — серійний № сертифіката КЕП).
     let last_shift: Option<PrroLastShiftDto> = {
@@ -266,10 +261,7 @@ async fn read_store_prro(db: &PgPool, store_id: Uuid) -> Result<StorePrroDto, Ad
     // Legacy fallback: env PRRO_KEY_FILE — лише для одиночної інсталяції,
     // якщо per-store keystore точки ще не створено.
     if file_path.is_none() {
-        if let Some(env) = env_file
-            .clone()
-            .filter(|p| Path::new(p).is_file())
-        {
+        if let Some(env) = env_file.clone().filter(|p| Path::new(p).is_file()) {
             file_path = Some(env);
             source = "env";
         }
@@ -412,7 +404,12 @@ async fn apply_put(
         let name = key_file_name.as_deref().ok_or_else(|| {
             AdminPrroErr::BadRequest("Не вказано ім'я файлу ключа (key_file_name)".to_string())
         })?;
-        Some(settings::save_uploaded_key(&content, name, &target_mode, store_id)?)
+        Some(settings::save_uploaded_key(
+            &content,
+            name,
+            &target_mode,
+            store_id,
+        )?)
     } else if let Some(path) = key_file_path {
         if !path.is_empty() {
             Some(settings::copy_key_file(&path, &target_mode, store_id)?)

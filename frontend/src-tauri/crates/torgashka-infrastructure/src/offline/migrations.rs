@@ -123,11 +123,8 @@ fn legacy_add_store_id(conn: &Connection) -> Result<(), String> {
         if has_column(conn, table, "store_id")? {
             continue; // вже є — ідемпотентність
         }
-        conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN store_id TEXT"),
-            [],
-        )
-        .map_err(|e| format!("legacy ALTER {table} ADD store_id: {}", e))?;
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN store_id TEXT"), [])
+            .map_err(|e| format!("legacy ALTER {table} ADD store_id: {}", e))?;
     }
     Ok(())
 }
@@ -161,7 +158,9 @@ fn migrate_legacy_products(conn: &Connection) -> Result<usize, String> {
         .prepare("SELECT id, data FROM products")
         .map_err(|e| format!("SELECT products (міграція): {e}"))?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| format!("читання products (міграція): {e}"))?;
     let mut migrated = 0usize;
     for row in rows {
@@ -237,12 +236,13 @@ pub fn migrate(conn: &Connection) -> Result<u32, String> {
         tx.commit()
             .map_err(|e| format!("COMMIT (міграція {} v{}): {}", m.name, m.version, e))?;
 
-        conn.execute_batch(&format!("PRAGMA user_version = {}", m.version)).map_err(|e| {
-            format!(
-                "PRAGMA user_version = {} (міграція {}): {}",
-                m.version, m.name, e
-            )
-        })?;
+        conn.execute_batch(&format!("PRAGMA user_version = {}", m.version))
+            .map_err(|e| {
+                format!(
+                    "PRAGMA user_version = {} (міграція {}): {}",
+                    m.version, m.name, e
+                )
+            })?;
 
         current = m.version;
     }
@@ -333,7 +333,13 @@ mod tests {
         assert!(has_column(&conn, "receipts", "store_id"));
 
         // Міграція 0003 (master_tables): нормалізовані довідники на місці.
-        for t in ["categories", "suppliers", "employees", "stock_norms", "products_v2"] {
+        for t in [
+            "categories",
+            "suppliers",
+            "employees",
+            "stock_norms",
+            "products_v2",
+        ] {
             assert!(table_exists(&conn, t), "0003: таблиця {t}");
         }
         for col in ["is_deleted", "server_version"] {
@@ -379,7 +385,9 @@ mod tests {
 
         // Дані не втрачені.
         let pid: String = conn
-            .query_row("SELECT id FROM products WHERE id='legacy-1'", [], |row| row.get(0))
+            .query_row("SELECT id FROM products WHERE id='legacy-1'", [], |row| {
+                row.get(0)
+            })
             .expect("продукт збережено");
         assert_eq!(pid, "legacy-1");
         let rn: i64 = conn
@@ -387,7 +395,11 @@ mod tests {
             .expect("чеки");
         assert_eq!(rn, 1);
         let sv: String = conn
-            .query_row("SELECT value FROM settings WHERE key='shop_name'", [], |row| row.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key='shop_name'",
+                [],
+                |row| row.get(0),
+            )
             .expect("налаштування");
         assert_eq!(sv, "Тест");
 
@@ -421,7 +433,11 @@ mod tests {
 
         // Дані після міграції цілі.
         let ver: i64 = conn
-            .query_row("SELECT version FROM sync_meta WHERE entity='products'", [], |row| row.get(0))
+            .query_row(
+                "SELECT version FROM sync_meta WHERE entity='products'",
+                [],
+                |row| row.get(0),
+            )
             .expect("sync_meta рядок");
         assert_eq!(ver, 42);
     }

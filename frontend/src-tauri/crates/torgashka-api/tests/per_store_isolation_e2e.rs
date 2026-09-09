@@ -65,7 +65,9 @@ async fn apply_schema() {
         .get_or_init(|| async {
             let p = torgashka_infrastructure::db::connect_test_pool(5)
                 .await
-                .expect("тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test");
+                .expect(
+                    "тестова БД недоступна: задайте TEST_DATABASE_URL або створіть <dbname>_test",
+                );
             torgashka_infrastructure::db::ensure_schema(&p)
                 .await
                 .expect("ensure_schema на тестовій БД");
@@ -119,7 +121,10 @@ async fn login(base: &str, login_name: &str) -> String {
         {
             if r.status().is_success() {
                 let v: Value = r.json().await.expect("login json");
-                return v["access_token"].as_str().expect("access_token").to_string();
+                return v["access_token"]
+                    .as_str()
+                    .expect("access_token")
+                    .to_string();
             }
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -131,7 +136,9 @@ async fn login(base: &str, login_name: &str) -> String {
 async fn gen_code(base: &str, token: &str, store: Uuid) -> (u16, Value) {
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{base}/api/v1/admin/stores/{store}/activation-code"))
+        .post(format!(
+            "{base}/api/v1/admin/stores/{store}/activation-code"
+        ))
         .bearer_auth(token)
         .send()
         .await
@@ -172,12 +179,7 @@ async fn master_pull(base: &str, token: &str, entity: &str, since: i64) -> (u16,
 }
 
 /// POST /sync/push (JWT + X-Store-Id) масивом агрегатів → (status, results[]).
-async fn http_push(
-    base: &str,
-    token: &str,
-    store_id: Uuid,
-    envelopes: &[Value],
-) -> (u16, Value) {
+async fn http_push(base: &str, token: &str, store_id: Uuid, envelopes: &[Value]) -> (u16, Value) {
     let req = reqwest::Client::new()
         .post(format!("{base}/api/v1/sync/push"))
         .bearer_auth(token)
@@ -206,9 +208,9 @@ fn receipt_env(client_uuid: Uuid, store: Uuid, product: Uuid, note: &str) -> Val
 }
 
 fn find_change<'a>(delta: &'a Value, id: &str) -> Option<&'a Value> {
-    delta["changes"].as_array().and_then(|arr| {
-        arr.iter().find(|c| c["id"].as_str() == Some(id))
-    })
+    delta["changes"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|c| c["id"].as_str() == Some(id)))
 }
 
 fn has_change_id(delta: &Value, id: &str) -> bool {
@@ -266,15 +268,13 @@ async fn seed_store(pool: &sqlx::PgPool, id: Uuid, name: &str) {
 
 /// Категорія: store_id = None → глобальна (бачать усі точки).
 async fn seed_category(pool: &sqlx::PgPool, id: Uuid, name: &str, store: Option<Uuid>) {
-    sqlx::query(
-        "INSERT INTO categories (id, name, store_id) VALUES ($1, $2, $3)",
-    )
-    .bind(id)
-    .bind(name)
-    .bind(store)
-    .execute(pool)
-    .await
-    .expect("seed category");
+    sqlx::query("INSERT INTO categories (id, name, store_id) VALUES ($1, $2, $3)")
+        .bind(id)
+        .bind(name)
+        .bind(store)
+        .execute(pool)
+        .await
+        .expect("seed category");
 }
 
 /// Store-scoped налаштування (system_settings, UNIQUE(store_id, key)).
@@ -331,7 +331,10 @@ async fn register_device(base: &str, owner: &str, store: Uuid, fp: &str) -> (Str
     let code = code_body["code"].as_str().expect("code").to_string();
     let (as_, act) = activate(base, &code, fp).await;
     assert_eq!(as_, 200, "активація каси {store}: {act}");
-    let token = act["device_token"].as_str().expect("device_token").to_string();
+    let token = act["device_token"]
+        .as_str()
+        .expect("device_token")
+        .to_string();
     let sid = Uuid::parse_str(act["store_id"].as_str().expect("store_id")).expect("uuid");
     assert_eq!(sid, store, "device прив'язаний до своєї точки");
     (token, sid)
@@ -357,7 +360,13 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     let b = Uuid::new_v4();
     seed_store(&pool, a, &format!("ISO-G1 A {sx}")).await;
     seed_store(&pool, b, &format!("ISO-G1 B {sx}")).await;
-    seed_owner(&pool, &format!("iso_g1_owner_{sx}"), "ISO G1 Owner", &[a, b]).await;
+    seed_owner(
+        &pool,
+        &format!("iso_g1_owner_{sx}"),
+        "ISO G1 Owner",
+        &[a, b],
+    )
+    .await;
 
     // Категорії: per-store (A/B) + одна глобальна (store_id NULL).
     let cat_a = Uuid::new_v4();
@@ -409,26 +418,34 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     for it in push_body.as_array().expect("results") {
         assert_eq!(it["status"], "created", "чек A прийнято: {it}");
     }
-    let n_a: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM receipts WHERE store_id = $1 AND client_uuid IS NOT NULL")
-            .bind(a)
-            .fetch_one(&pool)
-            .await
-            .expect("count receipts A");
-    let n_b: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM receipts WHERE store_id = $1 AND client_uuid IS NOT NULL")
-            .bind(b)
-            .fetch_one(&pool)
-            .await
-            .expect("count receipts B");
+    let n_a: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM receipts WHERE store_id = $1 AND client_uuid IS NOT NULL",
+    )
+    .bind(a)
+    .fetch_one(&pool)
+    .await
+    .expect("count receipts A");
+    let n_b: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM receipts WHERE store_id = $1 AND client_uuid IS NOT NULL",
+    )
+    .bind(b)
+    .fetch_one(&pool)
+    .await
+    .expect("count receipts B");
     assert_eq!(n_a, 2, "чеки A на місці");
     assert_eq!(n_b, 0, "чеки A НЕ потрапили в точку B");
 
     // ── Pull device A: store-scoped ряди ЛИШЕ своєї точки ─────────────────
     let (s, d_cat_a) = master_pull(&base, &tok_a, "categories", 0).await;
     assert_eq!(s, 200, "pull categories A: {d_cat_a}");
-    assert!(has_change_id(&d_cat_a, &cat_a.to_string()), "категорія A у pull A");
-    assert!(has_change_id(&d_cat_a, &cat_g.to_string()), "глобальна категорія у pull A");
+    assert!(
+        has_change_id(&d_cat_a, &cat_a.to_string()),
+        "категорія A у pull A"
+    );
+    assert!(
+        has_change_id(&d_cat_a, &cat_g.to_string()),
+        "глобальна категорія у pull A"
+    );
     assert!(
         !has_change_id(&d_cat_a, &cat_b.to_string()),
         "категорія точки B НЕ у pull A: {d_cat_a}"
@@ -444,7 +461,10 @@ async fn pull_isolates_store_scoped_and_global_rows() {
                 .collect()
         })
         .unwrap_or_default();
-    assert!(keys_a.iter().any(|k| *k == key_a), "налаштування A у pull A: {keys_a:?}");
+    assert!(
+        keys_a.iter().any(|k| *k == key_a),
+        "налаштування A у pull A: {keys_a:?}"
+    );
     assert!(
         !keys_a.iter().any(|k| *k == key_b),
         "налаштування B НЕ у pull A: {keys_a:?}"
@@ -453,8 +473,14 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     // Pull B — симетрично.
     let (s, d_cat_b) = master_pull(&base, &tok_b, "categories", 0).await;
     assert_eq!(s, 200);
-    assert!(has_change_id(&d_cat_b, &cat_b.to_string()), "категорія B у pull B");
-    assert!(has_change_id(&d_cat_b, &cat_g.to_string()), "глобальна у pull B");
+    assert!(
+        has_change_id(&d_cat_b, &cat_b.to_string()),
+        "категорія B у pull B"
+    );
+    assert!(
+        has_change_id(&d_cat_b, &cat_g.to_string()),
+        "глобальна у pull B"
+    );
     assert!(
         !has_change_id(&d_cat_b, &cat_a.to_string()),
         "категорія A НЕ у pull B"
@@ -463,7 +489,11 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     assert_eq!(s, 200);
     let keys_b: Vec<&str> = d_set_b["changes"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|c| c["data"]["key"].as_str()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c["data"]["key"].as_str())
+                .collect()
+        })
         .unwrap_or_default();
     assert!(keys_b.iter().any(|k| *k == key_b));
     assert!(!keys_b.iter().any(|k| *k == key_a));
@@ -518,8 +548,14 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     .fetch_one(&pool)
     .await
     .expect("price B");
-    assert!((stock_a - 4998.0).abs() < 1e-6, "stock A зменшено на 2 чеки: {stock_a}");
-    assert!((stock_b - 5000.0).abs() < 1e-6, "stock B недоторканий: {stock_b}");
+    assert!(
+        (stock_a - 4998.0).abs() < 1e-6,
+        "stock A зменшено на 2 чеки: {stock_a}"
+    );
+    assert!(
+        (stock_b - 5000.0).abs() < 1e-6,
+        "stock B недоторканий: {stock_b}"
+    );
     assert!((price_b - 20.0).abs() < 1e-6, "ціна B залишилась 20");
 
     // ── Дельта-ізоляція: нові ряди після `to` точки ───────────────────────
@@ -529,12 +565,29 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     let cat_b2 = Uuid::new_v4();
     seed_category(&pool, cat_a2, &format!("ISO-G1 cat A2 {sx}"), Some(a)).await;
     seed_category(&pool, cat_b2, &format!("ISO-G1 cat B2 {sx}"), Some(b)).await;
-    seed_setting(&pool, Uuid::new_v4(), a, &format!("iso_g1_key_a2_{sx}"), "a2").await;
-    seed_setting(&pool, Uuid::new_v4(), b, &format!("iso_g1_key_b2_{sx}"), "b2").await;
+    seed_setting(
+        &pool,
+        Uuid::new_v4(),
+        a,
+        &format!("iso_g1_key_a2_{sx}"),
+        "a2",
+    )
+    .await;
+    seed_setting(
+        &pool,
+        Uuid::new_v4(),
+        b,
+        &format!("iso_g1_key_b2_{sx}"),
+        "b2",
+    )
+    .await;
 
     let (s, d2_cat_a) = master_pull(&base, &tok_a, "categories", to_cat_a).await;
     assert_eq!(s, 200, "інкрементальний pull A: {d2_cat_a}");
-    assert!(has_change_id(&d2_cat_a, &cat_a2.to_string()), "новий рядок A у дельті A");
+    assert!(
+        has_change_id(&d2_cat_a, &cat_a2.to_string()),
+        "новий рядок A у дельті A"
+    );
     assert!(
         !has_change_id(&d2_cat_a, &cat_b2.to_string()),
         "новий рядок B НЕ протікає в дельту A: {d2_cat_a}"
@@ -543,27 +596,40 @@ async fn pull_isolates_store_scoped_and_global_rows() {
     assert_eq!(s, 200, "інкрементальний pull settings A: {d2_set_a}");
     let keys2_a: Vec<&str> = d2_set_a["changes"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|c| c["data"]["key"].as_str()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c["data"]["key"].as_str())
+                .collect()
+        })
         .unwrap_or_default();
     assert!(
-        keys2_a.iter().any(|k| k.starts_with(&format!("iso_g1_key_a2_{sx}"))),
+        keys2_a
+            .iter()
+            .any(|k| k.starts_with(&format!("iso_g1_key_a2_{sx}"))),
         "новий ключ A у дельті A: {keys2_a:?}"
     );
     assert!(
-        !keys2_a.iter().any(|k| k.starts_with(&format!("iso_g1_key_b2_{sx}"))),
+        !keys2_a
+            .iter()
+            .any(|k| k.starts_with(&format!("iso_g1_key_b2_{sx}"))),
         "новий ключ B НЕ у дельті A: {keys2_a:?}"
     );
 
     let to_cat_b = d_cat_b["to"].as_i64().expect("to categories B");
     let (s, d2_cat_b) = master_pull(&base, &tok_b, "categories", to_cat_b).await;
     assert_eq!(s, 200);
-    assert!(has_change_id(&d2_cat_b, &cat_b2.to_string()), "новий рядок B у дельті B");
+    assert!(
+        has_change_id(&d2_cat_b, &cat_b2.to_string()),
+        "новий рядок B у дельті B"
+    );
     assert!(
         !has_change_id(&d2_cat_b, &cat_a2.to_string()),
         "новий рядок A НЕ у дельті B"
     );
 
-    eprintln!("[per_store_isolation] ✅ Група 1: per-store pull (2 точки) — без перехресних рядків/цін");
+    eprintln!(
+        "[per_store_isolation] ✅ Група 1: per-store pull (2 точки) — без перехресних рядків/цін"
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -581,7 +647,13 @@ async fn soft_delete_reaches_only_owner_store() {
     let b = Uuid::new_v4();
     seed_store(&pool, a, &format!("ISO-G2 A {sx}")).await;
     seed_store(&pool, b, &format!("ISO-G2 B {sx}")).await;
-    seed_owner(&pool, &format!("iso_g2_owner_{sx}"), "ISO G2 Owner", &[a, b]).await;
+    seed_owner(
+        &pool,
+        &format!("iso_g2_owner_{sx}"),
+        "ISO G2 Owner",
+        &[a, b],
+    )
+    .await;
 
     // «Той самий товар у двох точках»: однаковий products.id, різні ряди
     // stock(store_id). Store-scoped master-рядок (категорія) — теж по одному
@@ -611,12 +683,18 @@ async fn soft_delete_reaches_only_owner_store() {
     let ch_a0 = find_change(&d0_a, &cat_a.to_string()).expect("рядок A у pull A");
     assert_eq!(ch_a0["op"], "upsert", "до видалення рядок A живий: {ch_a0}");
     assert_eq!(ch_a0["data"]["name"], shared_name);
-    assert!(!has_change_id(&d0_a, &cat_b.to_string()), "рядок B не видно з A");
+    assert!(
+        !has_change_id(&d0_a, &cat_b.to_string()),
+        "рядок B не видно з A"
+    );
     let (s, d0_b) = master_pull(&base, &tok_b, "categories", 0).await;
     assert_eq!(s, 200);
     let ch_b0 = find_change(&d0_b, &cat_b.to_string()).expect("рядок B у pull B");
     assert_eq!(ch_b0["op"], "upsert", "до видалення рядок B живий: {ch_b0}");
-    assert!(!has_change_id(&d0_b, &cat_a.to_string()), "рядок A не видно з B");
+    assert!(
+        !has_change_id(&d0_b, &cat_a.to_string()),
+        "рядок A не видно з B"
+    );
 
     // Soft-delete ЛИШЕ рядка точки A.
     sqlx::query("UPDATE categories SET is_deleted = true WHERE id = $1")
@@ -629,7 +707,10 @@ async fn soft_delete_reaches_only_owner_store() {
         .fetch_one(&pool)
         .await
         .expect("row A exists");
-    assert!(alive_a, "soft-delete: рядок A ЗАЛИШАЄТЬСЯ в БД (is_deleted=true)");
+    assert!(
+        alive_a,
+        "soft-delete: рядок A ЗАЛИШАЄТЬСЯ в БД (is_deleted=true)"
+    );
 
     // Pull A: op=delete для свого рядка.
     let (s, d1_a) = master_pull(&base, &tok_a, "categories", 0).await;
@@ -656,7 +737,10 @@ async fn soft_delete_reaches_only_owner_store() {
         .as_array()
         .map(|arr| arr.iter().filter(|c| c["op"] == "delete").count())
         .unwrap_or(0);
-    assert_eq!(del_in_b, 0, "pull B не містить жодного delete (все своє живе): {d1_b}");
+    assert_eq!(
+        del_in_b, 0,
+        "pull B не містить жодного delete (все своє живе): {d1_b}"
+    );
 
     // DB: рядок B недоторканий.
     let alive_b: bool = sqlx::query_scalar("SELECT is_deleted FROM categories WHERE id = $1")
@@ -714,8 +798,7 @@ async fn five_stores_concurrent_push_no_conflicts_isolated() {
     // 5 device-кас (по одній на точку) — pull після push.
     let mut dev_tokens = Vec::new();
     for (k, s) in stores.iter().enumerate() {
-        let (t, _) =
-            register_device(&base, &owner, *s, &format!("ISO-DEV-G3-{k}-{sx}")).await;
+        let (t, _) = register_device(&base, &owner, *s, &format!("ISO-DEV-G3-{k}-{sx}")).await;
         dev_tokens.push(t);
     }
 
@@ -778,15 +861,17 @@ async fn five_stores_concurrent_push_no_conflicts_isolated() {
         .fetch_one(&pool)
         .await
         .expect("distinct store");
-        assert_eq!(distinct, PER as i64, "точка {k}: без дублікатів client_uuid");
+        assert_eq!(
+            distinct, PER as i64,
+            "точка {k}: без дублікатів client_uuid"
+        );
     }
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM receipts WHERE client_uuid = ANY($1)",
-    )
-    .bind(&all_uuids)
-    .fetch_one(&pool)
-    .await
-    .expect("total");
+    let total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM receipts WHERE client_uuid = ANY($1)")
+            .bind(&all_uuids)
+            .fetch_one(&pool)
+            .await
+            .expect("total");
     assert_eq!(total, (N * PER) as i64, "сумарно всі чеки на місці (15)");
 
     // ── Перехресних даних немає: кожен client_uuid осів у СВОЇЙ точці ─────
@@ -798,7 +883,11 @@ async fn five_stores_concurrent_push_no_conflicts_isolated() {
         .fetch_all(&pool)
         .await
         .expect("store of uuids");
-        assert_eq!(got, vec![*s], "точка {k}: чеки осіли в своїй точці, не в чужих: {got:?}");
+        assert_eq!(
+            got,
+            vec![*s],
+            "точка {k}: чеки осіли в своїй точці, не в чужих: {got:?}"
+        );
     }
 
     // sync_log: per-store рівно PER записів ok; жодного error/already_exists.
@@ -847,7 +936,10 @@ async fn five_stores_concurrent_push_no_conflicts_isolated() {
             has_change_id(&d, &cats[k].to_string()),
             "точка {k}: своя категорія у pull"
         );
-        assert!(has_change_id(&d, &cat_g.to_string()), "точка {k}: глобальна у pull");
+        assert!(
+            has_change_id(&d, &cat_g.to_string()),
+            "точка {k}: глобальна у pull"
+        );
         for (j, cj) in cats.iter().enumerate() {
             if j != k {
                 assert!(

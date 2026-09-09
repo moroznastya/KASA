@@ -529,25 +529,29 @@ impl PrroSettingsUseCase {
         builder: &mut crate::xml::XmlBuilder,
         signer: Option<&dyn crate::crypto::PrroSigner>,
     ) -> (Vec<u8>, Option<String>) {
-        let ts = Utc::now().format("%Y%m%d%H%M%S").to_string();
-        let dat_xml = match builder.build_service_check_xml(SERVICE_PING, &ts) {
+        let ts = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        let dat_xml = match builder.build_service_check_xml(SERVICE_PING, &ts, 0) {
             Ok(x) => x,
             Err(e) => return (Vec::new(), Some(e.to_string())),
         };
-        let message = match builder.build_message(&dat_xml, None, false) {
+        // T=111: повне RQ з <MAC></MAC> (зразок ДПС: для ping MAC не
+        // заповнюється — тег порожній; спека A/I).
+        let message = match builder.build_message(&dat_xml, None, "", true) {
             Ok(m) => m,
             Err(e) => return (Vec::new(), Some(e.to_string())),
         };
+        // C: підписуються cp1251-байти повного RQ (з XML-декларацією).
+        let cp1251 = match crate::xml::cp1251_bytes(&message) {
+            Ok(b) => b,
+            Err(e) => return (Vec::new(), Some(e.to_string())),
+        };
         if let Some(s) = signer {
-            match s.sign(message.as_bytes()) {
+            match s.sign(&cp1251) {
                 Ok(signed) => (signed, None),
-                Err(e) => (message.into_bytes(), Some(e.to_string())),
+                Err(e) => (cp1251, Some(e.to_string())),
             }
         } else {
-            (
-                message.into_bytes(),
-                Some("ключ КЕП недоступний".to_string()),
-            )
+            (cp1251, Some("ключ КЕП недоступний".to_string()))
         }
     }
 
@@ -708,19 +712,13 @@ pub fn build_fiscal_check_url(
     if fiscal_number.is_empty() || prro_fn.is_empty() {
         return None;
     }
-    let mac_value = match mac {
-        Some(m) if !m.is_empty() => m.to_string(),
-        _ => {
-            // SHA-1 hex fallback — 1:1 Python `_fallback_mac`
-            use sha1::{Digest, Sha1};
-            let mut h = Sha1::new();
-            h.update(fiscal_number.as_bytes());
-            hex::encode(h.finalize())
-        }
-    };
+    // H: mac = MAC цього чеку (hex з <MAC>); SHA-1 fallback ПРИБРАНО —
+    // кабінет ДПС не прийме фейковий хеш. Наявний hex або порожньо.
+    let mac_value = mac.unwrap_or("").to_string();
     let sm = format!("{:.2}", amount.round_dp(2));
-    let date = sent_at.format("%Y%m%d");
-    let time = sent_at.format("%H%M");
+    let local = sent_at.with_timezone(&chrono::Local);
+    let date = local.format("%Y%m%d");
+    let time = local.format("%H%M");
     // V1: параметри URL-кодуються як Python `urllib.parse.urlencode`
     // (quote_plus) — 1:1 parity (base64 MAC містить + / =).
     Some(format!(

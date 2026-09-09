@@ -143,10 +143,7 @@ pub(crate) async fn require_admin(
     // Адмін-панель власника мережі (Етап 1): owner | store_manager | admin.
     // store_manager (керуючий мережею) додано до enum user_role; admin зберіг
     // доступ як раніше (не ламаємо наявні роути /users, /settings, /admin/*).
-    if !matches!(
-        claims.role.as_str(),
-        "admin" | "owner" | "store_manager"
-    ) {
+    if !matches!(claims.role.as_str(), "admin" | "owner" | "store_manager") {
         return Err(AuthError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
         )
@@ -166,8 +163,7 @@ pub(crate) async fn require_owner(
     let user_id = require_admin(state, claims).await?;
     if claims.role != "owner" {
         return Err(AuthError::Forbidden(
-            "Доступ заборонено: операція доступна лише власнику мережі (role=owner)"
-                .to_string(),
+            "Доступ заборонено: операція доступна лише власнику мережі (role=owner)".to_string(),
         )
         .into());
     }
