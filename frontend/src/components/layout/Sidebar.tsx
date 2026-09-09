@@ -1,6 +1,8 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
 import {
+  NavLink } from 'react-router-dom';
+import {
+  Server,
   LayoutDashboard,
   ShoppingCart,
   Package,
@@ -168,6 +170,13 @@ const navItems: NavItem[] = [
     path: '/network/devices',
     label: 'Каси мережі',
     icon: <Network className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
+  },
+  {
+    path: '/network/nodes',
+    label: 'Вузли мережі',
+    icon: <Server className="w-5 h-5" />,
     module: 'network',
     roles: ['admin', 'owner'],
   },

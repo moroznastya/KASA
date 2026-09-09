@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet } from 'react-router-dom';
-import { BarChart3, Landmark, Network, FileClock, Store, Database } from 'lucide-react';
+import { BarChart3, Landmark, Network, FileClock, Store, Database, Server } from 'lucide-react';
 import { Sidebar, NavItem } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { useUIStore } from '@/store/uiStore';
@@ -32,6 +32,13 @@ const ADMIN_NAV: NavItem[] = [
         path: '/network/devices',
         label: 'Каси мережі',
         icon: <Network className="w-5 h-5" />,
+        module: 'network',
+        roles: ['admin', 'owner'],
+    },
+    {
+        path: '/network/nodes',
+        label: 'Вузли мережі',
+        icon: <Server className="w-5 h-5" />,
         module: 'network',
         roles: ['admin', 'owner'],
     },

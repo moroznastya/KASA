@@ -130,3 +130,19 @@ export function formatVatRate(rate: number): string {
   if (rate === 0) return '0%';
   return `${rate}%`;
 }
+
+/**
+ * Format bytes to human-readable (БД розмір, replication lag).
+ */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes)) return '—';
+  if (bytes < 1024) return `${bytes} Б`;
+  const units = ['КБ', 'МБ', 'ГБ', 'ТБ'];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
