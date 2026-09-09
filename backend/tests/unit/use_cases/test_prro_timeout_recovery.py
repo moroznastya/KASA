@@ -202,13 +202,14 @@ class TestTimeoutRecoveryH1:
         data = await setup(grpc=grpc)
         result = await data["fiscalizer"].fiscalize_receipt(data["receipt"].id, manual=True)
 
-        assert result.fiscal_status == "failed", "документ у черзі (failed)"
+        assert result.fiscal_status == "failed", "документ не фіскалізовано"
         assert result.error is not None
-        # документ НЕ втрачений: лишився в черзі
+        # T=109 (перехід в офлайн) НЕ втрачається — у черзі (спека O5/D)
         items = await data["prro_repo"].list_by_shift(data["shift"].id)
-        assert len(items) == 1
-        assert items[0].local_number == 1
-        # ПРРО → offline (B4)
+        assert len(items) >= 1
+        assert items[0].check_type == "SERVICECHK", "109 першим у черзі"
+        assert 'T="109"' in items[0].xml_body
+        # ПРРО → offline
         from app.infrastructure.services.prro.offline_state import OfflineStateMachine
         assert await OfflineStateMachine.is_offline(data["settings_repo"]) is True
         # принаймні 2 спроби нашого чека (первинна + retry)
@@ -222,7 +223,9 @@ class TestTimeoutRecoveryH1:
 
 class TestQrMacV1:
     async def test_fiscalize_qr_uses_check_mac_not_id_sign(self, setup):
-        """V1: QR mac = MAC чека (SHA-256 base64), а НЕ id_sign."""
+        """H: QR mac = hex-значення <MAC> цього чека (НЕ id_sign, НЕ SHA-1).
+
+        Перший чек зміни (ланцюг порожній) → mac порожній (без fallback)."""
         data = await setup()
         result = await data["fiscalizer"].fiscalize_receipt(data["receipt"].id, manual=True)
 
@@ -231,12 +234,9 @@ class TestQrMacV1:
         assert url.startswith("https://cabinet.tax.gov.ua/cashregs/check?")
         mac_param = url.split("mac=")[1].split("&")[0]
         assert "id-sign" not in mac_param, f"id_sign не має потрапляти в QR: {url}"
-        # SHA-256 base64: 44 символи + паддінг '='
-        import base64
-        from urllib.parse import unquote
-
-        decoded = base64.b64decode(unquote(mac_param), validate=True)
-        assert len(decoded) == 32, "SHA-256 = 32 байти"
+        assert "sha1" not in mac_param.lower()
+        # shift.last_mac порожній (перший документ зміни) → MAC чека = ""
+        assert mac_param == ""
 
     async def test_qr_parameters_match_dps(self, setup):
         """V1: параметри QR відповідають ДПС §5 (mac/date/time/id/sm/fn)."""

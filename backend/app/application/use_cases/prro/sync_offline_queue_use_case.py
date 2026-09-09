@@ -3,6 +3,12 @@ Application Layer: SyncOfflineQueueUseCase — повторна передача
 
 Проходить по prro_queue (status=pending/failed), надсилає документи
 по порядку (з урахуванням локальних номерів) та оновлює статуси.
+
+Спека ПРРО:
+  - кожен документ передається зі своїм id_offline (резервний фіскальний
+    номер офлайн-чека) — він НЕ губиться при повторній передачі;
+  - після успішної передачі shift.last_mac = hash(повного RQ документа) —
+    наступний Check (онлайн/офлайн) посилається на цей хеш (ланцюг не рветься).
 """
 
 from __future__ import annotations
@@ -17,6 +23,12 @@ from app.infrastructure.persistence.repositories.prro_settings_repository import
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
+from app.infrastructure.services.prro.xml_builder import (
+    compute_mac,
+    cp1251_bytes,
+    reconstruct_full_rq,
+    signed_bytes_to_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,30 +111,46 @@ class SyncOfflineQueueUseCase:
                 # Документи, додані до B2 (check_sign=None), формуються рівно 1 раз
                 # і фіксуються у черзі — повторні sync не переформовують
                 # (build_message ≤ 1 разу на документ, NT/MAC не змінюються).
+                id_offline = str(getattr(item, "id_offline", "") or "")
                 if getattr(item, "check_sign", None):
-                    signed = item.check_sign.encode("utf-8")
+                    signed = item.check_sign.encode("cp1251")
+                    if item.check_sign.startswith("b64:"):
+                        import base64
+
+                        signed = base64.b64decode(item.check_sign[4:])
                 else:
-                    message = xml_builder.build_message(item.xml_body)
-                    signed = crypto.sign(message.encode("utf-8"))
+                    # Повний RQ з тим самим MAC/ID, що й при створенні документа
+                    message = xml_builder.build_message(
+                        item.xml_body,
+                        mac_value=getattr(item, "mac", None),
+                        mac_id=id_offline,
+                    )
+                    signed = crypto.sign(cp1251_bytes(message))
                     await self._offline_queue.update_check_sign(
-                        item.id, signed.decode("utf-8")
+                        item.id, signed_bytes_to_text(signed)
                     )
                 check = await self._context.build_check(
                     check_sign=signed,
                     local_number=int(item.local_number),
                     check_type=item.check_type,
+                    id_offline=id_offline,  # G: id_offline не губиться при sync
                 )
                 response = await grpc_client.send_chk(check)
 
                 if int(response.status) == 1:
                     await self._offline_queue.mark_sent(item.id)
-                    # B1: оновлюємо last_mac зміни — наступний Check посилатиметься
-                    # на хеш цього успішно відправленого документа (hash-ланцюжок).
-                    # getattr: документи без shift_id/mac (тестові стаби) — пропускаємо.
+                    # D: shift.last_mac = hash(повного RQ цього документа) —
+                    # наступний Check посилатиметься на цей хеш (ланцюг).
                     shift_id = getattr(item, "shift_id", None)
-                    mac = getattr(item, "mac", None)
-                    if shift_id is not None and mac is not None:
-                        await self._prro_repo.update_shift_last_mac(shift_id, mac)
+                    if shift_id is not None:
+                        chain_message = reconstruct_full_rq(
+                            item.xml_body,
+                            getattr(item, "mac", None) or "",
+                            mac_id=id_offline,
+                        )
+                        await self._prro_repo.update_shift_last_mac(
+                            shift_id, compute_mac(chain_message)
+                        )
                     synced += 1
                     results.append({
                         "id": str(item.id),

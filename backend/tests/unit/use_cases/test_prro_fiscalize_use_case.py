@@ -32,7 +32,10 @@ from app.infrastructure.persistence.repositories.prro_settings_repository import
 )
 from app.infrastructure.services.prro.key_store import PrroKeyStore
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-from app.infrastructure.services.prro.xml_builder import compute_mac
+from app.infrastructure.services.prro.xml_builder import (
+    compute_mac,
+    reconstruct_full_rq,
+)
 
 # ─── Допоміжні фабрики ──────────────────────────────────────────────────────
 
@@ -361,6 +364,79 @@ class TestFiscalizeReceipt:
         await data["session"].refresh(data["product"])
         assert data["product"].fiscal_stock == 7
 
+    async def test_fiscalize_return_passes_id_cancel(self, setup):
+        """E: повернення (T=1) → Check.id_cancel = фіскальний № оригіналу."""
+        data = await setup(
+            fiscal_quantity=Decimal("2"), quantity=Decimal("2"),
+            is_return=True, with_original=True,
+        )
+        sent: list = []
+
+        async def _send(check):
+            sent.append(check)
+            return make_response(id="FISCAL-RET")
+
+        data["grpc"].send_chk = AsyncMock(side_effect=_send)
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+        assert len(sent) == 1
+        assert sent[0].id_cancel == "FISCAL-ORIG-1", "id_cancel = № оригінального чека"
+        # B: date_time — YYYYMMDDhhmmss (14 цифр), не epoch
+        dt = str(sent[0].date_time)
+        assert len(dt) == 14 and dt.isdigit(), f"date_time={dt} має бути YYYYMMDDhhmmss"
+
+    async def test_fiscalize_sale_id_cancel_empty(self, setup):
+        """E: продаж — id_cancel порожній."""
+        data = await setup()
+        sent: list = []
+
+        async def _send(check):
+            sent.append(check)
+            return make_response()
+
+        data["grpc"].send_chk = AsyncMock(side_effect=_send)
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+        assert sent[0].id_cancel == ""
+
+    async def test_fiscalize_offline_queues_with_reserved_id(self, setup):
+        """F/G: офлайн — local_number послідовний, id_offline з діапазону,
+        документ у черзі (pending) без мережевої спроби."""
+        from app.infrastructure.services.prro.offline_state import (
+            KEY_PRRO_OFFLINE,
+            KEY_PRRO_OFFLINE_NEXT,
+            KEY_PRRO_RESERVE_END,
+            KEY_PRRO_RESERVE_START,
+        )
+
+        data = await setup()
+        sr = data["settings_repo"]
+        await sr.set(KEY_PRRO_OFFLINE, "1")
+        await sr.set(KEY_PRRO_RESERVE_START, "1001")
+        await sr.set(KEY_PRRO_RESERVE_END, "1100")
+        await sr.set(KEY_PRRO_OFFLINE_NEXT, "1001")
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "failed", "офлайн: документ у черзі"
+        data["grpc"].send_chk.assert_not_awaited(), "офлайн — без мережевих спроб"
+
+        items = await data["prro_repo"].list_by_shift(data["shift"].id)
+        assert len(items) == 1
+        assert items[0].check_type == "CHK"
+        assert items[0].status.value == "pending"
+        assert items[0].local_number == 1, "local_number — послідовний зі зміни"
+        assert items[0].id_offline == "1001", "id_offline — номер з діапазону (не offline-{n})"
+        assert items[0].mac == "", "MAC першого документа зміни порожній"
+        # наступний номер діапазону спожито
+        nxt = await sr.get(KEY_PRRO_OFFLINE_NEXT)
+        assert nxt == "1002"
+
     async def test_fiscalize_dedup_on_error_save(self, setup):
         """ERROR_SAVE → lastChk знаходить чек → дедуплікація (SENT)."""
         grpc = make_grpc(
@@ -492,18 +568,18 @@ class TestFiscalizeReceipt:
         assert data["receipt"].items[0].fiscal_quantity == 0
 
 
-class TestHashChainB1:
-    """B1: hash-ланцюжок попереднього Check (тег <H> у XML наступного чека)."""
+class TestHashChainD:
+    """D: хеш-ланцюжок через <MAC> повного RQ (H-тега в тілі немає)."""
 
     async def test_three_checks_form_hash_chain(self, setup):
-        """3 чеки поспіль: H(c1)→c2, H(c2)→c3 через FiscalizeReceiptUseCase."""
+        """3 чеки поспіль: MAC(c1)→doc2, MAC(doc2)→doc3 через use case."""
         data = await setup()
         fiscalizer = data["fiscalizer"]
         session = data["session"]
         prro_repo = data["prro_repo"]
         shift = data["shift"]
 
-        xml_bodies = []
+        queue_items = []
         for i in range(3):
             # Новий чек для кожної ітерації
             product = Product(
@@ -544,16 +620,23 @@ class TestHashChainB1:
 
             items = await prro_repo.list_by_receipt(receipt.id)
             assert len(items) == 1
-            xml_bodies.append(items[0].xml_body)
+            queue_items.append(items[0])
 
-        # c1: без <H>; c2: H = MAC(c1); c3: H = MAC(c2)
-        c1, c2, c3 = xml_bodies
-        assert "<H " not in c1, f"c1 не має <H>: {c1}"
-        h1 = compute_mac(c1)
-        assert f'<H N="1">{h1}</H>' in c2, f"c2 має H(c1): {c2}"
-        h2 = compute_mac(c2)
-        assert f'<H N="1">{h2}</H>' in c3, f"c3 має H(c2): {c3}"
+        # H-ланцюжка в тілі чеку немає; MAC першого чека порожній (перший у зміні,
+        # але після 108 — тут у тесті зміну створено напряму без 108, ланцюг порожній)
+        assert "<H " not in queue_items[0].xml_body
+        doc_macs = [getattr(q, "mac", None) or "" for q in queue_items]
 
-        # last_mac зміни оновлено до MAC(c3) — останнього успішно відправленого
+        # doc1: MAC = "" (перший документ зміни)
+        assert doc_macs[0] == ""
+        msg1 = reconstruct_full_rq(queue_items[0].xml_body, doc_macs[0])
+        # doc2: MAC = hash(повного RQ doc1)
+        assert doc_macs[1] == compute_mac(msg1)
+        msg2 = reconstruct_full_rq(queue_items[1].xml_body, doc_macs[1])
+        # doc3: MAC = hash(повного RQ doc2)
+        assert doc_macs[2] == compute_mac(msg2)
+        msg3 = reconstruct_full_rq(queue_items[2].xml_body, doc_macs[2])
+
+        # last_mac зміни = hash(повного RQ doc3) — наступний Check посилається на нього
         await session.refresh(shift)
-        assert shift.last_mac == compute_mac(c3)
+        assert shift.last_mac == compute_mac(msg3)

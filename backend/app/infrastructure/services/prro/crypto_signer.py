@@ -21,7 +21,7 @@
         key_path=Path("/secure/Key-6.pfx"),
         key_password="secret",
     )
-    signed = signer.sign(dat_xml.encode("utf-8"))
+    signed = signer.sign(cp1251_bytes(dat_xml))  # windows-1251 байти повного RQ
     ok = signer.verify(signed)
     serial = signer.get_serial_number()   # для prro_shifts.signer_serial
     name = signer.get_signer_name()       # для prro_shifts.signer_name
@@ -547,14 +547,18 @@ class PrroCryptoSigner:
         """
         Підписує XML-документ (XAdES-BES, enveloped, RSA-SHA256).
 
+        Аргумент ОБОВ'ЯЗКОВО має бути повне RQ-повідомлення (п. A/C спеки),
+        закодоване у windows-1251 (див. xml_builder.cp1251_bytes). Саме ці
+        байти «бачить» сервер ДПС (CAdES) — над ними рахується хеш-ланцюжок.
+
         Args:
-            xml_bytes: канонічний XML (наприклад, <DAT>…</DAT>) у bytes.
+            xml_bytes: повне повідомлення <RQ>…</RQ> у байтах windows-1251
+                (з XML-декларацією encoding="windows-1251").
 
         Returns:
-            bytes — підписаний XML: до кореневого елемента додається
-            тег <ds:Signature> (enveloped). Для ДСТУ 4145 (бекенд ІІТ) —
-            бінарний CAdES-BES підпис від XML (формат офіційного семпла
-            programika/prro_sample: `ee.SignInternal(true, data)`).
+            bytes — підписаний XML (XAdES, encoding windows-1251). Для
+            ДСТУ 4145 (бекенд ІІТ) — бінарний CAdES-BES підпис від XML
+            (формат семпла programika/prro_sample: `ee.SignInternal(true, data)`).
 
         Raises:
             PrroCryptoError: якщо підписання не вдалося.
@@ -581,10 +585,11 @@ class PrroCryptoSigner:
         except Exception as exc:
             raise PrroCryptoError(f"Помилка XAdES-підписання: {exc}") from exc
 
+        # Декларація/кодування — windows-1251 (обов'язково за API ФСКО)
         return etree.tostring(
             signed_root,
             xml_declaration=True,
-            encoding="UTF-8",
+            encoding="windows-1251",
             pretty_print=False,
         )
 
