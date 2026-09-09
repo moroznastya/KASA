@@ -5,7 +5,7 @@ import { authService } from '@/services/authService';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
-import { User, ArrowLeft, Loader2 } from 'lucide-react';
+import { User, ArrowLeft, Loader2, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '@/services/api';
 import logo from '@/assets/logo.png';
@@ -26,33 +26,67 @@ const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingUsers, setIsFetchingUsers] = useState(true);
   const [emptyError, setEmptyError] = useState<string | null>(null);
+  const [backendAttempt, setBackendAttempt] = useState(0); // лічильник ретраїв готовності
+  const [fatalError, setFatalError] = useState<string | null>(null); // сервер недоступний
 
   useEffect(() => {
     let cancelled = false;
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
     (async () => {
-      // 1) На fresh-БД без користувачів — редирект на майстер першого встановлення.
-      try {
-        const status = await api.get<{ status: string }>('/setup/status');
-        if (!cancelled && status.data.status === 'not_initialized') {
-          navigate('/setup', { replace: true });
-          return;
+      // На fresh-пристрої вбудований PostgreSQL піднімається 10-60 с
+      // (перший initdb або crash recovery після аварійного завершення), і
+      // лише після цього HTTP-фасад :8000 починає слухати. Ранні запити
+      // ловлять ECONNREFUSED → один «постріл» давав хибний toast
+      // «Не вдалося завантажити список користувачів» ще до готовності БД.
+      // Ретраї: чекаємо відповіді /setup/status (ознака готовності backend).
+      const READY_ATTEMPTS = 45; // 45 × 2 с ≈ до 90 с
+      let backendReady = false;
+      for (let attempt = 1; attempt <= READY_ATTEMPTS; attempt++) {
+        if (cancelled) return;
+        setBackendAttempt(attempt);
+        try {
+          const status = await api.get<{ status: string }>('/setup/status');
+          if (cancelled) return;
+          if (status.data.status === 'not_initialized') {
+            // Fresh-БД без користувачів — майстер першого встановлення.
+            navigate('/setup', { replace: true });
+            return;
+          }
+          backendReady = true;
+          break;
+        } catch {
+          // Backend ще не готовий — почекати і повторити.
+          await sleep(2000);
         }
-      } catch {
-        // /setup/status недоступний (старий фасад?) — продовжуємо як раніше.
       }
-      // 2) Список користувачів для логіну.
-      try {
-        const res = await api.get<UserOption[]>('/auth/users-list');
-        if (!cancelled) {
+      if (cancelled) return;
+      if (!backendReady) {
+        setFatalError(
+          'Не вдалося підключитися до сервера. Зачекайте кілька секунд і перезапустіть застосунок.'
+        );
+        setIsFetchingUsers(false);
+        return;
+      }
+      // Backend готовий — список користувачів (кілька спроб: авто-міграції схеми).
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        if (cancelled) return;
+        try {
+          const res = await api.get<UserOption[]>('/auth/users-list');
+          if (cancelled) return;
           setUsers(res.data);
           if (res.data.length === 0) {
             setEmptyError('У системі немає користувачів. Система вже ініціалізована — зверніться до адміністратора.');
           }
+          setIsFetchingUsers(false);
+          return;
+        } catch {
+          await sleep(1500);
         }
-      } catch {
-        if (!cancelled) toast.error('Не вдалося завантажити список користувачів');
-      } finally {
-        if (!cancelled) setIsFetchingUsers(false);
+      }
+      if (!cancelled) {
+        toast.error('Не вдалося завантажити список користувачів');
+        setIsFetchingUsers(false);
       }
     })();
     return () => {
@@ -137,8 +171,21 @@ const LoginPage: React.FC = () => {
               </h2>
 
               {isFetchingUsers ? (
-                <div className="flex items-center justify-center py-8">
+                <div className="flex flex-col items-center justify-center py-8">
                   <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                  <p className="mt-3 text-xs text-gray-400 dark:text-gray-500 text-center leading-relaxed">
+                    Підключення до сервера…
+                    {backendAttempt > 1 && (
+                      <span className="block">(спроба {backendAttempt}/45)</span>
+                    )}
+                  </p>
+                </div>
+              ) : fatalError ? (
+                <div className="py-6 text-center">
+                  <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center mx-auto mb-3">
+                    <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
+                  </div>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">{fatalError}</p>
                 </div>
               ) : emptyError ? (
                 <div className="py-6 text-center">

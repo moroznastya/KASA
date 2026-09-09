@@ -498,10 +498,16 @@ impl EmbeddedPostgres {
         let mut c = Command::new(&pg_ctl);
         #[cfg(windows)]
         {
-            // CREATE_NEW_PROCESS_GROUP (0x200): postgres.exe НЕ отримує
-            // CTRL_C_EVENT разом із консоллю застосунку (0xC000013A).
+            // CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x0800_0000):
+            // 1) postgres.exe НЕ отримує CTRL_C_EVENT разом із консоллю застосунку
+            //    (0xC000013A);
+            // 2) GUI-процес без консолі спавнить console-процес pg_ctl.exe → Windows
+            //    створює ВИДИМЕ чорне вікно. Юзер закриває його → CTRL_CLOSE_EVENT
+            //    → postgres.exe падає з 0xC000013A → crash recovery 30-60 с на
+            //    наступному старті (лог: "database system was not properly shut
+            //    down"). CREATE_NO_WINDOW ховає вікно — прибрати джерело crash.
             use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0000_0200);
+            c.creation_flags(0x0800_0200);
         }
         let out = c
             .arg("-D")
@@ -596,9 +602,10 @@ impl EmbeddedPostgres {
         let mut c = Command::new(&pg_ctl);
         #[cfg(windows)]
         {
-            // CREATE_NEW_PROCESS_GROUP: pg_ctl stop не вбивається Ctrl+C.
+            // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW: pg_ctl stop не вбивається
+            // Ctrl+C і не блимає консольним вікном (див. start_once).
             use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0000_0200);
+            c.creation_flags(0x0800_0200);
         }
         let status = c
             .arg("-D")
@@ -871,6 +878,29 @@ impl Drop for EmbeddedPostgres {
                 Err(e) => pg_log("ERROR", &format!("embedded PG stop: {e}")),
             }
         }
+    }
+}
+
+/// Зупинити вбудований PostgreSQL (якщо він наш і запущений). Викликається з
+/// RunEvent::Exit застосунку — страхівка поверх Drop таска serve_listener
+/// (tokio abort() не гарантує миттєвого Drop до завершення процесу).
+/// Ідемпотентно й безпечно: якщо data_dir не ініціалізований або порт 5433
+/// не слухає — без дій; чужий сервер (інший data_dir на 5433) не чіпається
+/// (pg_ctl -D зупиняє лише сервер цього data_dir).
+pub fn stop_running_instance() {
+    // data_dir ще не ініціалізовано (PG_VERSION нема) — нічого зупиняти.
+    let data_dir = data_dir_default();
+    if !data_dir.join("PG_VERSION").exists() {
+        return;
+    }
+    let Some(bin_dir) = EmbeddedPostgres::locate() else {
+        pg_log("WARN", "stop_running_instance: бінарники PG не знайдено");
+        return;
+    };
+    let pg = EmbeddedPostgres::new(bin_dir);
+    match pg.stop() {
+        Ok(()) => pg_log("INFO", "stop_running_instance: embedded PG зупинено"),
+        Err(e) => pg_log("WARN", &format!("stop_running_instance: {e} (можливо, уже зупинено)")),
     }
 }
 

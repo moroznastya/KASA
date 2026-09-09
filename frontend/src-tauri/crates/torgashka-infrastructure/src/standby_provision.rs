@@ -387,6 +387,14 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
     let mut backup_err = None;
     for create_slot in with_create {
         let mut cmd = tokio::process::Command::new(&pg_basebackup);
+        // Windows: CREATE_NO_WINDOW — pg_basebackup (console-процес) не блимає
+        // чорним вікном поверх GUI (той самий клас бага, що pg_ctl у
+        // embedded_pg.rs). На не-Windows флаг ігнорується.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
         cmd.args(pg_basebackup_args(
             &p.primary_host,
             p.primary_port,
@@ -535,6 +543,11 @@ async fn wait_recovery(bin_dir: &Path, user: &str) -> Result<(), ProvisionError>
     let mut last = String::new();
     for attempt in 1..=15u32 {
         let mut cmd = tokio::process::Command::new(&psql);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
         cmd.arg("-h")
             .arg("127.0.0.1")
             .arg("-p")
