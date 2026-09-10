@@ -12,6 +12,10 @@
 //! 4. `pg_basebackup -h <primary> -p <port> -U <replicator> -D <data_dir>
 //!    -X stream -C -S <slot> -R`  → створює replication slot на primary,
 //!    пише `standby.signal` + `primary_conninfo` у `postgresql.auto.conf`.
+//! 4b. Санація конфігів: копія `postgresql.conf` з primary (Linux-конфіг з
+//!    `dynamic_shared_memory_type = posix` та `lc_* = 'uk_UA.UTF-8'`) валить
+//!    Windows-PG на старті → замінюється мінімальним standby-конфігом, а з
+//!    `postgresql.auto.conf` прибираються несумісні GUC-и primary.
 //! 5. Пароль реплікації: plaintext у `postgresql.auto.conf` (PG читає
 //!    `primary_conninfo` лише у plaintext; файл 0600 у `data_dir`) + ОКРЕМО
 //!    зашифрована копія AES-256-GCM (`db_sources`-підхід, `.dbkey`) для
@@ -53,7 +57,7 @@ pub enum ProvisionError {
     #[error("не вдалося записати файл {path}: {err}")]
     WriteFile { path: PathBuf, err: std::io::Error },
     #[error("локальний PG не стартував: {0}")]
-    StartFailed(crate::embedded_pg::Error),
+    StartFailed(String),
     #[error("psql не зміг перевірити pg_is_in_recovery: {0}")]
     PsqlFailed(String),
     #[error("standby не в режимі recovery після старту (pg_is_in_recovery = {0}); перевірте postgres.log у data_dir")]
@@ -189,6 +193,98 @@ fn pg_basebackup_args(
     args.push("-S".to_string());
     args.push(slot.to_string());
     args
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Санація конфігів після pg_basebackup (крос-платформний фікс)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// GUC-и, які `pg_basebackup` копіює з Linux-primary, але які **неприпустимі
+/// на Windows-PG**: GUC там не існує, або значення містить Linux-шлях чи
+/// Linux-локаль. Будь-який із них валить старт standby
+/// (`pg_ctl: could not start server`); реальна аномалія — `dynamic_shared_memory_type
+/// = posix` і `lc_messages = 'uk_UA.UTF-8'` у скопійованому `postgresql.conf`.
+const WINDOWS_INCOMPATIBLE_GUCS: &[&str] = &[
+    // спільна пам'ять: на Windows лише `windows`/`mmap`; `posix` → FATAL
+    "dynamic_shared_memory_type",
+    // локалі Linux (`uk_UA.UTF-8`) у Windows не існують → FATAL
+    "lc_messages",
+    "lc_monetary",
+    "lc_numeric",
+    "lc_time",
+    "lc_ctype",
+    // Unix-специфічні: на Windows GUC відсутній
+    "unix_socket_directories",
+    "unix_socket_group",
+    "unix_socket_permissions",
+    // абсолютні Linux-шляхи у копії конфу — на Windows недосяжні
+    "data_directory",
+    "hba_file",
+    "ident_file",
+    "external_pid_file",
+    "log_directory",
+    "log_file_mode",
+    "logging_collector",
+    "archive_command",
+    "archive_mode",
+    "restore_command",
+    "recovery_end_command",
+    "dynamic_library_path",
+    "shared_preload_libraries",
+    "local_preload_libraries",
+    "ssl_cert_file",
+    "ssl_key_file",
+    "ssl_ca_file",
+    "ssl_crl_file",
+];
+
+/// Чи рядок конфу задає несумісний GUC (`key = value`; ключ без регістру).
+/// Коментарі та порожні рядки несумісними не вважаються.
+fn is_incompatible_conf_line(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.is_empty() || t.starts_with('#') {
+        return false;
+    }
+    let key = t
+        .split(|c: char| c == '=' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
+    WINDOWS_INCOMPATIBLE_GUCS
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(key))
+}
+
+/// Коментує несумісні рядки (не видаляє — причина лишається видимою у файлі
+/// для діагностики).
+fn strip_incompatible_lines(conf: &str) -> String {
+    let mut out = String::with_capacity(conf.len() + 128);
+    for line in conf.lines() {
+        if is_incompatible_conf_line(line) {
+            out.push_str("# [torgashka] прибрано (несумісно з Windows-PG): ");
+            out.push_str(line.trim_start());
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Мінімальний `postgresql.conf` для standby. Конфіг primary (Linux) свідомо
+/// **не переюзується**: він містить несумісні GUC-и, а жодне з його
+/// тюнінгових значень вузлу-репліці не потрібне.
+fn standby_conf() -> String {
+    format!(
+        "# Torgashka standby — згенеровано під час провіжинінгу (НЕ редагувати).\n\
+         # Конфіг primary (Linux) не використано: dynamic_shared_memory_type = posix\n\
+         # і lc_* = 'uk_UA.UTF-8' несумісні з Windows-PG (ЕТАП 16, фікс аномалії\n\
+         # \"pg_ctl: could not start server\").\n\
+         listen_addresses = '127.0.0.1'\n\
+         port = {EMBEDDED_PG_PORT}\n\
+         hot_standby = on\n\
+         max_connections = 100\n\
+         shared_buffers = 128MB\n"
+    )
 }
 
 /// Додає `password=<pw>` у рядок `primary_conninfo` всередині
@@ -450,6 +546,37 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
         return Err(e);
     }
 
+    // ── 4b. Санація конфігів (крос-платформний фікс) ────────────────────────
+    // `pg_basebackup` копіює `postgresql.conf` PRIMARY (Linux) у data_dir вузла.
+    // На Windows така копія непридатна: `dynamic_shared_memory_type = posix` і
+    // `lc_* = 'uk_UA.UTF-8'` → FATAL ще до старту (`pg_ctl: could not start
+    // server`). Копію замінюємо мінімальним standby-конфігом, а з
+    // `postgresql.auto.conf` (там `primary_conninfo` від `-R`) прибираємо
+    // несумісні GUC-и primary.
+    {
+        let dir = data_dir.clone();
+        let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            std::fs::write(dir.join("postgresql.conf"), standby_conf().as_bytes())?;
+            let auto = dir.join("postgresql.auto.conf");
+            let raw = std::fs::read_to_string(&auto)?;
+            let clean = strip_incompatible_lines(&raw);
+            if clean != raw {
+                std::fs::write(&auto, clean.as_bytes())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| ProvisionError::Invalid(format!("spawn_blocking(sanitize): {e}")))?;
+        res.map_err(|err| ProvisionError::WriteFile {
+            path: data_dir.join("postgresql.conf"),
+            err,
+        })?;
+    }
+    pg_log(
+        "INFO",
+        "[standby] крок 4b: конфіги очищено від Linux-несумісних GUC-ів",
+    );
+
     // ── 5a. Пароль plaintext у postgresql.auto.conf (0600) ─────────────────
     let auto_conf = data_dir.join("postgresql.auto.conf");
     let conf_raw = std::fs::read_to_string(&auto_conf).map_err(|e| ProvisionError::WriteFile {
@@ -514,7 +641,12 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
         tokio::task::spawn_blocking(move || mgr.start())
             .await
             .map_err(|e| ProvisionError::Invalid(format!("spawn_blocking(start): {e}")))?
-            .map_err(ProvisionError::StartFailed)?;
+            .map_err(|e| {
+                ProvisionError::StartFailed(format!(
+                    "{e}\npostgres.log (хвіст):\n{}",
+                    crate::embedded_pg::postgres_log_tail(&data_dir, 20)
+                ))
+            })?;
     }
     pg_log(
         "INFO",
@@ -698,6 +830,35 @@ primary_conninfo = 'host=h port=5432 user=u password=oldpass1234567890abcdef app
             default_secret_anchor(d),
             Path::new("/tmp/replication_secret.ctx")
         );
+    }
+
+    #[test]
+    fn incompatible_gucs_are_stripped() {
+        let conf = "max_slot_wal_keep_size = '10GB'\n\
+                    dynamic_shared_memory_type = posix\n\
+                    lc_messages = 'uk_UA.UTF-8'      # locale\n\
+                    # lc_time = 'uk_UA.UTF-8'\n\
+                    primary_conninfo = 'host=10.0.0.5 user=replicator_x'\n";
+        let clean = strip_incompatible_lines(conf);
+        assert!(clean.contains("max_slot_wal_keep_size = '10GB'"));
+        assert!(clean.contains("primary_conninfo = 'host=10.0.0.5"));
+        assert!(!clean
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("dynamic_shared_memory_type")));
+        assert!(!clean
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("lc_messages")));
+        // Закоментований рядок не чіпаємо (лишається коментарем).
+        assert!(clean.contains("# lc_time = 'uk_UA.UTF-8'"));
+    }
+
+    #[test]
+    fn standby_conf_is_windows_safe() {
+        let c = standby_conf();
+        assert!(c.contains("hot_standby = on"));
+        assert!(c.contains(&format!("port = {EMBEDDED_PG_PORT}")));
+        // Жодного Linux-несумісного GUC-а у згенерованому конфізі.
+        assert!(!c.lines().any(is_incompatible_conf_line));
     }
 
     #[test]

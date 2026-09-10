@@ -136,6 +136,12 @@ pub fn pg_log(level: &str, msg: &str) {
     }
 }
 
+/// Хвіст `postgres.log` у каталозі даних (діагностика невдалого старту PG —
+/// після `pg_ctl: could not start server` сама причина є ЛИШЕ тут).
+pub fn postgres_log_tail(data_dir: &Path, n: usize) -> String {
+    read_log_tail(&data_dir.join("postgres.log"), n)
+}
+
 /// Останні `n` рядків файлу (для діагностики postgres.log при таймауті старту).
 fn read_log_tail(path: &Path, n: usize) -> String {
     match std::fs::read_to_string(path) {
@@ -900,7 +906,10 @@ pub fn stop_running_instance() {
     let pg = EmbeddedPostgres::new(bin_dir);
     match pg.stop() {
         Ok(()) => pg_log("INFO", "stop_running_instance: embedded PG зупинено"),
-        Err(e) => pg_log("WARN", &format!("stop_running_instance: {e} (можливо, уже зупинено)")),
+        Err(e) => pg_log(
+            "WARN",
+            &format!("stop_running_instance: {e} (можливо, уже зупинено)"),
+        ),
     }
 }
 
