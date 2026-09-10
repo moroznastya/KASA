@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import toast from 'react-hot-toast';
+import api from '@/services/api';
 import { joinNetworkNode, NodeJoinResult } from '@/services/networkNodeService';
 import { getDeviceFingerprint, normalizeServerUrl } from '@/services/deviceActivationService';
 import { isTauri } from '@/hooks/useTauri';
@@ -154,11 +155,21 @@ const NodeJoinPage: React.FC = () => {
     setError(null);
     try {
       const fingerprint = await getDeviceFingerprint();
-      const res = await joinNetworkNode({
-        join_code: code,
-        node_fingerprint: fingerprint,
-        requested_name: name,
-      });
+      // ⚠️ join МУСИТЬ іти на PRIMARY: тимчасово перемикаємо baseURL axios
+      // на введений server_url. Без цього на standby-пристрої запит пішов би
+      // на власний локальний фасад 127.0.0.1:8000 (де такого вузла немає).
+      const prevBaseUrl = api.defaults.baseURL;
+      let res: NodeJoinResult;
+      try {
+        api.defaults.baseURL = `${url}/api/v1`;
+        res = await joinNetworkNode({
+          join_code: code,
+          node_fingerprint: fingerprint,
+          requested_name: name,
+        });
+      } finally {
+        api.defaults.baseURL = prevBaseUrl;
+      }
       setResult(res);
       setSavedUrl(url);
       toast.success('Вузол зареєстровано — креденшл реплікації отримано');

@@ -251,6 +251,14 @@ const LoginPage: React.FC = () => {
           )}
         </div>
 
+        <button
+          type="button"
+          onClick={() => navigate('/node-join')}
+          className="w-full mt-4 text-center text-sm text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Це не головний комп'ютер — приєднати до мережі (каса/standby)
+        </button>
+
         <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-6">
           Torgashka v1.0 &copy; {new Date().getFullYear()}
         </p>
