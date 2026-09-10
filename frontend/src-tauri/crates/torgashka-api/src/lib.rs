@@ -203,21 +203,29 @@ fn env_flag(name: &str) -> bool {
 ///
 /// Якщо `TORGASHKA_RUST_READDIRS=1` і БД доступна — повертає (пул, read-репо,
 /// write-репо). Інакше `None` (роути не монтуються → fallback → 410).
-async fn init_readdirs() -> Option<(
-    PgPool,
-    Arc<dyn ReadDirectories + Send + Sync>,
-    Arc<dyn WriteDirectories + Send + Sync>,
-    Arc<dyn PosService + Send + Sync>,
-    Arc<dyn LedgerService + Send + Sync>,
-    Arc<dyn AuthService + Send + Sync>,
-)> {
+async fn init_readdirs() -> Result<
+    (
+        PgPool,
+        Arc<dyn ReadDirectories + Send + Sync>,
+        Arc<dyn WriteDirectories + Send + Sync>,
+        Arc<dyn PosService + Send + Sync>,
+        Arc<dyn LedgerService + Send + Sync>,
+        Arc<dyn AuthService + Send + Sync>,
+    ),
+    String,
+> {
     if !env_flag(RUST_READDIRS_ENV) {
-        return None;
+        return Err(format!(
+            "{RUST_READDIRS_ENV} не увімкнено (1/true/yes) — Rust-гілку довідників не монтуємо"
+        ));
     }
     match torgashka_infrastructure::db::connect_readonly_pool(10).await {
         Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                &format!(
+                    "{RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
+                ),
             );
             let store_pool = StorePool::new(pool.clone());
             let read = Arc::new(
@@ -239,14 +247,16 @@ async fn init_readdirs() -> Option<(
             let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
                 store_pool.clone(),
             )) as Arc<dyn AuthService + Send + Sync>;
-            Some((pool, read, write, pos, ledger, auth))
+            Ok((pool, read, write, pos, ledger, auth))
         }
         Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_READDIRS_ENV}=1, але БД недоступна ({e}); \
-                 довідники не змонтовано (LEGACY → 410)"
+            // Windows-каса: stderr прихований (windows_subsystem=windows) —
+            // причина мусить лягти в torgashka.log.
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "ERROR",
+                &format!("{RUST_READDIRS_ENV}=1, але БД недоступна — пул читання НЕ створено: {e}"),
             );
-            None
+            Err(format!("пул читання не створено: {e}"))
         }
     }
 }
@@ -544,6 +554,12 @@ pub enum DbStartupPlan {
     /// отримано `pg_basebackup`, це hot standby (read-only): CREATE DATABASE
     /// там неможливий, а спроба bootstrap псує каталог репліки (дефект 6).
     StandbyReplica(String),
+    /// Standby-вузол, але ім'я локальної БД НЕВІДОМЕ (`[node] primary_db_url`
+    /// і env `TORGASHKA_PG_DB` порожні). `DATABASE_URL` не вигадуємо: пули й
+    /// роути не створюються, причина (з полем) іде в `torgashka.log`.
+    /// Раніше тут мовчки підставлялась БД «torgashka», якої на касі немає
+    /// (дефект 2026-09: `/api/v1/setup/status` = 503 назавжди).
+    StandbyWithoutDbName(String),
     /// Primary-вузол: повний bootstrap (initdb → pg_ctl start → CREATE DATABASE).
     PrimaryBootstrap,
 }
@@ -558,34 +574,112 @@ pub fn plan_db_startup(
         return DbStartupPlan::ExternalUrl(url.to_string());
     }
     if is_standby {
-        return DbStartupPlan::StandbyReplica(standby_url.unwrap_or_default());
+        // Порожній/відсутній URL — НЕ «порожній рядок у DATABASE_URL», а чесна
+        // відмова монтувати пули: ім'я БД невідоме, здогадуватись заборонено.
+        return match standby_url.filter(|u| !u.trim().is_empty()) {
+            Some(url) => DbStartupPlan::StandbyReplica(url),
+            None => DbStartupPlan::StandbyWithoutDbName(
+                "ім'я локальної БД невідоме: ні [node] primary_db_url, ні TORGASHKA_PG_DB"
+                    .to_string(),
+            ),
+        };
     }
     DbStartupPlan::PrimaryBootstrap
 }
 
-/// URL локальної репліки для standby-вузла: `postgresql://<user>@127.0.0.1:<port>/<db>`
-/// БЕЗ пароля (дефект 5: пароль у URL змушує psql/sqlx автентифікуватись, а
-/// локальний кластер приймає localhost без пароля).
-pub fn standby_local_url(
+/// Ім'я БД із `postgresql://` URL: частина після першого '/' у host-секції
+/// (query-параметри відкидаються). `None` — URL без імені БД
+/// (`postgresql://user@host:5432`) або без '/'.
+fn db_name_from_url(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://")?.1;
+    let after_userinfo = match after_scheme.find('@') {
+        Some(i) => &after_scheme[i + 1..],
+        None => after_scheme,
+    };
+    let path = &after_userinfo[after_userinfo.find('/')? + 1..];
+    let name = path.split(['/', '?']).next().unwrap_or("").trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Резолв URL локальної репліки standby-вузла (ЧИСТА функція — тестована без
+/// env/файлів). `Ok` — URL для пула; `Err(reason)` — явна причина, чому пул
+/// створювати НЕ можна (жодних здогадок імені БД).
+///
+/// Джерела імені БД у порядку пріоритету:
+/// 1. `primary_db_url` (поле `[node]` через
+///    [`torgashka_infrastructure::node_config::NodeConfig::resolve_primary_db_url`]
+///    — або активне джерело db_sources.toml): host:port → `127.0.0.1:local_port`,
+///    userinfo та ім'я БД зберігаються, пароль відкидається (дефект 5);
+/// 2. env `TORGASHKA_PG_DB`.
+///
+/// Літерала «torgashka» тут НЕМА: саме він давав продакшн-дефект 2026-09 —
+/// каса-standby підключалась до неіснуючої БД, `/api/v1/setup/status` = 503
+/// назавжди, логін-гейт каси висне (postgres.log: `FATAL: database "torgashka"
+/// does not exist`).
+pub fn standby_local_url_or_err(
     primary_url: Option<&str>,
     local_port: u16,
     user: &str,
-    db: &str,
-) -> String {
-    primary_url
-        .and_then(|u| torgashka_infrastructure::node_config::local_readonly_url(u, local_port))
-        .unwrap_or_else(|| {
-            torgashka_infrastructure::node_config::fallback_local_url(local_port, db, user)
-        })
+    env_db: Option<&str>,
+) -> Result<String, String> {
+    if let Some(primary) = primary_url.map(str::trim).filter(|u| !u.is_empty()) {
+        if db_name_from_url(primary).is_some() {
+            return torgashka_infrastructure::node_config::local_readonly_url(primary, local_port)
+                .ok_or_else(|| format!("primary_db_url не є postgresql:// URL: {primary}"));
+        }
+        // primary_db_url є, але БЕЗ імені БД — не підставляємо нічого, пробуємо
+        // env-джерело нижче (теж без здогадок).
+    }
+    if let Some(db) = env_db.map(str::trim).filter(|d| !d.is_empty()) {
+        return Ok(torgashka_infrastructure::node_config::fallback_local_url(
+            local_port, db, user,
+        ));
+    }
+    Err(
+        "локальна репліка недоступна: імені БД немає ні в [node] primary_db_url, ні в env \
+        TORGASHKA_PG_DB — вкажіть primary_db_url або TORGASHKA_PG_DB; пул НЕ створюється, \
+        здогадка імені БД («torgashka») вимкнена"
+            .to_string(),
+    )
+}
+
+/// Резолв + лог: ядро [`standby_url_for`] із ін'єкцією логера (тестовано).
+/// Причина невдачі ЗАВЖДИ йде в лог-канал — на Windows-касі
+/// (`windows_subsystem=windows`) `torgashka.log` єдиний видимий канал.
+pub fn standby_url_with_logger<F: FnMut(&str, &str)>(
+    primary_url: Option<&str>,
+    local_port: u16,
+    user: &str,
+    env_db: Option<&str>,
+    mut log: F,
+) -> Option<String> {
+    match standby_local_url_or_err(primary_url, local_port, user, env_db) {
+        Ok(url) => Some(url),
+        Err(reason) => {
+            log("ERROR", &reason);
+            None
+        }
+    }
 }
 
 /// URL локальної репліки з конфіга вузла + креденшалів з env (не чиста —
-/// env-обгортка над [`standby_local_url`]).
-fn standby_url_for(cfg: &torgashka_infrastructure::node_config::NodeConfig) -> String {
+/// env-обгортка над [`standby_local_url_or_err`]). `None` — імені БД немає:
+/// ERROR уже записано в `torgashka.log`, пул НЕ створюється.
+fn standby_url_for(cfg: &torgashka_infrastructure::node_config::NodeConfig) -> Option<String> {
     let user = std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
-    let db = std::env::var("TORGASHKA_PG_DB").unwrap_or_else(|_| "torgashka".to_string());
+    let env_db = std::env::var("TORGASHKA_PG_DB").ok();
     let primary = cfg.resolve_primary_db_url();
-    standby_local_url(primary.as_deref(), cfg.local_port, &user, &db)
+    standby_url_with_logger(
+        primary.as_deref(),
+        cfg.local_port,
+        &user,
+        env_db.as_deref(),
+        torgashka_infrastructure::embedded_pg::pg_log,
+    )
 }
 
 /// Шляхи-«проби готовності»: під час ініціалізації відповідаємо негайно (503),
@@ -775,25 +869,17 @@ async fn init_local_standby(
 ) -> Option<crate::route_local::LocalApiState> {
     use sqlx::postgres::PgPoolOptions;
     use torgashka_infrastructure::{
-        node_config as nc,
         repositories::{directories::SqlxDirectories, pos::SqlxPos, write::SqlxWriteDirectories},
         store_ctx::StorePool,
     };
     if !cfg.is_standby() {
         return None;
     }
-    // URL локальної репліки: той самий user/db, що й primary (з db_sources/
-    // env), host → 127.0.0.1, port → local_port. Fallback — локальні дефолти
-    // embedded PG (TORGASHKA_PG_USER/TORGASHKA_PG_DB).
-    let url = cfg
-        .resolve_primary_db_url()
-        .and_then(|u| nc::local_db_url(&u, cfg.local_port))
-        .unwrap_or_else(|| {
-            let user =
-                std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
-            let db = std::env::var("TORGASHKA_PG_DB").unwrap_or_else(|_| "torgashka".to_string());
-            nc::fallback_local_url(cfg.local_port, &db, &user)
-        });
+    // URL локальної репліки: ім'я БД — з [node] primary_db_url (host:port →
+    // 127.0.0.1:local_port, пароль відкидається) або з TORGASHKA_PG_DB.
+    // Жодних здогадок: немає імені БД → ERROR у torgashka.log і локальні роути
+    // НЕ монтуються (раніше підставлялась неіснуюча БД «torgashka»).
+    let url = standby_url_for(cfg)?;
     let pool = match PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(std::time::Duration::from_secs(5))
@@ -802,17 +888,23 @@ async fn init_local_standby(
     {
         Ok(p) => p,
         Err(e) => {
-            eprintln!(
-                "[torgashka-api] standby: локальна репліка 127.0.0.1:{} недоступна ({e}) —                  локальний режим вимкнено (запустіть embedded PG / standby_provision)",
-                cfg.local_port
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "ERROR",
+                &format!(
+                    "standby: локальна репліка 127.0.0.1:{} недоступна ({e}) — локальний режим вимкнено (запустіть embedded PG / standby_provision)",
+                    cfg.local_port
+                ),
             );
             return None;
         }
     };
     let sp = StorePool::new(pool);
-    eprintln!(
-        "[torgashka-api] standby: локальна репліка 127.0.0.1:{} підключена — /api/v1/local/* активні",
-        cfg.local_port
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!(
+            "standby: локальна репліка 127.0.0.1:{} підключена — /api/v1/local/* активні",
+            cfg.local_port
+        ),
     );
     Some(crate::route_local::LocalApiState {
         cfg: cfg.clone(),
@@ -876,7 +968,7 @@ async fn init_facade_state() -> Result<
     let plan = plan_db_startup(
         resolved.as_ref().ok().map(String::as_str),
         node_cfg.is_standby(),
-        Some(standby_url_for(&node_cfg)),
+        standby_url_for(&node_cfg),
     );
     torgashka_infrastructure::embedded_pg::pg_log(
         "INFO",
@@ -898,12 +990,19 @@ async fn init_facade_state() -> Result<
     match torgashka_infrastructure::db::connect_readonly_pool(5).await {
         Ok(pool) => {
             if let Err(e) = torgashka_infrastructure::db::ensure_schema(&pool).await {
-                eprintln!("[torgashka-api] попередження: авто-міграція схеми не виконана: {e}");
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("крок 3: авто-міграція схеми НЕ виконана — {e}"),
+                );
             }
             pool.close().await;
         }
         Err(e) => {
-            eprintln!("[torgashka-api] попередження: БД недоступна для авто-міграції ({e})");
+            // Провал створення пула: причина мусить бути у файлі (Windows: stderr приховано).
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "ERROR",
+                &format!("крок 3: БД недоступна для авто-міграції — {e}"),
+            );
         }
     }
     torgashka_infrastructure::embedded_pg::pg_log(
@@ -916,7 +1015,7 @@ async fn init_facade_state() -> Result<
     // ── Крок 4: репозиторії/сервіси (кожен пул створюється один раз) ──
     let t4 = Instant::now();
     let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
-        Some((pool, read, write, pos, ledger, auth)) => (
+        Ok((pool, read, write, pos, ledger, auth)) => (
             Some(read),
             Some(write),
             Some(pool),
@@ -924,7 +1023,18 @@ async fn init_facade_state() -> Result<
             Some(ledger),
             Some(auth),
         ),
-        None => (None, None, None, None, None, None),
+        Err(reason) => {
+            // Перелік того, що НЕ змонтовано — щоб причина 503-ї була видима
+            // в torgashka.log без здогадок (дефект 2026-09).
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "ERROR",
+                &format!(
+                    "крок 4: НЕ змонтовано readdirs/write/pos/ledger/auth/setup \
+                     (/api/v1/setup/status = 503, логін-гейт каси висне) — {reason}"
+                ),
+            );
+            (None, None, None, None, None, None)
+        }
     };
     // Окремий флаг auth: TORGASHKA_RUST_AUTH=1 вмикає Rust-гілку auth навіть якщо
     // readdirs вимкнено (проксі-режим для решти) — але пул створюється спільно.
@@ -941,8 +1051,11 @@ async fn init_facade_state() -> Result<
                 )
             }
             Err(e) => {
-                eprintln!(
-                    "[torgashka-api] попередження: {RUST_AUTH_ENV}=1, але БД недоступна ({e}); auth через роути не змонтовано (LEGACY → 410)"
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!(
+                        "{RUST_AUTH_ENV}=1, але пул для auth НЕ створено ({e}) — auth через роути не змонтовано (LEGACY → 410)"
+                    ),
                 );
                 None
             }
@@ -1044,6 +1157,46 @@ async fn init_facade_state() -> Result<
     Ok((state, embedded_pg))
 }
 
+/// Ідемпотентний старт локальної репліки з логом результату (дефект 5а:
+/// блокуючий PG-старт — тільки через `spawn_blocking`). Спільний для обох
+/// standby-гілок плану.
+async fn start_local_replica_logged() {
+    let t = Instant::now();
+    match tokio::task::spawn_blocking(
+        torgashka_infrastructure::embedded_pg::ensure_local_replica_running,
+    )
+    .await
+    {
+        Ok(Ok(true)) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!(
+                "крок 2 (standby): локальну репліку піднято ({} мс)",
+                t.elapsed().as_millis()
+            ),
+        ),
+        Ok(Ok(false)) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!(
+                "крок 2 (standby): локальна репліка — no-op (уже слухає / ще не провіжнена) ({} мс)",
+                t.elapsed().as_millis()
+            ),
+        ),
+        // Чесна причина і робота далі: фасад відповідає, локальний режим
+        // увімкнеться, щойно репліка стане доступною.
+        Ok(Err(e)) => torgashka_infrastructure::embedded_pg::pg_log(
+            "ERROR",
+            &format!(
+                "крок 2 (standby): локальну репліку НЕ піднято ({e}) — працюємо далі ({} мс)",
+                t.elapsed().as_millis()
+            ),
+        ),
+        Err(e) => torgashka_infrastructure::embedded_pg::pg_log(
+            "ERROR",
+            &format!("крок 2 (standby): таск старту репліки панікував ({e})"),
+        ),
+    }
+}
+
 /// Виконує план підготовки БД (ФІКС дефектів 5+6).
 ///
 /// * `ExternalUrl` — БД ззовні: embedded PG не чіпаємо;
@@ -1054,9 +1207,7 @@ async fn init_facade_state() -> Result<
 pub async fn apply_db_startup_plan(
     plan: DbStartupPlan,
 ) -> Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres> {
-    use torgashka_infrastructure::embedded_pg::{
-        bootstrap_if_needed, ensure_local_replica_running,
-    };
+    use torgashka_infrastructure::embedded_pg::bootstrap_if_needed;
     match plan {
         DbStartupPlan::ExternalUrl(url) => {
             torgashka_infrastructure::embedded_pg::pg_log(
@@ -1069,40 +1220,11 @@ pub async fn apply_db_startup_plan(
             torgashka_infrastructure::embedded_pg::pg_log(
                 "INFO",
                 &format!(
-                    "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО —                      це каталог репліки; ідемпотентно піднімаємо локальну репліку, читаємо {url}"
+                    "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО — \
+                     це каталог репліки; ідемпотентно піднімаємо локальну репліку, читаємо {url}"
                 ),
             );
-            let t = Instant::now();
-            // Дефект 5а: блокуючий старт локального PG — тільки spawn_blocking.
-            match tokio::task::spawn_blocking(ensure_local_replica_running).await {
-                Ok(Ok(true)) => torgashka_infrastructure::embedded_pg::pg_log(
-                    "INFO",
-                    &format!(
-                        "крок 2 (standby): локальну репліку піднято ({} мс)",
-                        t.elapsed().as_millis()
-                    ),
-                ),
-                Ok(Ok(false)) => torgashka_infrastructure::embedded_pg::pg_log(
-                    "INFO",
-                    &format!(
-                        "крок 2 (standby): локальна репліка — no-op (уже слухає / ще не провіжнена) ({} мс)",
-                        t.elapsed().as_millis()
-                    ),
-                ),
-                // Чесна причина і робота далі: фасад відповідає, локальний режим
-                // увімкнеться, щойно репліка стане доступною.
-                Ok(Err(e)) => torgashka_infrastructure::embedded_pg::pg_log(
-                    "ERROR",
-                    &format!(
-                        "крок 2 (standby): локальну репліку НЕ піднято ({e}) — працюємо далі ({} мс)",
-                        t.elapsed().as_millis()
-                    ),
-                ),
-                Err(e) => torgashka_infrastructure::embedded_pg::pg_log(
-                    "ERROR",
-                    &format!("крок 2 (standby): таск старту репліки панікував ({e})"),
-                ),
-            }
+            start_local_replica_logged().await;
             // Джерело даних standby-каси — локальна репліка, без пароля.
             std::env::set_var("DATABASE_URL", &url);
             torgashka_infrastructure::embedded_pg::pg_log(
@@ -1110,6 +1232,24 @@ pub async fn apply_db_startup_plan(
                 &format!("крок 2 (standby): DATABASE_URL = {url} (локальна репліка, лише читання)"),
             );
             // Реплікою НЕ володіємо: Drop фасаду не має її зупиняти.
+            None
+        }
+        DbStartupPlan::StandbyWithoutDbName(reason) => {
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО — це каталог репліки",
+            );
+            // Саму репліку піднімаємо (її стан не залежить від імені БД у URL),
+            // але DATABASE_URL НЕ вигадуємо — пули/роути лишаться немонтованими.
+            start_local_replica_logged().await;
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "ERROR",
+                &format!(
+                    "крок 2 (standby): DATABASE_URL НЕ встановлено — {reason}; \
+                     локальні пули (readdirs/write/pos/ledger/auth) і /api/v1/setup/status \
+                     НЕ монтуються; здогадок імені БД немає"
+                ),
+            );
             None
         }
         DbStartupPlan::PrimaryBootstrap => {
@@ -1252,23 +1392,139 @@ mod tests {
 
     #[test]
     fn standby_url_from_primary_is_passwordless_and_local() {
-        let url = standby_local_url(
+        let url = standby_local_url_or_err(
             Some("postgresql://repuser:s3cret@10.0.0.5:5432/pos_net"),
             5433,
             "repuser",
-            "repdb",
-        );
+            None,
+        )
+        .expect("URL локальної репліки");
         assert_eq!(url, "postgresql://repuser@127.0.0.1:5433/pos_net");
         assert!(!url.contains("s3cret"), "{url}");
-    }
-
-    #[test]
-    fn standby_url_falls_back_to_local_defaults() {
-        let url = standby_local_url(None, 5433, "postgres", "torgashka");
-        assert_eq!(url, "postgresql://postgres@127.0.0.1:5433/torgashka");
         // userinfo без ':' → пароля немає
         let userinfo = &url[url.find("://").unwrap() + 3..url.rfind('@').unwrap()];
         assert!(!userinfo.contains(':'), "пароль у URL заборонений: {url}");
+    }
+
+    /// Критерій контракту: ім'я БД primary доживає до локального URL
+    /// (userinfo збережено, host:port → 127.0.0.1:local_port, БД збережено).
+    #[test]
+    fn standby_local_url_keeps_primary_db_name() {
+        assert_eq!(
+            standby_local_url_or_err(
+                Some("postgresql://postgres@192.0.2.10:5432/pos_system_fresh"),
+                5433,
+                "postgres",
+                None,
+            )
+            .expect("URL локальної репліки"),
+            "postgresql://postgres@127.0.0.1:5433/pos_system_fresh"
+        );
+    }
+
+    // ── Регресія 2026-09: жодних здогадок імені БД «torgashka» ───────────────
+
+    #[test]
+    fn standby_url_without_db_name_is_error_and_is_logged() {
+        let mut records: Vec<(String, String)> = Vec::new();
+        let out = standby_url_with_logger(None, 5433, "postgres", None, |level, msg| {
+            records.push((level.to_string(), msg.to_string()));
+        });
+        assert!(out.is_none(), "без імені БД пул НЕ створюється");
+        assert_eq!(records.len(), 1, "рівно один запис у лог");
+        assert_eq!(records[0].0, "ERROR", "рівень запису — ERROR");
+        assert!(
+            records[0].1.contains("локальна репліка недоступна"),
+            "текст: {}",
+            records[0].1
+        );
+        assert!(
+            records[0].1.contains("primary_db_url") && records[0].1.contains("TORGASHKA_PG_DB"),
+            "текст мусить називати обидва джерела: {}",
+            records[0].1
+        );
+
+        // primary_db_url Є, але без імені БД → теж ERROR, без здогадки.
+        let mut records2: Vec<(String, String)> = Vec::new();
+        let out2 = standby_url_with_logger(
+            Some("postgresql://postgres@192.0.2.10:5432"),
+            5433,
+            "postgres",
+            None,
+            |level, msg| records2.push((level.to_string(), msg.to_string())),
+        );
+        assert!(out2.is_none(), "URL без імені БД → пул НЕ створюється");
+        assert_eq!(records2.len(), 1);
+        assert_eq!(records2[0].0, "ERROR");
+    }
+
+    /// Який би шлях не резолвився — «/torgashka» у виводі НЕ з'являється.
+    #[test]
+    fn no_url_ever_ends_with_guessed_torgashka() {
+        let candidates = [
+            standby_local_url_or_err(
+                Some("postgresql://postgres@192.0.2.10:5432/pos_system_fresh"),
+                5433,
+                "postgres",
+                None,
+            ),
+            standby_local_url_or_err(None, 5433, "postgres", Some("pos_system_fresh")),
+            standby_local_url_or_err(
+                Some("postgresql://postgres@192.0.2.10:5432/pos_system_fresh"),
+                5433,
+                "postgres",
+                Some("pos_system_fresh"),
+            ),
+        ];
+        for c in candidates {
+            let url = c.expect("URL локальної репліки");
+            assert!(!url.ends_with("/torgashka"), "здогадка повернулась: {url}");
+            assert!(!url.contains("torgashka"), "здогадка повернулась: {url}");
+        }
+        // Без жодного джерела імені БД — Err, а не URL.
+        assert!(standby_local_url_or_err(None, 5433, "postgres", None).is_err());
+        assert!(standby_local_url_or_err(None, 5433, "postgres", Some("   ")).is_err());
+    }
+
+    /// План standby-вузла без імені БД не містить жодного URL (і НІКОЛИ не
+    /// піде primary-шляхом з initdb на каталозі репліки).
+    #[test]
+    fn standby_plan_without_db_name_skips_pool() {
+        let plan = plan_db_startup(None, true, None);
+        assert_ne!(
+            plan,
+            DbStartupPlan::PrimaryBootstrap,
+            "standby НІКОЛИ не bootstrap (дефект 6)"
+        );
+        assert_ne!(
+            plan,
+            DbStartupPlan::StandbyReplica(String::new()),
+            "порожній DATABASE_URL — стара поведінка, тепер заборонена"
+        );
+        match plan {
+            DbStartupPlan::StandbyWithoutDbName(reason) => {
+                assert!(
+                    reason.contains("primary_db_url") || reason.contains("TORGASHKA_PG_DB"),
+                    "причина мусить називати джерела: {reason}"
+                );
+            }
+            other => panic!("очікували StandbyWithoutDbName, отримали {other:?}"),
+        }
+    }
+
+    #[test]
+    fn db_name_from_url_reads_name_only() {
+        assert_eq!(
+            db_name_from_url("postgresql://u:p@h:5432/pos_system_fresh"),
+            Some("pos_system_fresh".to_string())
+        );
+        assert_eq!(
+            db_name_from_url("postgres://h:5432/db?sslmode=require"),
+            Some("db".to_string())
+        );
+        assert_eq!(db_name_from_url("postgresql://u@h:5432"), None);
+        assert_eq!(db_name_from_url("postgresql://u@h:5432/"), None);
+        assert_eq!(db_name_from_url("не-url"), None);
     }
 
     #[test]

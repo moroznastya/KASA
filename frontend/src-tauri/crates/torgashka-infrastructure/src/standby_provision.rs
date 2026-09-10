@@ -40,6 +40,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::embedded_pg::{pg_log, EmbeddedPostgres, EMBEDDED_PG_PORT};
+use crate::standby_heartbeat::StandbySettings;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Помилки
@@ -92,6 +93,13 @@ pub struct StandbyParams {
     pub primary_host: String,
     /// Порт primary (з `ReplicationCreds.primary_port`).
     pub primary_port: u16,
+    /// Ім'я БД на primary (`ReplicationCreds.database`, SQLite-ключ
+    /// `node_replication_database`). Кластер копіюється ЦІЛКОМ (фізична
+    /// hot-standby), але ім'я БД потрібне, щоб після провіжну записати
+    /// `[node] primary_db_url`, з якого [`crate::node_config::local_db_url`]
+    /// виводить адресу локальної копії. Без імені БД фасад не має права
+    /// вгадувати її (дефект 2026-09: підставляв «torgashka»).
+    pub database: String,
     /// Ім'я ролі реплікації на primary (`replicator_<short>`).
     pub replication_role: String,
     /// Ім'я replication slot (`standby_<short>`).
@@ -116,6 +124,40 @@ impl StandbyParams {
             .clone()
             .unwrap_or_else(crate::embedded_pg::data_dir_default)
     }
+}
+
+/// Мапа «SQLite settings вузла (`node_*`) → [`StandbyParams`]» — ЧИСТА функція
+/// (без SQLite/env), тому й покрита тестами.
+///
+/// Відсутній або порожній ключ → `Err` із НАЗВОЮ ключа: провіжн не починається,
+/// бо кожен ключ — вхідні дані pg_basebackup. `node_replication_database`
+/// обов'язковий так само, як `node_replication_host`: ім'я БД їде у
+/// `[node] primary_db_url`, і без нього фасад піднімався б без пулів БД
+/// (`/api/v1/setup/status` = 503 назавжди).
+pub fn params_from_settings(st: &StandbySettings) -> Result<StandbyParams, String> {
+    let non_empty = |name: &str, v: Option<String>| -> Result<String, String> {
+        v.filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| format!("{name} відсутній у SQLite settings — join неповний"))
+    };
+    let host = non_empty("node_replication_host", st.replication_host.clone())?;
+    let port = st
+        .replication_port
+        .ok_or_else(|| "node_replication_port відсутній у SQLite settings".to_string())?;
+    let database = non_empty("node_replication_database", st.replication_database.clone())?;
+    let role = non_empty("node_replication_role", st.replication_role.clone())?;
+    let slot = non_empty("node_replication_slot", st.replication_slot.clone())?;
+    let password = non_empty("node_replication_password", st.replication_password.clone())?;
+    Ok(StandbyParams {
+        primary_host: host,
+        primary_port: port,
+        database,
+        replication_role: role,
+        replication_slot: slot,
+        replication_password: password,
+        data_dir: None,      // дефолт: embedded_pg::data_dir_default()
+        bin_dir: None,       // дефолт: EmbeddedPostgres::locate()
+        secret_anchor: None, // дефолт: replication_secret.ctx поруч із data_dir
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,6 +482,13 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
     let data_dir = p.resolved_data_dir();
     if p.primary_host.trim().is_empty() {
         return Err(ProvisionError::Invalid("primary_host порожній".into()));
+    }
+    if p.database.trim().is_empty() {
+        return Err(ProvisionError::Invalid(
+            "database (ім'я БД на primary) порожній — без нього [node] primary_db_url \
+             не скласти, а фасад не має права вгадувати БД"
+                .into(),
+        ));
     }
     if p.replication_role.trim().is_empty() {
         return Err(ProvisionError::Invalid("replication_role порожній".into()));
@@ -855,6 +904,7 @@ primary_conninfo = 'host=h port=5432 user=u password=oldpass1234567890abcdef app
         let p = StandbyParams {
             primary_host: "10.0.0.5".into(),
             primary_port: 5433,
+            database: "pos_system_fresh".into(),
             replication_role: "replicator_x".into(),
             replication_slot: "standby_x".into(),
             replication_password: "0123456789abcdef01234567".into(),
@@ -866,6 +916,80 @@ primary_conninfo = 'host=h port=5432 user=u password=oldpass1234567890abcdef app
             p.resolved_data_dir(),
             crate::embedded_pg::data_dir_default()
         );
+    }
+
+    /// Регресія 2026-09: без `node_replication_database` провіжн НЕ починається
+    /// (інакше ім'я БД губилось і фасад вгадував «torgashka»).
+    #[test]
+    fn params_from_settings_requires_replication_database() {
+        let full = StandbySettings {
+            node_id: Some("node-1".into()),
+            node_token: Some("tok".into()),
+            replication_role: Some("replicator_x".into()),
+            replication_password: Some("0123456789abcdef01234567".into()),
+            replication_host: Some("192.0.2.10".into()),
+            replication_port: Some(5432),
+            replication_database: Some("pos_system_fresh".into()),
+            replication_slot: Some("standby_x".into()),
+            server_url: Some("http://192.0.2.10:8000".into()),
+        };
+        let p = params_from_settings(&full).expect("повні settings → параметри");
+        assert_eq!(
+            p.database, "pos_system_fresh",
+            "ім'я БД донесено до провіжну"
+        );
+        assert_eq!(p.primary_host, "192.0.2.10");
+        assert_eq!(p.primary_port, 5432);
+
+        // Відсутній ключ → Err із назвою ключа.
+        let mut st = full.clone();
+        st.replication_database = None;
+        let err = params_from_settings(&st).expect_err("без node_replication_database → Err");
+        assert!(
+            err.contains("node_replication_database"),
+            "текст помилки: {err}"
+        );
+
+        // Порожній/пробільний рядок = той самий дефект → Err із назвою ключа.
+        let mut st = full.clone();
+        st.replication_database = Some("   ".into());
+        let err = params_from_settings(&st).expect_err("порожнє ім'я БД → Err");
+        assert!(
+            err.contains("node_replication_database"),
+            "текст помилки: {err}"
+        );
+    }
+
+    /// Кожен обов'язковий ключ відсутній → Err із СВОЄЮ назвою (не мовчазний
+    /// дефолт).
+    #[test]
+    fn params_from_settings_names_every_missing_key() {
+        type Clear = fn(&mut StandbySettings);
+        let cases: [(&str, Clear); 4] = [
+            ("node_replication_host", |s| s.replication_host = None),
+            ("node_replication_role", |s| s.replication_role = None),
+            ("node_replication_slot", |s| s.replication_slot = None),
+            ("node_replication_password", |s| {
+                s.replication_password = None
+            }),
+        ];
+        for (key, clear) in cases {
+            let mut st = StandbySettings {
+                replication_host: Some("192.0.2.10".into()),
+                replication_port: Some(5432),
+                replication_database: Some("pos_system_fresh".into()),
+                replication_role: Some("replicator_x".into()),
+                replication_slot: Some("standby_x".into()),
+                replication_password: Some("0123456789abcdef01234567".into()),
+                ..Default::default()
+            };
+            clear(&mut st);
+            let err = params_from_settings(&st).expect_err("ключ очищено → Err");
+            assert!(
+                err.contains(key),
+                "очікували назву ключа {key}, отримали: {err}"
+            );
+        }
     }
 
     #[test]

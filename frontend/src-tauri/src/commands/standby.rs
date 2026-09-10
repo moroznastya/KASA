@@ -15,34 +15,19 @@
 
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
 use torgashka_infrastructure::standby_heartbeat;
-use torgashka_infrastructure::standby_provision::StandbyParams;
+use torgashka_infrastructure::standby_provision::{self, StandbyParams};
 
 /// Побудувати параметри провіжингу з SQLite settings (sync I/O — викликати
 /// у spawn_blocking). `node_node_id` — маркер «join виконано».
+///
+/// Мапа «settings → params» живе в інфраструктурі
+/// ([`standby_provision::params_from_settings`]) — чиста функція, покрита
+/// тестами (обов'язкові ключі, зокрема `node_replication_database`: без імені
+/// БД провіжн не починається, бо його наслідок — `[node] primary_db_url`).
 fn build_params_from_settings() -> Result<StandbyParams, String> {
     let st = standby_heartbeat::read_standby_settings()?
         .ok_or_else(|| "join не виконано: спершу приєднайте вузол (NodeJoinPage)".to_string())?;
-    let non_empty = |name: &str, v: Option<String>| -> Result<String, String> {
-        v.filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| format!("{name} відсутній у SQLite settings — join неповний"))
-    };
-    let host = non_empty("node_replication_host", st.replication_host)?;
-    let port = st
-        .replication_port
-        .ok_or_else(|| "node_replication_port відсутній у SQLite settings".to_string())?;
-    let role = non_empty("node_replication_role", st.replication_role)?;
-    let slot = non_empty("node_replication_slot", st.replication_slot)?;
-    let password = non_empty("node_replication_password", st.replication_password)?;
-    Ok(StandbyParams {
-        primary_host: host,
-        primary_port: port,
-        replication_role: role,
-        replication_slot: slot,
-        replication_password: password,
-        data_dir: None,      // дефолт: embedded_pg::data_dir_default()
-        bin_dir: None,       // дефолт: EmbeddedPostgres::locate()
-        secret_anchor: None, // дефолт: replication_secret.ctx поруч із data_dir
-    })
+    standby_provision::params_from_settings(&st)
 }
 
 /// Запустити провіжинінг standby-вузла (pg_basebackup з primary) — B1a.
@@ -62,14 +47,31 @@ pub async fn start_standby_provision() -> Result<(), String> {
     let params: StandbyParams = tauri::async_runtime::spawn_blocking(build_params_from_settings)
         .await
         .map_err(|e| format!("spawn_blocking(settings): {e}"))??;
+    // Реальне ім'я БД (з node_replication_database) потрібне й ПІСЛЯ провіжну:
+    // параметри споживаються provision_standby, тож знімаємо їх наперед.
+    let primary_host = params.primary_host.clone();
+    let primary_port = params.primary_port;
+    let database = params.database.clone();
     torgashka_infrastructure::standby_provision::provision_standby(params)
         .await
         .map_err(|e| format!("standby provision: {e}"))?;
-    tauri::async_runtime::spawn_blocking(|| {
-        // [node] mode=standby: після рестарту фасад змонтує /api/v1/local/*
-        // проти локальної репліки 5433 (init_local_standby, torgashka-api).
+    tauri::async_runtime::spawn_blocking(move || {
+        // [node] mode=standby + primary_db_url: після рестарту фасад змонтує
+        // /api/v1/local/* проти локальної репліки 5433 (init_local_standby,
+        // torgashka-api). URL обов'язковий — local_db_url() виводить з нього
+        // 127.0.0.1:<local_port>/<РЕАЛЬНА БД>; без нього фасад лишався без
+        // пулів і вгадував «torgashka» (дефект 2026-09).
+        let user = std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
         let cfg = NodeConfig {
             mode: NodeMode::Standby,
+            primary_db_url: Some(
+                torgashka_infrastructure::node_config::primary_db_url_from_parts(
+                    &user,
+                    &primary_host,
+                    primary_port,
+                    &database,
+                ),
+            ),
             ..NodeConfig::default()
         };
         cfg.save_to_disk()?;

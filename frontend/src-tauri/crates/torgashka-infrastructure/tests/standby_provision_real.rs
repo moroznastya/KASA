@@ -94,6 +94,7 @@ async fn provision_keeps_local_replica_running() {
         primary_port: env_or("TORGASHKA_TEST_PRIMARY_PORT", "5545")
             .parse()
             .expect("TORGASHKA_TEST_PRIMARY_PORT — число"),
+        database: env_or("TORGASHKA_TEST_DATABASE", "pos_system_fresh"),
         replication_role: env_or("TORGASHKA_TEST_REPL_ROLE", "replicator_e2e"),
         replication_slot: env_or("TORGASHKA_TEST_REPL_SLOT", "standby_e2e"),
         replication_password: env_or("TORGASHKA_TEST_REPL_PASSWORD", "e2epass123"),

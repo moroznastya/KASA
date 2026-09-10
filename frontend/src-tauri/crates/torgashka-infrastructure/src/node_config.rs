@@ -492,6 +492,19 @@ pub fn strip_password(url: &str) -> String {
     }
 }
 
+/// URL primary для секції `[node]` з креденшлів вузла:
+/// `postgresql://{user}@{host}:{port}/{database}` (без пароля — роль реплікації
+/// має власний секрет у `postgresql.auto.conf`).
+///
+/// Записується `start_standby_provision` ПІСЛЯ успішного провіжну — саме з нього
+/// [`local_db_url`] виводить локальну адресу `127.0.0.1:{local_port}/<реальна БД>`.
+/// Без цього ім'я БД губилось і фасад підставляв вигадану «torgashka»
+/// (дефект 2026-09: `/api/v1/setup/status` = 503 назавжди, postgres.log каси →
+/// `FATAL: database "torgashka" does not exist`).
+pub fn primary_db_url_from_parts(user: &str, host: &str, port: u16, database: &str) -> String {
+    format!("postgresql://{user}@{host}:{port}/{database}")
+}
+
 /// Дефолтний локальний URL, якщо primary URL не резолвиться: postgres-дефолт
 /// на 127.0.0.1:local_port (бд/user беруться з env/embedded pg дефолтів).
 pub fn fallback_local_url(local_port: u16, db: &str, user: &str) -> String {
@@ -907,6 +920,28 @@ degrade_to_local = false
     }
 
     // ── Дефект 5: URL локальної репліки БЕЗ пароля ──────────────────────────
+
+    // ── Дефект 2026-09: ім'я БД standby-каси не губиться на шляху
+    //    провіжн → [node] primary_db_url → локальний URL ────────────────────────
+
+    #[test]
+    fn primary_db_url_from_parts_derives_local_url_with_same_db() {
+        // Критерій контракту: userinfo збережено, host:port → локальні,
+        // ім'я БД збережено.
+        let primary = primary_db_url_from_parts("postgres", "192.0.2.10", 5432, "pos_system_fresh");
+        assert_eq!(
+            primary,
+            "postgresql://postgres@192.0.2.10:5432/pos_system_fresh"
+        );
+        assert_eq!(
+            local_db_url(&primary, 5433).expect("локальний URL"),
+            "postgresql://postgres@127.0.0.1:5433/pos_system_fresh"
+        );
+        assert_eq!(
+            local_readonly_url(&primary, 5433).expect("локальний URL без пароля"),
+            "postgresql://postgres@127.0.0.1:5433/pos_system_fresh"
+        );
+    }
 
     #[test]
     fn local_readonly_url_drops_password() {
