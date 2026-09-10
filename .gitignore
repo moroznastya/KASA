@@ -153,3 +153,6 @@ dumps/
 
 # Веб-адмінка (Етап 6 §6): окрема збірка build:admin
 frontend/dist-admin/
+
+# ── External reference materials (ДПС/ПРРО, посібники — не для VCS) ──
+resources/
