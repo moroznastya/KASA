@@ -499,6 +499,31 @@ pub async fn join_node(
         serde_json::json!({ "requested_name": requested_name }),
     )
     .await;
+    // ЕТАП 16 (реалізація CREATE ROLE): фасад primary підключений
+    // суперкористувачем (backend/.env: postgres) — створюємо роль
+    // реплікації ЗАРАЗ, щоб каса одразу могла виконати pg_basebackup
+    // (join віддає креденшли лише один раз). Повторний join/provision:
+    // роль уже існує (42710 duplicate_object) → ALTER ROLE оновлює пароль.
+    // role_name = replicator_<8 hex> та repl_password = 24 hex — безпечні
+    // для прямого SQL (лише [a-z0-9_] / hex), екранування не потрібне.
+    let create_role_sql = format!(
+        "CREATE ROLE {role} LOGIN REPLICATION PASSWORD '{pw}'",
+        role = role_name,
+        pw = repl_password
+    );
+    match sqlx::raw_sql(&create_role_sql).execute(&pool).await {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("42710") => {
+            let alter_role_sql = format!(
+                "ALTER ROLE {role} WITH LOGIN REPLICATION PASSWORD '{pw}'",
+                role = role_name,
+                pw = repl_password
+            );
+            sqlx::raw_sql(&alter_role_sql).execute(&pool).await?;
+        }
+        Err(e) => return Err(NodeErr::Db(e)),
+    }
+
     let (primary_host, primary_port, primary_database) = primary_db_info();
     Ok(Json(JoinResponse {
         node_id,
