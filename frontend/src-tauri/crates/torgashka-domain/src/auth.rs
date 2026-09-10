@@ -30,6 +30,7 @@ use uuid::Uuid;
 ///   - адмінка (панель власника): `owner` (власник мережі),
 ///     `store_manager` (керуючий мережею);
 ///   - каса: `admin` (адміністратор точки), `cashier` (касир).
+///
 /// Python v1 мав ТІЛЬКИ admin|cashier; owner додано Етапом 3 мультиточковості,
 /// store_manager — Етапом 1 адмін-панелі (enum user_role у БД розширено).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

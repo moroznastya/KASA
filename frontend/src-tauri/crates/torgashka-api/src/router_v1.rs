@@ -342,10 +342,11 @@ pub fn build_router(state: AppState) -> Router {
 
     // Setup (Частина 1+2): перший власник + персональна БД — ПУБЛІЧНІ шляхи
     // (без JWT; у auth.rs/store_context.rs is_public_path додано /api/v1/setup).
+    // Дефект 5: /setup/status монтується ЗАВЖДИ (readiness-проба фронтенду —
+    // без БД віддає 503 зі станом, а не 404 й не «тишу» в сокеті).
+    router = router.route("/api/v1/setup/status", get(setup::status));
     if state.setup.is_some() {
-        router = router
-            .route("/api/v1/setup/status", get(setup::status))
-            .route("/api/v1/setup", post(setup::setup));
+        router = router.route("/api/v1/setup", post(setup::setup));
     }
 
     // Rust-гілка auth/users/settings/RBAC (етап 6) — під TORGASHKA_RUST_AUTH=1.

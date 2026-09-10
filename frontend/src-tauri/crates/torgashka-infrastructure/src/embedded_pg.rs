@@ -27,7 +27,7 @@
 //! у `<data_dir>/postgres.log`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Порт вбудованого PostgreSQL (фіксований; уникає конфлікту з системним 5432).
@@ -37,11 +37,106 @@ pub const EMBEDDED_PG_PORT: u16 = 5433;
 /// потребує crash recovery; на повільних дисках він перевищує 30s
 /// (checkpoint write 4.6s у логах користувача) → StartTimeout.
 fn start_timeout() -> Duration {
+    start_timeout_from(std::env::var(START_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Чиста логіка таймауту (тестована без env-гонок).
+pub fn start_timeout_from(env_value: Option<&str>) -> Duration {
+    if let Some(v) = env_value {
+        if let Ok(secs) = v.trim().parse::<u64>() {
+            // Обмеження 1..=600 с: 0 зробив би pg_ctl -t 0 (нескінченно),
+            // завелике значення повертає «вічне» очікування.
+            return Duration::from_secs(secs.clamp(1, 600));
+        }
+    }
     if cfg!(windows) {
         Duration::from_secs(60)
     } else {
         Duration::from_secs(30)
     }
+}
+
+/// Env-перевизначення [`start_timeout`] у секундах (тести/оператори).
+pub const START_TIMEOUT_ENV: &str = "TORGASHKA_PG_START_TIMEOUT_SECS";
+
+/// Таймаут з'єднання `psql` (PGCONNECT_TIMEOUT, дефект 5б): psql НЕ має права
+/// висіти на TCP-конекті/старті з'єднання безмежно.
+pub const PSQL_CONNECT_TIMEOUT_SECS: u64 = 5;
+
+/// Ім'я файлу stderr `pg_ctl` у data_dir (дефект 5б): діагностика pg_ctl
+/// зберігається, але НЕ через pipe — демон `postgres.exe` не може успадкувати
+/// pipe і заблокувати батька назавжди.
+pub const PG_CTL_LOG_NAME: &str = "pg_ctl.log";
+
+/// Аргументи `psql` для ЛОКАЛЬНОГО підключення (чиста функція — тестована).
+///
+/// `-w` (`--no-password`) — обов'язковий: застосунок це GUI-процес без
+/// консолі; якщо pg_hba репліки вимагає пароль, psql показав би запит пароля
+/// і застиг НАЗАВЖДИ (саме це блокувало фасад :8000 — дефект 5). З `-w` psql
+/// завершується помилкою замість очікування вводу.
+pub fn psql_conn_args(user: &str, db: &str, port: u16) -> Vec<String> {
+    vec![
+        "-w".to_string(),
+        "-h".to_string(),
+        "127.0.0.1".to_string(),
+        "-p".to_string(),
+        port.to_string(),
+        "-U".to_string(),
+        user.to_string(),
+        "-d".to_string(),
+        db.to_string(),
+    ]
+}
+
+/// Env для `psql`: PGCONNECT_TIMEOUT (секунди) — межа очікування з'єднання.
+pub fn psql_conn_env() -> Vec<(&'static str, String)> {
+    vec![("PGCONNECT_TIMEOUT", PSQL_CONNECT_TIMEOUT_SECS.to_string())]
+}
+
+/// Аргументи `pg_ctl start` (чиста функція — тестована).
+///
+/// `-w -t <secs>`: pg_ctl чекає готовності, але НЕ довше нашого таймауту
+/// (дефолт pg_ctl — 60 с, і без `-t` це ще одна сліпа зона очікування).
+pub fn pg_ctl_start_args(
+    data_dir: &Path,
+    log: &Path,
+    opts: &str,
+    timeout_secs: u64,
+) -> Vec<std::ffi::OsString> {
+    vec![
+        "-D".into(),
+        data_dir.as_os_str().into(),
+        "-l".into(),
+        log.as_os_str().into(),
+        "-o".into(),
+        opts.into(),
+        "-w".into(),
+        "-t".into(),
+        timeout_secs.to_string().into(),
+        "start".into(),
+    ]
+}
+
+/// Аргументи `pg_ctl stop` (чиста функція — тестована): `-w -t <secs>`.
+pub fn pg_ctl_stop_args(data_dir: &Path, timeout_secs: u64) -> Vec<std::ffi::OsString> {
+    vec![
+        "-D".into(),
+        data_dir.as_os_str().into(),
+        "-m".into(),
+        "fast".into(),
+        "-w".into(),
+        "-t".into(),
+        timeout_secs.to_string().into(),
+        "stop".into(),
+    ]
+}
+
+/// Рядок аргументів для логу (діагностика: що саме виконано).
+fn args_line<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> String {
+    args.iter()
+        .map(|a| a.as_ref().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Помилки модуля вбудованого PostgreSQL.
@@ -176,12 +271,84 @@ fn pg_ctl_name() -> &'static str {
     }
 }
 
+/// Готує `Command` для `pg_ctl` зі stdio, які НЕ може успадкувати демон.
+///
+/// ДЕФЕКТ 5б (жива Windows-каса): `pg_ctl start` лишає жити `postgres.exe`
+/// (postmaster + бекенди). Якщо stdout/stderr батька — pipe (`.output()`), демон
+/// успадковує write-end і тримає його, доки живий сервер; читання pipe ніколи
+/// не бачить EOF → `.output()` блокується НАЗАВЖДИ (журнал обривався на
+/// `data_dir`, 5× postgres.exe живі, pg_ctl.exe відсутній, фасад :8000 без
+/// `axum::serve`). Тому:
+///   * `stdout` → `Stdio::null()` — вивід СЕРВЕРА все одно йде в
+///     `-l <data_dir>/postgres.log` (аргумент збережено);
+///   * `stderr` → файл `<data_dir>/pg_ctl.log` — діагностика pg_ctl не губиться
+///     (раніше осідала в пам'яті `.output()`), читається у текст помилки;
+///   * `stdin` → `Stdio::null()` — демон не тримає ввід/консоль батька.
+///
+/// Якщо `pg_ctl.log` не створити — `Stdio::null()` (блокування неможливе за
+/// жодних умов) + WARN у torgashka.log. `CREATE_NO_WINDOW |
+/// CREATE_NEW_PROCESS_GROUP` (дефект Ctrl+C/0xC000013A) збережено.
+fn pg_ctl_command(pg_ctl: &Path, data_dir: &Path) -> Command {
+    let mut c = Command::new(pg_ctl);
+    // Демон не має успадковувати жодного pipe батька.
+    c.stdin(Stdio::null()).stdout(Stdio::null());
+    let log = data_dir.join(PG_CTL_LOG_NAME);
+    match std::fs::File::create(&log) {
+        Ok(f) => {
+            c.stderr(Stdio::from(f));
+        }
+        Err(e) => {
+            pg_log(
+                "WARN",
+                &format!("{} не створено ({e}) — stderr pg_ctl → null", log.display()),
+            );
+            c.stderr(Stdio::null());
+        }
+    }
+    #[cfg(windows)]
+    {
+        // CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x0800_0000):
+        // 1) postgres.exe НЕ отримує CTRL_C_EVENT разом із консоллю застосунку
+        //    (0xC000013A);
+        // 2) GUI-процес без консолі спавнить console-процес pg_ctl.exe → Windows
+        //    створює ВИДИМЕ чорне вікно. Юзер закриває його → CTRL_CLOSE_EVENT
+        //    → postgres.exe падає з 0xC000013A → crash recovery 30-60 с на
+        //    наступному старті (лог: "database system was not properly shut
+        //    down"). CREATE_NO_WINDOW ховає вікно — прибрати джерело crash.
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0200);
+    }
+    c
+}
+
 fn psql_name() -> &'static str {
     if cfg!(windows) {
         "psql.exe"
     } else {
         "psql"
     }
+}
+
+/// Хвіст файлу, якщо він існує (інакше «(відсутній)») — без шуму в діагностиці.
+fn log_tail_if_exists(path: &Path, n: usize) -> String {
+    if path.exists() {
+        read_log_tail(path, n)
+    } else {
+        "(відсутній)".to_string()
+    }
+}
+
+/// Контекст невдалого `pg_ctl` для повідомлення про помилку (дефект 5б, п.3 —
+/// stderr не «проковтувати»): stderr самого pg_ctl тепер у `pg_ctl.log`,
+/// причини від сервера — у `postgres.log` (після `pg_ctl: could not start
+/// server` деталі є ЛИШЕ там).
+fn pg_ctl_failure_context(data_dir: &Path) -> String {
+    format!(
+        "{} (хвіст): {}; postgres.log (хвіст): {}",
+        PG_CTL_LOG_NAME,
+        log_tail_if_exists(&data_dir.join(PG_CTL_LOG_NAME), 20),
+        log_tail_if_exists(&data_dir.join("postgres.log"), 20),
+    )
 }
 
 /// Чи слухає щось 127.0.0.1:EMBEDDED_PG_PORT (TCP) — перевірка зайнятості
@@ -483,8 +650,29 @@ impl EmbeddedPostgres {
         Err(last_err.unwrap_or_else(|| Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT)))
     }
 
-    /// Одна спроба `pg_ctl start` + poll готовності.
+    /// Стартує сервер і «віддає володіння» рівню застосунку: після успішного
+    /// старту цей екземпляр БІЛЬШЕ НЕ зупиняє сервер при `Drop`.
+    ///
+    /// Потрібно там, де життєвий цикл PG керує викликач (дефект 1 провіжна
+    /// standby): guard створюється лише щоб підняти сервер, а жити він має
+    /// поза ним. Зупинка — [`stop_running_instance`] (RunEvent::Exit).
+    pub fn start_detached(mut self) -> Result<(), Error> {
+        self.start()?;
+        self.started_by_us = false;
+        pg_log(
+            "INFO",
+            "embedded PG: володіння віддано — Drop не зупинить сервер",
+        );
+        Ok(())
+    }
+
+    /// Одна спроба `pg_ctl start` + poll готовності (таймаут — з env).
     fn start_once(&mut self) -> Result<(), Error> {
+        self.start_once_with_timeout(start_timeout())
+    }
+
+    /// Те саме, але з ЯВНИМ таймаутом: детерміновані тести без env-гонок.
+    fn start_once_with_timeout(&mut self, timeout: Duration) -> Result<(), Error> {
         let pg_ctl = self.bin_dir.join(pg_ctl_name());
         if !pg_ctl.exists() {
             return Err(Error::Missing(pg_ctl.display().to_string()));
@@ -501,53 +689,46 @@ impl EmbeddedPostgres {
         }
         let log = self.data_dir.join("postgres.log");
         let cmd = "pg_ctl start";
-        let mut c = Command::new(&pg_ctl);
-        #[cfg(windows)]
-        {
-            // CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x0800_0000):
-            // 1) postgres.exe НЕ отримує CTRL_C_EVENT разом із консоллю застосунку
-            //    (0xC000013A);
-            // 2) GUI-процес без консолі спавнить console-процес pg_ctl.exe → Windows
-            //    створює ВИДИМЕ чорне вікно. Юзер закриває його → CTRL_CLOSE_EVENT
-            //    → postgres.exe падає з 0xC000013A → crash recovery 30-60 с на
-            //    наступному старті (лог: "database system was not properly shut
-            //    down"). CREATE_NO_WINDOW ховає вікно — прибрати джерело crash.
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0200);
-        }
-        let out = c
-            .arg("-D")
-            .arg(&self.data_dir)
-            .arg("-l")
-            .arg(&log)
-            .arg("-o")
-            .arg(pg_ctl_opts())
-            .arg("-w")
-            .arg("start")
-            .output()
-            .map_err(|e| Error::Command {
-                cmd: cmd.to_string(),
-                e,
-            })?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // ДЕФЕКТ 5б: stdio батька НЕ pipe — інакше демон postgres.exe
+        // успадковує write-end і читання ніколи не бачить EOF (див.
+        // pg_ctl_command; CREATE_NO_WINDOW переїхав туди ж).
+        let mut c = pg_ctl_command(&pg_ctl, &self.data_dir);
+        // Дефект 5б: `-w -t <наш таймаут>` — pg_ctl не чекає довше за нас.
+        let args = pg_ctl_start_args(&self.data_dir, &log, &pg_ctl_opts(), timeout.as_secs());
+        let started = Instant::now();
+        pg_log("INFO", &format!("{cmd}: початок — {}", args_line(&args)));
+        // ДЕФЕКТ 5б: `.status()` (лише код виходу) замість `.output()`: pipe
+        // для захоплення виводу тут смертельний — демон успадковує write-end
+        // і тримає його, доки живий сервер (див. pg_ctl_command).
+        let status = c.args(&args).status().map_err(|e| Error::Command {
+            cmd: cmd.to_string(),
+            e,
+        })?;
+        pg_log(
+            "INFO",
+            &format!(
+                "{cmd}: завершено, код {:?} ({} мс)",
+                status.code(),
+                started.elapsed().as_millis()
+            ),
+        );
+        if !status.success() {
+            // Діагностика не губиться: stderr pg_ctl → pg_ctl.log (+ хвіст
+            // postgres.log), і саме вона йде в текст помилки.
+            let why = pg_ctl_failure_context(&self.data_dir);
             pg_log(
                 "ERROR",
-                &format!(
-                    "pg_ctl start: код {:?}; stderr: {}",
-                    out.status.code(),
-                    stderr
-                ),
+                &format!("pg_ctl start: код {:?}; {why}", status.code()),
             );
             return Err(Error::ExitWithOutput {
                 cmd: cmd.to_string(),
-                code: out.status.code().unwrap_or(-1),
-                stderr,
+                code: status.code().unwrap_or(-1),
+                stderr: why,
             });
         }
         self.started_by_us = true;
         // Poll готовності (страховка поверх pg_ctl -w): TCP до 127.0.0.1:5433.
-        let deadline = Instant::now() + start_timeout();
+        let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if port_is_open() {
                 pg_log(
@@ -568,10 +749,10 @@ impl EmbeddedPostgres {
             "ERROR",
             &format!(
                 "сервер не став готовим за {:?} (порт {EMBEDDED_PG_PORT}); postgres.log (хвіст):\n{tail}",
-                start_timeout()
+                timeout
             ),
         );
-        Err(Error::StartTimeout(start_timeout(), EMBEDDED_PG_PORT))
+        Err(Error::StartTimeout(timeout, EMBEDDED_PG_PORT))
     }
 
     /// Прибирає залишки crash: postmaster.pid мертвого процесу блокує старт.
@@ -605,29 +786,29 @@ impl EmbeddedPostgres {
             return Err(Error::Missing(pg_ctl.display().to_string()));
         }
         let cmd = "pg_ctl stop";
-        let mut c = Command::new(&pg_ctl);
-        #[cfg(windows)]
-        {
-            // CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW: pg_ctl stop не вбивається
-            // Ctrl+C і не блимає консольним вікном (див. start_once).
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0200);
-        }
-        let status = c
-            .arg("-D")
-            .arg(&self.data_dir)
-            .arg("-m")
-            .arg("fast")
-            .arg("stop")
-            .status()
-            .map_err(|e| Error::Command {
-                cmd: cmd.to_string(),
-                e,
-            })?;
+        // ДЕФЕКТ 5б: stdio НЕ успадковується демоном (див. pg_ctl_command);
+        // pg_ctl stop теж говорить із сервером → діагностика у файл.
+        let mut c = pg_ctl_command(&pg_ctl, &self.data_dir);
+        let args = pg_ctl_stop_args(&self.data_dir, start_timeout().as_secs());
+        let started = Instant::now();
+        pg_log("INFO", &format!("{cmd}: {}", args_line(&args)));
+        let status = c.args(&args).status().map_err(|e| Error::Command {
+            cmd: cmd.to_string(),
+            e,
+        })?;
+        pg_log(
+            "INFO",
+            &format!(
+                "{cmd}: код {:?} ({} мс)",
+                status.code(),
+                started.elapsed().as_millis()
+            ),
+        );
         if !status.success() {
-            let e = Error::Exit {
+            let e = Error::ExitWithOutput {
                 cmd: cmd.to_string(),
                 code: status.code().unwrap_or(-1),
+                stderr: pg_ctl_failure_context(&self.data_dir),
             };
             pg_log("ERROR", &format!("pg_ctl stop: {e}"));
             return Err(e);
@@ -651,33 +832,63 @@ impl EmbeddedPostgres {
         if !psql.exists() {
             return Err(Error::Missing(psql.display().to_string()));
         }
-        let check = Command::new(&psql)
-            .args(["-h", "127.0.0.1", "-p", &EMBEDDED_PG_PORT.to_string()])
-            .args(["-U", &self.user, "-d", "postgres", "-tAc"])
-            .arg(format!(
-                "SELECT 1 FROM pg_database WHERE datname = '{}'",
-                self.db
-            ))
-            .output()
-            .map_err(|e| Error::Command {
-                cmd: "psql".to_string(),
-                e,
-            })?;
+        // Дефект 5б: `-w` (ніколи не питати пароль) + PGCONNECT_TIMEOUT.
+        // Без них psql на GUI-процесі без консолі застигає назавжди.
+        let started = Instant::now();
+        let check_sql = format!("SELECT 1 FROM pg_database WHERE datname = '{}'", self.db);
+        let args = psql_conn_args(&self.user, "postgres", EMBEDDED_PG_PORT);
+        let mut c = Command::new(&psql);
+        c.args(&args).arg("-tAc").arg(&check_sql);
+        for (k, v) in psql_conn_env() {
+            c.env(k, v);
+        }
+        if let Ok(pw) = std::env::var("TORGASHKA_PG_PASSWORD") {
+            if !pw.is_empty() {
+                c.env("PGPASSWORD", pw);
+            }
+        }
+        let check = c.output().map_err(|e| Error::Command {
+            cmd: "psql".to_string(),
+            e,
+        })?;
+        pg_log(
+            "INFO",
+            &format!(
+                "ensure_database: перевірка наявності БД (psql {} -tAc SELECT… , {} мс)",
+                args_line(&args),
+                started.elapsed().as_millis()
+            ),
+        );
         let exists = check.status.success() && String::from_utf8_lossy(&check.stdout).trim() == "1";
         if exists {
             return Ok(());
         }
         // CREATE DATABASE через psql (createdb.exe відсутній у slim-бандлі).
         let create_sql = format!("CREATE DATABASE \"{}\"", self.db);
-        let status = Command::new(&psql)
-            .args(["-h", "127.0.0.1", "-p", &EMBEDDED_PG_PORT.to_string()])
-            .args(["-U", &self.user, "-d", "postgres", "-c"])
-            .arg(&create_sql)
-            .status()
-            .map_err(|e| Error::Command {
-                cmd: "psql CREATE DATABASE".to_string(),
-                e,
-            })?;
+        let started_create = Instant::now();
+        let mut c = Command::new(&psql);
+        c.args(psql_conn_args(&self.user, "postgres", EMBEDDED_PG_PORT))
+            .arg("-c")
+            .arg(&create_sql);
+        for (k, v) in psql_conn_env() {
+            c.env(k, v);
+        }
+        if let Ok(pw) = std::env::var("TORGASHKA_PG_PASSWORD") {
+            if !pw.is_empty() {
+                c.env("PGPASSWORD", pw);
+            }
+        }
+        let status = c.status().map_err(|e| Error::Command {
+            cmd: "psql CREATE DATABASE".to_string(),
+            e,
+        })?;
+        pg_log(
+            "INFO",
+            &format!(
+                "ensure_database: CREATE DATABASE (psql -w, {} мс)",
+                started_create.elapsed().as_millis()
+            ),
+        );
         if !status.success() {
             let why = format!("psql CREATE DATABASE exit {:?}", status.code());
             pg_log(
@@ -710,9 +921,17 @@ impl EmbeddedPostgres {
             "INFO",
             "bootstrap: DATABASE_URL не задано — запускаємо вбудований PostgreSQL",
         );
+        let t_locate = Instant::now();
         let bin_dir = match Self::locate() {
             Some(b) => {
-                pg_log("INFO", &format!("бінарники PG знайдено: {}", b.display()));
+                pg_log(
+                    "INFO",
+                    &format!(
+                        "bootstrap: крок 1/4 — бінарники PG знайдено: {} ({} мс)",
+                        b.display(),
+                        t_locate.elapsed().as_millis()
+                    ),
+                );
                 b
             }
             None => {
@@ -724,19 +943,47 @@ impl EmbeddedPostgres {
             }
         };
         let mut pg = Self::new(bin_dir);
-        pg_log("INFO", &format!("data_dir: {}", pg.data_dir().display()));
+        // Діагностика (дефект 5в): журнал обривався тут — далі кожен крок із часом.
+        pg_log(
+            "INFO",
+            &format!("bootstrap: data_dir: {}", pg.data_dir().display()),
+        );
+        let t_init = Instant::now();
         if let Err(e) = pg.ensure_initialized() {
             pg_log("ERROR", &format!("initdb не виконано: {e}"));
             return Err(e);
         }
+        pg_log(
+            "INFO",
+            &format!(
+                "bootstrap: крок 2/4 — initdb/перевірка каталогу ({} мс)",
+                t_init.elapsed().as_millis()
+            ),
+        );
+        let t_start = Instant::now();
         if let Err(e) = pg.start() {
             pg_log("ERROR", &format!("pg_ctl start не виконано: {e}"));
             return Err(e);
         }
+        pg_log(
+            "INFO",
+            &format!(
+                "bootstrap: крок 3/4 — сервер запущено ({} мс)",
+                t_start.elapsed().as_millis()
+            ),
+        );
+        let t_db = Instant::now();
         if let Err(e) = pg.ensure_database() {
             pg_log("ERROR", &format!("створення БД не виконано: {e}"));
             return Err(e);
         }
+        pg_log(
+            "INFO",
+            &format!(
+                "bootstrap: крок 4/4 — БД готова ({} мс)",
+                t_db.elapsed().as_millis()
+            ),
+        );
         std::env::set_var("DATABASE_URL", pg.database_url());
         pg_log(
             "INFO",
@@ -913,6 +1160,60 @@ pub fn stop_running_instance() {
     }
 }
 
+/// Ідемпотентно піднімає ЛОКАЛЬНУ embedded-репліку (standby-вузол).
+///
+/// Викликається при старті застосунку ДО бінда фасаду `:8000` у режимі
+/// standby («Дефект 2»): без цього після перезапуску/ребуту каса в режимі
+/// standby не має локальної БД (`init_local_standby` → `None`,
+/// `/api/v1/local/*` не змонтовано, UI вічно висить на «Підключення до
+/// сервера…»). Primary-режим цю функцію не викликає взагалі.
+///
+/// Гілки (ідемпотентно, БЕЗ `initdb`):
+/// * `127.0.0.1:5433` уже слухає → `Ok(false)` (no-op);
+/// * каталогу даних немає або без `PG_VERSION` → `Ok(false)` (вузол ще не
+///   провіжнено — primary-шлях його ініціалізує окремо);
+/// * інакше → `pg_ctl start` через [`EmbeddedPostgres::start_detached`]
+///   (сервер лишається запущеним) → `Ok(true)`.
+pub fn ensure_local_replica_running() -> Result<bool, Error> {
+    let data_dir = data_dir_default();
+    let bin_dir = EmbeddedPostgres::locate();
+    ensure_local_replica_running_at(bin_dir.as_deref(), &data_dir)
+}
+
+/// Чиста (без env) реалізація [`ensure_local_replica_running`] — для тестів.
+fn ensure_local_replica_running_at(bin_dir: Option<&Path>, data_dir: &Path) -> Result<bool, Error> {
+    if port_is_open() {
+        pg_log(
+            "INFO",
+            &format!(
+                "ensure_local_replica_running: 127.0.0.1:{EMBEDDED_PG_PORT} уже слухає — no-op"
+            ),
+        );
+        return Ok(false);
+    }
+    if !data_dir.join("PG_VERSION").exists() {
+        pg_log(
+            "INFO",
+            &format!(
+                "ensure_local_replica_running: {} без PG_VERSION — вузол не провіжнено, старт пропущено",
+                data_dir.display()
+            ),
+        );
+        return Ok(false);
+    }
+    let bin_dir = bin_dir.ok_or(Error::BinariesNotFound)?;
+    let mgr = EmbeddedPostgres::with_data_dir(bin_dir.to_path_buf(), data_dir.to_path_buf());
+    mgr.start_detached()?;
+    pg_log(
+        "INFO",
+        &format!(
+            "ensure_local_replica_running: локальну репліку піднято ({})",
+            data_dir.display()
+        ),
+    );
+    Ok(true)
+}
+
 /// Перевірка, чи процес з PID живий (без додаткових крейтів).
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
@@ -952,6 +1253,34 @@ mod tests {
     fn test_pg() -> Option<EmbeddedPostgres> {
         let bin_dir = EmbeddedPostgres::locate()?;
         Some(EmbeddedPostgres::with_data_dir(bin_dir, temp_data_dir()))
+    }
+
+    // ── ensure_local_replica_running (дефект 2: старт репліки) ────────────
+
+    #[test]
+    fn ensure_local_replica_is_noop_when_port_open() {
+        // Порт зайнятий (у CI/dev — системний PG або embedded) → no-op.
+        // Якщо зайняти не вдалося (порт уже кимось слухається) — умова та
+        // сама: no-op очікується в обох випадках.
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", EMBEDDED_PG_PORT)).ok();
+        let dir = temp_data_dir();
+        assert!(!dir.join("PG_VERSION").exists());
+        let started = ensure_local_replica_running_at(None, &dir).expect("no-op не помиляється");
+        assert!(
+            !started,
+            "порт {EMBEDDED_PG_PORT} зайнятий → старт має бути пропущено"
+        );
+    }
+
+    #[test]
+    fn ensure_local_replica_noop_without_pg_version() {
+        // Каталог без PG_VERSION (вузол ще не провіжнено) → Ok(false),
+        // жодного pg_ctl/initdb (bin_dir = None доводить, що не викликається).
+        let dir = temp_data_dir();
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        assert!(!dir.join("PG_VERSION").exists());
+        let started = ensure_local_replica_running_at(None, &dir).expect("no-op");
+        assert!(!started, "без PG_VERSION старт репліки не виконується");
     }
 
     #[test]
@@ -1236,5 +1565,232 @@ mod tests {
         let hba_after = std::fs::read_to_string(dir.join("pg_hba.conf")).expect("hba after");
         assert_eq!(conf_before, conf_after, "без env конфіг не чіпається");
         assert_eq!(hba_before, hba_after, "без env hba не чіпається");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Дефект 5: жоден виклик PG не має права висіти безмежно (psql `-w` +
+    // PGCONNECT_TIMEOUT; pg_ctl `-w -t <наш таймаут>`).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn psql_conn_args_contain_no_password_flag() {
+        let args = psql_conn_args("repuser", "postgres", EMBEDDED_PG_PORT);
+        let line = args_line(&args);
+        assert!(
+            args.contains(&"-w".to_string()),
+            "psql ОБОВ'ЯЗКОВО з -w (--no-password): без нього запит пароля на GUI-процесі без консолі застигає назавжди: {line}"
+        );
+        assert!(line.contains("-h 127.0.0.1"), "{line}");
+        assert!(line.contains("-U repuser"), "{line}");
+        assert!(line.contains("-d postgres"), "{line}");
+        assert!(line.contains("-p 5433"), "{line}");
+    }
+
+    #[test]
+    fn psql_conn_env_sets_pgconnect_timeout() {
+        let env = psql_conn_env();
+        assert!(
+            env.iter()
+                .any(|(k, v)| *k == "PGCONNECT_TIMEOUT"
+                    && *v == PSQL_CONNECT_TIMEOUT_SECS.to_string()),
+            "psql має отримувати PGCONNECT_TIMEOUT={PSQL_CONNECT_TIMEOUT_SECS}: {env:?}"
+        );
+        // Значення беремо з env-конфігурації виклику (не константа) —
+        // перевіряємо, що саме воно піде у процес psql.
+        assert_eq!(
+            env.iter()
+                .find(|(k, _)| *k == "PGCONNECT_TIMEOUT")
+                .map(|(_, v)| v.clone()),
+            Some(PSQL_CONNECT_TIMEOUT_SECS.to_string()),
+            "PGCONNECT_TIMEOUT має дорівнювати таймауту з'єднання"
+        );
+    }
+
+    #[test]
+    fn pg_ctl_start_args_are_time_bounded() {
+        let args = pg_ctl_start_args(
+            Path::new("/tmp/pgdata"),
+            Path::new("/tmp/postgres.log"),
+            "-p 5433 -h 127.0.0.1",
+            7,
+        );
+        let line = args_line(&args);
+        assert!(
+            line.contains("-w"),
+            "pg_ctl має чекати готовності (-w): {line}"
+        );
+        assert!(
+            line.contains("-t 7"),
+            "pg_ctl не має чекати довше за наш таймаут (дефолт 60с — сліпа зона): {line}"
+        );
+        assert!(line.ends_with("start"), "{line}");
+        assert!(line.contains("-D /tmp/pgdata"), "{line}");
+        assert!(line.contains("-o -p 5433 -h 127.0.0.1"), "{line}");
+    }
+
+    #[test]
+    fn pg_ctl_stop_args_are_time_bounded() {
+        let line = args_line(&pg_ctl_stop_args(Path::new("/tmp/pgdata"), 5));
+        assert!(line.contains("-m fast"), "{line}");
+        assert!(line.contains("-w -t 5"), "{line}");
+        assert!(line.ends_with("stop"), "{line}");
+    }
+
+    #[test]
+    fn start_timeout_clamps_and_defaults() {
+        assert_eq!(start_timeout_from(Some("3")), Duration::from_secs(3));
+        // 0 → pg_ctl -t 0 = чекати безмежно → заборонено (clamp у 1с)
+        assert_eq!(start_timeout_from(Some("0")), Duration::from_secs(1));
+        assert_eq!(start_timeout_from(Some("99999")), Duration::from_secs(600));
+        assert_eq!(start_timeout_from(Some("сміття")), start_timeout_from(None));
+        assert!(start_timeout_from(None) >= Duration::from_secs(30));
+    }
+
+    /// РЕАЛЬНЕ виконання: стаб-`psql` записує фактичну командну лінію та env.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_database_real_psql_call_has_no_password_and_connect_timeout() {
+        let dir = temp_data_dir();
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let log = dir.join("psql.log");
+        write_stub(
+            &bin.join(psql_name()),
+            &format!(
+                "#!/bin/sh\necho \"argv: $* | PGCONNECT_TIMEOUT=${{PGCONNECT_TIMEOUT:-}} | PGPASSWORD=${{PGPASSWORD:-}}\" >> \"{}\"\nexit 0\n",
+                log.display()
+            ),
+        );
+        let pg = EmbeddedPostgres::with_data_dir(bin, dir.join("pgdata"));
+        pg.ensure_database()
+            .expect("стаб-psql завершується успішно");
+        let recorded = std::fs::read_to_string(&log).expect("лог викликів psql");
+        assert!(
+            recorded.contains(" -w "),
+            "реальний виклик psql мусить містити -w: {recorded}"
+        );
+        assert!(
+            recorded.contains(&format!("PGCONNECT_TIMEOUT={PSQL_CONNECT_TIMEOUT_SECS}")),
+            "реальний виклик psql мусить мати PGCONNECT_TIMEOUT: {recorded}"
+        );
+        assert!(recorded.contains("-U postgres"), "{recorded}");
+        assert!(
+            recorded.lines().count() >= 2,
+            "ensure_database = перевірка + CREATE DATABASE: {recorded}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// РЕАЛЬНЕ виконання: стаб-`pg_ctl` фіксує аргументи `-w -t <n>`.
+    #[cfg(unix)]
+    #[test]
+    fn pg_ctl_start_real_call_is_time_bounded() {
+        // Таймаут 1 с — щоб поллінг готовності в start_once не тривав 30 с.
+        std::env::set_var(START_TIMEOUT_ENV, "1");
+        let dir = temp_data_dir();
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let log = dir.join("pg_ctl.log");
+        write_stub(
+            &bin.join(pg_ctl_name()),
+            &format!(
+                "#!/bin/sh\necho \"pg_ctl $*\" >> \"{}\"\nexit 0\n",
+                log.display()
+            ),
+        );
+        let mut pg = EmbeddedPostgres::with_data_dir(bin, dir.join("pgdata"));
+        // start_once — напряму (start() пропустив би старт, якби 5433 слухав).
+        let _ = pg.start_once();
+        let recorded = std::fs::read_to_string(&log).expect("лог викликів pg_ctl");
+        assert!(recorded.contains("start"), "{recorded}");
+        assert!(
+            recorded.contains("-w") && recorded.contains("-t 1"),
+            "pg_ctl start мусить бути обмежений нашим таймаутом (-w -t 1): {recorded}"
+        );
+        drop(pg); // Drop → pg_ctl stop (стаб) — теж обмежений
+        let recorded = std::fs::read_to_string(&log).expect("лог викликів pg_ctl (stop)");
+        assert!(
+            recorded.contains("stop") && recorded.contains("-t 1"),
+            "pg_ctl stop мусить бути обмежений таймаутом: {recorded}"
+        );
+        std::env::remove_var(START_TIMEOUT_ENV);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── ДЕФЕКТ 5б: pg_ctl НЕ має висіти на pipe, який тримає демон ─────────
+
+    /// РЕГРЕСІЯ (дефект 5б; Windows-семантика, відтворена на Linux).
+    ///
+    /// Стаб-`pg_ctl` спавнить ФОНОВИЙ довгоживучий процес, який успадковує
+    /// stdio батька, і одразу виходить з кодом 0 — точна модель `pg_ctl start`
+    /// (він лишає жити `postgres.exe`, який тримає успадкований pipe).
+    /// Зі старим `.output()` (piped stdio) читання pipe НІКОЛИ не бачить EOF →
+    /// блокування назавжди (на живій Windows-касі: журнал обривався на
+    /// `data_dir`, фасад :8000 без `axum::serve`).
+    /// З фіксом (stdout=null, stderr=файл) виклик повертається за секунди.
+    #[cfg(unix)]
+    #[test]
+    fn pg_ctl_start_does_not_block_on_daemon_holding_stdio() {
+        let dir = temp_data_dir();
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        // `sleep 30 &` успадковує stdio стаба і живе далі після його виходу.
+        write_stub(
+            &bin.join(pg_ctl_name()),
+            "#!/bin/sh\nsleep 30 &\necho \"pg_ctl $*\"\nexit 0\n",
+        );
+        let mut pg = EmbeddedPostgres::with_data_dir(bin, dir.join("pgdata"));
+        let started = Instant::now();
+        // Реальний код-шлях: стаб → код 0 → поллінг готовності (1 с) → вихід.
+        let _ = pg.start_once_with_timeout(Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "start_once завис на {elapsed:?}: демон успадкував pipe (дефект 5б)"
+        );
+        drop(pg); // Drop → stop(): порт відкритий → pg_ctl stop (стаб, null-stdio)
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// stderr `pg_ctl` ПОТРАПЛЯЄ у `<data_dir>/pg_ctl.log` (stdio → файл) і
+    /// читається у текст помилки (дефект 5б, п.3 — stderr не «проковтувати»).
+    #[cfg(unix)]
+    #[test]
+    fn pg_ctl_stderr_is_captured_in_log_and_error() {
+        let dir = temp_data_dir();
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        write_stub(
+            &bin.join(pg_ctl_name()),
+            "#!/bin/sh\necho 'pg_ctl: could not start server' >&2\nexit 1\n",
+        );
+        let pgdata = dir.join("pgdata");
+        let mut pg = EmbeddedPostgres::with_data_dir(bin, pgdata.clone());
+        let err = pg
+            .start_once_with_timeout(Duration::from_secs(1))
+            .expect_err("стаб-pg_ctl виходить з кодом 1");
+        let log = std::fs::read_to_string(pgdata.join(PG_CTL_LOG_NAME)).expect("pg_ctl.log");
+        assert!(
+            log.contains("pg_ctl: could not start server"),
+            "stderr pg_ctl мусить бути у pg_ctl.log: {log}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pg_ctl: could not start server"),
+            "хвіст pg_ctl.log мусить бути у тексті помилки: {msg}"
+        );
+        assert!(
+            matches!(err, Error::ExitWithOutput { code: 1, .. }),
+            "{err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Записує виконуваний стаб-бінарник (Unix).
+    #[cfg(unix)]
+    fn write_stub(path: &Path, content: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, content).expect("стаб-скрипт");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod +x");
     }
 }

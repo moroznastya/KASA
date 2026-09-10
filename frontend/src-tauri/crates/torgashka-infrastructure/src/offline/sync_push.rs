@@ -15,6 +15,7 @@
 //!   * [`push_pending_batch`] — POST /api/v1/sync/push + обробка відповідей
 //!     сервера: created/already_exists → done+pushed_at; 5xx/429 → attempts+=1
 //!     + exponential backoff next_attempt_at = now + min(2^attempts, 3600)c;
+//!
 //!     400/422 (per-item error) → failed + last_error (без retry — потрібне
 //!     втручання); немає мережі → pending без змін (повтор за подією/30с);
 //!     після 10 невдалих спроб (5xx) → failed + алерт (статус видимий — дизайн
@@ -644,7 +645,7 @@ fn defer_or_fail(
 
     if next_attempts >= MAX_ATTEMPTS {
         // 10 невдалих спроб (5xx) → failed + last_error (дизайн 4.3).
-        let msg = error.unwrap_or_else(|| format!("10 невдалих спроб (5xx)"));
+        let msg = error.unwrap_or_else(|| "10 невдалих спроб (5xx)".to_string());
         tx.execute(
             "UPDATE outbox SET attempts = ?1, status = 'failed', last_error = ?2 \
              WHERE id = ?3",

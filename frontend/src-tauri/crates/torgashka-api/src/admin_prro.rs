@@ -359,6 +359,9 @@ async fn put_setting(
 }
 
 /// Валідація + збереження per-store (1:1 PrroSettingsUseCase::save_settings).
+// Сигнатура — 1:1 з Python-еталоном (PrroSettingsUseCase::save_settings):
+// групування в struct змінило б контракт викликів і parity з Python.
+#[allow(clippy::too_many_arguments)]
 async fn apply_put(
     db: &PgPool,
     store_id: Uuid,

@@ -23,7 +23,10 @@
 //!    `primary_conninfo` лише у plaintext; файл 0600 у `data_dir`) + ОКРЕМО
 //!    зашифрована копія AES-256-GCM (`db_sources`-підхід, `.dbkey`) для
 //!    повторного використання.
-//! 6. Старт локального PG через [`embedded_pg::EmbeddedPostgres`] → hot_standby.
+//! 6. Старт локального PG через [`embedded_pg::EmbeddedPostgres`] →
+//!    hot_standby. Володіння віддається рівню застосунку
+//!    ([`embedded_pg::EmbeddedPostgres::start_detached`]) — репліка лишається
+//!    запущеною після завершення провіжна (інакше guard-`Drop` глушив її).
 //! 7. Перевірка `SELECT pg_is_in_recovery()` = true.
 //! ```
 //!
@@ -674,9 +677,15 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
     );
 
     // ── 6. Старт локального PG → hot_standby ───────────────────────────────
+    // Дефект 1 (виправлено): `start_detached` віддає володіння рівню
+    // застосунку. Інакше guard `EmbeddedPostgres` дропається всередині
+    // `spawn_blocking` одразу після `start()`, і його `Drop` виконує
+    // `pg_ctl stop -m fast`, вбиваючи щойно підняту репліку — крок 7 опитує
+    // вже мертвий сервер (Connection refused). Зупинка — на виході
+    // застосунку (`embedded_pg::stop_running_instance`).
     {
-        let mut mgr = EmbeddedPostgres::with_data_dir(bin_dir.clone(), data_dir.clone());
-        tokio::task::spawn_blocking(move || mgr.start())
+        let mgr = EmbeddedPostgres::with_data_dir(bin_dir.clone(), data_dir.clone());
+        tokio::task::spawn_blocking(move || mgr.start_detached())
             .await
             .map_err(|e| ProvisionError::Invalid(format!("spawn_blocking(start): {e}")))?
             .map_err(|e| {
@@ -718,16 +727,18 @@ async fn wait_recovery(bin_dir: &Path, user: &str) -> Result<(), ProvisionError>
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        cmd.arg("-h")
-            .arg("127.0.0.1")
-            .arg("-p")
-            .arg(EMBEDDED_PG_PORT.to_string())
-            .arg("-U")
-            .arg(user)
-            .arg("-d")
-            .arg("postgres")
-            .arg("-tAc")
-            .arg("SELECT pg_is_in_recovery()");
+        // Дефект 5б: `-w` + PGCONNECT_TIMEOUT — psql не має права застигнути
+        // на запиті пароля (провіжн виконується у GUI-процесі без консолі).
+        cmd.args(crate::embedded_pg::psql_conn_args(
+            user,
+            "postgres",
+            EMBEDDED_PG_PORT,
+        ))
+        .arg("-tAc")
+        .arg("SELECT pg_is_in_recovery()");
+        for (k, v) in crate::embedded_pg::psql_conn_env() {
+            cmd.env(k, v);
+        }
         // Локальний доступ після копії успадковує pg_hba primary (initdb
         // embedded PG — -A trust, тому локально пароль не потрібен; якщо
         // задано TORGASHKA_PG_PASSWORD — передаємо про всяк).

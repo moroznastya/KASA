@@ -24,9 +24,12 @@
 //! Відсутність файлу/секції → [`NodeConfig::default`] (Primary) — фасад
 //! стартує як раніше, без жодних змін поведінки.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::offline::db::OfflineDatabase;
 
 /// Порт локальної embedded PostgreSQL репліки (співпадає з
 /// `embedded_pg::EMBEDDED_PG_PORT`).
@@ -112,11 +115,19 @@ impl NodeConfig {
         let Some(path) = crate::db_sources::existing_path() else {
             return Self::default();
         };
-        match std::fs::read_to_string(&path) {
+        Self::load_from_path(&path)
+    }
+
+    /// Читає конфігурацію з КОНКРЕТНОГО файлу (env/CWD-незалежно — для
+    /// recovery і тестів). Файлу немає/помилка → `Ok(default)` (Primary) +
+    /// eprintln (stability_first: вузол не падає через опційну секцію).
+    pub fn load_from_path(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
             Ok(content) => Self::load_from_str(&content),
             Err(e) => {
                 eprintln!(
-                    "[torgashka-infrastructure] node_config: db_sources.toml не читається ({e}) — режим Primary"
+                    "[torgashka-infrastructure] node_config: {} не читається ({e}) — режим Primary",
+                    path.display()
                 );
                 Self::default()
             }
@@ -189,17 +200,20 @@ impl NodeConfig {
     /// `[active]`/`[sources.*]` та інші зберігаються як є — на відміну від
     /// `db_sources::save`, який знає лише свої секції). Атомарний запис,
     /// права 0600 (unix). Файлу немає → створюється з однією секцією `[node]`.
-    pub fn save_to_disk(&self) -> Result<std::path::PathBuf, String> {
-        let path = crate::db_sources::write_path();
+    pub fn save_to_disk(&self) -> Result<PathBuf, String> {
+        self.save_to_path(&crate::db_sources::write_path())
+    }
+
+    /// Те саме, але у КОНКРЕТНИЙ файл (recovery/тести): атомарний запис,
+    /// права 0600 (unix), решта секцій файлу зберігаються як є.
+    pub fn save_to_path(&self, path: &Path) -> Result<PathBuf, String> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => String::new(), // файлу ще немає — починаємо з [node]
-        };
+        // файлу ще немає — починаємо з [node]
+        let content = std::fs::read_to_string(path).unwrap_or_default();
         let mut root: toml::Value = if content.trim().is_empty() {
             toml::Value::Table(toml::map::Map::new())
         } else {
@@ -219,8 +233,110 @@ impl NodeConfig {
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| e.to_string())?;
         }
-        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-        Ok(path)
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        Ok(path.to_path_buf())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recovery standby-режиму після рестарту (дефект 3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `NodeConfig::save_to_disk()` викликається ЛИШЕ в
+// `start_standby_provision` (src/commands/standby.rs) — тобто тільки ПІСЛЯ
+// успішного провіжингу. Якщо провіжн обірвався (немає кроків 6-7) або
+// застосунок перезапустили ДО запису — `[node] mode="standby"` у
+// db_sources.toml відсутній, `NodeConfig::load()` віддає Primary, і каса
+// втрачає standby-режим НАЗАВЖДИ (немає жодного іншого шляху відновлення).
+//
+// Recovery відновлює режим за НАЯВНИМИ слідами, без здогадок:
+//   * PG_VERSION у `data_dir_default()` — провіжн реально виконано
+//     (pg_basebackup створив кластер); файлу немає → no-op, НІЧОГО не
+//     чіпаємо і НЕ робимо повторний pg_basebackup;
+//   * `node_node_id` у SQLite settings (join виконано) АБО `[node]` уже
+//     standby — підстава вважати вузол standby-касою;
+//   * обидві умови виконано → у СТАБІЛЬНИЙ db_sources.toml (поряд із pgdata;
+//     не в CWD — див. дефект 4) дописується `mode = "standby"` зі збереженням
+//     решти полів/секцій.
+
+/// Recovery standby-режиму вузла (ідемпотентно; прод-обгортка).
+///
+/// Повертає `Ok(true)`, якщо вузол — standby (уже був або щойно відновлено),
+/// `Ok(false)` — якщо підстав немає (провіжн не виконано / join не виконано).
+/// Помилки файлових операцій → `Err` (виклик при старті логує, не падає).
+pub fn recover_standby_if_needed() -> Result<bool, String> {
+    let data_dir = crate::embedded_pg::data_dir_default();
+    let join_done = join_performed();
+    // Запис — у СТАБІЛЬНИЙ шлях (env → поряд із pgdata → CWD → manifest).
+    // Саме в CWD-залежності був дефект 4: писати в «наявний» файл небезпечно —
+    // на проді CWD нестабільний, тож туди потрапив би випадковий/застарілий
+    // файл, а не конфіг каси.
+    let cfg_path = crate::db_sources::write_path();
+    recover_standby_at(join_done, &data_dir, &cfg_path)
+}
+
+/// Ядро recovery — чиста функція (тестована без env/SQLite):
+/// `join_done` — чи є `node_node_id` у SQLite settings; `data_dir` — каталог
+/// кластера (PG_VERSION = провіжн виконано); `cfg_path` — файл db_sources.toml.
+pub fn recover_standby_at(
+    join_done: bool,
+    data_dir: &Path,
+    cfg_path: &Path,
+) -> Result<bool, String> {
+    if !data_dir.join("PG_VERSION").is_file() {
+        // Провіжн не виконано (немає кластера) — не здогадуємось, нічого
+        // не створюємо: вторинний pg_basebackup НЕ запускаємо.
+        return Ok(false);
+    }
+    let cfg = if cfg_path.is_file() {
+        load_quiet(cfg_path)
+    } else {
+        NodeConfig::default()
+    };
+    if cfg.is_standby() {
+        return Ok(true); // режим уже standby — у файл не пишемо (ідемпотентно)
+    }
+    if !join_done {
+        // Кластер є, але слідів join немає — режим вузла невідомий, не вгадуємо.
+        return Ok(false);
+    }
+    cfg.with_mode(NodeMode::Standby).save_to_path(cfg_path)?;
+    Ok(true)
+}
+
+/// Читання конфіга без eprintln-шуму (файл перевірено на існування).
+fn load_quiet(path: &Path) -> NodeConfig {
+    match std::fs::read_to_string(path) {
+        Ok(content) => NodeConfig::load_from_str(&content),
+        Err(_) => NodeConfig::default(),
+    }
+}
+
+/// Чи виконано join вузла: `node_node_id` у SQLite settings каси.
+///
+/// Без побічних ефектів: якщо файлу SQLite ще немає — join точно не виконано
+/// (БД каси не створюємо). Будь-яка помилка читання → `false` + eprintln
+/// (stability_first: старт не падає).
+fn join_performed() -> bool {
+    let path = match OfflineDatabase::default_db_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[node_config] recovery: шлях SQLite каси невідомий ({e}) — join вважаємо невиконаним");
+            return false;
+        }
+    };
+    if !path.is_file() {
+        return false;
+    }
+    match crate::standby_heartbeat::read_standby_settings() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            eprintln!(
+                "[node_config] recovery: SQLite settings не читаються ({e}) — join вважаємо невиконаним"
+            );
+            false
+        }
     }
 }
 
@@ -267,15 +383,14 @@ pub async fn primary_reachable(url: &str) -> bool {
     let Some((host, port)) = primary_endpoint(url) else {
         return false;
     };
-    match tokio::time::timeout(
-        PRIMARY_CHECK_TIMEOUT,
-        tokio::net::TcpStream::connect((host.as_str(), port)),
+    matches!(
+        tokio::time::timeout(
+            PRIMARY_CHECK_TIMEOUT,
+            tokio::net::TcpStream::connect((host.as_str(), port)),
+        )
+        .await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 /// URL ЛОКАЛЬНОЇ репліки: той самий user/password/db, що й primary, але
@@ -296,9 +411,39 @@ pub fn local_db_url(primary_url: &str, local_port: u16) -> Option<String> {
         None => ("", rest),
     };
     // db-частина: '/' або '?' або кінець.
-    let cut = after.find(['/', '?']).map(|i| i).unwrap_or(after.len());
+    let cut = after.find(['/', '?']).unwrap_or(after.len());
     let dbpart = &after[cut..];
     Some(format!("{prefix}{userinfo}127.0.0.1:{local_port}{dbpart}"))
+}
+
+/// URL локальної репліки БЕЗ пароля: `postgresql://<user>@127.0.0.1:<port>/<db>`.
+///
+/// Використовується як `DATABASE_URL` у standby-режимі: локальна репліка
+/// слухає лише localhost (pg_hba локального кластера — trust), а пароль у
+/// URL шкідливий — psql/sqlx тоді намагаються автентифікуватись паролем і
+/// можуть застигнути на запиті пароля (дефект 5: GUI-процес без консолі).
+pub fn local_readonly_url(primary_url: &str, local_port: u16) -> Option<String> {
+    Some(strip_password(&local_db_url(primary_url, local_port)?))
+}
+
+/// Прибирає `:<password>` з userinfo URL: `postgresql://u:p@h/db` →
+/// `postgresql://u@h/db`. URL без '@' або без ':' у userinfo — без змін.
+pub fn strip_password(url: &str) -> String {
+    let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
+        return url.to_string();
+    };
+    let head = &url[..scheme_end];
+    let rest = &url[scheme_end..];
+    // '@' шукаємо ПІСЛЯ схеми; ':' у userinfo — розділювач пароля.
+    let Some(at) = rest.find('@') else {
+        return url.to_string();
+    };
+    let userinfo = &rest[..at];
+    let tail = &rest[at..];
+    match userinfo.find(':') {
+        Some(c) => format!("{head}{}{tail}", &userinfo[..c]),
+        None => url.to_string(),
+    }
 }
 
 /// Дефолтний локальний URL, якщо primary URL не резолвиться: postgres-дефолт
@@ -475,5 +620,228 @@ degrade_to_local = false
         assert_eq!(promoted.primary_db_url, None, "primary-посилання очищено");
         assert!(promoted.repoint_pending.is_some(), "позначка зберігається");
         assert_eq!(cfg.mode, NodeMode::Standby, "оригінал не мутується");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Recovery standby-режиму (дефект 3) + AppData-конфіг (дефект 4)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Хелпер: тимчасовий каталог + шляхи data_dir / db_sources.toml.
+    fn tmp_paths() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("Torgashka").join("pgdata");
+        let cfg_path = dir.path().join("Torgashka").join("db_sources.toml");
+        std::fs::create_dir_all(&data_dir).expect("mkdir data_dir");
+        (dir, data_dir, cfg_path)
+    }
+
+    /// (б) Recovery пише `[node] mode="standby"` ЛИШЕ за наявності PG_VERSION.
+    #[test]
+    fn recovery_writes_standby_only_when_pg_version_present() {
+        let (_d, data_dir, cfg_path) = tmp_paths();
+
+        // PG_VERSION немає (провіжн не виконано) → no-op, файл не створюється.
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(false));
+        assert!(!cfg_path.exists(), "без PG_VERSION файл не чіпаємо");
+
+        // PG_VERSION є + join виконано → [node] mode="standby" записано.
+        std::fs::write(data_dir.join("PG_VERSION"), "17").expect("PG_VERSION");
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(true));
+        let raw = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert!(raw.contains("mode = \"standby\""), "raw: {raw}");
+        assert!(NodeConfig::load_from_path(&cfg_path).is_standby());
+
+        // Ідемпотентно: режим уже standby → true, повторного запису не робимо
+        // (файл не переписується — mtime не змінюється).
+        let mtime_before = std::fs::metadata(&cfg_path)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(true));
+        let mtime_after = std::fs::metadata(&cfg_path)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        assert_eq!(
+            mtime_before, mtime_after,
+            "standby-конфіг не переписується даремно"
+        );
+
+        // PG_VERSION є, але join НЕ виконано і режим не standby → no-op.
+        let cfg_other = data_dir.parent().unwrap().join("other.toml");
+        assert_eq!(recover_standby_at(false, &data_dir, &cfg_other), Ok(false));
+        assert!(!cfg_other.exists(), "без слідів join не вгадуємо режим");
+    }
+
+    /// Recovery зберігає решту полів `[node]` і секції файлу (формат не змінюємо).
+    #[test]
+    fn recovery_preserves_existing_fields_and_sections() {
+        let (_d, data_dir, cfg_path) = tmp_paths();
+        std::fs::write(data_dir.join("PG_VERSION"), "17").expect("PG_VERSION");
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &cfg_path,
+            "active = \"primary\"\n\n[sources.primary]\nlabel = \"Основна\"\nhost = \"10.0.0.1\"\nport = 5432\ndatabase = \"pos_system\"\nuser = \"postgres\"\n\n[node]\nmode = \"primary\"\nlocal_port = 5433\nprimary_db_url = \"postgresql://10.0.0.1:5432/pos_system\"\ndegrade_to_local = true\n",
+        )
+        .expect("write cfg");
+
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(true));
+        let raw = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert!(raw.contains("mode = \"standby\""), "raw: {raw}");
+        assert!(raw.contains("[sources.primary]"), "секції збережено: {raw}");
+        assert!(raw.contains("10.0.0.1"), "дані джерела збережено: {raw}");
+        let cfg = NodeConfig::load_from_path(&cfg_path);
+        assert!(cfg.is_standby());
+        assert_eq!(
+            cfg.primary_db_url.as_deref(),
+            Some("postgresql://10.0.0.1:5432/pos_system"),
+            "primary_db_url не загублено"
+        );
+        assert!(cfg.degrade_to_local);
+    }
+
+    /// (в) `NodeConfig::load()`-частина: читання AppData-файлу (не CWD).
+    #[test]
+    fn load_reads_config_from_appdata_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Імітація %APPDATA%\Torgashka\db_sources.toml
+        let appdata_cfg = dir.path().join("Torgashka").join("db_sources.toml");
+        std::fs::create_dir_all(appdata_cfg.parent().unwrap()).expect("mkdir");
+        std::fs::write(
+            &appdata_cfg,
+            "[node]\nmode = \"standby\"\nlocal_port = 5433\n",
+        )
+        .expect("write");
+
+        // Кандидати як у проді: стабільний (AppData) → CWD → manifest.
+        let cands = crate::db_sources::path_candidates_with(
+            None,
+            Some(&appdata_cfg),
+            Path::new("db_sources.toml"),
+            Path::new("/repo/frontend/src-tauri/db_sources.toml"),
+        );
+        let chosen = crate::db_sources::existing_path_in(&cands).expect("AppData-файл знайдено");
+        assert_eq!(chosen, appdata_cfg);
+
+        let cfg = NodeConfig::load_from_path(&chosen);
+        assert!(cfg.is_standby(), "load() з AppData → standby");
+        assert_eq!(cfg.local_port, 5433);
+    }
+
+    /// E2E: реальні `data_dir_default()`/`write_path()`/`load()`.
+    /// Запуск: `XDG_DATA_HOME=<tmp> cargo test -p torgashka-infrastructure --lib
+    /// e2e_recovery -- --ignored --nocapture` (окремий процес — щоб env не
+    /// вплинув на інші тести).
+    #[test]
+    #[ignore = "потребує env XDG_DATA_HOME на тимчасовий каталог (див. doc)"]
+    fn e2e_recovery_writes_stable_config_and_load_sees_standby() {
+        let data_dir = crate::embedded_pg::data_dir_default();
+        let cfg_path = crate::db_sources::write_path();
+        assert_eq!(
+            cfg_path,
+            crate::db_sources::stable_config_path().expect("стабільний шлях"),
+            "запис іде у стабільний каталог (поряд із pgdata), не в CWD"
+        );
+        std::fs::create_dir_all(&data_dir).expect("mkdir data_dir");
+        std::fs::write(data_dir.join("PG_VERSION"), "17").expect("PG_VERSION");
+
+        // join виконано (у проді — node_node_id у SQLite settings)
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(true));
+        let raw = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert!(raw.contains("mode = \"standby\""), "raw: {raw}");
+
+        // Головне: РЕАЛЬНИЙ load() бачить standby → фасад змонтує /api/v1/local/*
+        assert!(
+            NodeConfig::load().is_standby(),
+            "після recovery load() має бачити mode=standby"
+        );
+        // Ідемпотентність прод-обгортки (join з SQLite може бути відсутнім у тесті).
+        assert_eq!(recover_standby_if_needed(), Ok(true));
+    }
+
+    /// E2E прод-шляху БЕЗ інʼєкцій: recovery читає `node_node_id` з реальної
+    /// SQLite каси (`OfflineDatabase::default_db_path`), бачить `PG_VERSION` у
+    /// `data_dir_default()` і пише `[node] mode="standby"`; потім звичайний
+    /// `NodeConfig::load()` його бачить. Запуск — окремим процесом:
+    /// `XDG_DATA_HOME=<tmp> cargo test -p torgashka-infrastructure --lib
+    /// e2e_recovery_from_sqlite -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "потребує env XDG_DATA_HOME на тимчасовий каталог (див. doc)"]
+    fn e2e_recovery_from_sqlite_settings_end_to_end() {
+        let data_dir = crate::embedded_pg::data_dir_default();
+        std::fs::create_dir_all(&data_dir).expect("mkdir data_dir");
+        std::fs::write(data_dir.join("PG_VERSION"), "17").expect("PG_VERSION");
+
+        // SQLite каси з ознакою виконаного join (node_node_id).
+        let db_path = OfflineDatabase::default_db_path().expect("db path");
+        std::fs::create_dir_all(db_path.parent().expect("parent")).expect("mkdir db dir");
+        let conn = crate::offline::sync_push::open_connection(&db_path).expect("open sqlite");
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('node_node_id', 'e2e-node-1')",
+            [],
+        )
+        .expect("insert node_node_id");
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('node_replication_host', '10.0.0.5')",
+            [],
+        )
+        .expect("insert node_replication_host");
+        drop(conn);
+
+        // Прод-обгортка: без інʼєкцій, усі шляхи — реальні.
+        assert_eq!(recover_standby_if_needed(), Ok(true));
+        assert!(
+            NodeConfig::load().is_standby(),
+            "після recovery звичайний load() бачить standby"
+        );
+        let cfg_path = crate::db_sources::write_path();
+        assert!(
+            cfg_path.is_absolute() && !cfg_path.starts_with("."),
+            "шлях запису мусить бути абсолютним (стабільний каталог), а не CWD: {cfg_path:?}"
+        );
+        let raw = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert!(raw.contains("mode = \"standby\""), "raw: {raw}");
+        // Повторний старт (рестарт каси) — ідемпотентно, без змін у файлі.
+        assert_eq!(recover_standby_if_needed(), Ok(true));
+    }
+
+    // ── Дефект 5: URL локальної репліки БЕЗ пароля ──────────────────────────
+
+    #[test]
+    fn local_readonly_url_drops_password() {
+        let url = local_readonly_url("postgresql://repuser:s3cret@10.0.0.5:5432/pos_net", 5433)
+            .expect("URL має перебудуватись");
+        assert_eq!(url, "postgresql://repuser@127.0.0.1:5433/pos_net");
+        assert!(
+            !url.contains("s3cret"),
+            "пароль у DATABASE_URL не має лишатись: {url}"
+        );
+    }
+
+    #[test]
+    fn strip_password_edge_cases() {
+        // без пароля — без змін
+        assert_eq!(
+            strip_password("postgresql://u@127.0.0.1:5433/db"),
+            "postgresql://u@127.0.0.1:5433/db"
+        );
+        // без userinfo — без змін
+        assert_eq!(
+            strip_password("postgresql://127.0.0.1:5433/db"),
+            "postgresql://127.0.0.1:5433/db"
+        );
+        // postgres:// (коротка схема) + query-параметри
+        assert_eq!(
+            strip_password("postgres://u:p@h:5432/db?sslmode=require"),
+            "postgres://u@h:5432/db?sslmode=require"
+        );
+        // не-URL — без паніки
+        assert_eq!(strip_password("не-url"), "не-url");
+    }
+
+    #[test]
+    fn local_readonly_url_is_none_for_non_postgres_scheme() {
+        assert!(local_readonly_url("mysql://u:p@h/db", 5433).is_none());
     }
 }

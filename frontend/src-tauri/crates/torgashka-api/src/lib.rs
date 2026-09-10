@@ -52,6 +52,7 @@ pub mod sync;
 pub mod sync_receivers;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
 use torgashka_domain::{
@@ -516,6 +517,237 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ФІКС ДЕФЕКТУ 5+6 (Torgashka, 2026-08): фасад :8000 відповідає ЗАВЖДИ, а
+// ініціалізація БД не виконується в async-потоці й НЕ робить bootstrap на
+// каталозі репліки.
+//
+// Було: `serve_listener` викликав СИНХРОННИЙ `bootstrap_if_needed()`
+// (subprocess-и: initdb/pg_ctl/psql) ПРЯМО в async-контексті ДО `axum::serve`.
+// Порт :8000 уже слухав (бінд у src/lib.rs), ядро завершувало TCP-handshake →
+// клієнт бачив «з'єднання встановлено», але HTTP-відповіді не було НІКОЛИ
+// (curl: 0 bytes received + timeout; CLOSE_WAIT/FIN_WAIT_2). psql без `-w`
+// міг застигнути на запиті пароля НАЗАВЖДИ (GUI-процес без консолі).
+//
+// Стало: HTTP обслуговується з першої секунди (boot-gate), важкі кроки — у
+// `spawn_blocking`, кожен крок логується з часом.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// План підготовки БД при старті фасаду (ЧИСТА функція — тестована без env).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbStartupPlan {
+    /// DATABASE_URL резолвиться ззовні (env → db_sources.toml → backend/.env):
+    /// embedded PG не чіпаємо взагалі.
+    ExternalUrl(String),
+    /// Standby-вузол: ЛИШЕ підняти локальну репліку (ідемпотентно).
+    /// initdb/CREATE DATABASE на каталозі репліки ЗАБОРОНЕНІ — каталог
+    /// отримано `pg_basebackup`, це hot standby (read-only): CREATE DATABASE
+    /// там неможливий, а спроба bootstrap псує каталог репліки (дефект 6).
+    StandbyReplica(String),
+    /// Primary-вузол: повний bootstrap (initdb → pg_ctl start → CREATE DATABASE).
+    PrimaryBootstrap,
+}
+
+/// Вибір плану підготовки БД (чиста логіка — покрита тестами).
+pub fn plan_db_startup(
+    resolved: Option<&str>,
+    is_standby: bool,
+    standby_url: Option<String>,
+) -> DbStartupPlan {
+    if let Some(url) = resolved.filter(|u| !u.trim().is_empty()) {
+        return DbStartupPlan::ExternalUrl(url.to_string());
+    }
+    if is_standby {
+        return DbStartupPlan::StandbyReplica(standby_url.unwrap_or_default());
+    }
+    DbStartupPlan::PrimaryBootstrap
+}
+
+/// URL локальної репліки для standby-вузла: `postgresql://<user>@127.0.0.1:<port>/<db>`
+/// БЕЗ пароля (дефект 5: пароль у URL змушує psql/sqlx автентифікуватись, а
+/// локальний кластер приймає localhost без пароля).
+pub fn standby_local_url(
+    primary_url: Option<&str>,
+    local_port: u16,
+    user: &str,
+    db: &str,
+) -> String {
+    primary_url
+        .and_then(|u| torgashka_infrastructure::node_config::local_readonly_url(u, local_port))
+        .unwrap_or_else(|| {
+            torgashka_infrastructure::node_config::fallback_local_url(local_port, db, user)
+        })
+}
+
+/// URL локальної репліки з конфіга вузла + креденшалів з env (не чиста —
+/// env-обгортка над [`standby_local_url`]).
+fn standby_url_for(cfg: &torgashka_infrastructure::node_config::NodeConfig) -> String {
+    let user = std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
+    let db = std::env::var("TORGASHKA_PG_DB").unwrap_or_else(|_| "torgashka".to_string());
+    let primary = cfg.resolve_primary_db_url();
+    standby_local_url(primary.as_deref(), cfg.local_port, &user, &db)
+}
+
+/// Шляхи-«проби готовності»: під час ініціалізації відповідаємо негайно (503),
+/// не змушуючи клієнта чекати (фронтенд ретраїть /setup/status кожні 2 с).
+fn is_readiness_path(path: &str) -> bool {
+    path == "/api/v1/health" || path == "/api/v1/setup/status"
+}
+
+/// Чесна 503 без очікування: `starting` (ініціалізація триває) або причина.
+fn not_ready_response(kind: &str, detail: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "2")],
+        axum::Json(serde_json::json!({"status": kind, "detail": detail})),
+    )
+        .into_response()
+}
+
+/// Стан boot-фасаду: HTTP доступний до готовності справжнього роутера.
+struct GateState {
+    router: Option<axum::Router>,
+    finished: bool,
+    note: String,
+}
+
+/// Boot-gate фасаду: приймає HTTP-з'єднання з першої секунди, віддає 503 на
+/// проби готовності, тримає решту запитів до публікації роутера, після чого
+/// делегує їх справжньому роутеру. Володіє guard-ом embedded PG (Drop →
+/// pg_ctl stop), тому PG живе, поки живе фасад.
+pub struct FacadeGate {
+    state: std::sync::Mutex<GateState>,
+    ready_tx: tokio::sync::watch::Sender<bool>,
+    ready_rx: tokio::sync::watch::Receiver<bool>,
+    pg: std::sync::Mutex<Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres>>,
+}
+
+impl Default for FacadeGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FacadeGate {
+    pub fn new() -> Self {
+        let (ready_tx, ready_rx) = tokio::sync::watch::channel(false);
+        Self {
+            state: std::sync::Mutex::new(GateState {
+                router: None,
+                finished: false,
+                note: String::new(),
+            }),
+            ready_tx,
+            ready_rx,
+            pg: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.state
+            .lock()
+            .map(|s| s.router.is_some())
+            .unwrap_or(false)
+    }
+
+    fn note(&self) -> String {
+        self.state
+            .lock()
+            .map(|s| s.note.clone())
+            .unwrap_or_else(|_| "стан фасаду недоступний".to_string())
+    }
+
+    /// Публікація справжнього роутера (ініціалізація завершилась успішно).
+    fn publish(&self, router: axum::Router) {
+        if let Ok(mut s) = self.state.lock() {
+            s.router = Some(router);
+            s.finished = true;
+            s.note.clear();
+        }
+        let _ = self.ready_tx.send(true);
+    }
+
+    /// Ініціалізація не дала роутера — фасад відповідає 503 із причиною.
+    fn fail(&self, note: String) {
+        if let Ok(mut s) = self.state.lock() {
+            s.finished = true;
+            s.note = note;
+        }
+        let _ = self.ready_tx.send(true);
+    }
+
+    /// Тримає embedded PG живим стільки, скільки живе фасад.
+    fn hold_pg(&self, pg: Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres>) {
+        if let Ok(mut g) = self.pg.lock() {
+            *g = pg;
+        }
+    }
+
+    /// Ініціалізація ядра у ФОНІ (її ніхто не чекає на шляху HTTP).
+    async fn run_init(&self) {
+        match init_facade_state().await {
+            Ok((state, pg)) => {
+                self.hold_pg(pg);
+                self.publish(router_v1::build_router(state));
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "INFO",
+                    "ініціалізацію ядра завершено — фасад переведено на повний роутер",
+                );
+            }
+            Err(e) => {
+                let note = format!("ініціалізацію ядра не завершено: {e}");
+                torgashka_infrastructure::embedded_pg::pg_log("ERROR", &note);
+                eprintln!("[torgashka-api] {note}");
+                self.fail(note);
+            }
+        }
+    }
+
+    async fn wait_ready(&self) {
+        // Обмеження зверху: навіть якщо ініціалізація застрягла, запит не висить
+        // безмежно (дефект 5: «жоден виклик не має права висіти безмежно»).
+        const MAX_WAIT: Duration = Duration::from_secs(180);
+        let mut rx = self.ready_rx.clone();
+        if *rx.borrow_and_update() {
+            return;
+        }
+        let _ = tokio::time::timeout(MAX_WAIT, async {
+            loop {
+                if *rx.borrow_and_update() {
+                    break;
+                }
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+
+    /// Обробка HTTP-запиту: 503 на проби готовності під час старту, делегування
+    /// справжньому роутеру після публікації, 503 із причиною — якщо ініціалізація
+    /// впала (жодних таймаутів і «мертвих» з'єднань).
+    async fn handle(&self, req: axum::extract::Request) -> axum::response::Response {
+        let path = req.uri().path().to_string();
+        if !self.is_ready() && is_readiness_path(&path) {
+            return not_ready_response("starting", "ініціалізація ядра триває");
+        }
+        self.wait_ready().await;
+        let router = self.state.lock().ok().and_then(|s| s.router.clone());
+        match router {
+            Some(r) => {
+                use tower::ServiceExt;
+                r.oneshot(req).await.unwrap_or_else(|e| match e {})
+            }
+            None => not_ready_response(
+                "db_unavailable",
+                &format!("роутер недоступний: {}", self.note()),
+            ),
+        }
+    }
+}
+
 /// Запускає axum-фасад на вказаній адресі як окремий tokio-таск.
 ///
 /// Повертає `JoinHandle<()>` — через нього можна зупинити фасад (abort).
@@ -597,27 +829,22 @@ pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     serve_listener(listener).await
 }
 
-/// Запустити фасад на вже прив'язаному слухачі.
+/// Ініціалізація ядра фасаду — виконується у ФОНІ (у власному таску), тому
+/// жоден крок не блокує HTTP-обслуговування.
 ///
-/// Викликається з `lib.rs` застосунку: бінд виконується СИНХРОННО до створення
-/// вікна, щоб порт :8000 був зайнятий ще до завантаження webview — інакше
-/// фронтенд ловить ECONNREFUSED під час ініціалізації (гонка при старті).
-pub async fn serve_listener(
-    listener: tokio::net::TcpListener,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // ── Діагностичний лог: безумовно — torgashka.log має з'являтися завжди ──
-    // (stderr на Windows приховано windows_subsystem=windows — це єдиний канал)
-    torgashka_infrastructure::embedded_pg::pg_log("INFO", "serve_listener: старт");
-    match torgashka_infrastructure::db::resolve_database_url() {
-        Ok(url) => torgashka_infrastructure::embedded_pg::pg_log(
-            "INFO",
-            &format!("resolve_database_url: Ok ({url}) — embedded PG пропускаємо"),
-        ),
-        Err(_) => torgashka_infrastructure::embedded_pg::pg_log(
-            "INFO",
-            "resolve_database_url: Err — запускаємо embedded PostgreSQL",
-        ),
-    }
+/// ФІКС ДЕФЕКТУ 5а: усі блокуючі PG-кроки (bootstrap, старт репліки) — через
+/// `tokio::task::spawn_blocking`; sync-subprocess у async-потоці заборонений.
+/// ФІКС ДЕФЕКТУ 6: у standby-режимі `bootstrap_if_needed()` НЕ викликається
+/// (initdb/CREATE DATABASE на каталозі репліки заборонені) — лише
+/// `ensure_local_replica_running()` і `DATABASE_URL` на локальну репліку.
+/// ФІКС ДЕФЕКТУ 5в: `Error::Skipped` = «БД зовнішня» — не помилка.
+async fn init_facade_state() -> Result<
+    (
+        AppState,
+        Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     // Етап 8 — повна дезактивація Python sidecar: Rust-ядро за замовчуванням.
     // Env-флаги можна явно перевизначити (напр. TORGASHKA_RUST_PRRO=0) для тестів.
     for (flag, val) in DEFAULT_RUST_FLAGS {
@@ -625,37 +852,46 @@ pub async fn serve_listener(
             std::env::set_var(flag, val);
         }
     }
-    // Embedded PostgreSQL (Windows-збірка без системного PG): якщо звичайний
-    // резолв DATABASE_URL (env → backend/.env) не дав результату — шукаємо
-    // локальні бінарники PG (TORGASHKA_PG_DIR, resources/postgres, .cache/pg,
-    // системний PG на Linux), ініціалізуємо data_dir, піднімаємо сервер на
-    // 127.0.0.1:5433 і встановлюємо DATABASE_URL для решти процесу. При
-    // завершенні serve_listener (Drop) сервер зупиняється pg_ctl stop.
-    let _embedded_pg = if torgashka_infrastructure::db::resolve_database_url().is_err() {
-        match torgashka_infrastructure::embedded_pg::bootstrap_if_needed() {
-            Ok(pg) => {
-                // Файлове логування (torgashka.log) — stderr на Windows приховано
-                torgashka_infrastructure::embedded_pg::pg_log(
-                    "INFO",
-                    &format!(
-                        "вбудований PostgreSQL: {} (data_dir: {})",
-                        pg.database_url(),
-                        pg.data_dir().display()
-                    ),
-                );
-                Some(pg)
+    // ── Крок 1: резолв DATABASE_URL (env → db_sources.toml → backend/.env) ──
+    let t1 = Instant::now();
+    let resolved = torgashka_infrastructure::db::resolve_database_url();
+    match &resolved {
+        Ok(url) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!(
+                "крок 1: resolve_database_url: Ok ({url}) — embedded PG пропускаємо ({} мс)",
+                t1.elapsed().as_millis()
+            ),
+        ),
+        Err(_) => torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!(
+                "крок 1: resolve_database_url: Err — визначаємо режим вузла ({} мс)",
+                t1.elapsed().as_millis()
+            ),
+        ),
+    }
+    // ── Крок 2: режим вузла → план підготовки БД (дефекти 5+6) ──
+    let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
+    let plan = plan_db_startup(
+        resolved.as_ref().ok().map(String::as_str),
+        node_cfg.is_standby(),
+        Some(standby_url_for(&node_cfg)),
+    );
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!(
+            "крок 2: режим вузла = {}; план = {plan:?}",
+            if node_cfg.is_standby() {
+                "standby"
+            } else {
+                "primary"
             }
-            Err(e) => {
-                torgashka_infrastructure::embedded_pg::pg_log(
-                    "ERROR",
-                    &format!("вбудований PostgreSQL недоступний ({e}); працюємо без БД"),
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
+        ),
+    );
+    let embedded_pg = apply_db_startup_plan(plan).await;
+    // ── Крок 3: авто-міграції схеми ──
+    let t3 = Instant::now();
     // Авто-міграції (Частина 1.2): застосувати схему на fresh-БД ПЕРЕД
     // підняттям listener. Ідемпотентно: повна схема лише якщо users немає;
     // owners_db створюється завжди (CREATE TABLE IF NOT EXISTS).
@@ -670,6 +906,15 @@ pub async fn serve_listener(
             eprintln!("[torgashka-api] попередження: БД недоступна для авто-міграції ({e})");
         }
     }
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!(
+            "крок 3: авто-міграції — завершено ({} мс)",
+            t3.elapsed().as_millis()
+        ),
+    );
+    // ── Крок 4: репозиторії/сервіси (кожен пул створюється один раз) ──
+    let t4 = Instant::now();
     let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
         Some((pool, read, write, pos, ledger, auth)) => (
             Some(read),
@@ -789,11 +1034,248 @@ pub async fn serve_listener(
         });
     }
 
-    let app = router_v1::build_router(state);
-    eprintln!(
-        "[torgashka-api] фасад слухає http://{}",
-        listener.local_addr()?
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!(
+            "крок 4: репозиторії/сервіси готові ({} мс); ініціалізація ядра завершена",
+            t4.elapsed().as_millis()
+        ),
     );
+    Ok((state, embedded_pg))
+}
+
+/// Виконує план підготовки БД (ФІКС дефектів 5+6).
+///
+/// * `ExternalUrl` — БД ззовні: embedded PG не чіпаємо;
+/// * `StandbyReplica` — ЛИШЕ ідемпотентний старт локальної репліки +
+///   `DATABASE_URL` на неї (жодного initdb/CREATE DATABASE — каталог репліки
+///   read-only і належить pg_basebackup);
+/// * `PrimaryBootstrap` — повний bootstrap, але у `spawn_blocking`.
+pub async fn apply_db_startup_plan(
+    plan: DbStartupPlan,
+) -> Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres> {
+    use torgashka_infrastructure::embedded_pg::{
+        bootstrap_if_needed, ensure_local_replica_running,
+    };
+    match plan {
+        DbStartupPlan::ExternalUrl(url) => {
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                &format!("крок 2: DATABASE_URL ззовні ({url}) — embedded PG не потрібен"),
+            );
+            None
+        }
+        DbStartupPlan::StandbyReplica(url) => {
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                &format!(
+                    "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО —                      це каталог репліки; ідемпотентно піднімаємо локальну репліку, читаємо {url}"
+                ),
+            );
+            let t = Instant::now();
+            // Дефект 5а: блокуючий старт локального PG — тільки spawn_blocking.
+            match tokio::task::spawn_blocking(ensure_local_replica_running).await {
+                Ok(Ok(true)) => torgashka_infrastructure::embedded_pg::pg_log(
+                    "INFO",
+                    &format!(
+                        "крок 2 (standby): локальну репліку піднято ({} мс)",
+                        t.elapsed().as_millis()
+                    ),
+                ),
+                Ok(Ok(false)) => torgashka_infrastructure::embedded_pg::pg_log(
+                    "INFO",
+                    &format!(
+                        "крок 2 (standby): локальна репліка — no-op (уже слухає / ще не провіжнена) ({} мс)",
+                        t.elapsed().as_millis()
+                    ),
+                ),
+                // Чесна причина і робота далі: фасад відповідає, локальний режим
+                // увімкнеться, щойно репліка стане доступною.
+                Ok(Err(e)) => torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!(
+                        "крок 2 (standby): локальну репліку НЕ піднято ({e}) — працюємо далі ({} мс)",
+                        t.elapsed().as_millis()
+                    ),
+                ),
+                Err(e) => torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("крок 2 (standby): таск старту репліки панікував ({e})"),
+                ),
+            }
+            // Джерело даних standby-каси — локальна репліка, без пароля.
+            std::env::set_var("DATABASE_URL", &url);
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                &format!("крок 2 (standby): DATABASE_URL = {url} (локальна репліка, лише читання)"),
+            );
+            // Реплікою НЕ володіємо: Drop фасаду не має її зупиняти.
+            None
+        }
+        DbStartupPlan::PrimaryBootstrap => {
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                "крок 2 (primary): запускаємо embedded PostgreSQL (initdb → старт → CREATE DATABASE)",
+            );
+            let t = Instant::now();
+            // Дефект 5а: bootstrap — блокуючий (subprocess-и) → spawn_blocking.
+            match tokio::task::spawn_blocking(bootstrap_if_needed).await {
+                Ok(Ok(pg)) => {
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "INFO",
+                        &format!(
+                            "крок 2 (primary): вбудований PostgreSQL: {} (data_dir: {}, {} мс)",
+                            pg.database_url(),
+                            pg.data_dir().display(),
+                            t.elapsed().as_millis()
+                        ),
+                    );
+                    Some(pg)
+                }
+                // Дефект 5в: Skipped = DATABASE_URL з'явився ззовні — це не помилка.
+                Ok(Err(torgashka_infrastructure::embedded_pg::Error::Skipped(msg))) => {
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "INFO",
+                        &format!("крок 2: embedded PG пропущено — {msg} (БД зовнішня)"),
+                    );
+                    None
+                }
+                Ok(Err(e)) => {
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!(
+                            "крок 2 (primary): вбудований PostgreSQL недоступний ({e}); працюємо без БД ({} мс)",
+                            t.elapsed().as_millis()
+                        ),
+                    );
+                    None
+                }
+                Err(e) => {
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!(
+                            "крок 2 (primary): таск bootstrap панікував ({e}); працюємо без БД"
+                        ),
+                    );
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Запустити фасад на вже прив'язаному слухачі.
+///
+/// Викликається з `lib.rs` застосунку: бінд виконується СИНХРОННО до створення
+/// вікна, щоб порт :8000 був зайнятий ще до завантаження webview — інакше
+/// фронтенд ловить ECONNREFUSED під час ініціалізації (гонка при старті).
+///
+/// ФІКС ДЕФЕКТУ 5: HTTP-обслуговування стартує ЗРАЗУ (boot-gate), а ініціалізація
+/// БД іде у фоні. Раніше синхронний bootstrap тримав слухач «німим»: TCP-handshake
+/// завершувався, а HTTP-відповіді не було (curl: 0 байт + таймаут).
+pub async fn serve_listener(
+    listener: tokio::net::TcpListener,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // ── Діагностичний лог: безумовно — torgashka.log має з'являтися завжди ──
+    // (stderr на Windows приховано windows_subsystem=windows — це єдиний канал)
+    torgashka_infrastructure::embedded_pg::pg_log("INFO", "serve_listener: старт");
+    let gate = Arc::new(FacadeGate::new());
+    let addr = listener.local_addr()?;
+    eprintln!("[torgashka-api] фасад слухає http://{addr} (ініціалізація БД — у фоні)");
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!("фасад слухає http://{addr} — HTTP-відповіді з першої секунди (boot-gate)"),
+    );
+    // Фонова ініціалізація ядра: жоден блокуючий крок не виконується на шляху HTTP.
+    let init_gate = gate.clone();
+    tokio::spawn(async move { init_gate.run_init().await });
+    // HTTP-обслуговування з першої секунди.
+    let app =
+        axum::Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
+            let gate = gate.clone();
+            async move { gate.handle(req).await }
+        }));
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Дефект 6: standby НІКОЛИ не йде primary-шляхом (initdb/CREATE DATABASE) ──
+
+    #[test]
+    fn standby_without_external_url_never_bootstraps() {
+        let plan = plan_db_startup(
+            None,
+            true,
+            Some("postgresql://repuser@127.0.0.1:5433/repdb".to_string()),
+        );
+        assert_eq!(
+            plan,
+            DbStartupPlan::StandbyReplica("postgresql://repuser@127.0.0.1:5433/repdb".to_string()),
+            "standby-вузол мусить іти гілкою репліки, а не bootstrap (дефект 6)"
+        );
+        assert_ne!(plan, DbStartupPlan::PrimaryBootstrap);
+    }
+
+    #[test]
+    fn primary_without_external_url_bootstraps() {
+        assert_eq!(
+            plan_db_startup(None, false, None),
+            DbStartupPlan::PrimaryBootstrap
+        );
+    }
+
+    #[test]
+    fn external_url_always_wins_and_skips_embedded_pg() {
+        // env DATABASE_URL задано → embedded PG не чіпаємо (ні primary, ні standby)
+        assert_eq!(
+            plan_db_startup(Some("postgresql://u@h:5432/db"), false, None),
+            DbStartupPlan::ExternalUrl("postgresql://u@h:5432/db".to_string())
+        );
+        assert_eq!(
+            plan_db_startup(
+                Some("postgresql://u@h:5432/db"),
+                true,
+                Some("x".to_string())
+            ),
+            DbStartupPlan::ExternalUrl("postgresql://u@h:5432/db".to_string())
+        );
+        // порожній/пробільний URL не вважається заданим
+        assert_eq!(
+            plan_db_startup(Some("   "), false, None),
+            DbStartupPlan::PrimaryBootstrap
+        );
+    }
+
+    #[test]
+    fn standby_url_from_primary_is_passwordless_and_local() {
+        let url = standby_local_url(
+            Some("postgresql://repuser:s3cret@10.0.0.5:5432/pos_net"),
+            5433,
+            "repuser",
+            "repdb",
+        );
+        assert_eq!(url, "postgresql://repuser@127.0.0.1:5433/pos_net");
+        assert!(!url.contains("s3cret"), "{url}");
+    }
+
+    #[test]
+    fn standby_url_falls_back_to_local_defaults() {
+        let url = standby_local_url(None, 5433, "postgres", "torgashka");
+        assert_eq!(url, "postgresql://postgres@127.0.0.1:5433/torgashka");
+        // userinfo без ':' → пароля немає
+        let userinfo = &url[url.find("://").unwrap() + 3..url.rfind('@').unwrap()];
+        assert!(!userinfo.contains(':'), "пароль у URL заборонений: {url}");
+    }
+
+    #[test]
+    fn readiness_paths_are_probe_endpoints_only() {
+        assert!(is_readiness_path("/api/v1/health"));
+        assert!(is_readiness_path("/api/v1/setup/status"));
+        assert!(!is_readiness_path("/api/v1/auth/login"));
+        assert!(!is_readiness_path("/api/v1/setup"));
+    }
 }

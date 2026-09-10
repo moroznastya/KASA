@@ -24,16 +24,24 @@
 //!   1. env `TORGASHKA_DBKEY` (base64 43 симв. або hex 64 симв.);
 //!   2. файлу `.dbkey` у тій самій директорії, що й `db_sources.toml` (права
 //!      0600; створюється автоматично при першому збереженні пароля).
+//!
 //! Ключ НЕ хардкодиться в коді/конфігах репозиторію. Пароль у файлі ніколи
 //! не зберігається у plaintext.
 //!
 //! # Шляхи пошуку db_sources.toml (перший знайдений виграє)
 //!   1. env `TORGASHKA_DB_SOURCES` (абсолютний шлях);
-//!   2. `./db_sources.toml` (CWD);
-//!   3. `<repo>/frontend/src-tauri/db_sources.toml` (dev-збірка, поряд із
+//!   2. СТАБІЛЬНИЙ каталог поряд із pgdata —
+//!      `embedded_pg::data_dir_default().parent()/db_sources.toml`
+//!      (Windows `%APPDATA%\Torgashka\db_sources.toml`, Linux
+//!      `$XDG_DATA_HOME/Torgashka/` або `~/.local/share/Torgashka/`);
+//!      саме цей каталог переживає рестарт (CWD на проді нестабільний:
+//!      autostart/`restart_app` спавнить exe з іншої робочої теки);
+//!   3. `./db_sources.toml` (CWD) — сумісність зі старими розкладками;
+//!   4. `<repo>/frontend/src-tauri/db_sources.toml` (dev-збірка, поряд із
 //!      config.toml.example; CARGO_MANIFEST_DIR — лише compile-time fallback).
-//! Запис (активація/CRUD) — завжди в перший кандидат списку (env → CWD →
-//! manifest), незалежно від того, чи файл уже існує.
+//!
+//! Запис (активація/CRUD) — завжди в перший кандидат списку (env → стабільний
+//! каталог → CWD → manifest), незалежно від того, чи файл уже існує.
 //!
 //! # Стабільність (stability_first, рішення зафіксоване)
 //! `active` — авторитетне джерело ПРИ СТАРТІ: `resolve_database_url()`
@@ -44,6 +52,7 @@
 //!   1) перевіряє з'єднання з джерелом (TCP + SELECT 1);
 //!   2) зберігає `active = <id>` у db_sources.toml;
 //!   3) повертає чесну відповідь «застосується після перезапуску сервісу».
+//!
 //! Жоден існуючий роут НЕ чіпає робочий пул під час перемикання.
 
 use std::io::Write;
@@ -141,30 +150,81 @@ pub struct DbSourceView {
 // Шляхи
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Кандидати шляху db_sources.toml у порядку пріоритету.
-pub fn path_candidates() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Ok(p) = std::env::var(DB_SOURCES_ENV) {
-        if !p.trim().is_empty() {
-            v.push(PathBuf::from(p));
-        }
+/// Стабільний шлях конфігурації — поряд із pgdata (переживає рестарт і
+/// зміну CWD): `embedded_pg::data_dir_default().parent()/db_sources.toml`.
+///
+/// Windows: `%APPDATA%\Torgashka\db_sources.toml`; Linux:
+/// `$XDG_DATA_HOME/Torgashka/db_sources.toml`, fallback
+/// `~/.local/share/Torgashka/db_sources.toml`.
+///
+/// `None`, якщо стабільного каталогу немає (`data_dir_default()` = відносний
+/// `pgdata`, тобто ні HOME, ні XDG_DATA_HOME) — тоді працюють CWD/manifest
+/// (повна сумісність зі старими розкладками).
+pub fn stable_config_path() -> Option<PathBuf> {
+    let data_dir = crate::embedded_pg::data_dir_default();
+    let parent = data_dir.parent()?;
+    if parent.as_os_str().is_empty() {
+        return None; // "pgdata" без каталогу → стабільного місця немає
     }
-    v.push(PathBuf::from("db_sources.toml")); // CWD
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // crates/torgashka-infrastructure → ../../db_sources.toml =
-    // <repo>/frontend/src-tauri/db_sources.toml (dev поряд із config.toml.example).
-    v.push(manifest.join("../../db_sources.toml"));
+    Some(parent.join("db_sources.toml"))
+}
+
+/// Чистий (тестований, без звернення до env) побудовник кандидатів.
+/// Порядок пріоритету: `env_override` → `stable` (поряд із pgdata) → `cwd` →
+/// `manifest`. Порожні шляхи та дублікати ігноруються.
+pub fn path_candidates_with(
+    env_override: Option<&str>,
+    stable: Option<&Path>,
+    cwd: &Path,
+    manifest: &Path,
+) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if p.as_os_str().is_empty() || v.contains(&p) {
+            return;
+        }
+        v.push(p);
+    };
+    if let Some(p) = env_override.map(str::trim).filter(|p| !p.is_empty()) {
+        push(PathBuf::from(p));
+    }
+    if let Some(p) = stable {
+        push(p.to_path_buf());
+    }
+    push(cwd.to_path_buf());
+    push(manifest.to_path_buf());
     v
 }
 
-/// Шлях для ЗАПИСУ (завжди перший кандидат: env → CWD → manifest).
+/// Кандидати шляху db_sources.toml у порядку пріоритету:
+/// env → стабільний каталог (поряд із pgdata) → CWD → manifest.
+pub fn path_candidates() -> Vec<PathBuf> {
+    let env_override = std::env::var(DB_SOURCES_ENV).ok();
+    let stable = stable_config_path();
+    // crates/torgashka-infrastructure → ../../db_sources.toml =
+    // <repo>/frontend/src-tauri/db_sources.toml (dev поряд із config.toml.example).
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../db_sources.toml");
+    path_candidates_with(
+        env_override.as_deref(),
+        stable.as_deref(),
+        Path::new("db_sources.toml"),
+        &manifest,
+    )
+}
+
+/// Шлях для ЗАПИСУ (перший кандидат: env → стабільний каталог → CWD → manifest).
 pub fn write_path() -> PathBuf {
     path_candidates().into_iter().next().expect("кандидати")
 }
 
+/// Перший ІСНУЮЧИЙ файл зі списку кандидатів (чиста частина [`existing_path`]).
+pub fn existing_path_in(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
+}
+
 /// Перший ІСНУЮЧИЙ файл конфігурації (None — файлу ще немає).
 pub fn existing_path() -> Option<PathBuf> {
-    path_candidates().into_iter().find(|p| p.is_file())
+    existing_path_in(&path_candidates())
 }
 
 /// Директорія зберігання дампів (`<дир db_sources.toml>/dumps`).
@@ -656,5 +716,80 @@ mod tests {
             ..src
         };
         assert_eq!(build_url(&v6, ""), "postgresql://u%3Aser@[::1]/mydb");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Шляхи конфігурації (дефект 4: CWD-залежність)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// (а) Пріоритет шляхів: env > AppData(стабільний) > CWD > manifest.
+    #[test]
+    fn path_priority_env_then_stable_then_cwd_then_manifest() {
+        let stable = Path::new("/appdata/Torgashka/db_sources.toml");
+        let cwd = Path::new("db_sources.toml");
+        let manifest = Path::new("/repo/frontend/src-tauri/db_sources.toml");
+
+        // env задано → він перший (запис іде туди ж: write_path() = кандидат №1).
+        let env = Some("/env/db_sources.toml");
+        assert_eq!(
+            path_candidates_with(env, Some(stable), cwd, manifest),
+            vec![
+                PathBuf::from("/env/db_sources.toml"),
+                stable.to_path_buf(),
+                cwd.to_path_buf(),
+                manifest.to_path_buf(),
+            ]
+        );
+
+        // env немає → перший СТАБІЛЬНИЙ (AppData/pgdata-сусід), потім CWD, manifest.
+        assert_eq!(
+            path_candidates_with(None, Some(stable), cwd, manifest),
+            vec![
+                stable.to_path_buf(),
+                cwd.to_path_buf(),
+                manifest.to_path_buf(),
+            ]
+        );
+
+        // Порожній env ігнорується.
+        assert_eq!(
+            path_candidates_with(Some("   "), Some(stable), cwd, manifest)[0],
+            stable.to_path_buf()
+        );
+
+        // Стабільного каталогу немає (немає HOME/XDG) → CWD/manifest (сумісність).
+        assert_eq!(
+            path_candidates_with(None, None, cwd, manifest),
+            vec![cwd.to_path_buf(), manifest.to_path_buf()]
+        );
+    }
+
+    /// Стабільний шлях — завжди `<data_dir_default>/../db_sources.toml`.
+    #[test]
+    fn stable_config_path_is_next_to_pgdata() {
+        let data_dir = crate::embedded_pg::data_dir_default();
+        match stable_config_path() {
+            Some(p) => assert_eq!(p, data_dir.parent().unwrap().join("db_sources.toml")),
+            None => assert!(data_dir
+                .parent()
+                .map(|p| p.as_os_str().is_empty())
+                .unwrap_or(true)),
+        }
+    }
+
+    /// (в) Читання (existing_path) віддає AppData-файл, а не CWD.
+    #[test]
+    fn existing_path_prefers_stable_config_over_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stable = dir.path().join("Torgashka").join("db_sources.toml");
+        std::fs::create_dir_all(stable.parent().unwrap()).expect("mkdir");
+        std::fs::write(&stable, "active = \"primary\"\n").expect("write");
+        let cands = vec![stable.clone(), PathBuf::from("db_sources.toml")];
+        assert_eq!(existing_path_in(&cands), Some(stable));
+        // Нічого не існує → None (жодних здогадок).
+        assert_eq!(
+            existing_path_in(&[dir.path().join("nope.toml"), dir.path().join("nope2.toml"),]),
+            None
+        );
     }
 }

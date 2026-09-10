@@ -263,8 +263,8 @@ async fn actor_claims(state: &AppState, claims: &Claims) -> Result<(), DbSrcErr>
         .map_err(DbSrcErr::Auth)
 }
 
-/// Спільний owner-check — auth_routes::require_owner (без дублів):
-/// require_admin (401/403) + жорстка вимога role=owner (admin/store_manager → 403).
+// Спільний owner-check — auth_routes::require_owner (без дублів):
+// require_admin (401/403) + жорстка вимога role=owner (admin/store_manager → 403).
 
 fn id_valid(id: &str) -> bool {
     !id.is_empty()
@@ -407,9 +407,7 @@ fn sanitize_dump_sql(sql: &str) -> String {
     sql.lines()
         .map(|l| {
             let t = l.trim_start();
-            if t.starts_with("\\restrict") {
-                format!("-- {l}")
-            } else if t.starts_with("SET transaction_timeout") {
+            if t.starts_with("\\restrict") || t.starts_with("SET transaction_timeout") {
                 format!("-- {l}")
             } else {
                 l.to_string()

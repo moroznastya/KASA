@@ -145,9 +145,9 @@ pub fn ensure_push_task_started() -> Result<bool, String> {
     }
     // spawn_push_task робить tokio::spawn — потребує tokio-контексту;
     // tauri::async_runtime::spawn гарантує його з будь-якого потоку.
-    let _ = tauri::async_runtime::spawn(async move {
+    drop(tauri::async_runtime::spawn(async move {
         sync_push::spawn_push_task(cfg);
-    });
+    }));
     Ok(true)
 }
 
@@ -187,9 +187,9 @@ pub fn ensure_pull_task_started() -> Result<bool, String> {
         db_path: path,
         interval_secs: sync_pull::DEFAULT_PULL_INTERVAL_SECS,
     };
-    let _ = tauri::async_runtime::spawn(async move {
+    drop(tauri::async_runtime::spawn(async move {
         sync_pull::spawn_pull_task(cfg);
-    });
+    }));
     Ok(true)
 }
 

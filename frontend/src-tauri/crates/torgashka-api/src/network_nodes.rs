@@ -380,6 +380,9 @@ pub struct JoinResponse {
     pub replication: ReplicationCreds,
 }
 
+/// Рядок вибірки вузла за join-хешем (id, store_id, expires_at, node_token_hash).
+type NodeJoinRow = (Uuid, Option<Uuid>, Option<NaiveDateTime>, Option<String>);
+
 /// Публічний join вузла за одноразовим кодом (без JWT — новий комп'ютер ще
 /// нічого не має). Той самий rate-limit (5/60с на IP), що й /devices/activate.
 pub async fn join_node(
@@ -417,7 +420,7 @@ pub async fn join_node(
 
     // Код → вузол за SHA-256-хешем (оригінал коду в БД не зберігається).
     let join_hash = network::sha256_hex(&code);
-    let row: Option<(Uuid, Option<Uuid>, Option<NaiveDateTime>, Option<String>)> = sqlx::query_as(
+    let row: Option<NodeJoinRow> = sqlx::query_as(
         "SELECT id, store_id, join_token_expires_at, node_token_hash \
          FROM network_nodes WHERE join_token_hash = $1",
     )
@@ -551,22 +554,27 @@ const LAG_THRESHOLD_BYTES: i64 = 50_000_000;
 /// його WAL-позиція на primary вже недоступна (max_slot_wal_keep_size=10GB),
 /// потрібен примусовий ресинк через новий pg_basebackup.
 ///
-/// Вузол у стані 'syncing' (примусовий ресинк у процесі) завжди пропускається;
-/// решта — відхиляються, якщо last_seen_at NULL (ніколи/ще не бачили) АБО
-/// останній heartbeat старший за stale_after.
+/// Вузол у стані 'syncing' (примусовий ресинк у процесі) завжди пропускається.
+/// Решта — відхиляються, якщо «вік» вузла перевищує stale_after, де вік
+/// рахується від last_seen_at, а для вузла, що жодного разу не виходив на
+/// зв'язок (last_seen_at NULL — свіжий join), — від created_at.
 fn requires_force_resync(
     current_status: &str,
     last_seen_at: Option<NaiveDateTime>,
+    created_at: NaiveDateTime,
     now: NaiveDateTime,
     stale_after: chrono::Duration,
 ) -> bool {
     if current_status == "syncing" {
         return false; // примусовий ресинк у процесі — новий basebackup іде
     }
-    match last_seen_at {
-        None => true,
-        Some(last) => now.signed_duration_since(last) > stale_after,
-    }
+    // last_seen_at виставляється ЛИШЕ прийнятим heartbeat, тож свіжий вузол
+    // має NULL за визначенням. Якщо брати NULL за «застарілий» — catch-22:
+    // перший heartbeat завжди 410, вузол назавжди лишається 'provisioning'.
+    // Тому базою для NULL є created_at (вузол застарілий лише якщо створений
+    // давніше за stale_after). Порівняння суворе (>), не (>=).
+    let base = last_seen_at.unwrap_or(created_at);
+    now.signed_duration_since(base) > stale_after
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,13 +616,13 @@ pub async fn heartbeat_node(
         }
     };
 
-    let row: Option<(Option<String>, String, Option<NaiveDateTime>)> = sqlx::query_as(
-        "SELECT node_token_hash, status::text, last_seen_at FROM network_nodes WHERE id = $1",
+    let row: Option<(Option<String>, String, Option<NaiveDateTime>, NaiveDateTime)> = sqlx::query_as(
+        "SELECT node_token_hash, status::text, last_seen_at, created_at FROM network_nodes WHERE id = $1",
     )
     .bind(node_id)
     .fetch_optional(&pool)
     .await?;
-    let (stored_hash, current_status, last_seen_at) = match row {
+    let (stored_hash, current_status, last_seen_at, created_at) = match row {
         Some(r) => r,
         None => return Err(NodeErr::NotFound("Вузол не знайдено".to_string())),
     };
@@ -636,6 +644,7 @@ pub async fn heartbeat_node(
     if requires_force_resync(
         &current_status,
         last_seen_at,
+        created_at,
         Utc::now().naive_utc(),
         chrono::Duration::days(7),
     ) {
@@ -648,6 +657,7 @@ pub async fn heartbeat_node(
                 "reason": "offline_over_7_days",
                 "current_status": current_status,
                 "last_seen_at": last_seen_at,
+                "created_at": created_at,
             }),
         )
         .await;
@@ -994,17 +1004,20 @@ mod tests {
     #[test]
     fn offline_over_7_days_requires_force_resync() {
         let now = dt(2026, 9, 10);
+        let created = now - chrono::Duration::days(30); // вузол створений давно
         let stale = now - chrono::Duration::days(8); // офлайн > 7 днів
         let fresh = now - chrono::Duration::days(1); // ще в межах вікна
         assert!(requires_force_resync(
             "offline",
             Some(stale),
+            created,
             now,
             chrono::Duration::days(7)
         ));
         assert!(!requires_force_resync(
             "offline",
             Some(fresh),
+            created,
             now,
             chrono::Duration::days(7)
         ));
@@ -1013,6 +1026,7 @@ mod tests {
         assert!(!requires_force_resync(
             "offline",
             Some(boundary),
+            created,
             now,
             chrono::Duration::days(7)
         ));
@@ -1021,18 +1035,21 @@ mod tests {
     #[test]
     fn never_seen_node_stale_unless_syncing() {
         let now = dt(2026, 9, 10);
-        // last_seen_at IS NULL — ніколи не слатав heartbeat: застарілий,
-        // якщо НЕ в процесі примусового ресинку (force-resync ставить
-        // status='syncing' І last_seen_at=NULL — новий basebackup іде).
+        // last_seen_at IS NULL — ніколи не слатав heartbeat: застарілий ЛИШЕ
+        // якщо створений давніше за stale_after (created_at — база для NULL).
+        // Тут вузол старий → застарілий.
+        let old_created = now - chrono::Duration::days(30);
         assert!(requires_force_resync(
             "provisioning",
             None,
+            old_created,
             now,
             chrono::Duration::days(7)
         ));
         assert!(!requires_force_resync(
             "syncing",
             None,
+            old_created,
             now,
             chrono::Duration::days(7)
         ));
@@ -1041,6 +1058,7 @@ mod tests {
         assert!(!requires_force_resync(
             "syncing",
             Some(ancient),
+            old_created,
             now,
             chrono::Duration::days(7)
         ));
@@ -1049,15 +1067,42 @@ mod tests {
     #[test]
     fn active_fresh_node_not_stale() {
         let now = dt(2026, 9, 10);
+        let created = now - chrono::Duration::days(30);
         assert!(!requires_force_resync(
             "active",
             Some(now),
+            created,
             now,
             chrono::Duration::days(7)
         ));
         assert!(!requires_force_resync(
             "lagging",
             Some(now - chrono::Duration::days(2)),
+            created,
+            now,
+            chrono::Duration::days(7)
+        ));
+    }
+
+    /// Регресія (вічний 410 на першому heartbeat): свіжий вузол після join має
+    /// last_seen_at=NULL, бо це поле виставляє ЛИШЕ прийнятий heartbeat. Такий
+    /// вузол НЕ застарілий, доки created_at у межах вікна — перший heartbeat
+    /// має прийматися (інакше catch-22: вузол ніколи не стане 'active').
+    #[test]
+    fn never_seen_fresh_node_is_accepted() {
+        let now = dt(2026, 9, 10);
+        assert!(!requires_force_resync(
+            "provisioning",
+            None,
+            now - chrono::Duration::hours(1),
+            now,
+            chrono::Duration::days(7)
+        ));
+        // Той самий NULL, але вузол створений давніше за stale_after → застарілий.
+        assert!(requires_force_resync(
+            "provisioning",
+            None,
+            now - chrono::Duration::days(8),
             now,
             chrono::Duration::days(7)
         ));

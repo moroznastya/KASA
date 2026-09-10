@@ -466,13 +466,6 @@ END
 $$;
 "#;
 
-/// Ідемпотентне застосування схеми при старті фасаду.
-///
-/// - Якщо таблиці `users` немає (fresh-БД) → виконується повна схема.
-/// - `owners_db`, `cash_operations`, мережевий рівень (devices/audit_log/…)
-///   створюються завжди (CREATE TABLE IF NOT EXISTS) — покривають і fresh,
-///   і вже мігровані БД без них.
-
 const RLS_FORCE_DDL: &str = r#"
 -- ============================================================================
 -- ЕТАП 7: FORCE ROW LEVEL SECURITY для вже мігрованих БД.
@@ -535,6 +528,12 @@ const WAL_POLICY_DDL: &str = r#"
 ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
 "#;
 
+/// Ідемпотентне застосування схеми при старті фасаду.
+///
+/// - Якщо таблиці `users` немає (fresh-БД) → виконується повна схема.
+/// - `owners_db`, `cash_operations`, мережевий рівень (devices/audit_log/…)
+///   створюються завжди (CREATE TABLE IF NOT EXISTS) — покривають і fresh,
+///   і вже мігровані БД без них.
 pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
     let has_users: bool = sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
         .fetch_one(pool)

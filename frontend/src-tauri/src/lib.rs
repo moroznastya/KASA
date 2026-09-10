@@ -250,6 +250,40 @@ pub fn run() {
             // ще до завантаження webview, тож фронтенд не ловить ECONNREFUSED
             // (гонка: ініціалізація БД/роутів у serve триває секунди, а webview
             // одразу стріляє GET /auth/verify при відновленні сесії).
+            // Дефект 3 (recovery): `[node] mode="standby"` пише ЛИШЕ
+            // start_standby_provision (після успішного провіжингу). Якщо провіжн
+            // обірвався або застосунок перезапустили до запису — конфіг губиться
+            // і каса назавжди вважає себе Primary (немає /api/v1/local/*, немає
+            // локальної репліки). Recovery відновлює режим за наявними слідами
+            // (PG_VERSION у data_dir + node_node_id у SQLite settings), НЕ
+            // роблячи повторний pg_basebackup. Викликаємо ДО `load()` нижче й ДО
+            // бінда фасаду :8000 — інакше init_local_standby не змонтується.
+            match torgashka_infrastructure::node_config::recover_standby_if_needed() {
+                Ok(true) => eprintln!(
+                    "[standby] recovery: [node] mode=standby відновлено (дефект 3)"
+                ),
+                Ok(false) => {}
+                Err(e) => eprintln!("[standby] recovery: не вдалося ({e})"),
+            }
+
+            // Дефект 2 (ЕТАП 16): у standby-режимі локальна embedded-репліка
+            // (127.0.0.1:5433) мусить бути піднята ДО бінда фасаду :8000 —
+            // інакше `init_local_standby` не підключиться, `/api/v1/local/*`
+            // не змонтуються, а UI вічно висить на «Підключення до сервера…».
+            // Ідемпотентно (уже слухає / не провіжнено → no-op); primary-режим
+            // не чіпаємо (is_standby() = false → виклику немає).
+            if torgashka_infrastructure::node_config::NodeConfig::load().is_standby() {
+                match torgashka_infrastructure::embedded_pg::ensure_local_replica_running() {
+                    Ok(true) => {
+                        eprintln!("[standby] локальну репліку піднято при старті (дефект 2)")
+                    }
+                    Ok(false) => {
+                        eprintln!("[standby] локальна репліка вже слухає або ще не провіжнена — no-op")
+                    }
+                    Err(e) => eprintln!("[standby] локальну репліку не піднято: {e}"),
+                }
+            }
+
             // B2 (рішення Творця): адреса фасаду з env TORGASHKA_LISTEN_ADDR
             // (напр. 0.0.0.0:8000 на VPS, щоб standby-каси достукувались через
             // інтернет); дефолт — 127.0.0.1:8000 (повна зворотна сумісність).

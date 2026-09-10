@@ -27,12 +27,12 @@ chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
 bigdecimal = "0.4"
 rust_xlsxwriter = "0.97.1"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors"] }
 sha2 = "0.10"
 
 [dev-dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 async-trait = "0.1.92"

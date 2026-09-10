@@ -123,12 +123,12 @@ fn dec2(v: i64) -> String {
     format!("{}.{:02}", v / 100, (v % 100).abs())
 }
 
+/// Розібрана позиція: (product_id, quantity-scaled3, quantity, cost_price?, price?).
+type ParsedItem = (Uuid, i64, String, Option<String>, Option<String>);
+
 /// Позиції payload: усі мають product_id + quantity (Decimal). Повертає
 /// (product_id, quantity-scaled3, рядок quantity, cost_price?, price?).
-fn parse_items(
-    v: &Value,
-    kind: &str,
-) -> Result<Vec<(Uuid, i64, String, Option<String>, Option<String>)>, String> {
+fn parse_items(v: &Value, kind: &str) -> Result<Vec<ParsedItem>, String> {
     let arr = match v.get("items") {
         Some(Value::Array(a)) if !a.is_empty() => a,
         _ => return Err(format!("{kind}: payload.items порожній або відсутній")),
@@ -353,14 +353,11 @@ pub async fn accept_inventory(
     .await
     .map_err(|e| format!("INSERT inventories: {e}"))?;
     for (pid, q3, qty_s, cost, price) in &items {
-        let acc = dec(&payload["items"], "accounting_quantity")
-            .ok()
-            .flatten()
-            .or_else(|| None);
+        let acc = dec(&payload["items"], "accounting_quantity").ok().flatten();
         let _ = acc;
         // accounting_quantity/difference — з позиції (якщо є), інакше 0.
         let acc_s = item_field_qty(payload, *pid, "accounting_quantity", qty_s);
-        let diff_s = item_field_qty(payload, *pid, "difference", &format!("0"));
+        let diff_s = item_field_qty(payload, *pid, "difference", "0");
         let cost_c = cost.as_deref().and_then(scaled2).unwrap_or(0);
         let price_c = price.as_deref().and_then(scaled2).unwrap_or(0);
         sqlx::query(

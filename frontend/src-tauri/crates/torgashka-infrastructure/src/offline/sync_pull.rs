@@ -199,7 +199,7 @@ fn apply_upsert(
             )?;
         }
         "products" => {
-            q(tx, 
+            q(tx,
                 "INSERT INTO products_v2 (id, barcode, name, unit, category_id, price, is_deleted, server_version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
                  ON CONFLICT(id) DO UPDATE SET
@@ -257,7 +257,7 @@ fn apply_upsert(
             )?;
         }
         "stock_norms" => {
-            q(tx, 
+            q(tx,
                 "INSERT INTO stock_norms (product_id, min_qty, max_qty, is_deleted, server_version, data)
                  VALUES (?1, ?2, ?3, 0, ?4, ?5)
                  ON CONFLICT(product_id) DO UPDATE SET
@@ -281,7 +281,7 @@ fn apply_upsert(
                 return Ok(());
             }
             let value = data.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            q(tx, 
+            q(tx,
                 "INSERT INTO settings (key, value, updated_at)
                  VALUES (?1, ?2, datetime('now'))
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
