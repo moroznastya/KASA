@@ -258,6 +258,17 @@ impl NodeConfig {
 //   * обидві умови виконано → у СТАБІЛЬНИЙ db_sources.toml (поряд із pgdata;
 //     не в CWD — див. дефект 4) дописується `mode = "standby"` зі збереженням
 //     решти полів/секцій.
+//
+// МЕЖА (критичний дефект): ЯВНИЙ `mode` у файлі — рішення вузла, а не предмет
+// вгадування. `[node] mode = "primary"` (promote →
+// `into_promoted_primary().save_to_disk()`, `torgashka-api/src/promote.rs`, або
+// первинна каса) НІКОЛИ не переписується на standby. Інакше промоутнутий вузол
+// після кожного рестарту застосунку (`src/lib.rs: recover_standby_if_needed()`
+// викликається ДО `NodeConfig::load()`) вважав би себе реплікою: не піднімає
+// локальний primary-PG, монтує `/api/v1/local/*` проти 127.0.0.1:5433 (якої
+// немає), записи не проходять. Відновлення standby виконується ЛИШЕ коли файл
+// або секція `[node]` відсутні (тоді Primary — дефолт, а не рішення) і є сліди
+// провіжингу.
 
 /// Recovery standby-режиму вузла (ідемпотентно; прод-обгортка).
 ///
@@ -278,6 +289,17 @@ pub fn recover_standby_if_needed() -> Result<bool, String> {
 /// Ядро recovery — чиста функція (тестована без env/SQLite):
 /// `join_done` — чи є `node_node_id` у SQLite settings; `data_dir` — каталог
 /// кластера (PG_VERSION = провіжн виконано); `cfg_path` — файл db_sources.toml.
+///
+/// Розрізняє «конфіг відсутній» і «конфіг Є з ЯВНИМ `mode`»:
+/// * файл є + `mode = "standby"` → `Ok(true)` (ідемпотентно, файл не чіпаємо);
+/// * файл Є + явний `mode = "primary"` → `Ok(false)`, файл НЕ ЧІПАЄМО (це
+///   рішення promote/первинної каси — назад у репліку не відкочуємо);
+/// * файла немає (або немає явного `mode`) + PG_VERSION + `join_done` →
+///   записуємо `mode = "standby"` (як і раніше);
+/// * файла немає + !`join_done` → `Ok(false)` (як і раніше).
+///
+/// Повертає `Ok(true)`, якщо вузол — standby (уже був або щойно відновлено).
+/// Помилки файлових операцій → `Err` (виклик при старті логує, не падає).
 pub fn recover_standby_at(
     join_done: bool,
     data_dir: &Path,
@@ -296,12 +318,36 @@ pub fn recover_standby_at(
     if cfg.is_standby() {
         return Ok(true); // режим уже standby — у файл не пишемо (ідемпотентно)
     }
+    if cfg_path.is_file() && explicit_node_mode_in_file(cfg_path) {
+        // Файл Є і режим задано ЯВНО: `mode = "primary"` після promote
+        // (`torgashka-api::promote` → `into_promoted_primary().save_to_disk()`)
+        // або первинної каси. Жодних здогадок і жодних записів: інакше кожен
+        // рестарт застосунку відкочував би промоутнутий вузол у standby.
+        return Ok(false);
+    }
     if !join_done {
         // Кластер є, але слідів join немає — режим вузла невідомий, не вгадуємо.
         return Ok(false);
     }
     cfg.with_mode(NodeMode::Standby).save_to_path(cfg_path)?;
     Ok(true)
+}
+
+/// Чи містить файл ЯВНУ секцію `[node]` з полем `mode` (не дефолт відсутньої
+/// секції). Відрізняє «конфіг відсутній / без `[node]`» (Primary — дефолт, за
+/// наявними слідами режим можна відновити) від «`mode` задано явно» (рішення
+/// promote/первинної каси — переписувати НЕ МОЖНА).
+///
+/// Помилка читання/парсингу → `false` (файл невідомий; режим тоді вирішує
+/// решта recovery-перевірок, як і до цього фіксу).
+fn explicit_node_mode_in_file(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = toml::from_str::<toml::Value>(&content) else {
+        return false;
+    };
+    v.get("node").and_then(|node| node.get("mode")).is_some()
 }
 
 /// Читання конфіга без eprintln-шуму (файл перевірено на існування).
@@ -674,7 +720,9 @@ degrade_to_local = false
         assert!(!cfg_other.exists(), "без слідів join не вгадуємо режим");
     }
 
-    /// Recovery зберігає решту полів `[node]` і секції файлу (формат не змінюємо).
+    /// Recovery зберігає решту полів `[node]` (файл БЕЗ явного `mode` — інакше
+    /// це рішення вузла і запису немає, див. `recovery_never_downgrades_explicit_primary`)
+    /// і секції файлу (формат не змінюємо).
     #[test]
     fn recovery_preserves_existing_fields_and_sections() {
         let (_d, data_dir, cfg_path) = tmp_paths();
@@ -682,7 +730,7 @@ degrade_to_local = false
         std::fs::create_dir_all(cfg_path.parent().unwrap()).expect("mkdir");
         std::fs::write(
             &cfg_path,
-            "active = \"primary\"\n\n[sources.primary]\nlabel = \"Основна\"\nhost = \"10.0.0.1\"\nport = 5432\ndatabase = \"pos_system\"\nuser = \"postgres\"\n\n[node]\nmode = \"primary\"\nlocal_port = 5433\nprimary_db_url = \"postgresql://10.0.0.1:5432/pos_system\"\ndegrade_to_local = true\n",
+            "active = \"primary\"\n\n[sources.primary]\nlabel = \"Основна\"\nhost = \"10.0.0.1\"\nport = 5432\ndatabase = \"pos_system\"\nuser = \"postgres\"\n\n[node]\nlocal_port = 5433\nprimary_db_url = \"postgresql://10.0.0.1:5432/pos_system\"\ndegrade_to_local = true\n",
         )
         .expect("write cfg");
 
@@ -699,6 +747,58 @@ degrade_to_local = false
             "primary_db_url не загублено"
         );
         assert!(cfg.degrade_to_local);
+    }
+
+    /// КРИТИЧНИЙ ДЕФЕКТ: recovery НЕ має відкочувати промоутнутий вузол назад у
+    /// standby. Ланцюг: `promote.rs` (`into_promoted_primary().save_to_disk()`)
+    /// пише `mode = "primary"` → рестарт застосунку → `src/lib.rs`
+    /// `recover_standby_if_needed()` (ДО `NodeConfig::load()`) → без цього фіксу
+    /// у файл писався `mode = "standby"`, і вузол ставав «реплікою» без
+    /// локального PG на 127.0.0.1:5433.
+    #[test]
+    fn recovery_never_downgrades_explicit_primary() {
+        let (_d, data_dir, cfg_path) = tmp_paths();
+        std::fs::write(data_dir.join("PG_VERSION"), "17").expect("PG_VERSION");
+        std::fs::create_dir_all(cfg_path.parent().expect("parent")).expect("mkdir");
+
+        // Конфіг пише ПРОДОВИЙ шлях (формат той самий, що в promote):
+        // NodeConfig + save_to_path, не руками.
+        NodeConfig::default()
+            .with_mode(NodeMode::Primary)
+            .save_to_path(&cfg_path)
+            .expect("save explicit primary cfg");
+        let raw_before = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert!(
+            raw_before.contains("mode = \"primary\""),
+            "прод-формат явного primary: {raw_before}"
+        );
+        let mtime_before = std::fs::metadata(&cfg_path)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+
+        // Сліди провіжингу Є (PG_VERSION + join) — але явний primary сильніший.
+        assert_eq!(recover_standby_at(true, &data_dir, &cfg_path), Ok(false));
+        assert_eq!(
+            recover_standby_at(false, &data_dir, &cfg_path),
+            Ok(false),
+            "явний primary не залежить від слідів join"
+        );
+
+        // КРИТЕРІЙ: файл БЕЗ ЗМІН і load() бачить mode=primary.
+        let raw_after = std::fs::read_to_string(&cfg_path).expect("read cfg");
+        assert_eq!(raw_before, raw_after, "файл явного primary не чіпаємо");
+        let mtime_after = std::fs::metadata(&cfg_path)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        assert_eq!(mtime_before, mtime_after, "mtime не змінюється");
+        assert_eq!(
+            NodeConfig::load_from_path(&cfg_path).mode,
+            NodeMode::Primary,
+            "промоутнутий вузол лишається primary після recovery"
+        );
+        assert!(!NodeConfig::load_from_path(&cfg_path).is_standby());
     }
 
     /// (в) `NodeConfig::load()`-частина: читання AppData-файлу (не CWD).
