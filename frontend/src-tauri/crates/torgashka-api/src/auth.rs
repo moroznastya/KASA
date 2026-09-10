@@ -2,7 +2,9 @@
 // auth — JWT-валідація (jsonwebtoken, HS256)
 // ─────────────────────────────────────────────────────────────────────────────
 // Секрет береться з env TORGASHKA_JWT_SECRET; fallback — backend/.env (SECRET_KEY,
-// спільний із Python-бекендом). Хардкодити секрет у коді ЗАБОРОНЕНО.
+// спільний із Python-бекендом); last-resort — локальний файл вузла
+// `<data_dir>/jwt_secret.key` (створюється при першому старті, див.
+// torgashka_infrastructure::jwt_secret). Хардкодити секрет у коді ЗАБОРОНЕНО.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
@@ -47,7 +49,12 @@ pub struct Claims {
     pub exp: usize,
 }
 
-/// Резолв JWT-секрету: env TORGASHKA_JWT_SECRET → backend/.env (SECRET_KEY) → Err.
+/// Резолв JWT-секрету: env `TORGASHKA_JWT_SECRET` → `backend/.env` (SECRET_KEY) →
+/// локальний файл вузла `<data_dir>/jwt_secret.key` (last-resort: генерується
+/// при першому старті) → `Err(AuthError::MissingSecret)`.
+///
+/// Локальний файл потрібен інстальованій касі без `backend/.env` і без env:
+/// інакше bootstrap падає з `MissingSecret`, і фасад вічно віддає 503.
 pub fn resolve_jwt_secret() -> Result<String, AuthError> {
     if let Ok(s) = std::env::var("TORGASHKA_JWT_SECRET") {
         if !s.trim().is_empty() {
@@ -62,7 +69,15 @@ pub fn resolve_jwt_secret() -> Result<String, AuthError> {
             }
         }
     }
-    Err(AuthError::MissingSecret)
+    // Last-resort: локальний секрет вузла поряд із pgdata (створюється один раз).
+    // Значення секрету НІКОЛИ не логуємо — лише текст помилки.
+    match torgashka_infrastructure::jwt_secret::load_or_create() {
+        Ok(secret) => Ok(secret),
+        Err(e) => {
+            eprintln!("[auth] локальний JWT-секрет недоступний: {e}");
+            Err(AuthError::MissingSecret)
+        }
+    }
 }
 
 /// Кандидати шляхів до backend/.env (залежно від робочої директорії запуску).

@@ -17,6 +17,7 @@ pub mod db;
 pub mod db_sources;
 pub mod devices;
 pub mod embedded_pg;
+pub mod jwt_secret;
 pub mod node_config;
 pub mod ocr;
 pub mod offline;
