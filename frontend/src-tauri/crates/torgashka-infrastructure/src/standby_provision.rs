@@ -15,7 +15,10 @@
 //! 4b. Санація конфігів: копія `postgresql.conf` з primary (Linux-конфіг з
 //!    `dynamic_shared_memory_type = posix` та `lc_* = 'uk_UA.UTF-8'`) валить
 //!    Windows-PG на старті → замінюється мінімальним standby-конфігом, а з
-//!    `postgresql.auto.conf` прибираються несумісні GUC-и primary.
+//!    `postgresql.auto.conf` прибираються несумісні GUC-и primary. Копія
+//!    `pg_hba.conf` вимагає scram для loopback → додається локальний `trust`
+//!    (як `initdb -A trust` вузла), інакше крок 7 і локальний DATABASE_URL
+//!    фасаду не зможуть підключитися.
 //! 5. Пароль реплікації: plaintext у `postgresql.auto.conf` (PG читає
 //!    `primary_conninfo` лише у plaintext; файл 0600 у `data_dir`) + ОКРЕМО
 //!    зашифрована копія AES-256-GCM (`db_sources`-підхід, `.dbkey`) для
@@ -238,6 +241,19 @@ const WINDOWS_INCOMPATIBLE_GUCS: &[&str] = &[
     "ssl_crl_file",
 ];
 
+/// Локальний `trust` для loopback у копії `pg_hba.conf` primary.
+///
+/// Вузол завжди створює власний PG через `initdb -A trust` (локальні з'єднання
+/// без пароля). Копія `pg_hba.conf` з primary вимагає `scram-sha-256` для
+/// `127.0.0.1` — після підміни data_dir це ламає і перевірку
+/// `pg_is_in_recovery` (psql без пароля), і локальний `DATABASE_URL` фасаду.
+/// Рядки додаємо ПЕРШИМИ (у pg_hba перше співпадіння виграє) і ЛИШЕ для
+/// loopback — репліка слухає тільки `127.0.0.1`.
+const STANDBY_HBA_HEADER: &str = "\
+# --- Torgashka standby (крок 4b): локальний trust, як initdb -A trust вузла ---\n\
+host    all             all             127.0.0.1/32            trust\n\
+host    all             all             ::1/128                 trust\n";
+
 /// Чи рядок конфу задає несумісний GUC (`key = value`; ключ без регістру).
 /// Коментарі та порожні рядки несумісними не вважаються.
 fn is_incompatible_conf_line(line: &str) -> bool {
@@ -273,7 +289,7 @@ fn strip_incompatible_lines(conf: &str) -> String {
 /// Мінімальний `postgresql.conf` для standby. Конфіг primary (Linux) свідомо
 /// **не переюзується**: він містить несумісні GUC-и, а жодне з його
 /// тюнінгових значень вузлу-репліці не потрібне.
-fn standby_conf() -> String {
+fn standby_conf(extra: &str) -> String {
     format!(
         "# Torgashka standby — згенеровано під час провіжинінгу (НЕ редагувати).\n\
          # Конфіг primary (Linux) не використано: dynamic_shared_memory_type = posix\n\
@@ -283,8 +299,22 @@ fn standby_conf() -> String {
          port = {EMBEDDED_PG_PORT}\n\
          hot_standby = on\n\
          max_connections = 100\n\
-         shared_buffers = 128MB\n"
+         shared_buffers = 128MB\n\
+         {extra}"
     )
+}
+
+/// Додатковий рядок конфу для сокета: на Unix GUC існує і дефолт
+/// (`/var/run/postgresql`) недоступний непривілейованому користувачу — сокет
+/// кладемо у власний data_dir. На Windows GUC не існує взагалі (додавання
+/// будь-якого значення → FATAL), тому там рядок порожній.
+#[cfg(not(windows))]
+fn standby_socket_line(data_dir: &Path) -> String {
+    format!("unix_socket_directories = '{}'\n", data_dir.display())
+}
+#[cfg(windows)]
+fn standby_socket_line(_data_dir: &Path) -> String {
+    String::new()
 }
 
 /// Додає `password=<pw>` у рядок `primary_conninfo` всередині
@@ -556,12 +586,20 @@ pub async fn provision_standby(p: StandbyParams) -> Result<(), ProvisionError> {
     {
         let dir = data_dir.clone();
         let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            std::fs::write(dir.join("postgresql.conf"), standby_conf().as_bytes())?;
+            let sock = standby_socket_line(&dir);
+            std::fs::write(dir.join("postgresql.conf"), standby_conf(&sock).as_bytes())?;
             let auto = dir.join("postgresql.auto.conf");
             let raw = std::fs::read_to_string(&auto)?;
             let clean = strip_incompatible_lines(&raw);
             if clean != raw {
                 std::fs::write(&auto, clean.as_bytes())?;
+            }
+            // pg_hba.conf: копія з primary вимагає scram для loopback —
+            // повертаємо локальний trust (як initdb -A trust на вузлі).
+            let hba = dir.join("pg_hba.conf");
+            let old_hba = std::fs::read_to_string(&hba).unwrap_or_default();
+            if !old_hba.starts_with("# --- Torgashka standby") {
+                std::fs::write(&hba, format!("{STANDBY_HBA_HEADER}{old_hba}"))?;
             }
             Ok(())
         })
@@ -852,9 +890,31 @@ primary_conninfo = 'host=h port=5432 user=u password=oldpass1234567890abcdef app
         assert!(clean.contains("# lc_time = 'uk_UA.UTF-8'"));
     }
 
+    /// Unix: сокет кладемо у data_dir (дефолт `/var/run/postgresql` недоступний
+    /// непривілейованому користувачу). На Windows цей GUC відсутній.
+    #[cfg(not(windows))]
+    #[test]
+    fn standby_socket_line_is_data_dir_on_unix() {
+        let l = standby_socket_line(Path::new("/tmp/pgdata"));
+        assert_eq!(l, "unix_socket_directories = '/tmp/pgdata'\n");
+    }
+
+    #[test]
+    fn standby_hba_grants_loopback_trust_first() {
+        let h = STANDBY_HBA_HEADER;
+        // Рядки trust стоять ПЕРШИМИ (у pg_hba перше співпадіння виграє).
+        let first_rule = h
+            .lines()
+            .find(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+            .unwrap();
+        assert!(first_rule.contains("127.0.0.1/32"));
+        assert!(first_rule.trim_end().ends_with("trust"));
+        assert!(h.contains("::1/128"));
+    }
+
     #[test]
     fn standby_conf_is_windows_safe() {
-        let c = standby_conf();
+        let c = standby_conf(""); // Windows-shape: без unix_socket_directories
         assert!(c.contains("hot_standby = on"));
         assert!(c.contains(&format!("port = {EMBEDDED_PG_PORT}")));
         // Жодного Linux-несумісного GUC-а у згенерованому конфізі.
