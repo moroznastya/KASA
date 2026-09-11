@@ -120,9 +120,8 @@ fn apply_effects(
     // Оплата боргу: ефект — борг покупця ↓ (локальний похідний стан
     // `debtor_balances`), а не stock. Гілка стоїть ДО розбору позицій.
     if kind == TYPE_DEBTOR_PAYMENT {
-        let (debtor_id, amount_cents) = debtor::payment_from_payload(payload).ok_or_else(|| {
-            "оплата боргу: потрібні debtor_id і додатна сума".to_string()
-        })?;
+        let (debtor_id, amount_cents) = debtor::payment_from_payload(payload)
+            .ok_or_else(|| "оплата боргу: потрібні debtor_id і додатна сума".to_string())?;
         return debtor::apply_pending_payment(conn, store_id, &debtor_id, amount_cents);
     }
     // Ручний запис книги постачальника: ефект — баланс постачальника
@@ -1084,13 +1083,21 @@ mod tests {
         assert!(err.contains("p-ghost"), "людське повідомлення: {err}");
         assert!(err.contains("накладна"), "назва документа: {err}");
         assert!(!err.contains("SELECT"), "без сирого SQL: {err}");
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM invoices"), 0, "агрегата немає");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM invoices"),
+            0,
+            "агрегата немає"
+        );
         assert_eq!(
             count(&c, "SELECT COUNT(*) FROM invoice_items"),
             0,
             "позицій немає"
         );
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0, "outbox порожній");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM outbox"),
+            0,
+            "outbox порожній"
+        );
         assert_eq!(level(&c, "p1"), 500, "stock без змін (жодного ефекту)");
 
         // Те саме для ПОВЕРНЕННЯ ПОСТАЧАЛЬНИКУ (другий шлях документів).
@@ -1102,13 +1109,20 @@ mod tests {
         .to_string();
         let err = enqueue_transaction(&mut c, TYPE_RETURN_INVOICE, &ret, STORE)
             .expect_err("невідомий товар у поверненні");
-        assert!(err.contains("повернення постачальнику"), "назва документа: {err}");
+        assert!(
+            err.contains("повернення постачальнику"),
+            "назва документа: {err}"
+        );
         assert_eq!(
             count(&c, "SELECT COUNT(*) FROM return_invoices"),
             0,
             "агрегата повернення немає"
         );
-        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0, "outbox порожній");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM outbox"),
+            0,
+            "outbox порожній"
+        );
         assert_eq!(level(&c, "p1"), 500, "stock без змін");
 
         // Видалений у каталозі товар — теж відмова (інший текст, той самий наслідок).
@@ -1438,7 +1452,10 @@ mod tests {
         })
         .to_string();
         let out = enqueue_cash_operation(&mut conn, &deposit, STORE).expect("deposit");
-        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("balance"), 15_000);
+        assert_eq!(
+            cash::get_cash_balance(&conn, STORE, "cash").expect("balance"),
+            15_000
+        );
         // Агрегат — у НАЯВНІЙ таблиці 0006 cash_ledger, synced=1 (push-кандидат).
         let (data, synced, table): (String, i64, String) = conn
             .query_row(
@@ -1476,8 +1493,14 @@ mod tests {
         })
         .to_string();
         enqueue_cash_operation(&mut conn, &card, STORE).expect("card");
-        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("cash"), 10_000);
-        assert_eq!(cash::get_cash_balance(&conn, STORE, "card").expect("card"), 1_000);
+        assert_eq!(
+            cash::get_cash_balance(&conn, STORE, "cash").expect("cash"),
+            10_000
+        );
+        assert_eq!(
+            cash::get_cash_balance(&conn, STORE, "card").expect("card"),
+            1_000
+        );
         // 3 агрегати, 3 op — нічого не загубилось і не подвоїлось.
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM cash_ledger", [], |r| r.get(0))
@@ -1506,6 +1529,9 @@ mod tests {
             .expect("count ops");
         assert_eq!(n, 0, "агрегата немає");
         assert_eq!(ops, 0, "outbox-запису немає");
-        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("balance"), 0);
+        assert_eq!(
+            cash::get_cash_balance(&conn, STORE, "cash").expect("balance"),
+            0
+        );
     }
 }

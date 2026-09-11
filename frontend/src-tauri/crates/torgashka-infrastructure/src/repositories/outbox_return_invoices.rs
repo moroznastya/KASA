@@ -121,16 +121,20 @@ impl ReturnInvoicesService for OutboxReturnInvoices {
         input: &ReturnInvoiceCreateInput,
         _user_id: Uuid,
     ) -> Result<ReturnInvoiceDto, ReturnInvoicesError> {
-        let out = q::enqueue("створення повернення постачальнику", TYPE_RETURN_INVOICE, payload(input))
-            .await
-            .map_err(|e| {
-                // Відмова валідації каталогу (ADR-0007 §5 AT-14) — бізнес-помилка.
-                if crate::offline::catalog::is_catalog_rejection(&e) {
-                    ReturnInvoicesError::BadRequest(e)
-                } else {
-                    ReturnInvoicesError::Infrastructure(e)
-                }
-            })?;
+        let out = q::enqueue(
+            "створення повернення постачальнику",
+            TYPE_RETURN_INVOICE,
+            payload(input),
+        )
+        .await
+        .map_err(|e| {
+            // Відмова валідації каталогу (ADR-0007 §5 AT-14) — бізнес-помилка.
+            if crate::offline::catalog::is_catalog_rejection(&e) {
+                ReturnInvoicesError::BadRequest(e)
+            } else {
+                ReturnInvoicesError::Infrastructure(e)
+            }
+        })?;
         Ok(queued_dto(input, out))
     }
 

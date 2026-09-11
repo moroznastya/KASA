@@ -6,8 +6,8 @@
 pub mod cash;
 pub mod catalog;
 pub mod commands;
-pub mod debtor;
 pub mod db;
+pub mod debtor;
 pub mod ledger;
 pub mod migrations;
 pub mod reconciliation;

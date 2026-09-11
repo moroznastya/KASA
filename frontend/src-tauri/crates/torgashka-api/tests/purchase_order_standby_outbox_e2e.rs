@@ -28,8 +28,8 @@ use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
-use torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders;
 use torgashka_infrastructure::repositories::outbox_purchase_orders::OutboxPurchaseOrders;
+use torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders;
 use torgashka_infrastructure::store_ctx::StorePool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -80,7 +80,13 @@ fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
     let host_start = after.find('@').map(|i| i + 1).unwrap_or(0);
-    format!("{}{}:{}@{}", &url[..scheme_end], user, pass, &after[host_start..])
+    format!(
+        "{}{}:{}@{}",
+        &url[..scheme_end],
+        user,
+        pass,
+        &after[host_start..]
+    )
 }
 
 fn db_name_from_url(url: &str) -> String {
@@ -275,11 +281,13 @@ async fn standby_purchase_order_queues_locally_and_never_writes_replica() {
 
     let store = Uuid::new_v4();
     let user_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO stores (id, name) VALUES ($1, 'E2E PO Точка') ON CONFLICT (id) DO NOTHING")
-        .bind(store)
-        .execute(&admin_pool)
-        .await
-        .expect("INSERT stores");
+    sqlx::query(
+        "INSERT INTO stores (id, name) VALUES ($1, 'E2E PO Точка') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(store)
+    .execute(&admin_pool)
+    .await
+    .expect("INSERT stores");
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed) \
          VALUES ($1, 'E2E PO Admin', $2, 'x', 'admin'::public.user_role, true, now(), now(), true) \
@@ -320,11 +328,10 @@ async fn standby_purchase_order_queues_locally_and_never_writes_replica() {
 
     // ── 2. Standby-фасад із OutboxPurchaseOrders (нова обв'язка) ───────────
     seed_sqlite_store_id(store);
-    let svc: Arc<dyn torgashka_domain::PurchaseOrdersService + Send + Sync> = Arc::new(
-        OutboxPurchaseOrders::new(Arc::new(SqlxPurchaseOrders::new(StorePool::new(
-            ro_pool.clone(),
-        )))),
-    );
+    let svc: Arc<dyn torgashka_domain::PurchaseOrdersService + Send + Sync> =
+        Arc::new(OutboxPurchaseOrders::new(Arc::new(
+            SqlxPurchaseOrders::new(StorePool::new(ro_pool.clone())),
+        )));
     let app = router_v1::build_router(standby_state(svc, ro_pool.clone()));
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
     let product = Uuid::new_v4();
@@ -359,7 +366,10 @@ async fn standby_purchase_order_queues_locally_and_never_writes_replica() {
         "замовлення на standby має створитися локально (201/queued), маємо {status}: {raw}"
     );
     assert_eq!(dto["status"], "queued", "бізнес-статус черги: {dto}");
-    let client_uuid = dto["id"].as_str().expect("client_uuid документа").to_string();
+    let client_uuid = dto["id"]
+        .as_str()
+        .expect("client_uuid документа")
+        .to_string();
     assert_eq!(
         local_stock_milli(product),
         3_000,
@@ -438,5 +448,7 @@ async fn standby_purchase_order_queues_locally_and_never_writes_replica() {
         3_000,
         "локальний stock не змінився негативним контролем"
     );
-    eprintln!("[purchase_order_standby_outbox_e2e] ✅ 201/queued + 1 pending + stock 3000 + 0 рядків PG");
+    eprintln!(
+        "[purchase_order_standby_outbox_e2e] ✅ 201/queued + 1 pending + stock 3000 + 0 рядків PG"
+    );
 }

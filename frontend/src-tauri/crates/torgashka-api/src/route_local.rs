@@ -43,9 +43,7 @@ use torgashka_domain::{InvoicesV1Service, ReturnInvoicesService};
 use torgashka_infrastructure::{
     node_config::{self, NodeConfig},
     offline,
-    repositories::{
-        invoices::SqlxInvoices, pos::SqlxPos, return_invoices::SqlxReturnInvoices,
-    },
+    repositories::{invoices::SqlxInvoices, pos::SqlxPos, return_invoices::SqlxReturnInvoices},
     store_ctx::{current_store_ctx, with_store_ctx, StoreCtx, StorePool},
 };
 use uuid::Uuid;
@@ -600,11 +598,9 @@ pub async fn local_stock_reconciliation(
     }
 
     // ── Локальна половина: агрегат каси + оптимістичний залишок SQLite ─────
-    let db_path =
-        offline::db::OfflineDatabase::default_db_path().map_err(LocalErr::Queue)?;
+    let db_path = offline::db::OfflineDatabase::default_db_path().map_err(LocalErr::Queue)?;
     let view = {
-        let conn =
-            offline::sync_push::open_connection(&db_path).map_err(LocalErr::Queue)?;
+        let conn = offline::sync_push::open_connection(&db_path).map_err(LocalErr::Queue)?;
         offline::reconciliation::local_view(&conn, &invoice_id).map_err(LocalErr::Queue)?
     };
     let Some(view) = view else {
@@ -685,8 +681,7 @@ async fn authoritative_milli(
     store_id: &str,
     product_id: &str,
 ) -> Result<Option<i64>, LocalErr> {
-    let (Ok(store), Ok(product)) = (Uuid::parse_str(store_id), Uuid::parse_str(product_id))
-    else {
+    let (Ok(store), Ok(product)) = (Uuid::parse_str(store_id), Uuid::parse_str(product_id)) else {
         return Ok(None);
     };
     let qty: Option<String> = sqlx::query_scalar(
@@ -764,9 +759,8 @@ pub async fn drain_local_outbox(
     state: &AppState,
     claims: &crate::auth::Claims,
 ) -> Result<DrainSummary, LocalErr> {
-    let cashier = Uuid::parse_str(&claims.sub).map_err(|_| {
-        LocalErr::BadRequest("sub власника не є UUID — drain неможливий".into())
-    })?;
+    let cashier = Uuid::parse_str(&claims.sub)
+        .map_err(|_| LocalErr::BadRequest("sub власника не є UUID — drain неможливий".into()))?;
     let db_path = offline::db::OfflineDatabase::default_db_path().map_err(LocalErr::Queue)?;
     let mut conn = offline::sync_push::open_connection(&db_path).map_err(LocalErr::Queue)?;
 
@@ -792,9 +786,8 @@ pub async fn drain_local_outbox(
     let mut summary = DrainSummary::default();
     // До 5 батчів × 50 (як sync_now): поки є pending і прогрес.
     for _ in 0..5 {
-        let batch =
-            offline::sync_push::pending_outbox(&conn, offline::sync_push::PUSH_BATCH_MAX)
-                .map_err(LocalErr::Queue)?;
+        let batch = offline::sync_push::pending_outbox(&conn, offline::sync_push::PUSH_BATCH_MAX)
+            .map_err(LocalErr::Queue)?;
         if batch.is_empty() {
             break;
         }
@@ -833,8 +826,7 @@ pub async fn drain_local_outbox(
             .await;
             match res.status {
                 "created" | "already_exists" => {
-                    offline::sync_push::mark_done(&mut conn, item)
-                        .map_err(LocalErr::Queue)?;
+                    offline::sync_push::mark_done(&mut conn, item).map_err(LocalErr::Queue)?;
                     if res.status == "created" {
                         summary.created += 1;
                     } else {

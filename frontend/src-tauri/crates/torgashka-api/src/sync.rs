@@ -637,8 +637,16 @@ pub(crate) async fn process_push_item(
         // confirm: stock −qty, supplier_ledger, борг) — та сама логіка, що
         // локальний роут, а не друга реалізація SQL-приймача.
         "return_invoice" => {
-            accept_return_invoice_kind(return_invoices, pool, item, table, cashier, ctx_store, &hash)
-                .await
+            accept_return_invoice_kind(
+                return_invoices,
+                pool,
+                item,
+                table,
+                cashier,
+                ctx_store,
+                &hash,
+            )
+            .await
         }
         kind => {
             accept_non_receipt_kind(
@@ -884,9 +892,7 @@ async fn accept_return_invoice_kind(
     ctx_store: Uuid,
     hash: &str,
 ) -> PushItemResult {
-    use torgashka_domain::return_invoices::{
-        ReturnInvoiceConfirmInput, ReturnInvoiceCreateInput,
-    };
+    use torgashka_domain::return_invoices::{ReturnInvoiceConfirmInput, ReturnInvoiceCreateInput};
 
     // 1. Rust-гілка повернень не змонтована (TORGASHKA_RUST_RETURN_INVOICES≠1)
     //    — НЕ тихий ack: каса має побачити error і лишити оп у outbox.
@@ -901,8 +907,8 @@ async fn accept_return_invoice_kind(
 
     // 2. push вимагає JWT sub (created_by_id документа).
     let Some(cashier) = cashier else {
-        let msg = "return_invoice: push вимагає автентифікованого користувача (JWT sub)"
-            .to_string();
+        let msg =
+            "return_invoice: push вимагає автентифікованого користувача (JWT sub)".to_string();
         log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
         return PushItemResult::error(item.client_uuid, msg);
     };
@@ -966,10 +972,7 @@ async fn accept_return_invoice_kind(
                 }
                 Err(e) => {
                     // Сирий текст причини → лог (sync_log + stderr).
-                    let msg = format!(
-                        "повернення {} створено, але confirm не вдався: {e}",
-                        dto.id
-                    );
+                    let msg = format!("повернення {} створено, але confirm не вдався: {e}", dto.id);
                     log_sync(pool, item, ctx_store, "error", hash, Some(msg)).await;
                     // Клієнту — людський контекст + машинний клас (без тексту БД).
                     PushItemResult::error(

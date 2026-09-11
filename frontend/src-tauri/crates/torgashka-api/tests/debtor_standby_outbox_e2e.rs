@@ -34,11 +34,11 @@ use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
-use torgashka_infrastructure::repositories::debtors::SqlxDebtors;
-use torgashka_infrastructure::repositories::outbox_debtors::OutboxDebtors;
 use torgashka_infrastructure::offline::sync_push::{
     open_connection, pending_count, push_pending_batch, PushConfig,
 };
+use torgashka_infrastructure::repositories::debtors::SqlxDebtors;
+use torgashka_infrastructure::repositories::outbox_debtors::OutboxDebtors;
 use torgashka_infrastructure::store_ctx::StorePool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -93,7 +93,13 @@ fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
     let host_start = after.find('@').map(|i| i + 1).unwrap_or(0);
-    format!("{}{}:{}@{}", &url[..scheme_end], user, pass, &after[host_start..])
+    format!(
+        "{}{}:{}@{}",
+        &url[..scheme_end],
+        user,
+        pass,
+        &after[host_start..]
+    )
 }
 
 fn db_name_from_url(url: &str) -> String {
@@ -222,11 +228,9 @@ async fn call(
 /// Скільки outbox-записів цього типу взагалі (усі client_uuid).
 fn outbox_count_kind(kind: &str) -> i64 {
     let conn = rusqlite::Connection::open(offline_db_path()).expect("SQLite каси");
-    conn.query_row(
-        "SELECT COUNT(*) FROM outbox WHERE type = ?1",
-        [kind],
-        |r| r.get::<_, i64>(0),
-    )
+    conn.query_row("SELECT COUNT(*) FROM outbox WHERE type = ?1", [kind], |r| {
+        r.get::<_, i64>(0)
+    })
     .expect("COUNT outbox")
 }
 
@@ -350,11 +354,13 @@ async fn standby_debtor_payment_queues_locally_and_never_writes_replica() {
     let store = Uuid::new_v4();
     let user_id = Uuid::new_v4();
     let debtor = Uuid::new_v4();
-    sqlx::query("INSERT INTO stores (id, name) VALUES ($1, 'E2E Debtor Точка') ON CONFLICT (id) DO NOTHING")
-        .bind(store)
-        .execute(&admin_pool)
-        .await
-        .expect("INSERT stores");
+    sqlx::query(
+        "INSERT INTO stores (id, name) VALUES ($1, 'E2E Debtor Точка') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(store)
+    .execute(&admin_pool)
+    .await
+    .expect("INSERT stores");
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed) \
          VALUES ($1, 'E2E Debtor Admin', $2, 'x', 'admin'::public.user_role, true, now(), now(), true) \
@@ -458,7 +464,10 @@ async fn standby_debtor_payment_queues_locally_and_never_writes_replica() {
         .expect("агрегат debtors_ledger")
     };
     assert_eq!(agg_synced, 1, "агрегат каси — push-кандидат");
-    assert!(agg_data.contains("30.00"), "data = payload як є: {agg_data}");
+    assert!(
+        agg_data.contains("30.00"),
+        "data = payload як є: {agg_data}"
+    );
 
     // ── 6. У PG — НУЛЬ оплат, борг не змінився ─────────────────────────────
     assert_eq!(
@@ -488,10 +497,17 @@ async fn standby_debtor_payment_queues_locally_and_never_writes_replica() {
         "сума більша за локальний борг мусить дати 400: {over_status} {over_raw}"
     );
     assert!(
-        over_dto["detail"].as_str().unwrap_or_default().contains("перевищує поточний борг"),
+        over_dto["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("перевищує поточний борг"),
         "людський текст відмови: {over_dto}"
     );
-    assert_eq!(outbox_count_kind("debtor_payment"), 2, "відмова не створила документ");
+    assert_eq!(
+        outbox_count_kind("debtor_payment"),
+        2,
+        "відмова не створила документ"
+    );
 
     // ── 8. НЕГАТИВНИЙ КОНТРОЛЬ: read-only БД + СТАРА обв'язка (§11.6.4) ────
     let old_app = router_v1::build_router(legacy_state(ro_pool.clone()));
@@ -625,7 +641,11 @@ async fn standby_debtor_payment_push_idempotent_on_primary() {
     let db_path = offline_db_path();
     {
         let conn = open_connection(&db_path).expect("SQLite каси");
-        assert_eq!(pending_count(&conn).expect("pending"), 1, "1 документ у черзі");
+        assert_eq!(
+            pending_count(&conn).expect("pending"),
+            1,
+            "1 документ у черзі"
+        );
     }
 
     // ── Сервер піднято → push каси ────────────────────────────────────────
@@ -642,9 +662,14 @@ async fn standby_debtor_payment_push_idempotent_on_primary() {
         db_path: db_path.clone(),
         interval_secs: 30,
     };
-    let s1 = push_pending_batch(&db_path, &client, &cfg).await.expect("push");
+    let s1 = push_pending_batch(&db_path, &client, &cfg)
+        .await
+        .expect("push");
     eprintln!("[debtor e2e] перший push: {s1:?}");
-    assert_eq!(s1.done, 1, "перший push → created (payload адаптера прийнято)");
+    assert_eq!(
+        s1.done, 1,
+        "перший push → created (payload адаптера прийнято)"
+    );
     assert_eq!(s1.failed, 0, "помилок немає: {s1:?}");
     assert_eq!(s1.already_exists, 0, "перший push — не дублікат");
 
@@ -676,7 +701,9 @@ async fn standby_debtor_payment_push_idempotent_on_primary() {
         )
         .expect("reset done→pending");
     }
-    let s2 = push_pending_batch(&db_path, &client, &cfg).await.expect("push");
+    let s2 = push_pending_batch(&db_path, &client, &cfg)
+        .await
+        .expect("push");
     eprintln!("[debtor e2e] повторний push: {s2:?}");
     assert_eq!(s2.already_exists, 1, "повторний push → already_exists");
     assert_eq!(s2.done, 0, "нового created немає");
@@ -691,5 +718,7 @@ async fn standby_debtor_payment_push_idempotent_on_primary() {
         Some("60.00"),
         "повторний push не подвоїв борг-ефект"
     );
-    eprintln!("[debtor_standby_outbox_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, борг 60.00");
+    eprintln!(
+        "[debtor_standby_outbox_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, борг 60.00"
+    );
 }

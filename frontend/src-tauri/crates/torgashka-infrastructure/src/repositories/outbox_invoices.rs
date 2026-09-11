@@ -97,7 +97,11 @@ fn v2_as_v1_payload(input: &InvoiceCreateV2Input) -> Value {
     })
 }
 
-fn v1_items_dto(input: &InvoiceCreateV1Input, doc_id: Uuid, now: NaiveDateTime) -> Vec<InvoiceItemV1Dto> {
+fn v1_items_dto(
+    input: &InvoiceCreateV1Input,
+    doc_id: Uuid,
+    now: NaiveDateTime,
+) -> Vec<InvoiceItemV1Dto> {
     input
         .items
         .iter()
@@ -122,9 +126,10 @@ fn v1_items_dto(input: &InvoiceCreateV1Input, doc_id: Uuid, now: NaiveDateTime) 
 fn queued_v1_dto(input: &InvoiceCreateV1Input, out: EnqueuedTransaction) -> InvoiceV1Dto {
     let now = Utc::now().naive_utc();
     let doc_id = q::uuid_of(&out.client_uuid);
-    let total = input.total_amount.clone().unwrap_or_else(|| {
-        q::dec_sum(input.items.iter().map(|it| it.total.clone()))
-    });
+    let total = input
+        .total_amount
+        .clone()
+        .unwrap_or_else(|| q::dec_sum(input.items.iter().map(|it| it.total.clone())));
     InvoiceV1Dto {
         id: doc_id,
         number: input

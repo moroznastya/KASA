@@ -172,7 +172,10 @@ mod tests {
         assert_eq!(cash_delta(&dep), Some(15_000));
         assert_eq!(cash_delta(&col), Some(-15_000));
         // Невідомий тип / без суми → None (агрегат не пишеться).
-        assert_eq!(cash_delta(&json!({"operation_type": "x", "amount": "1"})), None);
+        assert_eq!(
+            cash_delta(&json!({"operation_type": "x", "amount": "1"})),
+            None
+        );
         assert_eq!(cash_delta(&json!({"operation_type": "deposit"})), None);
     }
 

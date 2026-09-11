@@ -33,8 +33,8 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
-use torgashka_api::write_gate::{STANDBY_DETAIL, UPSTREAM_DOWN, UPSTREAM_HEADER};
 use torgashka_api::route_local::LocalApiState;
+use torgashka_api::write_gate::{STANDBY_DETAIL, UPSTREAM_DOWN, UPSTREAM_HEADER};
 use torgashka_api::{router_v1, AppState};
 use torgashka_domain::{
     InvoicesV1Service, InvoicesV2Service, PosService, ReadDirectories, WriteDirectories,
@@ -44,8 +44,8 @@ use torgashka_infrastructure::offline::sync_push::{open_connection, pending_coun
 use torgashka_infrastructure::offline::transactions;
 use torgashka_infrastructure::repositories::directories::SqlxDirectories;
 use torgashka_infrastructure::repositories::invoices::SqlxInvoices;
-use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
+use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::repositories::pos::SqlxPos;
 use torgashka_infrastructure::repositories::write::SqlxWriteDirectories;
 use torgashka_infrastructure::store_ctx::StorePool;
@@ -280,8 +280,7 @@ fn with_local(mut st: AppState, pool: sqlx::PgPool) -> AppState {
             as Arc<dyn ReadDirectories + Send + Sync>,
         pos: Arc::new(OutboxPos::new(Arc::new(SqlxPos::new(sp.clone()))))
             as Arc<dyn PosService + Send + Sync>,
-        write: Arc::new(SqlxWriteDirectories::new(sp))
-            as Arc<dyn WriteDirectories + Send + Sync>,
+        write: Arc::new(SqlxWriteDirectories::new(sp)) as Arc<dyn WriteDirectories + Send + Sync>,
     });
     st
 }
@@ -318,10 +317,25 @@ fn header<'a>(h: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 /// Контракт §4 цілком: 503 + рівно `{"detail": STANDBY_DETAIL}` + маркери.
-fn assert_503_contract(where_: &str, status: StatusCode, body: &Value, headers: &axum::http::HeaderMap) {
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{where_}: має бути 503, не {status}");
-    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{where_}: 500 заборонено §4");
-    let obj = body.as_object().unwrap_or_else(|| panic!("{where_}: тіло не об'єкт: {body}"));
+fn assert_503_contract(
+    where_: &str,
+    status: StatusCode,
+    body: &Value,
+    headers: &axum::http::HeaderMap,
+) {
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{where_}: має бути 503, не {status}"
+    );
+    assert_ne!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{where_}: 500 заборонено §4"
+    );
+    let obj = body
+        .as_object()
+        .unwrap_or_else(|| panic!("{where_}: тіло не об'єкт: {body}"));
     assert_eq!(
         obj.len(),
         1,
@@ -490,12 +504,7 @@ async fn at_02_standby_primary_down_returns_503_contract() {
 
     let (_store, user_id, _supplier, _product) = seed_catalog(&pool).await;
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
-    let app = router_v1::build_router(standby_state(
-        Some(pool.clone()),
-        None,
-        None,
-        pool.clone(),
-    ));
+    let app = router_v1::build_router(standby_state(Some(pool.clone()), None, None, pool.clone()));
 
     // ── КРОК 1: primary ЖИВИЙ (фейковий HTTP-сервер) → pass-through ─────────
     let live = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -652,12 +661,7 @@ async fn at_10_standby_without_upstream_write_url_is_503_not_500() {
         None,
         "AT-10: передумова — апстрім-запис не задано"
     );
-    let app = router_v1::build_router(standby_state(
-        Some(pool.clone()),
-        None,
-        None,
-        pool.clone(),
-    ));
+    let app = router_v1::build_router(standby_state(Some(pool.clone()), None, None, pool.clone()));
 
     let before: Vec<(&str, i64)> = vec![
         ("stores", count(&pool, "stores").await),
@@ -669,8 +673,15 @@ async fn at_10_standby_without_upstream_write_url_is_503_not_500() {
     ];
 
     for (method, path) in UPSTREAM_NOW_ROUTES {
-        let (status, body, raw, headers) =
-            call(&app, method, path, &token, Uuid::nil(), json!({"probe": true})).await;
+        let (status, body, raw, headers) = call(
+            &app,
+            method,
+            path,
+            &token,
+            Uuid::nil(),
+            json!({"probe": true}),
+        )
+        .await;
         assert_ne!(
             status,
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -734,16 +745,20 @@ async fn at_14_standby_invoice_atomic_and_marker() {
     let v2: Arc<dyn InvoicesV2Service + Send + Sync> = Arc::new(OutboxInvoicesV2::new(Arc::new(
         SqlxInvoices::new(StorePool::new(ro_pool.clone())),
     )));
-    let app = router_v1::build_router(standby_state(Some(ro_pool.clone()), Some(v1), Some(v2), ro_pool.clone()));
+    let app = router_v1::build_router(standby_state(
+        Some(ro_pool.clone()),
+        Some(v1),
+        Some(v2),
+        ro_pool.clone(),
+    ));
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
 
     // ── 1. Доказ: репліка ФІЗИЧНО read-only ────────────────────────────────
-    let direct: Result<sqlx::postgres::PgRow, sqlx::Error> = sqlx::query(
-        "INSERT INTO stores (id, name) VALUES ($1, 'AT-14 мусить впасти')",
-    )
-    .bind(Uuid::new_v4())
-    .fetch_one(&ro_pool)
-    .await;
+    let direct: Result<sqlx::postgres::PgRow, sqlx::Error> =
+        sqlx::query("INSERT INTO stores (id, name) VALUES ($1, 'AT-14 мусить впасти')")
+            .bind(Uuid::new_v4())
+            .fetch_one(&ro_pool)
+            .await;
     let err = direct.expect_err("репліка мусить бути read-only");
     assert!(
         err.to_string().contains("read-only"),
@@ -921,7 +936,8 @@ async fn at_14_standby_invoice_atomic_and_marker() {
     );
     assert_eq!(
         conn_mut
-            .query_row("SELECT COUNT(*) FROM cash_ledger", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM cash_ledger", [], |r| r
+                .get::<_, i64>(0))
             .expect("cash_ledger після"),
         cash_before,
         "AT-14 (rollback): агрегат не осів"
@@ -971,12 +987,7 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         SqlxInvoices::new(StorePool::new(ro_pool.clone())),
     )));
     let app = router_v1::build_router(with_local(
-        standby_state(
-            Some(ro_pool.clone()),
-            Some(v1),
-            Some(v2),
-            ro_pool.clone(),
-        ),
+        standby_state(Some(ro_pool.clone()), Some(v1), Some(v2), ro_pool.clone()),
         ro_pool.clone(),
     ));
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
@@ -1000,18 +1011,27 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         .map(|s| s.parse().unwrap_or(0.0))
         .unwrap_or(0.0);
     assert_eq!(local_before_push, 3_000, "AT-15: локальний (оптимістичний)");
-    assert_eq!(auth_before_push, 0.0, "AT-15: авторитетний ще не бачив документа");
+    assert_eq!(
+        auth_before_push, 0.0,
+        "AT-15: авторитетний ще не бачив документа"
+    );
     let delta_before = local_before_push as f64 / 1000.0 - auth_before_push;
     assert_eq!(delta_before, 3.0, "AT-15: дельта локальний−авторитетний");
 
     // ── 1б. ПОВЕРХНЯ §10.3: GET /api/v1/local/stock-reconciliation ─────────
     // Показує ОБИДВА числа й дельту по товарах документа (тільки показ).
-    let invoice_id = dto1["id"].as_str().expect("client_uuid накладної").to_string();
+    let invoice_id = dto1["id"]
+        .as_str()
+        .expect("client_uuid накладної")
+        .to_string();
     let recon = recon_call(&app, &token, store, &invoice_id).await;
     assert_eq!(recon["invoice_id"], invoice_id, "AT-15: {recon}");
     assert_eq!(recon["kind"], "invoice", "AT-15: {recon}");
     assert_eq!(recon["local_source"], "sqlite_cash_queue", "AT-15: {recon}");
-    assert_eq!(recon["authoritative_source"], "replica_pg", "AT-15: {recon}");
+    assert_eq!(
+        recon["authoritative_source"], "replica_pg",
+        "AT-15: {recon}"
+    );
     assert_eq!(
         recon["local_is_estimate"], true,
         "AT-15: §10.3 — локальне число ЯВНО позначене оцінкою: {recon}"
@@ -1026,7 +1046,10 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         recon["items"][0]["authoritative_qty"], 0.0,
         "AT-15: авторитетний ще 0: {recon}"
     );
-    assert_eq!(recon["items"][0]["delta"], 3.0, "AT-15: дельта ≠ 0: {recon}");
+    assert_eq!(
+        recon["items"][0]["delta"], 3.0,
+        "AT-15: дельта ≠ 0: {recon}"
+    );
     assert_eq!(recon["items"][0]["matches"], false, "AT-15: {recon}");
     assert_eq!(recon["summary"]["total"], 1, "AT-15: {recon}");
     assert_eq!(recon["summary"]["matching"], 0, "AT-15: {recon}");
@@ -1037,7 +1060,10 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     let (st404, body404, raw404, _) = call(
         &app,
         "GET",
-        &format!("/api/v1/local/stock-reconciliation?invoice_id={}", Uuid::new_v4()),
+        &format!(
+            "/api/v1/local/stock-reconciliation?invoice_id={}",
+            Uuid::new_v4()
+        ),
         &token,
         store,
         Value::Null,
@@ -1105,12 +1131,14 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         db_path: db_path.clone(),
         interval_secs: 30,
     };
-    let summary = torgashka_infrastructure::offline::sync_push::push_pending_batch(
-        &db_path, &client, &cfg,
-    )
-    .await
-    .expect("push на primary");
-    assert_eq!(summary.done, 1, "AT-15: push доставив накладну: {summary:?}");
+    let summary =
+        torgashka_infrastructure::offline::sync_push::push_pending_batch(&db_path, &client, &cfg)
+            .await
+            .expect("push на primary");
+    assert_eq!(
+        summary.done, 1,
+        "AT-15: push доставив накладну: {summary:?}"
+    );
     assert_eq!(summary.failed, 0, "AT-15: {summary:?}");
 
     let auth_after: f64 = pg_stock(&admin_pool, store, product)
@@ -1210,17 +1238,18 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     // Вирівнювання лишається за інвентаризацією (`set_stock_level`) — нового
     // reconcile-движка немає (§10.3).
     let local_catalog = {
-        let rows = torgashka_infrastructure::offline::stock::stock_with_catalog(
-            &conn,
-            &store.to_string(),
-        )
-        .expect("stock_with_catalog");
+        let rows =
+            torgashka_infrastructure::offline::stock::stock_with_catalog(&conn, &store.to_string())
+                .expect("stock_with_catalog");
         rows.iter()
             .find(|(id, _, _)| id == &product.to_string())
             .map(|(_, _, milli)| *milli)
             .unwrap_or(0)
     };
-    assert_eq!(local_catalog, local_aligned, "AT-15: каталог + залишки (локальне число)");
+    assert_eq!(
+        local_catalog, local_aligned,
+        "AT-15: каталог + залишки (локальне число)"
+    );
     eprintln!(
         "[AT-15] ✅ локальний={local_aligned}‰ авторитетний={auth_after} дельта=0; пре-push дельта=3.000; локальна #2 дала дельту 2.000 → вирівняно інвентаризацією"
     );

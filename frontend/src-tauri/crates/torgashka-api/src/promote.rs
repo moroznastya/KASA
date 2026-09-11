@@ -42,7 +42,10 @@ const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// `/api/v1/local/promote` та `/api/v1/local/repoint-primary`: вони лежать
 /// ПОЗА auth/store middleware приватної гілки саме для того, щоб працювати,
 /// коли primary (і його БД) недоступний.
-pub(crate) fn require_owner_offline(state: &AppState, headers: &HeaderMap) -> Result<Claims, LocalErr> {
+pub(crate) fn require_owner_offline(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Claims, LocalErr> {
     let Some(h) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

@@ -174,9 +174,18 @@ mod tests {
                 name: "Кава Львівська".to_string()
             }
         );
-        assert_eq!(product_state(&conn, "p-del").unwrap(), ProductState::Deleted);
-        assert_eq!(product_state(&conn, "p-nope").unwrap(), ProductState::Unknown);
-        assert_eq!(catalog_name(&conn, "p-ok").unwrap().as_deref(), Some("Кава Львівська"));
+        assert_eq!(
+            product_state(&conn, "p-del").unwrap(),
+            ProductState::Deleted
+        );
+        assert_eq!(
+            product_state(&conn, "p-nope").unwrap(),
+            ProductState::Unknown
+        );
+        assert_eq!(
+            catalog_name(&conn, "p-ok").unwrap().as_deref(),
+            Some("Кава Львівська")
+        );
         assert_eq!(catalog_name(&conn, "p-nope").unwrap(), None);
     }
 

@@ -83,7 +83,13 @@ fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
     let host_start = after.find('@').map(|i| i + 1).unwrap_or(0);
-    format!("{}{}:{}@{}", &url[..scheme_end], user, pass, &after[host_start..])
+    format!(
+        "{}{}:{}@{}",
+        &url[..scheme_end],
+        user,
+        pass,
+        &after[host_start..]
+    )
 }
 
 fn db_name_from_url(url: &str) -> String {
@@ -367,7 +373,10 @@ async fn standby_inventory_queues_locally_and_never_writes_replica() {
         "інвентаризація на standby має створитися локально (201/queued), маємо {status}: {raw}"
     );
     assert_eq!(dto["status"], "queued", "бізнес-статус черги: {dto}");
-    let client_uuid = dto["id"].as_str().expect("client_uuid документа").to_string();
+    let client_uuid = dto["id"]
+        .as_str()
+        .expect("client_uuid документа")
+        .to_string();
     assert_eq!(
         local_stock_milli(product),
         7_000,
@@ -382,7 +391,8 @@ async fn standby_inventory_queues_locally_and_never_writes_replica() {
     );
 
     // ── 5. SQLite: агрегат inventories + рівно 1 pending ───────────────────
-    let (synced, data) = local_aggregate_row("inventories", &client_uuid).expect("агрегат inventories");
+    let (synced, data) =
+        local_aggregate_row("inventories", &client_uuid).expect("агрегат inventories");
     assert_eq!(synced, 1, "агрегат каси — push-кандидат");
     assert!(
         data.contains("\"quantity\":7.0") && data.contains("\"actual_quantity\":7.0"),
@@ -423,7 +433,12 @@ async fn standby_inventory_queues_locally_and_never_writes_replica() {
         StatusCode::INTERNAL_SERVER_ERROR,
         "стара обв'язка на read-only репліці мусить дати 500, маємо {old_status}: {old_raw}"
     );
-    for banned in ["read-only transaction", "INSERT INTO", "inventories", "sqlx"] {
+    for banned in [
+        "read-only transaction",
+        "INSERT INTO",
+        "inventories",
+        "sqlx",
+    ] {
         assert!(
             !old_raw.contains(banned),
             "у тілі 500 немає сирого тексту PG/драйвера ('{banned}'): {old_raw}"
@@ -445,5 +460,7 @@ async fn standby_inventory_queues_locally_and_never_writes_replica() {
         7_000,
         "локальний stock не змінився негативним контролем"
     );
-    eprintln!("[inventory_standby_outbox_e2e] ✅ 201/queued + 1 pending + stock 7000 + 0 рядків PG");
+    eprintln!(
+        "[inventory_standby_outbox_e2e] ✅ 201/queued + 1 pending + stock 7000 + 0 рядків PG"
+    );
 }

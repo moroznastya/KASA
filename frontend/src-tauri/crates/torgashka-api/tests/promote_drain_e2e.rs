@@ -34,7 +34,9 @@ use sqlx::PgPool;
 use torgashka_api::auth::create_access_token;
 use torgashka_api::route_local::LocalApiState;
 use torgashka_api::{router_v1, AppState};
-use torgashka_domain::{InvoicesV1Service, InvoicesV2Service, PosService, ReadDirectories, WriteDirectories};
+use torgashka_domain::{
+    InvoicesV1Service, InvoicesV2Service, PosService, ReadDirectories, WriteDirectories,
+};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
 use torgashka_infrastructure::offline::sync_push::{
     open_connection, pending_count, push_pending_batch_with_node, PushConfig,
@@ -300,8 +302,7 @@ fn with_local(mut st: AppState) -> AppState {
             as Arc<dyn ReadDirectories + Send + Sync>,
         pos: Arc::new(OutboxPos::new(Arc::new(SqlxPos::new(sp.clone()))))
             as Arc<dyn PosService + Send + Sync>,
-        write: Arc::new(SqlxWriteDirectories::new(sp))
-            as Arc<dyn WriteDirectories + Send + Sync>,
+        write: Arc::new(SqlxWriteDirectories::new(sp)) as Arc<dyn WriteDirectories + Send + Sync>,
     });
     st
 }
@@ -399,12 +400,20 @@ async fn promote_drains_local_outbox_into_own_pg() {
         invoice_body(supplier, product, "PD-1", "3.000", "100.00"),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "накладна офлайн: {status} {raw}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "накладна офлайн: {status} {raw}"
+    );
     assert_eq!(dto["status"], "queued", "маркер черги: {dto}");
     let client_uuid = dto["id"].as_str().expect("client_uuid").to_string();
 
     let conn = conn_ret();
-    assert_eq!(pending_count(&conn).expect("pending"), 1, "1 агрегат у черзі");
+    assert_eq!(
+        pending_count(&conn).expect("pending"),
+        1,
+        "1 агрегат у черзі"
+    );
     drop(conn);
     assert_eq!(
         pg_invoice_rows(&pool, store).await,
@@ -422,11 +431,22 @@ async fn promote_drains_local_outbox_into_own_pg() {
     assert_eq!(pg_by_uuid, 0, "до promote документа немає");
 
     // ── 2. PROMOTE: вузол стає джерелом істини + drain залишку черги ────────
-    let (status, body, raw) = call(&app, "POST", "/api/v1/local/promote", &token, store, json!({})).await;
+    let (status, body, raw) = call(
+        &app,
+        "POST",
+        "/api/v1/local/promote",
+        &token,
+        store,
+        json!({}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "promote: {status} {raw}");
     let drain = &body["outbox_drain"];
     assert_eq!(drain["drained"], 1, "drain у відповіді promote: {body}");
-    assert_eq!(drain["created"], 1, "агрегат створено у власному PG: {body}");
+    assert_eq!(
+        drain["created"], 1,
+        "агрегат створено у власному PG: {body}"
+    );
     assert_eq!(drain["errors"], 0, "жодної помилки: {body}");
 
     // ── 3. Агрегат У ЛОКАЛЬНОМУ PG, черга ПОРОЖНЯ ────────────────────────────
@@ -441,7 +461,10 @@ async fn promote_drains_local_outbox_into_own_pg() {
             .fetch_one(&pool)
             .await
             .expect("COUNT invoices by client_uuid (після drain)");
-    assert_eq!(pg_by_uuid, 1, "той самий client_uuid каси → один документ у PG");
+    assert_eq!(
+        pg_by_uuid, 1,
+        "той самий client_uuid каси → один документ у PG"
+    );
     let pg_items: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM invoice_items i JOIN invoices v ON v.id = i.invoice_id \
          WHERE v.store_id = $1",
@@ -474,7 +497,11 @@ async fn promote_drains_local_outbox_into_own_pg() {
 
     // ── 4. ҐЕЙТ: на СТАРИЙ сервер більше не пушимо (mode=primary, апстріму немає)
     let disk = NodeConfig::load_explicit_from_path(&cfg_path).expect("promote записав [node]");
-    assert_eq!(disk.mode, NodeMode::Primary, "promote → mode=primary на диску");
+    assert_eq!(
+        disk.mode,
+        NodeMode::Primary,
+        "promote → mode=primary на диску"
+    );
     assert!(
         disk.push_blocked_reason().is_some(),
         "primary без апстріму → HTTP-push вимкнено"
@@ -531,7 +558,15 @@ async fn repeated_drain_is_idempotent_already_exists() {
     let client_uuid = dto["id"].as_str().expect("client_uuid").to_string();
 
     // Перший drain — усередині promote.
-    let (status, body, raw) = call(&app, "POST", "/api/v1/local/promote", &token, store, json!({})).await;
+    let (status, body, raw) = call(
+        &app,
+        "POST",
+        "/api/v1/local/promote",
+        &token,
+        store,
+        json!({}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "promote: {status} {raw}");
     assert_eq!(body["outbox_drain"]["created"], 1, "{body}");
     assert_eq!(pg_invoice_rows(&pool, store).await, 1, "один документ");
@@ -570,7 +605,10 @@ async fn repeated_drain_is_idempotent_already_exists() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "drain#3: {status} {raw}");
-    assert_eq!(body3["already_exists"], 1, "ідемпотентність client_uuid: {body3}");
+    assert_eq!(
+        body3["already_exists"], 1,
+        "ідемпотентність client_uuid: {body3}"
+    );
     assert_eq!(body3["created"], 0, "нового документа не створено: {body3}");
     assert_eq!(body3["drained"], 1, "агрегат знято з черги: {body3}");
     assert_eq!(
@@ -644,10 +682,11 @@ async fn drain_error_keeps_item_pending_and_reports_reason() {
 
     let conn = conn_ret();
     let st: String = conn
-        .query_row("SELECT status FROM outbox WHERE type = 'mystery'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT status FROM outbox WHERE type = 'mystery'",
+            [],
+            |r| r.get(0),
+        )
         .expect("status");
     assert_eq!(st, "pending", "дані не втрачено — агрегат у черзі");
 }
-

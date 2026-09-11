@@ -21,10 +21,10 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use torgashka_domain::{
-    CategoryCreateInput, CategoryDto, CategoryUpdateInput, InventoryCountsDto, InventoryCreateInput,
-    InventoryDto, InventoryItemDto, InventorySummaryDto, InventoryUpdateInput, Page, ProductCreateInput,
-    ProductDto, ProductUpdateInput, SupplierCreateInput, SupplierDto, SupplierUpdateInput, WriteDirectories,
-    WriteError,
+    CategoryCreateInput, CategoryDto, CategoryUpdateInput, InventoryCountsDto,
+    InventoryCreateInput, InventoryDto, InventoryItemDto, InventorySummaryDto,
+    InventoryUpdateInput, Page, ProductCreateInput, ProductDto, ProductUpdateInput,
+    SupplierCreateInput, SupplierDto, SupplierUpdateInput, WriteDirectories, WriteError,
 };
 
 use crate::offline::transactions::{self, EnqueuedTransaction};
@@ -89,8 +89,18 @@ fn queued_dto(input: &InventoryCreateInput, out: EnqueuedTransaction) -> Invento
             }
         })
         .collect();
-    let total_cost = q::dec_sum(input.items.iter().map(|it| q::dec_mul(&it.actual_quantity, &it.cost_price)));
-    let total_selling = q::dec_sum(input.items.iter().map(|it| q::dec_mul(&it.actual_quantity, &it.price)));
+    let total_cost = q::dec_sum(
+        input
+            .items
+            .iter()
+            .map(|it| q::dec_mul(&it.actual_quantity, &it.cost_price)),
+    );
+    let total_selling = q::dec_sum(
+        input
+            .items
+            .iter()
+            .map(|it| q::dec_mul(&it.actual_quantity, &it.price)),
+    );
     InventoryDto {
         id: doc_id,
         number: input

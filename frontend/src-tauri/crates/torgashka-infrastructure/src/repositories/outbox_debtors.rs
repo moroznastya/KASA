@@ -62,7 +62,11 @@ impl DebtorService for OutboxDebtors {
         self.inner.get(id).await
     }
 
-    async fn update(&self, _id: Uuid, _input: &DebtorUpdateInput) -> Result<DebtorDto, DebtorError> {
+    async fn update(
+        &self,
+        _id: Uuid,
+        _input: &DebtorUpdateInput,
+    ) -> Result<DebtorDto, DebtorError> {
         Err(DebtorError::BadRequest(q::unavailable(
             "редагування боржника",
         )))
@@ -84,7 +88,9 @@ impl DebtorService for OutboxDebtors {
             ));
         }
         if local_cents <= 0 {
-            return Err(DebtorError::BadRequest("У боржника немає боргу".to_string()));
+            return Err(DebtorError::BadRequest(
+                "У боржника немає боргу".to_string(),
+            ));
         }
         if amount_cents > local_cents {
             return Err(DebtorError::BadRequest(format!(

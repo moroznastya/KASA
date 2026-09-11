@@ -486,13 +486,7 @@ pub async fn push_pending_batch(
     cfg: &PushConfig,
 ) -> Result<PushSummary, String> {
     // Конфігурація вузла з диска (ЯВНА секція [node]; немає — ґейт не діє).
-    push_pending_batch_with_node(
-        db_path,
-        client,
-        cfg,
-        NodeConfig::load_explicit().as_ref(),
-    )
-    .await
+    push_pending_batch_with_node(db_path, client, cfg, NodeConfig::load_explicit().as_ref()).await
 }
 
 /// Те саме, але з ЯВНО переданим `NodeConfig` (тести без env/CWD; прод
@@ -1417,206 +1411,213 @@ mod tests {
         assert_eq!(kinds, vec!["pull_ok".to_string(), "pull_fail".to_string()]);
     }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ФАЗА 3.8 — ґейт «promote-нутий primary без апстріму» (дефект: push на
-// СТАРИЙ server_url після promote → ризик split-brain)
-// ─────────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ФАЗА 3.8 — ґейт «promote-нутий primary без апстріму» (дефект: push на
+    // СТАРИЙ server_url після promote → ризик split-brain)
+    // ─────────────────────────────────────────────────────────────────────────────
 
-/// Лічильник TCP-з'єднань: «0 HTTP» доводиться ФАКТОМ відсутності конекту,
-/// а не відсутністю помилки в логах.
-struct ConnCounter {
-    addr: String,
-    hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
+    /// Лічильник TCP-з'єднань: «0 HTTP» доводиться ФАКТОМ відсутності конекту,
+    /// а не відсутністю помилки в логах.
+    struct ConnCounter {
+        addr: String,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
 
-impl ConnCounter {
-    fn start() -> Self {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let h = hits.clone();
-        std::thread::spawn(move || {
-            // Мок «мертвого старого сервера»: приймає і одразу закриває —
-            // reqwest дістане помилку, але КОНЕКТ буде зафіксований.
-            for stream in listener.incoming() {
-                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                drop(stream);
+    impl ConnCounter {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let h = hits.clone();
+            std::thread::spawn(move || {
+                // Мок «мертвого старого сервера»: приймає і одразу закриває —
+                // reqwest дістане помилку, але КОНЕКТ буде зафіксований.
+                for stream in listener.incoming() {
+                    h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    drop(stream);
+                }
+            });
+            Self {
+                addr: format!("http://{addr}"),
+                hits,
             }
-        });
-        Self {
-            addr: format!("http://{addr}"),
-            hits,
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
-    fn hits(&self) -> usize {
-        self.hits.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-/// Файлова SQLite-БД каси з міграціями + один pending-чек у черзі.
-fn queue_with_one_receipt() -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("offline.db");
-    let mut conn = open_connection(&path).expect("SQLite каси");
-    enqueue_receipt(&mut conn, &sale_receipt_json(1), Some(&Uuid::nil().to_string()))
+    /// Файлова SQLite-БД каси з міграціями + один pending-чек у черзі.
+    fn queue_with_one_receipt() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("offline.db");
+        let mut conn = open_connection(&path).expect("SQLite каси");
+        enqueue_receipt(
+            &mut conn,
+            &sale_receipt_json(1),
+            Some(&Uuid::nil().to_string()),
+        )
         .expect("enqueue");
-    drop(conn);
-    (dir, path)
-}
-
-fn cfg_for(base_url: &str, db_path: &Path) -> PushConfig {
-    PushConfig {
-        base_url: base_url.to_string(),
-        token: "t".to_string(),
-        store_id: None,
-        db_path: db_path.to_path_buf(),
-        interval_secs: 30,
+        drop(conn);
+        (dir, path)
     }
-}
 
-fn promoted() -> crate::node_config::NodeConfig {
-    // Як на standby-касі перед promote: mode=standby + primary_db_url на
-    // старий primary; promote очищає обидва посилання (`into_promoted_primary`).
-    crate::node_config::NodeConfig {
-        mode: crate::node_config::NodeMode::Standby,
-        primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
-        ..Default::default()
+    fn cfg_for(base_url: &str, db_path: &Path) -> PushConfig {
+        PushConfig {
+            base_url: base_url.to_string(),
+            token: "t".to_string(),
+            store_id: None,
+            db_path: db_path.to_path_buf(),
+            interval_secs: 30,
+        }
     }
-    .into_promoted_primary()
-}
 
-/// КРИТЕРІЙ 1 Фази 3.8: promoted primary (mode=Primary, апстрім очищено) →
-/// push_pending_batch робить **0 HTTP** (до старого сервера не звертається)
-/// і повертає маркер `gated`.
-#[tokio::test]
-async fn gate_blocks_http_push_on_promoted_primary() {
-    let srv = ConnCounter::start();
-    let (_dir, path) = queue_with_one_receipt();
-    let cfg = cfg_for(&srv.addr, &path);
-    let node = promoted();
-    assert!(
-        node.push_blocked_reason().is_some(),
-        "передумова: promote-нутий primary без апстріму"
-    );
+    fn promoted() -> crate::node_config::NodeConfig {
+        // Як на standby-касі перед promote: mode=standby + primary_db_url на
+        // старий primary; promote очищає обидва посилання (`into_promoted_primary`).
+        crate::node_config::NodeConfig {
+            mode: crate::node_config::NodeMode::Standby,
+            primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
+            ..Default::default()
+        }
+        .into_promoted_primary()
+    }
 
-    let client = reqwest::Client::new();
-    let s = push_pending_batch_with_node(&path, &client, &cfg, Some(&node))
-        .await
-        .expect("ґейт — не помилка мережі");
+    /// КРИТЕРІЙ 1 Фази 3.8: promoted primary (mode=Primary, апстрім очищено) →
+    /// push_pending_batch робить **0 HTTP** (до старого сервера не звертається)
+    /// і повертає маркер `gated`.
+    #[tokio::test]
+    async fn gate_blocks_http_push_on_promoted_primary() {
+        let srv = ConnCounter::start();
+        let (_dir, path) = queue_with_one_receipt();
+        let cfg = cfg_for(&srv.addr, &path);
+        let node = promoted();
+        assert!(
+            node.push_blocked_reason().is_some(),
+            "передумова: promote-нутий primary без апстріму"
+        );
 
-    assert!(s.gated, "маркер ґейта");
-    assert_eq!(s.sent, 0, "жодного відправленого агрегата");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        srv.hits(),
-        0,
-        "0 HTTP-з'єднань до колишнього сервера (інакше — split-brain)"
-    );
-    // Черга НЕ втрачена: агрегат лишається pending для drain-у у власний PG.
-    let conn = open_connection(&path).expect("SQLite");
-    assert_eq!(pending_count(&conn).expect("count"), 1);
-}
+        let client = reqwest::Client::new();
+        let s = push_pending_batch_with_node(&path, &client, &cfg, Some(&node))
+            .await
+            .expect("ґейт — не помилка мережі");
 
-/// КРИТЕРІЙ 2 Фази 3.8 (норма НЕ зламана): `mode=Primary` ІЗ апстрімом
-/// (standalone POS на віддалений сервер) → HTTP-push виконується.
-#[tokio::test]
-async fn gate_lets_primary_with_remote_upstream_push() {
-    let srv = ConnCounter::start();
-    let (_dir, path) = queue_with_one_receipt();
-    let cfg = cfg_for(&srv.addr, &path);
-    let node = crate::node_config::NodeConfig {
-        primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
-        ..Default::default()
-    };
-    assert_eq!(node.mode, crate::node_config::NodeMode::Primary);
-    assert!(
-        node.push_blocked_reason().is_none(),
-        "primary із апстрімом — норма, ґейт не діє"
-    );
+        assert!(s.gated, "маркер ґейта");
+        assert_eq!(s.sent, 0, "жодного відправленого агрегата");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            srv.hits(),
+            0,
+            "0 HTTP-з'єднань до колишнього сервера (інакше — split-brain)"
+        );
+        // Черга НЕ втрачена: агрегат лишається pending для drain-у у власний PG.
+        let conn = open_connection(&path).expect("SQLite");
+        assert_eq!(pending_count(&conn).expect("count"), 1);
+    }
 
-    let client = reqwest::Client::new();
-    let _ = push_pending_batch_with_node(&path, &client, &cfg, Some(&node)).await;
-    assert!(
-        srv.hits() > 0,
-        "HTTP-push МУСИТЬ піти (мок-сервер зафіксував конект)"
-    );
-}
+    /// КРИТЕРІЙ 2 Фази 3.8 (норма НЕ зламана): `mode=Primary` ІЗ апстрімом
+    /// (standalone POS на віддалений сервер) → HTTP-push виконується.
+    #[tokio::test]
+    async fn gate_lets_primary_with_remote_upstream_push() {
+        let srv = ConnCounter::start();
+        let (_dir, path) = queue_with_one_receipt();
+        let cfg = cfg_for(&srv.addr, &path);
+        let node = crate::node_config::NodeConfig {
+            primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(node.mode, crate::node_config::NodeMode::Primary);
+        assert!(
+            node.push_blocked_reason().is_none(),
+            "primary із апстрімом — норма, ґейт не діє"
+        );
 
-/// КРИТЕРІЙ 2 (норма НЕ зламана): `mode=Standby` → HTTP-push виконується.
-#[tokio::test]
-async fn gate_lets_standby_push() {
-    let srv = ConnCounter::start();
-    let (_dir, path) = queue_with_one_receipt();
-    let cfg = cfg_for(&srv.addr, &path);
-    let node = crate::node_config::NodeConfig {
-        mode: crate::node_config::NodeMode::Standby,
-        primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
-        ..Default::default()
-    };
-    assert!(node.push_blocked_reason().is_none(), "standby — штатний push");
+        let client = reqwest::Client::new();
+        let _ = push_pending_batch_with_node(&path, &client, &cfg, Some(&node)).await;
+        assert!(
+            srv.hits() > 0,
+            "HTTP-push МУСИТЬ піти (мок-сервер зафіксував конект)"
+        );
+    }
 
-    let client = reqwest::Client::new();
-    let _ = push_pending_batch_with_node(&path, &client, &cfg, Some(&node)).await;
-    assert!(srv.hits() > 0, "standby МУСИТЬ пушити (норма каси)");
-}
+    /// КРИТЕРІЙ 2 (норма НЕ зламана): `mode=Standby` → HTTP-push виконується.
+    #[tokio::test]
+    async fn gate_lets_standby_push() {
+        let srv = ConnCounter::start();
+        let (_dir, path) = queue_with_one_receipt();
+        let cfg = cfg_for(&srv.addr, &path);
+        let node = crate::node_config::NodeConfig {
+            mode: crate::node_config::NodeMode::Standby,
+            primary_db_url: Some("postgresql://u:p@10.0.0.5:5432/db".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            node.push_blocked_reason().is_none(),
+            "standby — штатний push"
+        );
 
-/// Норма: конфігурації вузла НЕМАЄ (дефолт Primary без секції `[node]` —
-/// чиста каса, тести) → ґейт не вмикається, push працює як раніше.
-#[tokio::test]
-async fn gate_is_inactive_without_explicit_node_section() {
-    let srv = ConnCounter::start();
-    let (_dir, path) = queue_with_one_receipt();
-    let cfg = cfg_for(&srv.addr, &path);
-    let client = reqwest::Client::new();
-    let _ = push_pending_batch_with_node(&path, &client, &cfg, None).await;
-    assert!(
-        srv.hits() > 0,
-        "без ЯВНОЇ секції [node] ґейт не діє (інакше зламали б чисту касу)"
-    );
-}
+        let client = reqwest::Client::new();
+        let _ = push_pending_batch_with_node(&path, &client, &cfg, Some(&node)).await;
+        assert!(srv.hits() > 0, "standby МУСИТЬ пушити (норма каси)");
+    }
 
-/// Після promote оператор переналаштовує активне джерело на ВЛАСНИЙ PG
-/// (`127.0.0.1:local_port`) — це «посилання на себе», НЕ апстрім: ґейт
-/// лишається увімкненим (інакше черга знову пішла б на мертвий сервер).
-#[test]
-fn self_reference_is_not_an_upstream() {
-    use crate::node_config::{is_self_local_url, NodeConfig, NodeMode};
+    /// Норма: конфігурації вузла НЕМАЄ (дефолт Primary без секції `[node]` —
+    /// чиста каса, тести) → ґейт не вмикається, push працює як раніше.
+    #[tokio::test]
+    async fn gate_is_inactive_without_explicit_node_section() {
+        let srv = ConnCounter::start();
+        let (_dir, path) = queue_with_one_receipt();
+        let cfg = cfg_for(&srv.addr, &path);
+        let client = reqwest::Client::new();
+        let _ = push_pending_batch_with_node(&path, &client, &cfg, None).await;
+        assert!(
+            srv.hits() > 0,
+            "без ЯВНОЇ секції [node] ґейт не діє (інакше зламали б чисту касу)"
+        );
+    }
 
-    assert!(is_self_local_url(
-        "postgresql://u:p@127.0.0.1:5433/torgashka",
-        5433
-    ));
-    assert!(is_self_local_url("postgresql://u@localhost:5433/db", 5433));
-    assert!(!is_self_local_url("postgresql://u@10.0.0.5:5432/db", 5433));
+    /// Після promote оператор переналаштовує активне джерело на ВЛАСНИЙ PG
+    /// (`127.0.0.1:local_port`) — це «посилання на себе», НЕ апстрім: ґейт
+    /// лишається увімкненим (інакше черга знову пішла б на мертвий сервер).
+    #[test]
+    fn self_reference_is_not_an_upstream() {
+        use crate::node_config::{is_self_local_url, NodeConfig, NodeMode};
 
-    // Явно записана секція [node] (mode=primary, без апстріму) — стан вузла
-    // після promote; активне джерело: посилання на себе.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cfg_path = dir.path().join("db_sources.toml");
-    std::fs::write(
-        &cfg_path,
-        "[node]\nmode = \"primary\"\n\n[active]\nid = \"local\"\n\n\
+        assert!(is_self_local_url(
+            "postgresql://u:p@127.0.0.1:5433/torgashka",
+            5433
+        ));
+        assert!(is_self_local_url("postgresql://u@localhost:5433/db", 5433));
+        assert!(!is_self_local_url("postgresql://u@10.0.0.5:5432/db", 5433));
+
+        // Явно записана секція [node] (mode=primary, без апстріму) — стан вузла
+        // після promote; активне джерело: посилання на себе.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg_path = dir.path().join("db_sources.toml");
+        std::fs::write(
+            &cfg_path,
+            "[node]\nmode = \"primary\"\n\n[active]\nid = \"local\"\n\n\
          [sources.local]\nurl = \"postgresql://u@127.0.0.1:5433/torgashka\"\n",
-    )
-    .expect("cfg");
-    let cfg = NodeConfig::load_explicit_from_path(&cfg_path).expect("секція [node]");
-    assert_eq!(cfg.mode, NodeMode::Primary);
-    assert!(
-        cfg.push_blocked_reason().is_some(),
-        "власний PG — не апстрім: push мусить бути вимкнений"
-    );
+        )
+        .expect("cfg");
+        let cfg = NodeConfig::load_explicit_from_path(&cfg_path).expect("секція [node]");
+        assert_eq!(cfg.mode, NodeMode::Primary);
+        assert!(
+            cfg.push_blocked_reason().is_some(),
+            "власний PG — не апстрім: push мусить бути вимкнений"
+        );
 
-    // Той самий режим, але апстрім на віддалений сервер → норма.
-    let remote = NodeConfig {
-        mode: NodeMode::Primary,
-        primary_db_url: Some("postgresql://u@10.0.0.5:5432/db".to_string()),
-        ..Default::default()
-    };
-    assert!(remote.push_blocked_reason().is_none());
+        // Той самий режим, але апстрім на віддалений сервер → норма.
+        let remote = NodeConfig {
+            mode: NodeMode::Primary,
+            primary_db_url: Some("postgresql://u@10.0.0.5:5432/db".to_string()),
+            ..Default::default()
+        };
+        assert!(remote.push_blocked_reason().is_none());
 
-    // `load_explicit_from_str`: НЕМАЄ секції [node] → None (ґейт не діє).
-    assert!(NodeConfig::load_explicit_from_str("[active]\nid = \"x\"\n").is_none());
-    assert!(NodeConfig::load_explicit_from_str("не toml").is_none());
-}
+        // `load_explicit_from_str`: НЕМАЄ секції [node] → None (ґейт не діє).
+        assert!(NodeConfig::load_explicit_from_str("[active]\nid = \"x\"\n").is_none());
+        assert!(NodeConfig::load_explicit_from_str("не toml").is_none());
+    }
 }

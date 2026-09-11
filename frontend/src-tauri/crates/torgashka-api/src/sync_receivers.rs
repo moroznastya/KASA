@@ -597,8 +597,8 @@ pub async fn accept_cash_operation(
             "касова операція: cash_type мусить бути cash/card, маємо '{cash_type}'"
         ));
     }
-    let amount = dec(payload, "amount")?
-        .ok_or_else(|| "касова операція: сума обов'язкова".to_string())?;
+    let amount =
+        dec(payload, "amount")?.ok_or_else(|| "касова операція: сума обов'язкова".to_string())?;
     match scaled2(&amount) {
         Some(cents) if cents > 0 => {}
         _ => {
@@ -657,8 +657,8 @@ pub async fn accept_debtor_payment(
     created_at: Option<NaiveDateTime>,
     payload: &Value,
 ) -> Result<Uuid, String> {
-    let debtor_id =
-        u(payload, "debtor_id")?.ok_or_else(|| "оплата боргу: debtor_id обов'язковий".to_string())?;
+    let debtor_id = u(payload, "debtor_id")?
+        .ok_or_else(|| "оплата боргу: debtor_id обов'язковий".to_string())?;
     let amount =
         dec(payload, "amount")?.ok_or_else(|| "оплата боргу: сума обов'язкова".to_string())?;
     let amount_cents = match scaled2(&amount) {
@@ -676,14 +676,13 @@ pub async fn accept_debtor_payment(
     let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
 
     // 1. Боржник точки мусить існувати (pre-flight до будь-якого INSERT).
-    let debt_raw: Option<String> = sqlx::query_scalar(
-        "SELECT total_debt::text FROM debtors WHERE id = $1 AND store_id = $2",
-    )
-    .bind(debtor_id)
-    .bind(store_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| format!("SELECT debtors: {e}"))?;
+    let debt_raw: Option<String> =
+        sqlx::query_scalar("SELECT total_debt::text FROM debtors WHERE id = $1 AND store_id = $2")
+            .bind(debtor_id)
+            .bind(store_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("SELECT debtors: {e}"))?;
     let Some(debt_raw) = debt_raw else {
         return Err(format!(
             "Боржника {debtor_id} не знайдено в цій точці — оплату відхилено"
@@ -762,8 +761,8 @@ pub async fn accept_supplier_ledger(
             LEDGER_TYPES.join(", ")
         ));
     }
-    let amount =
-        dec(payload, "amount")?.ok_or_else(|| "книга постачальника: сума обов'язкова".to_string())?;
+    let amount = dec(payload, "amount")?
+        .ok_or_else(|| "книга постачальника: сума обов'язкова".to_string())?;
     match scaled2(&amount) {
         Some(0) | None => {
             return Err(format!(

@@ -38,11 +38,11 @@ use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
-use torgashka_infrastructure::repositories::outbox_return_invoices::OutboxReturnInvoices;
-use torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices;
 use torgashka_infrastructure::offline::sync_push::{
     open_connection, pending_count, push_pending_batch, PushConfig,
 };
+use torgashka_infrastructure::repositories::outbox_return_invoices::OutboxReturnInvoices;
+use torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices;
 use torgashka_infrastructure::store_ctx::StorePool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -115,7 +115,13 @@ fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
     let host_start = after.find('@').map(|i| i + 1).unwrap_or(0);
-    format!("{}{}:{}@{}", &url[..scheme_end], user, pass, &after[host_start..])
+    format!(
+        "{}{}:{}@{}",
+        &url[..scheme_end],
+        user,
+        pass,
+        &after[host_start..]
+    )
 }
 
 fn db_name_from_url(url: &str) -> String {
@@ -159,7 +165,9 @@ async fn ensure_readonly_role(pool: &sqlx::PgPool, db: &str) {
 /// Standby-фасад із переданою гілкою повернень постачальнику (адаптер або
 /// стара обв'язка на репліці).
 fn standby_state(
-    return_invoices: Option<Arc<dyn torgashka_domain::return_invoices::ReturnInvoicesService + Send + Sync>>,
+    return_invoices: Option<
+        Arc<dyn torgashka_domain::return_invoices::ReturnInvoicesService + Send + Sync>,
+    >,
     pool: sqlx::PgPool,
 ) -> AppState {
     AppState {
@@ -212,7 +220,9 @@ fn outbox_state(pool: sqlx::PgPool) -> AppState {
 /// Стара обв'язка (негативний контроль): сервіс пише в read-only репліку.
 fn legacy_state(pool: sqlx::PgPool) -> AppState {
     standby_state(
-        Some(Arc::new(SqlxReturnInvoices::new(StorePool::new(pool.clone())))),
+        Some(Arc::new(SqlxReturnInvoices::new(StorePool::new(
+            pool.clone(),
+        )))),
         pool,
     )
 }
@@ -284,13 +294,7 @@ fn reset_local_queue() {
     }
     // `open_connection` створює файл і доганяє міграції (як у адаптерів).
     let conn = open_connection(&path).expect("SQLite каси + міграції");
-    for t in [
-        "outbox",
-        "invoices",
-        "invoice_items",
-        "stock",
-        "sync_log",
-    ] {
+    for t in ["outbox", "invoices", "invoice_items", "stock", "sync_log"] {
         let _ = conn.execute(&format!("DELETE FROM {t}"), []);
     }
 }
@@ -300,7 +304,11 @@ fn reset_local_queue() {
 fn seed_local_stock(product: Uuid, milli: i64) {
     let conn = rusqlite::Connection::open(offline_db_path()).expect("SQLite каси");
     let store: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'store_id'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'store_id'",
+            [],
+            |r| r.get(0),
+        )
         .expect("settings.store_id");
     conn.execute(
         "INSERT INTO stock (store_id, product_id, quantity) VALUES (?1, ?2, ?3) \
@@ -382,11 +390,13 @@ async fn standby_return_invoice_queues_locally_and_never_writes_replica() {
 
     let store = Uuid::new_v4();
     let user_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO stores (id, name) VALUES ($1, 'E2E Return Точка') ON CONFLICT (id) DO NOTHING")
-        .bind(store)
-        .execute(&admin_pool)
-        .await
-        .expect("INSERT stores");
+    sqlx::query(
+        "INSERT INTO stores (id, name) VALUES ($1, 'E2E Return Точка') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(store)
+    .execute(&admin_pool)
+    .await
+    .expect("INSERT stores");
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed) \
          VALUES ($1, 'E2E Return Admin', $2, 'x', 'admin'::public.user_role, true, now(), now(), true) \
@@ -467,7 +477,8 @@ async fn standby_return_invoice_queues_locally_and_never_writes_replica() {
     assert_eq!(dto["status"], "queued", "бізнес-статус черги: {dto}");
     assert_eq!(dto["number"], "RV-Q-1", "{dto}");
     let cu = dto["id"].as_str().expect("client_uuid").to_string();
-    let (synced, data) = local_aggregate_row("return_invoices", &cu).expect("агрегат return_invoices");
+    let (synced, data) =
+        local_aggregate_row("return_invoices", &cu).expect("агрегат return_invoices");
     assert_eq!(synced, 1, "агрегат каси — push-кандидат");
     assert!(data.contains("RV-Q-1"), "data = payload як є: {data}");
     assert_eq!(
@@ -668,7 +679,11 @@ async fn standby_return_invoice_payload_accepted_by_primary_receiver() {
     let db_path = offline_db_path();
     {
         let conn = open_connection(&db_path).expect("SQLite каси");
-        assert_eq!(pending_count(&conn).expect("pending"), 1, "1 документ у черзі");
+        assert_eq!(
+            pending_count(&conn).expect("pending"),
+            1,
+            "1 документ у черзі"
+        );
     }
 
     // ── Сервер піднято (Rust-гілка повернень УВІМКНЕНА) → push каси ───────
@@ -686,9 +701,14 @@ async fn standby_return_invoice_payload_accepted_by_primary_receiver() {
         db_path: db_path.clone(),
         interval_secs: 30,
     };
-    let s1 = push_pending_batch(&db_path, &client, &cfg).await.expect("push");
+    let s1 = push_pending_batch(&db_path, &client, &cfg)
+        .await
+        .expect("push");
     eprintln!("[return e2e] перший push: {s1:?}");
-    assert_eq!(s1.done, 1, "перший push → created (payload адаптера прийнято)");
+    assert_eq!(
+        s1.done, 1,
+        "перший push → created (payload адаптера прийнято)"
+    );
     assert_eq!(s1.failed, 0, "помилок немає: {s1:?}");
     assert_eq!(s1.already_exists, 0, "перший push — не дублікат");
 
@@ -704,8 +724,15 @@ async fn standby_return_invoice_payload_accepted_by_primary_receiver() {
     assert_eq!(srv_store, store);
     assert_eq!(srv_supplier, supplier);
     assert_eq!(srv_number, "RV-PUSH-1");
-    assert_eq!(srv_status, "confirmed", "приймач проводить повернення одразу");
-    assert_eq!(pg_return_invoice_rows(&pool, store).await, 1, "рівно 1 повернення");
+    assert_eq!(
+        srv_status, "confirmed",
+        "приймач проводить повернення одразу"
+    );
+    assert_eq!(
+        pg_return_invoice_rows(&pool, store).await,
+        1,
+        "рівно 1 повернення"
+    );
     assert_eq!(
         pg_stock(&pool, store, product).await.as_deref(),
         Some("7.000"),
@@ -722,12 +749,18 @@ async fn standby_return_invoice_payload_accepted_by_primary_receiver() {
         )
         .expect("reset done→pending");
     }
-    let s2 = push_pending_batch(&db_path, &client, &cfg).await.expect("push");
+    let s2 = push_pending_batch(&db_path, &client, &cfg)
+        .await
+        .expect("push");
     eprintln!("[return e2e] повторний push: {s2:?}");
     assert_eq!(s2.already_exists, 1, "повторний push → already_exists");
     assert_eq!(s2.done, 0, "нового created немає");
     assert_eq!(s2.failed, 0, "помилок немає");
-    assert_eq!(pg_return_invoice_rows(&pool, store).await, 1, "дублів немає (UNIQUE 0018)");
+    assert_eq!(
+        pg_return_invoice_rows(&pool, store).await,
+        1,
+        "дублів немає (UNIQUE 0018)"
+    );
     assert_eq!(
         pg_stock(&pool, store, product).await.as_deref(),
         Some("7.000"),

@@ -629,11 +629,10 @@ async fn schema_revision_matches(pool: &PgPool, fp: &str) -> Result<bool, DbErro
     // FROM schema_revision …)` падає з `42P01 relation does not exist` на
     // свіжій БД (перевірено прогоном). Кожен наступний запит виконується лише
     // після підтвердження існування таблиці.
-    let has_users: bool =
-        sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
-            .fetch_one(pool)
-            .await
-            .map_err(DbError::Sqlx)?;
+    let has_users: bool = sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
+        .fetch_one(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
     if !has_users {
         return Ok(false);
     }

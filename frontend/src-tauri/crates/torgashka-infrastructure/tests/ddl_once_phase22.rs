@@ -56,7 +56,9 @@ async fn ddl_applied_once_per_revision() {
     let marker = "at_phase22_current".to_string();
     let ddl_v1 = "CREATE TABLE IF NOT EXISTS public.at_phase22_probe (id int PRIMARY KEY);";
     assert!(
-        ensure_ddl_once(&p, &marker, ddl_v1).await.expect("перше застосування"),
+        ensure_ddl_once(&p, &marker, ddl_v1)
+            .await
+            .expect("перше застосування"),
         "перший виклик мусить застосувати DDL"
     );
     assert!(
@@ -65,7 +67,8 @@ async fn ddl_applied_once_per_revision() {
             .expect("повторний виклик"),
         "той самий fingerprint ⇒ DDL НЕ виконується (саме це прибирає AccessExclusiveLock'и у прогоні)"
     );
-    let ddl_v2 = "CREATE TABLE IF NOT EXISTS public.at_phase22_probe (id int PRIMARY KEY, note text);";
+    let ddl_v2 =
+        "CREATE TABLE IF NOT EXISTS public.at_phase22_probe (id int PRIMARY KEY, note text);";
     assert!(
         ensure_ddl_once(&p, &marker, ddl_v2)
             .await
@@ -73,7 +76,9 @@ async fn ddl_applied_once_per_revision() {
         "змінений DDL ⇒ новий fingerprint ⇒ застосування"
     );
     assert!(
-        !ensure_ddl_once(&p, &marker, ddl_v2).await.expect("нова ревізія, повтор"),
+        !ensure_ddl_once(&p, &marker, ddl_v2)
+            .await
+            .expect("нова ревізія, повтор"),
         "нова ревізія теж застосовується рівно один раз"
     );
 
@@ -110,7 +115,10 @@ async fn ddl_applied_once_per_revision() {
         let (_i, applied_here) = res.expect("жодного 40P01/deadlock у паралельних викликах");
         applied += usize::from(applied_here);
     }
-    assert!(applied <= 1, "DDL застосовано максимум один раз, маємо {applied}");
+    assert!(
+        applied <= 1,
+        "DDL застосовано максимум один раз, маємо {applied}"
+    );
     eprintln!(
         "[phase2.2] ✅ DDL-once: schema fp={}…, parallel applied={applied}",
         &fp1[..8.min(fp1.len())]

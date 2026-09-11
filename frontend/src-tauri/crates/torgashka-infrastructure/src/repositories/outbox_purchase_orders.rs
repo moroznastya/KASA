@@ -64,9 +64,10 @@ fn payload_of(input: &PurchaseOrderCreateInput) -> Value {
 fn queued_dto(input: &PurchaseOrderCreateInput, out: EnqueuedTransaction) -> PurchaseOrderDto {
     let now = Utc::now().naive_utc();
     let doc_id = q::uuid_of(&out.client_uuid);
-    let total = input.total_amount.clone().unwrap_or_else(|| {
-        q::dec_sum(input.items.iter().map(|it| it.total.clone()))
-    });
+    let total = input
+        .total_amount
+        .clone()
+        .unwrap_or_else(|| q::dec_sum(input.items.iter().map(|it| it.total.clone())));
     PurchaseOrderDto {
         id: doc_id,
         number: input

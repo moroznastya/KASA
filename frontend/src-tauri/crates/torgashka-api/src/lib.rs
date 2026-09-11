@@ -63,12 +63,10 @@ use torgashka_domain::{
     ReadDirectories, ReturnInvoicesService, SetupService, StoreService, WriteDirectories,
 };
 use torgashka_infrastructure::node_config::NodeMode;
-use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
-use torgashka_infrastructure::repositories::outbox_invoices::{
-    OutboxInvoicesV1, OutboxInvoicesV2,
-};
 use torgashka_infrastructure::repositories::outbox_debtors::OutboxDebtors;
+use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
 use torgashka_infrastructure::repositories::outbox_ledger::OutboxLedger;
+use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::repositories::outbox_purchase_orders::OutboxPurchaseOrders;
 use torgashka_infrastructure::repositories::outbox_return_invoices::OutboxReturnInvoices;
 use torgashka_infrastructure::repositories::outbox_write::OutboxWrite;
@@ -522,11 +520,10 @@ async fn init_purchase_orders() -> (
                 torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
                     StorePool::new(pool.clone()),
                 );
-            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> =
-                match node_cfg_mode() {
-                    NodeMode::Primary => Arc::new(repo),
-                    NodeMode::Standby => Arc::new(OutboxPurchaseOrders::new(Arc::new(repo))),
-                };
+            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = match node_cfg_mode() {
+                NodeMode::Primary => Arc::new(repo),
+                NodeMode::Standby => Arc::new(OutboxPurchaseOrders::new(Arc::new(repo))),
+            };
             (Some(svc), Some(pool))
         }
         Err(e) => {

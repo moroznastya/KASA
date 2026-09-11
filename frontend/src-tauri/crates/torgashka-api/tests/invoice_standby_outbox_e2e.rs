@@ -31,11 +31,11 @@ use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
-use torgashka_infrastructure::repositories::invoices::SqlxInvoices;
-use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
 use torgashka_infrastructure::offline::sync_push::{
     open_connection, pending_count, push_pending_batch, PushConfig, PushSummary,
 };
+use torgashka_infrastructure::repositories::invoices::SqlxInvoices;
+use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
 use torgashka_infrastructure::store_ctx::StorePool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -109,7 +109,13 @@ fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
     let host_start = after.find('@').map(|i| i + 1).unwrap_or(0);
-    format!("{}{}:{}@{}", &url[..scheme_end], user, pass, &after[host_start..])
+    format!(
+        "{}{}:{}@{}",
+        &url[..scheme_end],
+        user,
+        pass,
+        &after[host_start..]
+    )
 }
 
 fn db_name_from_url(url: &str) -> String {
@@ -284,13 +290,7 @@ fn reset_local_queue() {
     }
     // `open_connection` створює файл і доганяє міграції (як у адаптерів).
     let conn = open_connection(&path).expect("SQLite каси + міграції");
-    for t in [
-        "outbox",
-        "invoices",
-        "invoice_items",
-        "stock",
-        "sync_log",
-    ] {
+    for t in ["outbox", "invoices", "invoice_items", "stock", "sync_log"] {
         let _ = conn.execute(&format!("DELETE FROM {t}"), []);
     }
 }
@@ -501,7 +501,11 @@ async fn standby_invoice_queues_locally_and_never_writes_replica() {
     );
     assert_eq!(dto2["status"], "queued", "бізнес-статус черги v2: {dto2}");
     let cu_v2 = dto2["id"].as_str().expect("client_uuid v2").to_string();
-    assert_eq!(outbox_count_for("invoice", &cu_v2), 1, "v2 → один outbox-запис");
+    assert_eq!(
+        outbox_count_for("invoice", &cu_v2),
+        1,
+        "v2 → один outbox-запис"
+    );
     assert_eq!(
         local_stock_milli(product),
         5_000,
@@ -601,7 +605,11 @@ async fn login(base: &str) -> String {
     panic!("login не вдався");
 }
 
-async fn push_once(db: &std::path::Path, client: &reqwest::Client, cfg: &PushConfig) -> PushSummary {
+async fn push_once(
+    db: &std::path::Path,
+    client: &reqwest::Client,
+    cfg: &PushConfig,
+) -> PushSummary {
     push_pending_batch(db, client, cfg).await.expect("push")
 }
 
@@ -710,7 +718,11 @@ async fn standby_invoice_payload_accepted_by_primary_receiver() {
     let db_path = offline_db_path();
     {
         let conn = open_connection(&db_path).expect("SQLite каси");
-        assert_eq!(pending_count(&conn).expect("pending"), 1, "1 документ у черзі");
+        assert_eq!(
+            pending_count(&conn).expect("pending"),
+            1,
+            "1 документ у черзі"
+        );
     }
 
     // ── Сервер піднято (Rust-гілка інвойсів УВІМКНЕНА) → push каси ─────────
@@ -730,7 +742,10 @@ async fn standby_invoice_payload_accepted_by_primary_receiver() {
     };
     let s1 = push_once(&db_path, &client, &cfg).await;
     eprintln!("[invoice e2e] перший push: {s1:?}");
-    assert_eq!(s1.done, 1, "перший push → created (payload адаптера прийнято)");
+    assert_eq!(
+        s1.done, 1,
+        "перший push → created (payload адаптера прийнято)"
+    );
     assert_eq!(s1.failed, 0, "помилок немає: {s1:?}");
     assert_eq!(s1.already_exists, 0, "перший push — не дублікат");
 
@@ -769,11 +784,17 @@ async fn standby_invoice_payload_accepted_by_primary_receiver() {
     assert_eq!(s2.already_exists, 1, "повторний push → already_exists");
     assert_eq!(s2.done, 0, "нового created немає");
     assert_eq!(s2.failed, 0, "помилок немає");
-    assert_eq!(pg_invoice_rows(&pool, store).await, 1, "дублів немає (UNIQUE 0016)");
+    assert_eq!(
+        pg_invoice_rows(&pool, store).await,
+        1,
+        "дублів немає (UNIQUE 0016)"
+    );
     assert_eq!(
         pg_stock(&pool, store, product).await.as_deref(),
         Some("3.000"),
         "повторний push не подвоїв stock-ефект"
     );
-    eprintln!("[invoice_standby_outbox_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, 0 дублів");
+    eprintln!(
+        "[invoice_standby_outbox_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, 0 дублів"
+    );
 }

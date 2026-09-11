@@ -22,9 +22,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use torgashka_domain::{
-    LedgerBalanceV1Dto, LedgerBalanceV2Dto, LedgerEntriesQuery, LedgerEntryInput,
-    LedgerEntryV1Dto, LedgerEntryV2Dto, LedgerError, LedgerHistoryV1Dto, LedgerListV2Dto,
-    LedgerService, SupplierBalanceV2Dto,
+    LedgerBalanceV1Dto, LedgerBalanceV2Dto, LedgerEntriesQuery, LedgerEntryInput, LedgerEntryV1Dto,
+    LedgerEntryV2Dto, LedgerError, LedgerHistoryV1Dto, LedgerListV2Dto, LedgerService,
+    SupplierBalanceV2Dto,
 };
 
 use crate::offline::transactions::TYPE_SUPPLIER_LEDGER;
@@ -101,7 +101,9 @@ impl LedgerService for OutboxLedger {
         input: &LedgerEntryInput,
     ) -> Result<LedgerEntryV1Dto, LedgerError> {
         let (client_uuid, balance_after) = self.enqueue_entry(input, &LEDGER_TYPES_V1).await?;
-        let op_date = input.operation_date.unwrap_or_else(|| Utc::now().naive_utc());
+        let op_date = input
+            .operation_date
+            .unwrap_or_else(|| Utc::now().naive_utc());
         Ok(LedgerEntryV1Dto {
             id: client_uuid,
             supplier_id: input.supplier_id,
@@ -143,7 +145,10 @@ impl LedgerService for OutboxLedger {
     ) -> Result<LedgerEntryV2Dto, LedgerError> {
         // v2 приймає на один тип більше (`write_off`) і не має operation_date.
         let (client_uuid, balance_after) = self
-            .enqueue_entry(input, &["invoice", "payment", "return", "correction", "write_off"])
+            .enqueue_entry(
+                input,
+                &["invoice", "payment", "return", "correction", "write_off"],
+            )
             .await?;
         let amount = q::parse_cents2(&input.amount).unwrap_or(0) as f64 / 100.0;
         Ok(LedgerEntryV2Dto {

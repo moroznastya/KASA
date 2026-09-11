@@ -476,7 +476,10 @@ fn real_all_crates_tree_has_no_unclassified_dml() {
 {}",
         violations.join("\n")
     );
-    assert!(pg_dml >= 260, "PG-шар: очікували ≥260 DML-точок, маємо {pg_dml}");
+    assert!(
+        pg_dml >= 260,
+        "PG-шар: очікували ≥260 DML-точок, маємо {pg_dml}"
+    );
     assert!(
         sqlite_dml >= 60,
         "шар локальної SQLite: очікували ≥60 DML-точок, маємо {sqlite_dml}"
@@ -484,7 +487,8 @@ fn real_all_crates_tree_has_no_unclassified_dml() {
     let scanned: BTreeSet<&str> = pg_tables.iter().map(|s| s.as_str()).collect();
     let registered: BTreeSet<&str> = PG_TABLE_REGISTRY.iter().map(|(t, _)| *t).collect();
     assert_eq!(
-        scanned, registered,
+        scanned,
+        registered,
         "реєстр §11.7 ↔ скан розійшлися (лише в сканi: {:?}; лише в реєстрі: {:?})",
         scanned.difference(&registered).collect::<Vec<_>>(),
         registered.difference(&scanned).collect::<Vec<_>>()
@@ -754,9 +758,15 @@ fn adr_registry_has_all_points_and_matching_policies() {
         );
     }
     // §3.5: UPSTREAM_NOW 20, DISABLED 16, QUEUE+LOCAL_SQLITE 4, LocalOutbox(накладна) 1
-    assert_eq!(counts[0], 21, "UPSTREAM_NOW (§3.1–§3.2 20 + write_off_reason §11.6)");
+    assert_eq!(
+        counts[0], 21,
+        "UPSTREAM_NOW (§3.1–§3.2 20 + write_off_reason §11.6)"
+    );
     assert_eq!(counts[1], 16, "DISABLED_ON_STANDBY (§3.5)");
-    assert_eq!(counts[2], 5, "QUEUE 1 + LOCAL_SQLITE 3 (§3.5) + cash_operation §11.6");
+    assert_eq!(
+        counts[2], 5,
+        "QUEUE 1 + LOCAL_SQLITE 3 (§3.5) + cash_operation §11.6"
+    );
     assert_eq!(counts[3], 1, "LocalOutbox-накладна (§3.6)");
     assert_eq!(exemptions, 1, "єдиний виняток — promote.rs:172 (§3.2 #36)");
     eprintln!(
@@ -877,7 +887,10 @@ fn pg_table_registry_is_complete_and_consistent() {
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let (mut lo, mut px, mut ds) = (0usize, 0usize, 0usize);
     for (table, class) in PG_TABLE_REGISTRY {
-        assert!(names.insert(table), "дубль таблиці '{table}' у реєстрі §11.7");
+        assert!(
+            names.insert(table),
+            "дубль таблиці '{table}' у реєстрі §11.7"
+        );
         let policy = policy_for_dml_table(table)
             .unwrap_or_else(|| panic!("§11.7: таблиця '{table}' без політики (§11.1/§11.7)"));
         assert_eq!(
@@ -916,7 +929,11 @@ fn pg_table_registry_is_complete_and_consistent() {
     }
 
     // шар локальної SQLite: політики PG немає
-    assert_eq!(SQLITE_ONLY_TABLES.len(), 8, "§11.7 п.4: 8 таблиць лише в SQLite");
+    assert_eq!(
+        SQLITE_ONLY_TABLES.len(),
+        8,
+        "§11.7 п.4: 8 таблиць лише в SQLite"
+    );
     for table in SQLITE_ONLY_TABLES {
         assert!(
             policy_for(table).is_none(),
@@ -1171,8 +1188,7 @@ fn every_write_route_has_explicit_class() {
     let mut bad: Vec<String> = Vec::new();
 
     for rel in ROUTE_FILES {
-        let src = std::fs::read_to_string(root.join(rel))
-            .unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
         for (method, path) in parse_write_routes(&src) {
             if !seen.insert((method.clone(), path.clone())) {
                 continue;
@@ -1206,8 +1222,12 @@ fn every_write_route_has_explicit_class() {
     eprintln!(
         "[routes] усього write-поверхонь={} | класифіковано={} | свідомо Pass={}",
         rows.len(),
-        rows.iter().filter(|(_, c)| !c.starts_with("СВІДОМО")).count(),
-        rows.iter().filter(|(_, c)| c.starts_with("СВІДОМО")).count()
+        rows.iter()
+            .filter(|(_, c)| !c.starts_with("СВІДОМО"))
+            .count(),
+        rows.iter()
+            .filter(|(_, c)| c.starts_with("СВІДОМО"))
+            .count()
     );
 
     assert!(

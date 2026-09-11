@@ -300,11 +300,13 @@ async fn standby_cash_operation_queues_locally_and_never_writes_replica() {
     // Точка + адміністратор точки (потрібні для `require_admin` каси).
     let store = Uuid::new_v4();
     let user_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO stores (id, name) VALUES ($1, 'E2E Cash Точка') ON CONFLICT (id) DO NOTHING")
-        .bind(store)
-        .execute(&admin_pool)
-        .await
-        .expect("INSERT stores");
+    sqlx::query(
+        "INSERT INTO stores (id, name) VALUES ($1, 'E2E Cash Точка') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(store)
+    .execute(&admin_pool)
+    .await
+    .expect("INSERT stores");
     sqlx::query(
         "INSERT INTO users (id, name, login, password_hash, role, is_active, created_at, updated_at, onboarding_completed) \
          VALUES ($1, 'E2E Cash Admin', $2, 'x', 'admin'::public.user_role, true, now(), now(), true) \
@@ -426,7 +428,12 @@ async fn standby_cash_operation_queues_locally_and_never_writes_replica() {
         StatusCode::INTERNAL_SERVER_ERROR,
         "стара обв'язка на read-only репліці мусить дати 500, маємо {old_status}: {old_raw}"
     );
-    for banned in ["read-only transaction", "INSERT INTO", "cash_operations", "sqlx"] {
+    for banned in [
+        "read-only transaction",
+        "INSERT INTO",
+        "cash_operations",
+        "sqlx",
+    ] {
         assert!(
             !old_raw.contains(banned),
             "у тілі 500 немає сирого тексту PG/драйвера ('{banned}'): {old_raw}"
@@ -448,7 +455,9 @@ async fn standby_cash_operation_queues_locally_and_never_writes_replica() {
         15_000,
         "локальний баланс не змінився негативним контролем"
     );
-    eprintln!("[cash_operation_standby_e2e] ✅ ТЕСТ 1: 202 + 1 pending + баланс 15000 + 0 рядків PG");
+    eprintln!(
+        "[cash_operation_standby_e2e] ✅ ТЕСТ 1: 202 + 1 pending + баланс 15000 + 0 рядків PG"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -607,5 +616,7 @@ async fn cash_operation_push_idempotent_on_primary() {
         1,
         "дублів касових операцій немає (partial UNIQUE 0017)"
     );
-    eprintln!("[cash_operation_standby_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, 0 дублів");
+    eprintln!(
+        "[cash_operation_standby_e2e] ✅ ТЕСТ 2: created → already_exists, 1 рядок, 0 дублів"
+    );
 }

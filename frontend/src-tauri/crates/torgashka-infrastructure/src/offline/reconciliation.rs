@@ -70,8 +70,7 @@ pub fn local_view(conn: &Connection, invoice_id: &str) -> Result<Option<LocalInv
         if lines.iter().any(|l| l.product_id == product_id) {
             continue;
         }
-        let name = catalog::catalog_name(conn, &product_id)?
-            .unwrap_or_else(|| product_id.clone());
+        let name = catalog::catalog_name(conn, &product_id)?.unwrap_or_else(|| product_id.clone());
         let local_milli = stock::get_stock_level(conn, &store_key, &product_id)?;
         lines.push(LocalReconLine {
             product_id,
@@ -203,10 +202,15 @@ mod tests {
         assert_eq!(view.lines.len(), 1);
         // 5000 − 2000 (повернення забирає товар з точки) = 3000.
         assert_eq!(view.lines[0].local_milli, 3_000);
-        assert_eq!(view.number, None, "у return_invoices номер живе лише в data");
+        assert_eq!(
+            view.number, None,
+            "у return_invoices номер живе лише в data"
+        );
 
         assert!(
-            local_view(&conn, "нема-такого").expect("local_view").is_none(),
+            local_view(&conn, "нема-такого")
+                .expect("local_view")
+                .is_none(),
             "невідомий документ → None (обробник віддає 404)"
         );
     }
@@ -229,6 +233,8 @@ mod tests {
         .expect("закупівля (валідації каталогу не має)");
         // Закупівля не має локального агрегата-накладної → None (див. таблицю
         // table_of: purchase_orders не читається звіркою накладних).
-        assert!(local_view(&conn, &out.client_uuid).expect("local_view").is_none());
+        assert!(local_view(&conn, &out.client_uuid)
+            .expect("local_view")
+            .is_none());
     }
 }
