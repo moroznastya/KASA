@@ -1698,6 +1698,13 @@ mod tests {
                 log.display()
             ),
         );
+        // Крихкість (виявлено в CI): `start_once` після стаб-`pg_ctl` поллить TCP
+        // до 127.0.0.1:5433 і на вільному порту віддає `StartTimeout`, тобто
+        // `started_by_us` лишається true, але тест залежав від того, чи вже
+        // слухає 5433 ЩОСЬ на машині (локально — випадково проходив, у CI —
+        // падав). Тримаємо порт самі: заглушка-`TcpListener` без `accept`
+        // достатня, бо `port_is_open()` робить лише `connect` (backlog).
+        let _fake_ready_server = std::net::TcpListener::bind(("127.0.0.1", EMBEDDED_PG_PORT)).ok();
         let mut pg = EmbeddedPostgres::with_data_dir(bin, dir.join("pgdata"));
         // start_once — напряму (start() пропустив би старт, якби 5433 слухав).
         let _ = pg.start_once();
