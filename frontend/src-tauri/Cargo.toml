@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "torgashka"
-version = "1.0.4"
+version = "1.0.5"
 description = "Torgashka — Enterprise POS-система для малого та середнього бізнесу"
 authors = ["Torgashka Team"]
 edition = "2021"
