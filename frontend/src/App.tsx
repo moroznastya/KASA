@@ -54,6 +54,7 @@ const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabels
 const OnboardingPage = lazy(() => import('@/pages/onboarding/OnboardingPage'));
 const SetupPage = lazy(() => import('@/pages/setup/SetupPage'));
 const AvailabilityPage = lazy(() => import('@/pages/inventory/AvailabilityPage'));
+import { UpdateBanner } from '@/components/update/UpdateBanner';
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -355,6 +356,7 @@ const App: React.FC = () => {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>
+      <UpdateBanner />
     </BrowserRouter>
   );
 };
