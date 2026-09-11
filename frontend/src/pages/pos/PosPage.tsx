@@ -1629,7 +1629,7 @@ const PosPage: React.FC = () => {
         </div>
       )}
 
-      <div className="flex h-[calc(100vh-8rem)] gap-4">
+      <div className="flex gap-4" style={{ height: 'calc(100vh - 8rem - var(--update-banner-h, 0px))' }}>
         {/* Left panel - Product search / Categories */}
       <div className="w-80 flex flex-col gap-4">
         {/* Unified search field */}

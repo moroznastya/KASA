@@ -21,27 +21,11 @@ QR-код на основі цього URL генерується на фрон�
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 # Базове посилання кабінету платника податків ДПС
 FISCAL_CHECK_BASE_URL = "https://cabinet.tax.gov.ua/cashregs/check"
-
-
-def _fallback_mac(fiscal_number: str) -> str:
-    """
-    Формує MAC-замінник з фіскального номера чеку (SHA-1 hex).
-
-    Використовується, якщо у відповіді ПРРО відсутні id_sign / data_sign.
-
-    Args:
-        fiscal_number: фіскальний номер чеку.
-
-    Returns:
-        str — 40-символьний hex-хеш.
-    """
-    return hashlib.sha1(str(fiscal_number).encode("utf-8")).hexdigest()
 
 
 def build_fiscal_check_url(
@@ -60,8 +44,9 @@ def build_fiscal_check_url(
         amount: сума чеку в гривнях (Decimal/float/str).
         prro_fn: фіскальний номер ПРРО.
         sent_at: дата/час успішної фіскалізації чеку.
-        mac: MAC/підпис чеку (id_sign / data_sign з CheckResponse);
-            якщо None або порожній — використовується хеш fiscal_number.
+        mac: MAC цього чеку (hex-значення з <MAC> = ланцюг попереднього RQ,
+            спека H). Якщо None/порожній — параметр mac порожній (SHA-1
+            fallback ПРИБРАНО — кабінет ДПС не прийме фейковий хеш).
 
     Returns:
         str — готове посилання, або None, якщо недостатньо даних
@@ -70,7 +55,7 @@ def build_fiscal_check_url(
     if not fiscal_number or not prro_fn or sent_at is None:
         return None
 
-    mac_value = mac or _fallback_mac(fiscal_number)
+    mac_value = mac or ""  # H: наявний hex або порожньо (без SHA-1 fallback)
     sm = Decimal(str(amount)).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )

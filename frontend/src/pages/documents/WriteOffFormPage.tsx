@@ -13,6 +13,9 @@ import { formatCurrency } from '@/utils/format';
 import toast from 'react-hot-toast';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
+import { isTauri } from '@/hooks/useTauri';
+import { saveWriteOffOffline, syncNow } from '@/services/tauri/offline';
+import { useStoreStore } from '@/store/storeStore';
 import api from '@/services/api';
 
 interface CartItem {
@@ -257,8 +260,8 @@ const WriteOffFormPage: React.FC = () => {
         return;
       }
 
-      const doc = await createMutation.mutateAsync({
-        document_type: 'write_off',
+      const payload = {
+        document_type: 'write_off' as const,
         reason,
         write_off_date: new Date(writeOffDate + 'T12:00:00').toISOString(),
         notes: notes || undefined,
@@ -268,7 +271,25 @@ const WriteOffFormPage: React.FC = () => {
           cost_price: item.cost_price,
           price: item.price,
         })),
-      });
+      };
+
+      // ЕТАП 6 (offline-first): у Tauri списання — ЛОКАЛЬНО (SQLite агрегат
+      // 0006 + stock −qty атомарно), працює з вимкненим сервером.
+      const storeId = useStoreStore.getState().activeStoreId;
+      if (isTauri() && storeId) {
+        try {
+          const clientUuid = await saveWriteOffOffline(payload, storeId);
+          void syncNow(); // негайний push (мережа) / pending в outbox (офлайн)
+          toast.success(`Списання збережено локально (№ ${clientUuid.slice(0, 8)})`);
+          queryClient.invalidateQueries({ queryKey: ['documents'] });
+          navigate('/documents');
+          return;
+        } catch (e) {
+          console.warn('save_write_off_offline недоступна, fallback на API:', e);
+        }
+      }
+
+      const doc = await createMutation.mutateAsync(payload);
 
       if (andConfirm) {
         // create вже проводить документ (залишки зменшено, статус confirmed).

@@ -1,19 +1,28 @@
-//! XML СЗЗД 2.1.7 — побудова пакетів даних ПРРО та канонізація (C14N).
+//! XML ПРРО — побудова повідомлень для фіскального сервера ДПС (API ФСКО)
+//! та канонізація (C14N). Байт-ідентичний Python-еталону
+//! `backend/.../prro/xml_builder.py` (спека prro_fix_spec_2026-09-08, A–J).
 //!
-//! Байт-ідентичний Python-еталону `backend/.../prro/xml_builder.py`
-//! (golden parity: вектори згенеровані з Python, зафіксовані в тестах).
-//!
-//! Структура повідомлення (розділ 5 протоколу СЗЗД 2.1.7):
+//! СТРУКТУРА ПОВІДОМЛЕННЯ (ПРРО, 262576.docx):
 //! ```xml
-//! <RQ V="1"><DAT FN=".." TN=".." ZN=".." DI=".." V="1">
-//!   <C T="0|1">…</C> | <Z …>…</Z> | <C T="108..112"><E N="1"/></C>
+//! <?xml version="1.0" encoding="windows-1251"?>
+//! <RQ V="1"><DAT FN=".." TN=".." ZN=".." DI=".." DT="0" V="1">
+//!   <C T="0|1">…</C> | <Z …>…</Z> | <C T="108..112">…</C>
 //!   <TS>YYYYMMDDhhmmss</TS>
-//! </DAT><MAC DI=".." NT="..">Base64</MAC></RQ>
+//! </DAT><MAC ID="">{hex}</MAC></RQ>
 //! ```
 //!
-//! Канонічний вигляд (Додаток А): атрибути в алфавітному порядку, теги завжди
-//! закриті (`<tag></tag>`), пробіли між тегами видаляються.
-//! MAC = Base64(SHA-256(канонічний <DAT>)).
+//! - Одна пара `<DAT>…</DAT><MAC>…</MAC>` на повідомлення.
+//! - Кодування windows-1251, XML-декларація обов'язкова.
+//! - `<TS>` — ЛОКАЛЬНИЙ час YYYYMMDDhhmmss.
+//! - MAC: лише атрибут ID (без DI/NT). Значення = hex (lowercase) sha256
+//!   ПОВНОГО RQ попереднього Check (байти windows-1251). Перший документ
+//!   ПРРО/після скидання ланцюга — значення порожнє. `<H>`-ланцюжка в тілі
+//!   чеку НЕМАЄ — ланцюг контролюється самим <MAC>.
+//! - Службові: T=111 → `<MAC></MAC>` (без ID/значення); T=112 → `<MAC>` без ID;
+//!   офлайн-документи → `<MAC ID="{резервний №}">`.
+//!
+//! Канонічний вигляд (Додаток А СЗЗД): атрибути в алфавітному порядку, теги
+//! завжди закриті (`<tag></tag>`), пробіли між тегами видаляються.
 
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
@@ -42,6 +51,12 @@ pub const SERVICE_TYPES: [&str; 5] = [
     SERVICE_RESERVE,
 ];
 
+/// XML-декларація (обов'язкова, windows-1251) — 1:1 Python `XML_DECLARATION`.
+pub const XML_DECLARATION: &str = "<?xml version=\"1.0\" encoding=\"windows-1251\"?>";
+
+/// Розмір діапазону резервних номерів для T=112 (за зразком ДПС).
+pub const DEFAULT_RESERVE_SIZE: i64 = 150;
+
 #[derive(Debug, thiserror::Error)]
 pub enum XmlBuilderError {
     #[error("Порожній XML-документ")]
@@ -54,6 +69,8 @@ pub enum XmlBuilderError {
     MissingDi,
     #[error("Невірне десяткове значення: {0}")]
     InvalidDecimal(String),
+    #[error("Символ неможливо закодувати у windows-1251: {0}")]
+    Cp1251(String),
 }
 
 /// Позиція чеку `<P>`.
@@ -502,18 +519,113 @@ pub fn canonicalize(xml: &str) -> Result<String, XmlBuilderError> {
     Ok(out)
 }
 
-// ─── MAC ─────────────────────────────────────────────────────────────────────
+// ─── Кодування / MAC / хеш-ланцюжок ────────────────────────────────────────
 
-/// MAC = Base64(SHA-256(канонічний <DAT>)) — 1:1 Python `compute_mac`.
-pub fn compute_mac(dat_xml_canonical: &str, key: Option<&[u8]>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(dat_xml_canonical.as_bytes());
-    if let Some(k) = key {
-        hasher.update(k);
+/// Кодує повне RQ-повідомлення у байти windows-1251 — 1:1 Python
+/// `cp1251_bytes`. Саме ці байти підписуються (CAdES/XAdES) і саме над ними
+/// обчислюється хеш-ланцюжок (MAC наступного Check). Символ поза
+/// windows-1251 → помилка (краще явна помилка, ніж мовчазне спотворення).
+pub fn cp1251_bytes(message: &str) -> Result<Vec<u8>, XmlBuilderError> {
+    let (bytes, _, had_errors) = encoding_rs::WINDOWS_1251.encode(message);
+    if had_errors {
+        return Err(XmlBuilderError::Cp1251(
+            "символ неможливо представити у windows-1251".to_string(),
+        ));
     }
-    let digest = hasher.finalize();
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(digest)
+    Ok(bytes.into_owned())
+}
+
+/// Декодує байти windows-1251 у текст (зворотний до [`cp1251_bytes`]).
+/// windows-1251 покриває всі 256 байтів — декодування не може не вдатись.
+pub fn cp1251_decode(bytes: &[u8]) -> String {
+    let (cow, _, _) = encoding_rs::WINDOWS_1251.decode(bytes);
+    cow.into_owned()
+}
+
+/// Перетворює підписані байти у текст для зберігання (check_sign) — 1:1 Python
+/// `signed_bytes_to_text`. XAdES — XML windows-1251 → текст windows-1251;
+/// бінарний CAdES (ІІТ) — теж декодується у cp1251 (бієктивне кодування:
+/// повторний cp1251_bytes повертає ті самі байти).
+pub fn signed_bytes_to_text(signed: &[u8]) -> String {
+    cp1251_decode(signed)
+}
+
+/// Зворотний до [`signed_bytes_to_text`]: текст check_sign → байти. Якщо текст
+/// має префікс "b64:" — base64-декодування (бінарний CAdES), інакше —
+/// повторне кодування у windows-1251. 1:1 Python `sync_offline_queue_use_case`.
+pub fn signed_text_to_bytes(text: &str) -> Result<Vec<u8>, XmlBuilderError> {
+    if let Some(b64) = text.strip_prefix("b64:") {
+        use base64::Engine as _;
+        return base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| XmlBuilderError::Cp1251(format!("base64 check_sign: {e}")));
+    }
+    cp1251_bytes(text)
+}
+
+/// MAC = hex (lowercase) sha256 XML ПОПЕРЕДНЬОГО Check — 1:1 Python
+/// `compute_mac`. Хешується ПОВНИЙ RQ-документ попереднього повідомлення
+/// у байтах windows-1251 (те, що «бачить» сервер через CAdES).
+/// Для першого документа ПРРО (ланцюг порожній) значення порожнє ("").
+pub fn compute_mac(message: &str) -> Result<String, XmlBuilderError> {
+    let raw = cp1251_bytes(message)?;
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    let digest = Sha256::digest(&raw);
+    Ok(hex::encode(digest))
+}
+
+/// Аліас: назва, що описує призначення в коді ланцюга (1:1 Python `chain_hash`).
+pub fn chain_hash(message: &str) -> Result<String, XmlBuilderError> {
+    compute_mac(message)
+}
+
+/// Визначає тип службового чеку `<C T="...">` у канонічному `<DAT>` (або None).
+/// 1:1 Python `_service_type_of`.
+fn service_type_of(dat_xml: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r#"<C\b[^>]*\bT="(\d+)""#).expect("валідний регекс службового типу")
+    });
+    re.captures(dat_xml)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Будує тег `<MAC>` за зразками ДПС (262576.docx) — 1:1 Python `_mac_tag`:
+/// - T=111 (ping): `<MAC></MAC>` — без ID, без значення;
+/// - T=112 (резерв): `<MAC>{value}</MAC>` — без атрибута ID;
+/// - решта: `<MAC ID="{mac_id}">{value}</MAC>` — ID="" для онлайн,
+///   ID={резервний фіскальний номер} для офлайн-документів.
+pub fn mac_tag(dat_xml: &str, mac_value: &str, mac_id: &str) -> String {
+    match service_type_of(dat_xml).as_deref() {
+        Some(SERVICE_PING) => "<MAC></MAC>".to_string(),
+        Some(SERVICE_RESERVE) => format!("<MAC>{}</MAC>", esc_text(mac_value)),
+        _ => format!(
+            "<MAC ID=\"{}\">{}</MAC>",
+            esc_attr(mac_id),
+            esc_text(mac_value)
+        ),
+    }
+}
+
+/// Відтворює ПОВНЕ RQ-повідомлення зі збережених частин (для хешу ланцюга
+/// документа з офлайн-черги) — 1:1 Python `reconstruct_full_rq`.
+/// Детерміноване і байт-ідентичне `build_message`, якщо збережені ті самі
+/// частини (xml_body=канонічний <DAT>, mac=значення <MAC> документа,
+/// id_offline → ID тега MAC для офлайн-чеків).
+pub fn reconstruct_full_rq(
+    dat_xml: &str,
+    mac_value: &str,
+    mac_id: &str,
+) -> Result<String, XmlBuilderError> {
+    let dat_xml = canonicalize(dat_xml)?;
+    let mac_value = if mac_value.is_empty() { "" } else { mac_value };
+    Ok(format!(
+        "{XML_DECLARATION}<RQ V=\"1\">{dat_xml}{}</RQ>",
+        mac_tag(&dat_xml, mac_value, mac_id)
+    ))
 }
 
 /// Дістає NO (номер операції) з XML чека — використовується для H1:
@@ -582,11 +694,6 @@ impl XmlBuilder {
         self.packet_id
     }
 
-    fn next_mac_number(&mut self) -> i64 {
-        self.mac_number += 1;
-        self.mac_number
-    }
-
     /// Обгортає вміст у <DAT> (НЕканонічний) — 1:1 Python `_build_dat`.
     fn build_dat(&self, body_xml: &str, ts: &str, di: Option<i64>) -> String {
         let packet_id = di.unwrap_or_else(|| {
@@ -619,7 +726,6 @@ impl XmlBuilder {
         discounts: &[Discount],
         comment: Option<&str>,
         return_type: Option<&str>,
-        prev_hash: Option<&str>, // B1: хеш (MAC) попереднього Check — тег <H> у <C>
     ) -> Result<String, XmlBuilderError> {
         let mut seq = 0i64;
         let mut next_n = || {
@@ -630,13 +736,6 @@ impl XmlBuilder {
         // B1: хеш попереднього Check (СЗЗД 2.1.7, тег <H> — службова інформація,
         // Base64; не друкується; крім ping T=111 та службових 108/109/110/112).
         // H — перша операція чеку (N=1), щоб Python/Rust були байт-ідентичні.
-        let h_tag: String = match prev_hash {
-            Some(h) if !h.is_empty() => {
-                let n = next_n();
-                format!("<H N=\"{n}\">{}</H>", esc_text(h))
-            }
-            _ => String::new(),
-        };
 
         // Позиції продажу/повернення (<P>)
         let mut p_tags = String::new();
@@ -697,6 +796,7 @@ impl XmlBuilder {
             }
             attrs.push(format!("SM=\"{}\"", to_cents(&pay.amount)?));
             if let Some(ch) = &pay.change {
+                // RM (решта) — лише коли решта > 0 (спека J; 1:1 Python)
                 attrs.push(format!("RM=\"{}\"", to_cents(ch)?));
             }
             let _ = write!(m_tags, "<M {}></M>", attrs.join(" "));
@@ -786,7 +886,6 @@ impl XmlBuilder {
 
         let mut body = String::new();
         let _ = write!(body, "<C {}>", c_attrs.join(" "));
-        body.push_str(&h_tag);
         body.push_str(&p_tags);
         body.push_str(&d_tags);
         body.push_str(&m_tags);
@@ -915,45 +1014,50 @@ impl XmlBuilder {
         &mut self,
         service_type: &str,
         ts: &str,
+        reserve_size: i64,
     ) -> Result<String, XmlBuilderError> {
         if !SERVICE_TYPES.contains(&service_type) {
             return Err(XmlBuilderError::UnknownServiceType(
                 service_type.to_string(),
             ));
         }
-        let body = format!(r#"<C T="{service_type}"><E N="1"></E></C>"#);
+        // Тіло за зразками ДПС (262576.docx), БЕЗ <E N="1"> (спека I):
+        //   108/109/110/111: `<C T="..."></C>`;
+        //   112: `<C T="112"><H SIZE="{size}"></H></C>`.
+        let body = if service_type == SERVICE_RESERVE {
+            format!(r#"<C T="{service_type}"><H SIZE="{reserve_size}"></H></C>"#)
+        } else {
+            format!(r#"<C T="{service_type}"></C>"#)
+        };
         let di = self.next_packet_id();
         let dat_xml = self.build_dat(&body, ts, Some(di));
         canonicalize(&dat_xml)
     }
-
     /// Повне повідомлення <RQ>…</RQ> з <MAC> — 1:1 Python `build_message`.
+    ///
+    /// Формат (ПРРО, спека A):
+    /// `<?xml version="1.0" encoding="windows-1251"?><RQ V="1"><DAT …>…<TS>…
+    /// </TS></DAT><MAC …>{hex}</MAC></RQ>` — одна пара DAT/MAC.
+    ///
+    /// MAC-значення = hex sha256 XML ПОПЕРЕДНЬОГО Check (mac_value).
+    /// None/"" — перший документ після скидання ланцюга.
+    ///
+    /// - mac_id: ID тега <MAC>: "" для онлайн; резервний фіскальний номер
+    ///   для офлайн-документів (T=112/T=111 форму тега визначає білдер).
+    /// - include_mac=false: тег <MAC> не додається (для сумісності).
     pub fn build_message(
-        &mut self,
+        &self,
         dat_xml: &str,
         mac_value: Option<&str>,
+        mac_id: &str,
         include_mac: bool,
     ) -> Result<String, XmlBuilderError> {
         let dat_xml = canonicalize(dat_xml)?;
-        // DI з <DAT ... DI="...">
-        let di = extract_di(&dat_xml).ok_or(XmlBuilderError::MissingDi)?;
-
-        let mut parts = String::from("<RQ V=\"1\">");
-        parts.push_str(&dat_xml);
-        if include_mac {
-            let mac = match mac_value {
-                Some(m) => m.to_string(),
-                None => compute_mac(&dat_xml, None),
-            };
-            let nt = self.next_mac_number();
-            let _ = write!(
-                parts,
-                "<MAC DI=\"{di}\" NT=\"{nt}\">{}</MAC>",
-                esc_text(&mac)
-            );
+        if !include_mac {
+            return Ok(format!("{XML_DECLARATION}<RQ V=\"1\">{dat_xml}</RQ>"));
         }
-        parts.push_str("</RQ>");
-        Ok(parts)
+        let mac_value = mac_value.unwrap_or("");
+        reconstruct_full_rq(&dat_xml, mac_value, mac_id)
     }
 }
 
@@ -1020,18 +1124,25 @@ mod tests {
     }
 
     #[test]
-    fn compute_mac_matches_python() {
-        // vector з Python compute_mac на канонічному <DAT> (див. golden vectors)
-        let mac = compute_mac(
-            r#"<DAT DI="1" FN="4538765845" TN="345612052809" V="1" ZN="АА57506761"><C T="0"><P C="120" CD="4820000000001" N="1" NM="Хліб" PRC="370" Q="370" SM="137" TX="1"></P><M N="2" NM="ГОТІВКА" RM="363" SM="500" T="0"></M><E DTPR="0.00" DTSM="0" FN="4538765845" N="3" NO="3" SE="114" SM="137" TS="20260807112601" TX="1" TXAL="0" TXPR="20.00" TXSM="23" TXTY="0"></E></C><TS>20260807112601</TS></DAT>"#,
-            None,
+    fn compute_mac_is_hex_sha256_of_full_rq_cp1251() {
+        // MAC = hex(lower) sha256 ПОВНОГО RQ у байтах windows-1251 (спека A/D).
+        // Вектор згенеровано з Python-еталона xml_builder.compute_mac.
+        let message = "<?xml version=\"1.0\" encoding=\"windows-1251\"?><RQ V=\"1\"><DAT DI=\"1\" FN=\"4538765845\" TN=\"345612052809\" V=\"1\" ZN=\"АА57506761\"><C T=\"0\"></C><TS>20260827120000</TS></DAT><MAC ID=\"\"></MAC></RQ>";
+        let mac = compute_mac(message).unwrap();
+        assert_eq!(mac.len(), 64);
+        assert!(mac.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            mac,
+            "d49aeceec6bd80bc0afc080b09b5f0f50b23485298c510adc961e7d02bc7ede2"
         );
-        assert_eq!(mac, "ts1jV7GpNqH3C28M4Sl8izXtergBzaeXVVSE3gQBYqc=");
+        // Порожнє повідомлення (перший документ, ланцюг порожній) — "".
+        assert_eq!(compute_mac("").unwrap(), "");
     }
 
     #[test]
-    fn hash_chain_inserts_prev_hash_tag() {
-        // B1: 3 чеки поспіль — H(c1)→c2, H(c2)→c3 (тег <H> у <C>, СЗЗД 2.1.7).
+    fn message_chain_no_h_tag_mac_is_previous_rq_hash() {
+        // D: <H>-ланцюжка в тілі чеку НЕМАЄ; ланцюг = <MAC> наступного чека =
+        // hex sha256 повного RQ попереднього.
         let mut b = XmlBuilder::new("4538765845", "345612052809", "АА57506761", "0", "1", 0, 0);
         let items = [ReceiptItem {
             code: Some("120".into()),
@@ -1063,56 +1174,71 @@ mod tests {
         };
         let ts = "20260827120000";
 
-        // c1: без попереднього → без <H>
-        let c1 = b
-            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None, None)
+        // c1: перший документ — MAC порожній, тег <MAC ID=""></MAC>
+        let dat1 = b
+            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None)
             .unwrap();
-        assert!(!c1.contains("<H "), "c1 не має <H>: {c1}");
-        let h1 = compute_mac(&c1, None);
-
-        // c2: H(c1) = MAC(c1) — тег <H N="1"> у <C>
-        let c2 = b
-            .build_receipt_xml(
-                "0",
-                &items,
-                &payments,
-                &totals,
-                ts,
-                &[],
-                None,
-                None,
-                Some(&h1),
-            )
-            .unwrap();
+        assert!(!dat1.contains("<H "), "тіло чеку не містить <H>: {dat1}");
+        let m1 = b.build_message(&dat1, Some(""), "", true).unwrap();
         assert!(
-            c2.contains(&format!("<H N=\"1\">{h1}</H>")),
-            "c2 має містити H(c1): {c2}"
+            m1.starts_with("<?xml version=\"1.0\" encoding=\"windows-1251\"?><RQ V=\"1\">"),
+            "декларація windows-1251 обов'язкова: {m1}"
         );
-        let h2 = compute_mac(&c2, None);
-        assert_ne!(h1, h2, "MAC c2 відрізняється від c1 (H змінює DAT)");
-
-        // c3: H(c2) = MAC(c2)
-        let c3 = b
-            .build_receipt_xml(
-                "0",
-                &items,
-                &payments,
-                &totals,
-                ts,
-                &[],
-                None,
-                None,
-                Some(&h2),
-            )
-            .unwrap();
         assert!(
-            c3.contains(&format!("<H N=\"1\">{h2}</H>")),
-            "c3 має містити H(c2): {c3}"
+            m1.contains("<MAC ID=\"\"></MAC>"),
+            "перший документ: <MAC ID=\"\"> порожній: {m1}"
         );
-        // послідовність N: H=1, P=2, M=3, E=4
-        assert!(c3.contains("<P C=\"120\" N=\"2\""));
-        assert!(c3.contains("<M N=\"3\""));
-        assert!(c3.contains("<E DTPR=\"0.00\" DTSM=\"0\" FN=\"4538765845\" N=\"4\""));
+        let mac1 = compute_mac(&m1).unwrap();
+
+        // c2: MAC(c2) = hash повного RQ(c1) — без тега <H> у <C>
+        let dat2 = b
+            .build_receipt_xml("0", &items, &payments, &totals, ts, &[], None, None)
+            .unwrap();
+        assert!(!dat2.contains("<H "), "тіло чеку не містить <H>: {dat2}");
+        let m2 = b.build_message(&dat2, Some(&mac1), "", true).unwrap();
+        assert!(
+            m2.contains(&format!("<MAC ID=\"\">{mac1}</MAC>")),
+            "MAC(c2)=hex sha256 RQ(c1): {m2}"
+        );
+        let mac2 = compute_mac(&m2).unwrap();
+        assert_ne!(mac1, mac2, "новий документ змінює ланцюг");
+    }
+
+    #[test]
+    fn service_checks_follow_dps_samples() {
+        // I: службові за зразками 262576.docx: без <E N="1">; 112 -> <H SIZE>;
+        // 111 -> <MAC></MAC> (без ID/значення); 112 -> <MAC> без ID.
+        let mut b = XmlBuilder::new("4538765845", "345612052809", "АА57506761", "0", "1", 0, 0);
+        let ts = "20260827120000";
+        let chain = "d49aeceec6bd80bc0afc080b09b5f0f50b23485298c510adc961e7d02bc7ede2";
+
+        let dat108 = b.build_service_check_xml("108", ts, 150).unwrap();
+        assert_eq!(
+            dat108,
+            "<DAT DI=\"1\" FN=\"4538765845\" TN=\"345612052809\" V=\"1\" ZN=\"АА57506761\"><C T=\"108\"></C><TS>20260827120000</TS></DAT>"
+        );
+        let m108 = b.build_message(&dat108, Some(chain), "", true).unwrap();
+        assert!(m108.contains(&format!("<MAC ID=\"\">{chain}</MAC>")));
+
+        let dat111 = b.build_service_check_xml("111", ts, 150).unwrap();
+        let m111 = b.build_message(&dat111, Some(chain), "", true).unwrap();
+        assert!(
+            m111.contains("<MAC></MAC>"),
+            "ping: <MAC></MAC> без ID/значення: {m111}"
+        );
+        assert!(!m111.contains("<MAC ID"));
+
+        let dat112 = b.build_service_check_xml("112", ts, 150).unwrap();
+        assert!(
+            dat112.contains("<C T=\"112\"><H SIZE=\"150\"></H></C>"),
+            "112: <H SIZE=\"150\">: {dat112}"
+        );
+        let m112 = b.build_message(&dat112, Some(chain), "", true).unwrap();
+        assert!(
+            m112.contains(&format!("<MAC>{chain}</MAC>")),
+            "112: <MAC> без ID: {m112}"
+        );
+        assert!(!m112.contains("<MAC ID"));
     }
 
     #[test]

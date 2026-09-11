@@ -16,7 +16,7 @@ on:
   workflow_dispatch:        # ручний запуск
   push:
     tags: ['v*.*.*']        # автоматично при пуші тегу релізу
-    branches: ['main', 'feat/rust-migration']   # main — основний; feat/rust-migration — тимчасово для валідації
+    branches: ['main', 'feat/rust-migration', 'feat/pg-replication']   # feat/pg-replication — валідація standby-фіксів
 
 permissions:
   contents: write           # потрібно для upload до GitHub Release
@@ -80,7 +80,7 @@ jobs:
           updaterJsonGlob: '**/*.sig'
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: Torgashka ${{ github.ref_name }}
-          releaseDraft: true
+          releaseDraft: false
 
       - name: 📤 Upload artifacts (installers + updater)
         uses: actions/upload-artifact@v4

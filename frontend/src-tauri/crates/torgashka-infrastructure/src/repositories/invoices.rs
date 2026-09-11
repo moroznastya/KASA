@@ -508,11 +508,13 @@ impl InvoicesV1Service for SqlxInvoices {
             _ => self.next_number().await?,
         };
         let new_id = Uuid::new_v4();
+        // client_uuid (Alembic 0016): ідемпотентність push. NULL безпечний —
+        // partial UNIQUE (WHERE client_uuid IS NOT NULL) не конфліктує.
         sqlx::query(
             "INSERT INTO invoices \
              (id, number, supplier_id, invoice_date, payment_method, is_fiscal, notes, total_amount, \
-              status, created_by_id, store_id, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5::payment_method,$6,$7,$8::numeric,'draft',$9,$10, now(), now())",
+              status, created_by_id, store_id, created_at, updated_at, client_uuid) \
+             VALUES ($1,$2,$3,$4,$5::payment_method,$6,$7,$8::numeric,'draft',$9,$10, now(), now(), $11)",
         )
         .bind(new_id)
         .bind(&number)
@@ -524,6 +526,7 @@ impl InvoicesV1Service for SqlxInvoices {
         .bind(total_amount.as_deref())
         .bind(user_id)
         .bind(store_id)
+        .bind(input.client_uuid)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;

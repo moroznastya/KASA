@@ -30,6 +30,18 @@ export const storeService = {
     return response.data;
   },
 
+  /**
+   * Фізично видалити «порожню» точку (owner).
+   *
+   * ⚠️ Реальний ендпоінт — POST /admin/stores/:id/delete (require_owner):
+   * `DELETE /admin/stores/:id` зайнятий АРХІВАЦІЄЮ (archiveStore, див.
+   * коментар у Rust admin.rs + store_delete_e2e.rs). Відповідь 204;
+   * 409 з detail «є дані у …», якщо точка не порожня.
+   */
+  async removeStore(id: string): Promise<void> {
+    await api.post(`/admin/stores/${id}/delete`);
+  },
+
   /** Міжточкова наявність: залишки по всіх точках користувача (read-only). */
   async availability(): Promise<AvailabilityItem[]> {
     const response = await api.get<AvailabilityItem[]>('/inventory/availability');

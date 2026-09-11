@@ -119,11 +119,21 @@ impl IntoResponse for LedgerErr {
                     })),
                 )
                     .into_response(),
-                LedgerError::Infrastructure(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-                )
-                    .into_response(),
+                LedgerError::Infrastructure(msg) => {
+                    // Санація (ADR-0007, контракт §D): технічний текст → лог,
+                    // користувачу — стабільне повідомлення (як `pos.rs:115`).
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[ledger] LedgerError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(
+                            serde_json::json!({"detail": "Не вдалося зберегти зміну, спробуйте ще раз"}),
+                        ),
+                    )
+                        .into_response()
+                }
             },
         }
     }
@@ -141,10 +151,10 @@ fn ledger_repo(
 
 /// require_admin (Python AuthService.require_admin → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), LedgerErr> {
-    let pool = state
-        .write_pool
-        .clone()
-        .ok_or_else(|| LedgerErr::Forbidden("Rust-гілка ledger вимкнена".to_string()))?;
+    // ADR-0007 §11.1 НЕ має рядка для `supplier_ledger` (пишеться сервісом,
+    // не літералом DML у `src/`) → політики немає → `Pass` (АНОМАЛІЯ №1 звіту).
+    let pool =
+        crate::write_gate::admin_pool(state, "supplier_ledger").map_err(LedgerErr::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         LedgerErr::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

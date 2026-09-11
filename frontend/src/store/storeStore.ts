@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { storeService } from '@/services/storeService';
+import { persistSyncStore } from '@/services/tauri/offline';
 import { Store } from '@/types/store';
 
 const STORAGE_KEY = 'activeStoreId';
@@ -44,6 +45,8 @@ export const useStoreStore = create<StoreState>((set, get) => ({
         }
       }
       set({ stores, activeStoreId, storesLoaded: true });
+      // Автовибір точки — синхронізуємо store_id у SQLite settings (ЕТАП 5).
+      if (activeStoreId) void persistSyncStore(activeStoreId);
     } catch {
       // Помилка мережі: не блокуємо застосунок — зберігаємо наявний стан.
       // Якщо користувач має збережену точку, він продовжить працювати.
@@ -58,5 +61,8 @@ export const useStoreStore = create<StoreState>((set, get) => ({
       /* ignore */
     }
     set({ activeStoreId: storeId });
+    // ЕТАП 5 (outbox-push): Rust читає store_id з SQLite settings як контекст
+    // для POST /sync/push. Fire-and-forget: у браузері invoke мовчки падає.
+    void persistSyncStore(storeId);
   },
 }));

@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import {formatCurrency, formatDateTime, formatDocumentStatus} from '@/utils/format';
 import PrintFromInvoiceModal from '@/components/printing/PrintFromInvoiceModal';
+import { StockReconciliationPanel } from '@/components/documents/StockReconciliationPanel';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
 const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'warning'> = {
@@ -198,16 +199,25 @@ const DocumentViewPage: React.FC = () => {
 
   if (error || !doc) {
     return (
-      <div className="text-center py-12">
-        <p className="text-danger-600 font-medium">Помилка завантаження документа</p>
-        <p className="text-sm text-gray-500 mt-2">
-          {docType === 'write_off'
-            ? 'Не вдалося завантажити списання. Можливо, документ не існує або стався збій на сервері.'
-            : 'Перевірте правильність ID документа та спробуйте ще раз.'}
-        </p>
-        <Button variant="secondary" onClick={goBack} className="mt-4">
-          Повернутись до списку
-        </Button>
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="text-center py-12">
+          <p className="text-danger-600 font-medium">Помилка завантаження документа</p>
+          <p className="text-sm text-gray-500 mt-2">
+            {docType === 'write_off'
+              ? 'Не вдалося завантажити списання. Можливо, документ не існує або стався збій на сервері.'
+              : 'Перевірте правильність ID документа та спробуйте ще раз.'}
+          </p>
+          <Button variant="secondary" onClick={goBack} className="mt-4">
+            Повернутись до списку
+          </Button>
+        </div>
+
+        {/* §10.3: документ може бути ще в ЛОКАЛЬНІЙ черзі каси (на сервері його
+            немає) — саме тоді звірка залишків найпотрібніша. Панель сама
+            ховається, якщо документа немає і в черзі. */}
+        {(docType === 'invoice' || docType === 'return_invoice') && (
+          <StockReconciliationPanel invoiceId={id!} />
+        )}
       </div>
     );
   }
@@ -858,6 +868,11 @@ const DocumentViewPage: React.FC = () => {
           <div className="text-center py-8 text-gray-400">
             <p>Немає товарів у цьому документі</p>
           </div>
+        )}
+
+        {/* ─── §10.3 Звірка залишків: локальний (оцінка) vs авторитетний ─── */}
+        {(docType === 'invoice' || docType === 'return_invoice') && (
+          <StockReconciliationPanel invoiceId={id!} />
         )}
 
         {/* Actions */}

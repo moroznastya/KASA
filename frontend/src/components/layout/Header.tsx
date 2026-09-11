@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Moon, Sun, User, Clock, Store } from 'lucide-react';
+import { LogOut, Moon, Sun, User, Clock, Store, ShieldCheck } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { SyncStatus } from '@/hooks/useOfflineSync';
+import { NodeStatusIndicator } from '@/hooks/useNodeStatus';
 import { useAuthStore } from '@/store/authStore';
 import { useStoreStore } from '@/store/storeStore';
 import { authService } from '@/services/authService';
@@ -71,6 +72,19 @@ export const Header: React.FC = () => {
 
       {/* Right side */}
       <div className="flex items-center gap-4">
+        {/* Бейдж режиму (Етап 6 §6): адміністратор/власник бачить, що
+            панель працює в режимі адміністратора (не каси). */}
+        {!!user && user.role !== 'cashier' && (
+          <span
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full
+                       bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300
+                       text-xs font-semibold border border-primary-200 dark:border-primary-800 whitespace-nowrap"
+            title="Панель працює в режимі адміністратора мережі"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            Режим адміністратора
+          </span>
+        )}
         {showStoreSwitcher && (
           <Select
             title="Активна торгівельна точка"
@@ -81,6 +95,10 @@ export const Header: React.FC = () => {
             containerClassName="w-[200px]"
           />
         )}
+
+        {/* Стан вузла (standby): primary доступний / черга синкається / офлайн.
+            Джерело — GET /local/status, НЕ navigator.onLine (Фаза 3.1а/3.1б). */}
+        <NodeStatusIndicator />
 
         {/* Індикатор офлайн-синхронізації (Tauri SQLite черга; null у браузері) */}
         <SyncStatus />

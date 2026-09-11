@@ -308,13 +308,13 @@ async fn insert_receipt(
             terminal_transaction_id, terminal_response_code, terminal_status,
             terminal_receipt, terminal_card_pan, terminal_payment_system,
             terminal_merchant, terminal_created_at, is_fiscal, fiscal_status,
-            split_group_id, store_id, created_at
+            split_group_id, client_uuid, store_id, created_at
         ) VALUES (
             $1, $2, $3::receipt_type, $4, $5, NULL, $6, $7, $8, $9, $10,
             $11::receipt_payment_method,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-            $24::fiscal_status, $25, $26,
-            (now() AT TIME ZONE 'UTC')::timestamp
+            $24::fiscal_status, $25, $26, $27,
+            COALESCE($28::timestamp, (now() AT TIME ZONE 'UTC')::timestamp)
         )
         RETURNING created_at::text
         "#,
@@ -344,7 +344,9 @@ async fn insert_receipt(
     .bind(input.is_fiscal)
     .bind(if input.is_fiscal { "pending" } else { "none" })
     .bind(input.split_group_id)
+    .bind(input.client_uuid)
     .bind(store_id)
+    .bind(input.created_at)
     .fetch_one(&mut **tx)
     .await
     .pe()?;
@@ -3505,16 +3507,21 @@ impl PosService for SqlxPos {
 
     // ── Зміни ПРРО ──────────────────────────────────────────────────────────
     async fn list_shifts(&self, page: i64, size: i64) -> Result<ShiftListDto, PosError> {
-        let total: i64 = sqlx::query("SELECT count(*) FROM prro_shifts")
-            .fetch_one(&self.pool)
-            .await
-            .pe()?
-            .get("count");
+        let total: i64 = sqlx::query(
+            "SELECT count(*) FROM prro_shifts \
+             WHERE store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .pe()?
+        .get("count");
         let offset = (page - 1) * size;
         let rows = sqlx::query(
             "SELECT id, shift_number, opened_at::text, closed_at::text, signer_name, status::text, \
              receipt_count, total_amount::text, zreport_number \
-             FROM prro_shifts ORDER BY opened_at DESC LIMIT $1 OFFSET $2",
+             FROM prro_shifts \
+             WHERE store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+             ORDER BY opened_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(size).bind(offset).fetch_all(&self.pool).await.pe()?;
         let mut items = Vec::new();
@@ -3560,7 +3567,10 @@ impl PosService for SqlxPos {
     async fn close_shift(&self, _comment: Option<String>) -> Result<PrroShiftDto, PosError> {
         // Спершу — перевірка відкритої зміни (локальна, як Python).
         let open: Option<i64> = sqlx::query(
-            "SELECT shift_number FROM prro_shifts WHERE status = 'open' ORDER BY opened_at DESC LIMIT 1",
+            "SELECT shift_number FROM prro_shifts \
+             WHERE status = 'open' AND \
+                   store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
+             ORDER BY opened_at DESC LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Torgashka
+Name[uk]=Торгашка
+Comment=Enterprise POS-system (Kasа + Warehouse/ERP)
+Comment[uk]=Enterprise POS-система (Каса + Склад/ERP)
+Exec=torgashka
+Icon=com.torgashka.pos
+Terminal=false
+Type=Application
+Categories=Office;Finance;
+StartupWMClass=torgashka
+X-Flatpak-RenamedFrom=torgashka.desktop;

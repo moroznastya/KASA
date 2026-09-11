@@ -42,7 +42,10 @@ from app.infrastructure.services.prro.key_store import (
     PrroKeyStore,
     PrroKeyStoreError,
 )
-from app.infrastructure.services.prro.xml_builder import SERVICE_PING
+from app.infrastructure.services.prro.xml_builder import (
+    SERVICE_PING,
+    cp1251_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -353,16 +356,16 @@ class PrroSettingsUseCase:
         dat_xml = xml_builder.build_service_check_xml(
             service_type=SERVICE_PING
         )
-        # Згідно з документацією: «XML з типом <CT="111">. MAC не заповнюється».
-        message = xml_builder.build_message(dat_xml, include_mac=False)
-
+        # T=111: `<?xml…?><RQ…><C T="111"></C><TS>…</TS></RQ>` + <MAC></MAC>
+        # (зразок ДПС: MAC для ping не заповнюється — тег порожній).
+        message = xml_builder.build_message(dat_xml)
         try:
             crypto = await self._context.build_crypto_signer()
-            signed = crypto.sign(message.encode("utf-8"))
+            signed = crypto.sign(cp1251_bytes(message))  # C: cp1251-байти RQ
             return signed, None
         except Exception as exc:
             logger.warning("PRRO_SETTINGS | не вдалося підписати ping XML: %s", exc)
-            return message.encode("utf-8"), str(exc)
+            return cp1251_bytes(message), str(exc)
 
     async def test_connection(self) -> dict:
         """

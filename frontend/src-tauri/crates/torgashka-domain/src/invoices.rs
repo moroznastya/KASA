@@ -252,6 +252,11 @@ pub struct InvoiceCreateV1Input {
     pub total_amount: Option<String>,
     #[serde(default)]
     pub items: Vec<InvoiceItemV1Input>,
+    /// Ідемпотентний ключ каси (push /sync/push, ADR-0007 §3.4):
+    /// заповнюється ПРИЙМАЧЕМ із конверта (Alembic 0016: partial UNIQUE
+    /// `uq_invoices_client_uuid`). Локальний CRUD (v1/v2-роути) — `None`.
+    #[serde(default)]
+    pub client_uuid: Option<Uuid>,
 }
 
 /// Оновлення v1 (Python InvoiceUpdate).

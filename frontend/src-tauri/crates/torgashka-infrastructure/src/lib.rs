@@ -14,12 +14,19 @@
 
 pub mod cash_drawer;
 pub mod db;
+pub mod db_sources;
 pub mod devices;
 pub mod embedded_pg;
+pub mod jwt_secret;
+pub mod node_config;
 pub mod ocr;
 pub mod offline;
 pub mod print;
+pub mod provision;
 pub mod prro;
+pub mod readonly_guard;
 pub mod repositories;
+pub mod standby_heartbeat;
+pub mod standby_provision;
 pub mod store_ctx;
 pub mod terminal;

@@ -70,6 +70,14 @@ impl IntoResponse for AuthRouteError {
                     AuthError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
                     AuthError::Validation(_) => unreachable!("validation handled above"),
                     AuthError::Infrastructure(m) => {
+                        // ADR-0007 §7.7: евристику «503 за текстом PG-помилки»
+                        // (`m.contains("read-only transaction")`) ПРИБРАНО —
+                        // рішення «куди писати» ухвалює виключно гейт
+                        // (`crate::write_gate`), а не розпізнавання рядка
+                        // помилки (залежало від локалі/версії PostgreSQL).
+                        // Auth-поверхня на standby: політики в §11.1 немає
+                        // (F6 — work_sessions у SQLite — окремий обсяг) →
+                        // pass-through; тут лишається чесний 500 без тексту PG.
                         eprintln!("[torgashka-api] auth infrastructure error: {m}");
                         (StatusCode::INTERNAL_SERVER_ERROR, "Помилка БД".to_string())
                     }
@@ -140,9 +148,30 @@ pub(crate) async fn require_admin(
     // НЕ з БД. Це дозволяє токену з role=admin працювати незалежно від БД.
     let _ = state;
     let user_id = sub_uuid(claims)?;
-    if !matches!(claims.role.as_str(), "admin" | "owner") {
+    // Адмін-панель власника мережі (Етап 1): owner | store_manager | admin.
+    // store_manager (керуючий мережею) додано до enum user_role; admin зберіг
+    // доступ як раніше (не ламаємо наявні роути /users, /settings, /admin/*).
+    if !matches!(claims.role.as_str(), "admin" | "owner" | "store_manager") {
         return Err(AuthError::Forbidden(
             "Доступ заборонено: потрібна роль адміністратора".to_string(),
+        )
+        .into());
+    }
+    Ok(user_id)
+}
+
+/// Owner-only: require_admin + жорстка вимога role=owner
+/// (admin/store_manager → 403 Forbidden). Для незворотних операцій власника
+/// мережі (/admin/db-sources/provision, /admin/network-config/*), де навіть
+/// admin/store_manager не мають права діяти від імені власника мережі.
+pub(crate) async fn require_owner(
+    state: &AppState,
+    claims: &Claims,
+) -> Result<Uuid, AuthRouteError> {
+    let user_id = require_admin(state, claims).await?;
+    if claims.role != "owner" {
+        return Err(AuthError::Forbidden(
+            "Доступ заборонено: операція доступна лише власнику мережі (role=owner)".to_string(),
         )
         .into());
     }
@@ -154,7 +183,7 @@ async fn ensure_settings_admin(state: &AppState, claims: &Claims) -> Result<Uuid
     let repo = auth_repo(state)?;
     let user_id = sub_uuid(claims)?;
     let user = repo.get_user_by_id(user_id).await?;
-    if !matches!(user.role.as_str(), "admin" | "owner") {
+    if !matches!(user.role.as_str(), "admin" | "owner" | "store_manager") {
         return Err(AuthError::Forbidden(
             "Тільки адміністратор може змінювати налаштування".to_string(),
         )
@@ -332,14 +361,17 @@ fn parse_login_pin(body: &Value) -> Result<LoginPinRequest, AuthRouteError> {
 
 fn parse_role(value: &Value) -> Result<UserRole, AuthRouteError> {
     match value.as_str() {
+        // Адмін-панель (Етап 1): store_manager створюється через API;
+        // owner — лише через setup/БД (роль власника мережі).
         Some("admin") => Ok(UserRole::Admin),
         Some("cashier") => Ok(UserRole::Cashier),
+        Some("store_manager") => Ok(UserRole::StoreManager),
         _ => Err(AuthRouteError::Validation(json!({"detail": [v422_err(
             "enum",
             &["body", "role"],
-            "Input should be 'admin' or 'cashier'",
+            "Input should be 'admin', 'cashier' or 'store_manager'",
             value.clone(),
-            Some(json!({"expected": "'admin' or 'cashier'"})),
+            Some(json!({"expected": "'admin', 'cashier' or 'store_manager'"})),
         )]}))),
     }
 }
@@ -998,4 +1030,62 @@ pub async fn settings_update_key(
 #[allow(dead_code)]
 fn _sqlx_auth(pool: sqlx::PgPool) -> SqlxAuth {
     SqlxAuth::new(torgashka_infrastructure::store_ctx::StorePool::new(pool))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR-0007 §7.7: рішення «куди писати» ухвалює ГЕЙТ, а не текст PG-помилки.
+//
+// Евристику `m.contains("read-only transaction") → 503` ПРИБРАНО (вона залежала
+// від локалі/версії PostgreSQL і була другим, неперевірюваним місцем рішення).
+// 503 §4 для admin-поверхонь тепер віддає `crate::write_gate::gate_middleware`
+// (або `write_gate::admin_pool` як друга лінія) — див. tests/write_gate_*.rs.
+// Логін/логаут на standby взагалі не торкаються PG (F6: SQLite + outbox).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod upstream_error_contract_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    async fn body_json(resp: Response) -> Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// §7.7: текст PG-помилки БІЛЬШЕ НЕ вирішує нічого — жодного «магічного»
+    /// 503 з `read-only transaction`; відповідь без сирого тексту PG і без
+    /// вигаданої §4-деталі (503 §4 віддає гейт на HTTP-поверхні, не цей мапінг).
+    #[tokio::test]
+    async fn read_only_transaction_text_no_longer_guesses_503() {
+        let pg_text =
+            "error returned from database: cannot execute INSERT in a read-only transaction";
+        let err = AuthRouteError::from(AuthError::Infrastructure(pg_text.to_string()));
+        let resp = err.into_response();
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "рішення про 503 — виключно в гейті (ADR-0007 §7.7), не в тексті помилки"
+        );
+        let body = body_json(resp).await;
+        assert_eq!(body["detail"], "Помилка БД");
+        assert!(
+            !body.to_string().contains("read-only"),
+            "сирий текст PG заборонений у тілі: {body}"
+        );
+    }
+
+    /// Будь-яка інша Infrastructure-помилка → 500 «Помилка БД» без тексту PG.
+    #[tokio::test]
+    async fn other_infrastructure_error_stays_500_and_hides_pg_text() {
+        let err = AuthRouteError::from(AuthError::Infrastructure(
+            "error returned from database: SELECT unknown_column".to_string(),
+        ));
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body_json(resp).await["detail"],
+            "Помилка БД",
+            "сирий текст PG у тілі відповіді заборонений"
+        );
+    }
 }

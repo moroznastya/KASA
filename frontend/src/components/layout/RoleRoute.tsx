@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/authStore';
 
 interface RoleRouteProps {
   children: React.ReactNode;
-  roles: ('admin' | 'cashier' | 'owner')[];
+  roles: ('admin' | 'cashier' | 'owner' | 'store_manager')[];
 }
 
 export const RoleRoute: React.FC<RoleRouteProps> = ({ children, roles }) => {
@@ -14,12 +14,13 @@ export const RoleRoute: React.FC<RoleRouteProps> = ({ children, roles }) => {
     return <Navigate to="/login" replace />;
   }
 
-  // Owner/manager — привілейовані ролі: доступ до всіх адмін-сторінок (аналог Sidebar.tsx).
-  if (user.role === 'owner' || user.role === 'manager') {
+  // Owner/store_manager/manager — привілейовані ролі: доступ до всіх адмін-сторінок
+  // (аналог Sidebar.tsx). store_manager — «керуючий мережею» (Етап 1 адмін-панелі).
+  if (user.role === 'owner' || user.role === 'store_manager' || user.role === 'manager') {
     return <>{children}</>;
   }
 
-  if (!roles.includes(user.role as 'admin' | 'cashier' | 'owner')) {
+  if (!roles.includes(user.role as 'admin' | 'cashier' | 'owner' | 'store_manager')) {
     // Якщо касир намагається зайти на адмінську сторінку - редірект на POS
     return <Navigate to="/pos" replace />;
   }

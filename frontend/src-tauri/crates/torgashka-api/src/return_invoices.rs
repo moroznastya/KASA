@@ -52,11 +52,19 @@ impl IntoResponse for RetErr {
             RetErr::Service(ReturnInvoicesError::BadRequest(msg)) => {
                 (StatusCode::BAD_REQUEST, Json(json!({"detail": msg}))).into_response()
             }
-            RetErr::Service(ReturnInvoicesError::Infrastructure(msg)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"detail": msg})),
-            )
-                .into_response(),
+            RetErr::Service(ReturnInvoicesError::Infrastructure(msg)) => {
+                // Санація (ADR-0007, контракт §D): технічний текст → лог,
+                // користувачу — стабільне повідомлення (як `pos.rs:115`).
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[return_invoices] ReturnInvoicesError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"detail": "Не вдалося зберегти зміну, спробуйте ще раз"})),
+                )
+                    .into_response()
+            }
             RetErr::Auth(e) => e.into_response(),
             RetErr::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({"detail": msg}))).into_response()

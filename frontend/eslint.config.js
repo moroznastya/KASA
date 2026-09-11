@@ -13,7 +13,7 @@ import globals from 'globals';
 
 export default tseslint.config(
     // Глобальне ігнорування
-    { ignores: ['dist/', 'node_modules/', 'src-tauri/', 'build/'] },
+    { ignores: ['dist/', 'dist-admin/', 'node_modules/', 'src-tauri/', 'build/'] },
 
     // Базові рекомендовані правила
     js.configs.recommended,

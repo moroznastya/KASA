@@ -39,15 +39,15 @@ class TestBuildFiscalCheckUrl:
         assert url is not None
         assert "sm=123.50" in url
 
-    def test_mac_fallback_hash(self):
-        """Без MAC — використовується хеш фіскального номера (SHA-1 hex)."""
+    def test_no_mac_no_fallback(self):
+        """Без MAC — параметр порожній (SHA-1 fallback прибрано, спека H)."""
         url = build_fiscal_check_url(
             fiscal_number="FISCAL-X", amount=Decimal("10"),
             prro_fn="4538765845", sent_at=datetime(2026, 1, 1),
         )
         assert url is not None
         mac_param = url.split("mac=")[1].split("&")[0]
-        assert len(mac_param) == 40  # sha1 hex
+        assert mac_param == ""  # наявний hex або порожньо
 
     def test_missing_data_returns_none(self):
         """Недостатньо даних → None."""

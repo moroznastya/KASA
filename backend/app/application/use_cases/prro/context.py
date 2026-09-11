@@ -206,31 +206,37 @@ class PrroContextFactory:
         local_number: int,
         check_type: str = CHECK_TYPE_CHK,
         id_offline: str = "",
+        id_cancel: str = "",
     ):
         """
         Формує prro_pb2.Check для sendChkV2.
 
         Args:
-            check_sign: підписаний XML-документ СЗЗД (bytes).
+            check_sign: підписаний XML-документ (повне RQ, windows-1251).
             local_number: локальний номер чеку (0 — відкриття зміни).
             check_type: "CHK" / "ZREPORT" / "SERVICECHK".
-            id_offline: B4 — офлайн-ідентифікатор ("offline-{n}" в офлайні).
+            id_offline: офлайн-ідентифікатор — фіскальний номер з резервного
+                діапазону (T=112) для офлайн-чеків; "" для онлайн.
+            id_cancel: фіскальний номер (response.id) ОРИГІНАЛЬНОГО чека для
+                повернення (T="1"); "" для продажу/інших.
 
         Returns:
             prro_pb2.Check — готове повідомлення.
         """
         from app.infrastructure.services.prro import prro_pb2
+        from app.infrastructure.services.prro.grpc_client import _check_date_time
 
         fn = await self._settings_repo.get(KEY_PRRO_FN) or ""
         return prro_pb2.Check(
             rro_fn=fn,
-            date_time=int(datetime.utcnow().timestamp()),
+            date_time=_check_date_time(),  # YYYYMMDDhhmmss, ЛОКАЛЬНИЙ час (спека B)
             check_sign=check_sign,
             local_number=int(local_number),
             check_type=_PRRO_CHECK_TYPE_MAP.get(
                 check_type, _PRRO_CHECK_TYPE_MAP[CHECK_TYPE_CHK]
             ),
             id_offline=id_offline,
+            id_cancel=id_cancel,
         )
 
     # ─── Лічильник змін ────────────────────────────────────────────────────

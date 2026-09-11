@@ -30,6 +30,7 @@ import {
   RefreshCw,
   Download,
   Plug,
+  Radio,
 } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { getPrinters } from '@/services/tauri/print';
@@ -1155,6 +1156,19 @@ const SettingsPage: React.FC = () => {
         >
           <Plug className="w-4 h-4" />
           Підключені пристрої
+        </button>
+
+        {/* Окрема вкладка: Мережева каса (device-режим синхронізації, Етап 3) */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={false}
+          onClick={() => navigate('/settings/device-sync')}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+            bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700"
+        >
+          <Radio className="w-4 h-4" />
+          Мережева каса
         </button>
       </div>
 

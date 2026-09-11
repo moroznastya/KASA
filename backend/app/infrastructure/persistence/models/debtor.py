@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -86,6 +87,22 @@ class DebtorPayment(Base):
         primary_key=True,
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор оплати",
+    )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_debtor_payments_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
     )
     debtor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

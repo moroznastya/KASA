@@ -64,6 +64,22 @@ class Receipt(Base):
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор чеку",
     )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_receipts_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
+    )
     receipt_number: Mapped[str] = mapped_column(
         String(50),
         nullable=False,

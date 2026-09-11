@@ -73,11 +73,20 @@ impl IntoResponse for DocErr {
             DocErr::Service(DocumentsError::BadRequest(msg)) => {
                 (StatusCode::BAD_REQUEST, Json(json!({"detail": msg}))).into_response()
             }
-            DocErr::Service(DocumentsError::Infrastructure(msg)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"detail": msg})),
-            )
-                .into_response(),
+            DocErr::Service(DocumentsError::Infrastructure(msg)) => {
+                // Санація (ADR-0007 §D): сирий текст БД → лог, клієнту — людський.
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[documents] DocumentsError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "detail": "Не вдалося виконати операцію з документами, спробуйте ще раз"
+                    })),
+                )
+                    .into_response()
+            }
             DocErr::Auth(e) => e.into_response(),
             DocErr::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({"detail": msg}))).into_response()

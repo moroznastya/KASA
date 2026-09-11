@@ -1,33 +1,28 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, PackageSearch, ArrowLeft } from 'lucide-react';
+import { Search, ArrowLeft } from 'lucide-react';
 import { storeService } from '@/services/storeService';
-import { useAuthStore } from '@/store/authStore';
 import { Input } from '@/components/ui/Input';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { formatCurrency } from '@/utils/format';
 import { useBackNavigation } from '@/hooks/useBackNavigation';
 
 /**
- * Сторінка «Наявність в інших точках» (Етап 4 мультиточковості).
+ * Сторінка «Наявність в точках» (Етап 4 мультиточковості).
  * Read-only: пошук за назвою/ШК → GET /api/v1/inventory/availability
- * (залишки по ВСІХ точках користувача, незалежно від активної).
- * Доступ: admin/owner або пермішен inventory.view_other_stores.
+ * (залишки по точках КОРИСТУВАЧА — RLS/user_stores на бекенді фільтрує:
+ * admin/owner бачать усі, cashier — лише призначені йому).
+ * Доступ: усі авторизовані ролі (пункт меню — Sidebar, roles admin+cashier;
+ * owner/manager прирівнюються до admin). Жодного пермішен-гейта на
+ * сторінці: розкриття даних нема, API сам обмежує набір точок.
  */
 const AvailabilityPage: React.FC = () => {
-  const user = useAuthStore((state) => state.user);
   const { goBack } = useBackNavigation();
   const [query, setQuery] = useState('');
-
-  const canView =
-    user?.role === 'admin' ||
-    user?.role === 'owner' ||
-    !!user?.permissions?.includes('inventory.view_other_stores');
 
   const { data: items = [], isLoading } = useQuery({
     queryKey: ['inventory-availability'],
     queryFn: () => storeService.availability(),
-    enabled: canView,
   });
 
   const filtered = useMemo(() => {
@@ -39,18 +34,6 @@ const AvailabilityPage: React.FC = () => {
         (item.barcode && item.barcode.toLowerCase().includes(q))
     );
   }, [items, query]);
-
-  if (!canView) {
-    return (
-      <div className="max-w-4xl mx-auto">
-        <EmptyState
-          icon={<PackageSearch className="w-16 h-16" />}
-          message="Немає доступу"
-          description="Перегляд наявності в інших точках доступний адміністратору або за правом inventory.view_other_stores."
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">

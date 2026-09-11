@@ -110,11 +110,22 @@ impl IntoResponse for PosErr {
                     Json(serde_json::json!({"detail": msg})),
                 )
                     .into_response(),
-                PosError::Infrastructure(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-                )
-                    .into_response(),
+                PosError::Infrastructure(msg) => {
+                    // Санація (ADR-0007, контракт §D): сирий технічний текст
+                    // (імена таблиць/колонок, SQL, драйвер PG) іде у
+                    // torgashka.log; користувачу — стабільне повідомлення.
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[pos] PosError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "detail": "Не вдалося зберегти зміну, спробуйте ще раз"
+                        })),
+                    )
+                        .into_response()
+                }
                 PosError::Integrity(_) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -126,6 +137,26 @@ impl IntoResponse for PosErr {
             },
         }
     }
+}
+
+// ─── Статус створення: 201 Created / 202 Accepted (LocalOutbox) ────────────
+
+/// ADR-0007 §11.1: на standby POS-документ не створюється на primary, а
+/// кладеться в локальну чергу (`LocalOutbox`) → **202 Accepted** з ознакою
+/// `queued` у тілі. Ознаку ставить ЄДИНЕ місце — `OutboxPos`
+/// (`fiscal_status`/`status` = "queued"); на primary вона не з'являється,
+/// тому F2 (201, байт-в-байт) не змінюється.
+fn created_or_queued(queued: bool) -> StatusCode {
+    if queued {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::CREATED
+    }
+}
+
+/// Чи документ поставлено в локальну чергу (`OutboxPos::QUEUED_STATUS`).
+fn queued(marker: &str) -> bool {
+    marker == torgashka_infrastructure::repositories::outbox_pos::QUEUED_STATUS
 }
 
 // ─── Доступ до репозиторію ─────────────────────────────────────────────────
@@ -141,10 +172,10 @@ fn pos_repo(
 
 /// require_admin (Python AuthService.require_admin → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), PosErr> {
-    let pool = state
-        .write_pool
-        .clone()
-        .ok_or_else(|| PosErr::Forbidden("Rust-гілка POS вимкнена".to_string()))?;
+    // ADR-0007 §11.1: POS-документи каси — `LocalOutbox` → на standby гейт
+    // пропускає цю поверхню (лічені операції каси не блокуються). Пул тут
+    // потрібен лише для перевірки ролі (читання) — див. `admin_pool`.
+    let pool = crate::write_gate::admin_pool(state, "receipt").map_err(PosErr::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         PosErr::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;
@@ -278,7 +309,10 @@ fn parse_receipt_item(v: &Value, idx: usize) -> Result<ReceiptItemInput, PosErr>
     })
 }
 
-fn parse_receipt_create(v: &Value, cashier_id: Option<Uuid>) -> Result<ReceiptCreateInput, PosErr> {
+pub(crate) fn parse_receipt_create(
+    v: &Value,
+    cashier_id: Option<Uuid>,
+) -> Result<ReceiptCreateInput, PosErr> {
     let items = match v.get("items") {
         Some(Value::Array(arr)) if !arr.is_empty() => arr,
         _ => {
@@ -333,6 +367,10 @@ fn parse_receipt_create(v: &Value, cashier_id: Option<Uuid>) -> Result<ReceiptCr
             .and_then(|b| b.as_bool())
             .unwrap_or(false),
         split_group_id: field_uuid(v, "split_group_id", false)?,
+        client_uuid: field_uuid(v, "client_uuid", false)?,
+        // ЕТАП 7b: created_at ставить sync-push приймач з PushEnvelope.created_at
+        // (RFC3339 каси); звичайний API (v2 /sale) → None → сервер пише now().
+        created_at: None,
     })
 }
 
@@ -762,10 +800,8 @@ pub async fn create_sale(
     let input = parse_receipt_create(&body, cashier)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_sale_receipt(&input).await?),
-    ))
+    let dto = svc.create_sale_receipt(&input).await?;
+    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
 }
 
 /// POST /api/v2/receipts/return → 201
@@ -778,10 +814,8 @@ pub async fn create_return(
     let input = parse_receipt_create(&body, cashier)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_return_receipt(&input).await?),
-    ))
+    let dto = svc.create_return_receipt(&input).await?;
+    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
 }
 
 /// POST /api/v1/receipts — v1 create_receipt (боргова семантика) → 201.
@@ -1098,10 +1132,8 @@ pub async fn create_write_off(
     let input = parse_write_off_create(&body, user_id)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_write_off(&input).await?),
-    ))
+    let dto = svc.create_write_off(&input).await?;
+    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
 }
 
 /// PUT /api/v1/write-offs/{id}
@@ -1245,10 +1277,8 @@ pub async fn create_transfer(
     let input = parse_transfer_create(&body, user_id)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_transfer(&input).await?),
-    ))
+    let dto = svc.create_transfer(&input).await?;
+    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
 }
 
 /// PUT /api/v1/transfers/{id}
@@ -1401,7 +1431,15 @@ fn current_store_id() -> Result<Uuid, PosErr> {
     })
 }
 
-/// POST /api/v1/cash-operations → 201 (внесення/інкасація; admin|owner).
+/// POST /api/v1/cash-operations → 201 Created (primary) / 202 Accepted (standby).
+///
+/// ADR-0007 §11.6: касова операція — клас `LocalOutbox`; на standby вона не
+/// створюється на primary, а лягає в локальну чергу (`OutboxPos`) → **202**,
+/// той самий контракт статусу, що в POS-документів (`created_or_queued`).
+/// DTO касової операції не має поля-маркера (`fiscal_status`/`status`), тому
+/// ознака «в черзі» тут — сам код 202 + заголовок `X-Torgashka-Node-Mode`
+/// (§4) + `/api/v1/local/status`; на primary — 201, байт-в-байт стара
+/// поведінка (F2).
 pub async fn create_cash_operation(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -1414,7 +1452,7 @@ pub async fn create_cash_operation(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok((
-        StatusCode::CREATED,
+        created_or_queued(state.node_config.is_standby()),
         Json(svc.create_cash_operation(store_id, user_id, &input).await?),
     ))
 }
@@ -1584,14 +1622,8 @@ mod tests {
             parse_cash_amount(&json!({"amount": "0.00"})),
             Err(PosErr::Validation(_))
         ));
-        assert!(matches!(
-            parse_cash_amount(&json!({"amount": 500.50})),
-            Ok(_)
-        ));
-        assert!(matches!(
-            parse_cash_amount(&json!({"amount": "500.50"})),
-            Ok(_)
-        ));
+        assert!(parse_cash_amount(&json!({"amount": 500.50})).is_ok());
+        assert!(parse_cash_amount(&json!({"amount": "500.50"})).is_ok());
         // Відсутній amount → 422.
         assert!(matches!(
             parse_cash_amount(&json!({})),
@@ -1613,18 +1645,13 @@ mod tests {
             Err(PosErr::Validation(_))
         ));
         // Коректні значення — проходять.
-        assert!(matches!(
-            parse_cash_operation_create(
-                &json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})
-            ),
-            Ok(_)
-        ));
-        assert!(matches!(
-            parse_cash_operation_create(
+        assert!(parse_cash_operation_create(
+            &json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})
+        )
+        .is_ok());
+        assert!(parse_cash_operation_create(
                 &json!({"operation_type": "collection", "cash_type": "card", "amount": "42.00", "comment": "Розмін"})
-            ),
-            Ok(_)
-        ));
+            ).is_ok());
     }
 
     #[test]

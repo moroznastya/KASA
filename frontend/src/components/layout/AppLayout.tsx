@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { UpdateBanner } from '@/components/update/UpdateBanner';
 import { useUIStore } from '@/store/uiStore';
 import { useStoreStore } from '@/store/storeStore';
 import { useAuthStore } from '@/store/authStore';
@@ -38,10 +39,11 @@ export const AppLayout: React.FC = () => {
     return <Navigate to="/onboarding" replace />;
   }
 
-  // Касир без жодної точки — НЕ редиректимо на онбординг (глухий кут):
-  // онбординг створює точки/касирів і доступний лише owner/admin.
-  // Показуємо заглушку з поясненням.
-  if (user && user.role === 'cashier' && stores.length === 0) {
+  // Касир/менеджер без жодної точки — НЕ редиректимо на онбординг
+  // (глухий кут: онбординг створює точки/касирів і доступний лише owner/admin).
+  // Показуємо заглушку замість розсипу «Помилка завантаження» з кожної
+  // сторінки (без X-Store-Id бізнес-запити падають 400/403).
+  if (user && user.role !== 'admin' && user.role !== 'owner' && stores.length === 0) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-slate-900 flex items-center justify-center p-4">
         <div className="w-full max-w-md card p-8 text-center">
@@ -52,7 +54,7 @@ export const AppLayout: React.FC = () => {
             Немає доступу до точок
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-            Вас ще не призначено на жодну торговельну точку. Зверніться до адміністратора.
+            Вам не призначено жодної торговельної точки. Зверніться до адміністратора.
           </p>
         </div>
       </div>
@@ -76,6 +78,7 @@ export const AppLayout: React.FC = () => {
         `}
       >
         <Header />
+        <UpdateBanner />
         <main className="p-6">
           <Outlet />
         </main>

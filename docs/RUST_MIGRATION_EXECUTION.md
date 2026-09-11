@@ -87,9 +87,15 @@
       shift НЕ змінюють стан (зміна не створюється / лишається open), sync →
       mark_failed + error; фіскальний стан зберігається, нуль втрат
 - [x] Обмеження 7.3: пароль КЕП для Rust-фасаду — env PRRO_KEY_FILE +
-      PRRO_KEY_PASSWORD (plaintext); Python key_store (Fernet + PRRO_MASTER_KEY)
-      не підтримується (TODO наступних етапів); real gRPC open_shift до
-      sandbox ДПС потребує налаштованого ключа/ФН (як Python)
+      PRRO_KEY_PASSWORD (plaintext); **Python key_store (Fernet + PRRO_MASTER_KEY)
+      ПІДТРИМУЄТЬСЯ** — `crates/torgashka-prro/src/prro/settings.rs:92-156`
+      (`PrroKeyStore`, 1:1 Python `PrroKeyStore`): master-ключ — env `PRRO_MASTER_KEY`
+      → файл `PRRO_MASTER_KEY_PATH` (типово `.prro_master.key`) → генерація;
+      Fernet сумісний із `cryptography.fernet` (тести `fernet_decrypts_python_token`,
+      `decrypts_real_python_keystore`), тож попередній статус обмеження — «key_store
+      не підтримується» — знято: ключі, створені Python-бекендом, Rust читає як є.
+      Єдине, що лишається зовнішнім: real gRPC open_shift до sandbox ДПС потребує
+      налаштованого ключа/ФН (як Python)
 
 **DoD підетапу 7.2 (XAdES/CAdES крипто-шар):**
 - [x] crypto::xades (чистий Rust, ADR-014): XAdES-BES enveloped — C14N 1.1 inclusive
@@ -801,22 +807,38 @@ documents → print/print_templates → products v2 → prro v2 → ocr**.
    робить правильно (204, CASCADE) — це відхилення від Python у КРАЩИЙ бік, зафіксовано.
    → Виправити у Python-бекенді при дезактивації (етап 8): додати cascade у relationship.
 5. **БЛОКУВАННЯ ЕТАПУ 8 — Python sidecar НЕ можна дезактивувати без втрати функціоналу** (2026-08-07, Rust_Agent):
-   Rust НЕ покриває 6 груп роутів, які фронтенд активно використовує (сторінки
-   documents/*, debtors/, printing/*, settings/PrintTemplatesPage; сервіси
+   ⚠ **ІСТОРИЧНИЙ ЗАПИС (стан на 2026-08-07): усі 6 груп нижче ЗНЯТО — роути є в Rust**
+   (`crates/torgashka-api/src/router_v1.rs`, `return_invoices.rs`); позначки ✅ у пунктах.
+   **На той момент** Rust НЕ покривав 6 груп роутів, які фронтенд активно використовує
+   (сторінки documents/*, debtors/, printing/*, settings/PrintTemplatesPage; сервіси
    documentService, debtorService, printService, printTemplateService,
    productService images/barcodes, prroService):
    - **Документи** (план-етап 3, журнал 3b ⏳): /documents (list/get/create/delete/batch-confirm),
      /invoices (CRUD+confirm+payment-info+print-items+price-changes),
      /return-invoices, /purchase-orders — Python v1/invoices.py, v1/documents.py.
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:442-443` (`/api/v1/documents`, `/documents/:document_id`),
+     `:451-495` (`/api/v1/invoices`, `/api/v2/invoices`, `payment-info`, `price-changes`,
+     `print-items`, `confirm`), `:514` (`/api/v1/purchase-orders`); return-invoices — власний
+     `router()`: `api/return_invoices.rs:291-299`.
    - **Боржники**: /debtors (CRUD+search+pay+receipts+payments) — v1/debtors.py.
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:417-423` (`/api/v1/debtors`, `/:debtor_id/receipts`,
+     `/:debtor_id/payments`).
    - **Друк цінників/етикеток**: /print/price-tags/render, /print/labels/render,
      /print/printers, /print/test — v1/print.py (друк ЧЕКІВ — Rust, етап 5 ✅;
      цінники/етикетки — Python).
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:532-540` (`price-tags/render`, `labels/render`,
+     `printers`, `test`).
    - **Шаблони друку**: /print-templates (CRUD+render+set-default+default) — v1/print_templates.py.
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:542-566` (`/`, `/all`, `/default`, `/:template_id`,
+     `/:template_id/set-default`, `/:template_id/render`).
    - **Продукти**: /products/{id}/images, /products/{id}/barcodes — v2/products.py
      (Rust crud НЕ має).
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:598-606` (`/api/v1/products/:product_id/barcodes`,
+     `/images`), `:581` (`/api/v2/products/:product_id/images`).
    - **ПРРО v2 залишки**: /prro/test-connection, /prro/receipts/{id}/fiscalize —
      v2/prro.py (Rust має лише /fiscal/*).
+     ✅ **ЗНЯТО (Rust)**: `api/router_v1.rs:325-327` (`/api/v2/prro/test-connection`,
+     `/api/v2/prro/receipts/:receipt_id/fiscalize`).
    Додатково: sqlx-міграцій НЕМАЄ (frontend/src-tauri/migrations/ порожня;
    у БД alembic_version — схема належить Alembic). tauri-updater: конфіг на місці
    (pubkey+endpoint), але endpoint https://github.com/kasa-pos/kasa-pos/.../latest.json

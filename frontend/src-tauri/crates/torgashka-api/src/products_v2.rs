@@ -85,11 +85,20 @@ impl IntoResponse for ProductsV2ApiError {
                 ProductsV2Error::Validation(detail) => {
                     (StatusCode::UNPROCESSABLE_ENTITY, Json(detail)).into_response()
                 }
-                ProductsV2Error::Infrastructure(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"detail": msg})),
-                )
-                    .into_response(),
+                ProductsV2Error::Infrastructure(msg) => {
+                    // Санація (ADR-0007 §D): сирий текст БД → лог, клієнту — людський.
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[products_v2] ProductsV2Error::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "detail": "Не вдалося виконати операцію з товарами, спробуйте ще раз"
+                        })),
+                    )
+                        .into_response()
+                }
             },
         }
     }

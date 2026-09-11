@@ -19,6 +19,8 @@ use torgashka_infrastructure::repositories::auth::SqlxAuth;
 use torgashka_infrastructure::repositories::stores::SqlxStoreService;
 use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
 
+mod common;
+
 /// «Білий магазин» — точка-донор (всі 30 налаштувань + шаблони друку).
 const SOURCE_STORE: &str = "65d5db51-672f-4a38-9c1e-f36c5feb5374";
 
@@ -66,6 +68,7 @@ fn dto_settings_count(dto: &torgashka_domain::SettingsModulesDto) -> usize {
 #[tokio::test]
 async fn create_store_copies_settings_and_templates_per_store() {
     let pool = pool().await;
+    common::ensure_fixture(&pool).await;
     let store_pool = StorePool::new(pool.clone());
     cleanup_test_stores(&pool, None).await;
     let source_store = Uuid::parse_str(SOURCE_STORE).expect("source uuid");
@@ -101,6 +104,8 @@ async fn create_store_copies_settings_and_templates_per_store() {
         name,
         address: None,
         phone: None,
+        legal_name: None,
+        edrpou: None,
     };
     let svc = SqlxStoreService::new(store_pool.clone());
     let dto = with_store_ctx(source_ctx.clone(), async { svc.create_store(&input).await })

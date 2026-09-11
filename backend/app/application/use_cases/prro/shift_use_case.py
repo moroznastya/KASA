@@ -6,6 +6,11 @@ Application Layer: PrroShiftUseCase — відкриття/закриття зм
   - close_shift()        — Z-звіт, закриття PrroShift (closed, zreport_number);
   - auto_reminder_check()— попередження, якщо зміна відкрита > 24 год;
   - list_shifts()        — журнал змін.
+
+Хеш-ланцюжок (спека D):
+  - T=108 (відкриття зміни) MAC = hex sha256 Z-звіту ПОПЕРЕДНЬОЇ зміни;
+  - Z-звіт (T=2) теж у ланцюзі; після успіху shift.last_mac = hash(повного RQ
+    Z) — відкриття НАСТУПНОЇ зміни посилається на цей хеш.
 """
 
 from __future__ import annotations
@@ -37,7 +42,9 @@ from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
 from app.infrastructure.services.prro.xml_builder import (
     SERVICE_OPEN_SHIFT,
     compute_mac,
+    cp1251_bytes,
     parse_receipt_xml_totals,
+    signed_bytes_to_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,10 +96,12 @@ class PrroShiftUseCase:
 
         Кроки:
           1. Перевірка, що зміна не відкрита;
-          2. Формування службового чеку T=108 (xml_builder);
-          3. Підписання XML (crypto.sign);
+          2. Формування службового чеку T=108 (xml_builder); MAC = hash(Z
+             попередньої зміни) або порожній для першої зміни (спека D);
+          3. Підписання XML (crypto.sign, windows-1251);
           4. Надсилання send_chk (check_type=SERVICECHK);
-          5. При OK — створення PrroShift (status=open) + запис у чергу (sent).
+          5. При OK — створення PrroShift (status=open, last_mac=hash(108))
+             + запис у чергу (sent).
 
         Args:
             comment: коментар (наприклад, ПІБ касира).
@@ -111,6 +120,10 @@ class PrroShiftUseCase:
                 code="SHIFT_ALREADY_OPEN",
             )
 
+        # Ланцюг: попередня (закрита) зміна → її last_mac = hash(Z).
+        # Для першої зміни ПРРО ланцюг порожній (MAC = "").
+        previous_mac = await self._last_closed_shift_mac()
+
         # 2. Службовий чек T=108
         xml_builder = await self._context.build_xml_builder()
         crypto = await self._context.build_crypto_signer()
@@ -118,9 +131,9 @@ class PrroShiftUseCase:
         dat_xml = xml_builder.build_service_check_xml(
             service_type=SERVICE_OPEN_SHIFT
         )
-        message = xml_builder.build_message(dat_xml)
-        signed = crypto.sign(message.encode("utf-8"))
-        mac = compute_mac(dat_xml)
+        doc_mac = previous_mac or ""
+        message = xml_builder.build_message(dat_xml, mac_value=doc_mac)
+        signed = crypto.sign(cp1251_bytes(message))  # C: підпис cp1251-байтів RQ
 
         # 3. Надсилаємо (check_type=SERVICECHK, local_number=0)
         check = await self._context.build_check(
@@ -133,7 +146,6 @@ class PrroShiftUseCase:
 
         if int(response.status) != 1:
             # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
-            # (1:1 Rust shift.rs; джерело мапи: status_codes).
             status_text = status_error_text(int(response.status))
             error_msg = (
                 f"{response.error_message} | {status_text}"
@@ -145,9 +157,11 @@ class PrroShiftUseCase:
                 code="OPEN_SHIFT_FAILED",
             )
 
-        # 4. Створюємо зміну
+        # 4. Створюємо зміну; last_mac = hash(повного RQ цього 108) — на нього
+        #    посилатиметься перший чек зміни (спека D).
         shift_number = await self._context.next_shift_number()
-        now = datetime.utcnow()
+        now = datetime.now()  # ЛОКАЛЬНИЙ час
+        next_mac = compute_mac(message)
         shift = PrroShift(
             shift_number=shift_number,
             opened_at=now,
@@ -157,7 +171,7 @@ class PrroShiftUseCase:
             receipt_count=0,
             total_amount=0,
             last_local_number=0,
-            last_mac=mac,
+            last_mac=next_mac,
         )
         await self._prro_repo.create_shift(shift)
         await self._context.save_last_shift_number(shift_number)
@@ -169,7 +183,8 @@ class PrroShiftUseCase:
             local_number=0,
             check_type=CHECK_TYPE_SERVICECHK,
             xml_body=dat_xml,
-            mac=mac,
+            mac=doc_mac,
+            check_sign=signed_bytes_to_text(signed),
         )
         await self._offline_queue.mark_sent(queue_item.id)
 
@@ -182,6 +197,16 @@ class PrroShiftUseCase:
         )
         return self._to_dto(shift)
 
+    async def _last_closed_shift_mac(self) -> str | None:
+        """last_mac останньої (закритої) зміни — hash її Z-звіту для ланцюга."""
+        shifts, _total = await self._prro_repo.list_shifts(page=1, size=1)
+        if not shifts:
+            return None
+        latest = shifts[0]
+        if latest.status == PrroShiftStatus.CLOSED and latest.last_mac:
+            return latest.last_mac
+        return None
+
     # ─── Закриття зміни ────────────────────────────────────────────────────
 
     async def close_shift(self, comment: str | None = None) -> PrroShiftDTO:
@@ -190,9 +215,11 @@ class PrroShiftUseCase:
 
         Кроки:
           1. Пошук відкритої зміни;
-          2. Формування Z-звіту (підсумки з чеків зміни);
+          2. Формування Z-звіту (підсумки з чеків зміни); MAC = поточний
+             ланцюг (last_mac відкритої зміни) — Z у ланцюзі (спека D);
           3. Підписання та надсилання send_chk (check_type=ZREPORT);
-          4. При OK — закриття PrroShift (closed_at, zreport_number).
+          4. При OK — закриття PrroShift (closed_at, zreport_number) та
+             last_mac = hash(повного RQ Z).
 
         Args:
             comment: коментар (хто закриває зміну).
@@ -216,9 +243,9 @@ class PrroShiftUseCase:
         # 2. Z-звіт з підсумками зміни (з фактично переданих чеків)
         z_data = await self._build_zreport_data(open_shift)
         dat_xml = xml_builder.build_zreport_xml(shift_data=z_data)
-        message = xml_builder.build_message(dat_xml)
-        signed = crypto.sign(message.encode("utf-8"))
-        mac = compute_mac(dat_xml)
+        doc_mac = open_shift.last_mac or ""  # Z у ланцюзі (спека D)
+        message = xml_builder.build_message(dat_xml, mac_value=doc_mac)
+        signed = crypto.sign(cp1251_bytes(message))
 
         # 3. Надсилаємо Z-звіт (check_type=ZREPORT, local_number=0)
         check = await self._context.build_check(
@@ -231,7 +258,6 @@ class PrroShiftUseCase:
 
         if int(response.status) != 1:
             # Код + ім'я + людський опис ЗАВЖДИ; текст сервера — повністю
-            # (1:1 Rust shift.rs; джерело мапи: status_codes).
             status_text = status_error_text(int(response.status))
             error_msg = (
                 f"{response.error_message} | {status_text}"
@@ -246,7 +272,7 @@ class PrroShiftUseCase:
         # 4. Закриваємо зміну
         closed = await self._prro_repo.close_shift(
             shift_id=open_shift.id,
-            closed_at=datetime.utcnow(),
+            closed_at=datetime.now(),  # ЛОКАЛЬНИЙ час
             closed_by=comment or "system",
             zreport_number=response.id,
             signer_serial=crypto.get_serial_number(),
@@ -260,12 +286,16 @@ class PrroShiftUseCase:
             local_number=0,
             check_type=CHECK_TYPE_ZREPORT,
             xml_body=dat_xml,
-            mac=mac,
+            mac=doc_mac,
+            check_sign=signed_bytes_to_text(signed),
         )
         await self._offline_queue.mark_sent(queue_item.id)
 
-        # B1: last_mac = MAC(Z) — останній успішно відправлений документ зміни.
-        await self._prro_repo.update_shift_last_mac(open_shift.id, mac)
+        # D: last_mac = hash(повного RQ Z) — відкриття наступної зміни
+        # посилатиметься на цей хеш.
+        await self._prro_repo.update_shift_last_mac(
+            open_shift.id, compute_mac(message)
+        )
 
         await self._context.persist_builder_counters(xml_builder)
         await self._session.commit()
@@ -288,7 +318,7 @@ class PrroShiftUseCase:
         open_shift = await self._prro_repo.get_open_shift()
         if open_shift is None:
             return None
-        hours = (datetime.utcnow() - open_shift.opened_at).total_seconds() / 3600
+        hours = (datetime.now() - open_shift.opened_at).total_seconds() / 3600
         if hours > 24:
             return {
                 "warning": (
@@ -331,15 +361,7 @@ class PrroShiftUseCase:
         суми, податкові групи, форми оплати).
 
         Returns:
-            dict — shift_data для build_zreport_xml:
-            {
-                "shift_number": int,
-                "sales_count": int,
-                "returns_count": int,
-                "taxes": [{tax, ts, tax_percent, tax_in, tax_out,
-                           tax_type, tax_algorithm, smi, smo}, ...],
-                "payments": [{code, name, smi, smo}, ...],
-            }
+            dict — shift_data для build_zreport_xml.
         """
         queue_items = await self._prro_repo.list_by_shift(shift.id)
         sent_checks = [
@@ -394,7 +416,7 @@ class PrroShiftUseCase:
                 else:
                     group["in"] += tax["tax_total"]
 
-        today = datetime.utcnow().strftime("%Y%m%d")
+        today = datetime.now().strftime("%Y%m%d")  # ЛОКАЛЬНА дата
         tax_rows = []
         for code, group in sorted(taxes.items()):
             tax_rows.append({

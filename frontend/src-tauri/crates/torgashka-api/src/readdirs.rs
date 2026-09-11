@@ -102,11 +102,21 @@ impl IntoResponse for ReaddirsError {
                 .into_response(),
             ReaddirsError::Service(torgashka_application::ServiceError::Directory(
                 DirectoryError::Infrastructure(msg),
-            )) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"detail": format!("Помилка БД довідників: {msg}")})),
-            )
-                .into_response(),
+            )) => {
+                // Санація (ADR-0007, контракт §D): сирий текст БД → лог,
+                // користувачу — стабільне повідомлення (як `crud.rs`).
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[readdirs] DirectoryError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "detail": "Помилка БД довідників, спробуйте ще раз"
+                    })),
+                )
+                    .into_response()
+            }
             ReaddirsError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"detail": msg})),
@@ -143,11 +153,21 @@ impl IntoResponse for ReaddirsError {
                 .into_response(),
             ReaddirsError::Service(torgashka_application::ServiceError::Write(
                 torgashka_domain::WriteError::Infrastructure(msg),
-            )) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-            )
-                .into_response(),
+            )) => {
+                // Санація (ADR-0007, контракт §D): технічний текст → лог,
+                // користувачу — стабільне повідомлення (як `crud.rs:106`).
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[readdirs] WriteError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "detail": "Не вдалося зберегти зміну, спробуйте ще раз"
+                    })),
+                )
+                    .into_response()
+            }
         }
     }
 }

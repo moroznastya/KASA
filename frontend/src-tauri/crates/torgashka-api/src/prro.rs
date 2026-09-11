@@ -20,6 +20,8 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::Deserialize;
 use serde_json::json;
 use torgashka_infrastructure::prro::SqlxPrroRepository;
+use torgashka_infrastructure::readonly_guard::MARKER as READONLY_MARKER;
+use torgashka_infrastructure::store_ctx::current_store_ctx;
 use torgashka_prro::crypto::{signer_from_key_material, PrroSigner};
 use torgashka_prro::grpc::{PrroGrpcClient, TlsConfig};
 use torgashka_prro::keystore;
@@ -71,6 +73,46 @@ impl From<PrroShiftError> for PrroApiError {
     }
 }
 
+impl PrroApiError {
+    /// Текст для HTTP-тіла: ЛЮДСЬКИЙ, без сирого SQLx/PostgreSQL.
+    ///
+    /// Санація (ADR-0007 §D, той самий принцип, що в `PosError::Infrastructure`):
+    /// імена таблиць/колонок, SQL-фрагменти й текст драйвера PG ідуть ЛИШЕ у
+    /// stderr (`torgashka.log`); користувачу — стабільне повідомлення.
+    ///
+    /// Виняток — read-only репліка: маркер [`READONLY_MARKER`] СВІДОМО
+    /// зберігається у тілі (це контракт для шару відповіді
+    /// `crate::readonly_net`, який перепише відповідь на 503 §4). Сам маркер
+    /// не містить ні SQL, ні тексту PostgreSQL.
+    pub fn public_message(&self) -> String {
+        let raw = self.to_string();
+        if raw.contains(READONLY_MARKER) {
+            return format!(
+                "{READONLY_MARKER} вузол у режимі standby: запис у локальну репліку неможливий"
+            );
+        }
+        if self.is_db_backed() {
+            eprintln!("[torgashka-api] ПРРО: помилка БД (сирий текст): {raw}");
+            return "помилка бази даних ПРРО: операцію не виконано на цьому вузлі (деталі — у журналі вузла)"
+                .to_string();
+        }
+        raw
+    }
+
+    /// Чи несе помилка сирий текст помилки БД (власний `PrroRepoError::Db`,
+    /// у будь-якому вкладенні: Repo / Queue / Settings / Shift).
+    fn is_db_backed(&self) -> bool {
+        match self {
+            PrroApiError::Repo(PrroRepoError::Db(_)) => true,
+            // `QueueError::Repo(...)`, `PrroSettingsError` (текст із `PrroRepoError`)
+            // і `PrroShiftError` з кодом PRRO_REPO_ERROR несуть `PrroRepoError`
+            // лише рядком — стабільний маркер нашого власного Display:
+            // `PrroRepoError::Db` = "помилка БД: {0}".
+            _ => self.to_string().contains("помилка БД:"),
+        }
+    }
+}
+
 /// Контекст ПРРО: builder + signer + gRPC-клієнт (з налаштувань БД).
 struct PrroContext {
     builder: XmlBuilder,
@@ -83,17 +125,26 @@ pub struct PrroFacade {
     repo: SqlxPrroRepository,
     /// shadow-режим: готуємо чек, але НЕ надсилаємо (Python виконує).
     shadow: bool,
-    /// Сховище ключа КЕП (шлях/пароль) — 1:1 Python PrroKeyStore.
-    key_store: PrroKeyStore,
 }
 
 impl PrroFacade {
     pub fn new(repo: SqlxPrroRepository, shadow: bool) -> Self {
-        Self {
-            repo,
-            shadow,
-            key_store: PrroKeyStore::default(),
-        }
+        Self { repo, shadow }
+    }
+
+    /// Сховище ключа КЕП ПОТОЧНОЇ точки («один магазин — один ПРРО»):
+    /// окремий keystore-файл і окремий master-ключ на store_id (X-Store-Id,
+    /// current_store_ctx). ENV PRRO_KEY_FILE/PRRO_KEY_PASSWORD — лише fallback
+    /// для legacy-одиночної інсталяції (context()).
+    fn key_store(&self) -> Result<PrroKeyStore, PrroApiError> {
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PrroApiError::Config(
+                "ПРРО-операція поза контекстом торговельної точки (StoreCtx відсутній); \
+                     укажіть X-Store-Id"
+                    .to_string(),
+            )
+        })?;
+        Ok(PrroKeyStore::for_store(store_id))
     }
 
     pub fn repo(&self) -> &SqlxPrroRepository {
@@ -164,11 +215,10 @@ impl PrroFacade {
             ));
         }
 
-        // Ключ КЕП: keystore (1:1 Python PrroKeyStore) → env PRRO_KEY_* fallback.
-        let (key_file, key_password) = match (
-            self.key_store.get_key_path(),
-            self.key_store.decrypt_password(),
-        ) {
+        // Ключ КЕП: per-store keystore (PrroKeyStore::for_store) →
+        // env PRRO_KEY_* fallback (legacy одиночна інсталяція).
+        let ks = self.key_store()?;
+        let (key_file, key_password) = match (ks.get_key_path(), ks.decrypt_password()) {
             (Ok(kp), Ok(pw)) => (kp, pw),
             _ => {
                 let kf = std::env::var("PRRO_KEY_FILE").ok();
@@ -215,8 +265,8 @@ impl PrroFacade {
         let mut ctx = self.context().await?;
         if self.shadow {
             // shadow: Rust готує чек+підпис, Python виконує (parity-лог)
-            let dat_xml = ctx.builder.build_service_check_xml("108", &ts_now())?;
-            let message = ctx.builder.build_message(&dat_xml, None, true)?;
+            let dat_xml = ctx.builder.build_service_check_xml("108", &ts_now(), 0)?;
+            let message = ctx.builder.build_message(&dat_xml, None, "", true)?;
             let signed = ctx.signer.sign(message.as_bytes())?;
             eprintln!(
                 "[torgashka-prro:shadow] open_shift готовий: dat_len={} signed_len={} di={}",
@@ -338,7 +388,7 @@ impl PrroFacade {
 
     /// GET /api/v2/prro/settings — 1:1 Python get_settings.
     pub async fn get_settings(&self) -> Result<PrroSettingsDto, PrroApiError> {
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         // _check_online: окремий gRPC-клієнт (без ключа — лише statusRro,
         // 1:1 Python _check_online через context.grpc_client()).
         let grpc = self.grpc_only().await.ok();
@@ -395,12 +445,20 @@ impl PrroFacade {
         mode: Option<String>,
         auto_fiscalize: Option<bool>,
     ) -> Result<PrroSettingsDto, PrroApiError> {
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let store_id = current_store_ctx().map(|c| c.store_id).ok_or_else(|| {
+            PrroApiError::Config(
+                "PUT /prro/settings поза контекстом точки (StoreCtx відсутній); \
+                     укажіть X-Store-Id"
+                    .to_string(),
+            )
+        })?;
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         let grpc = self.grpc_only().await.ok();
         Ok(uc
             .save_settings(
                 &self.repo,
                 grpc.as_ref(),
+                store_id,
                 key_file_content.as_deref(),
                 key_file_name.as_deref(),
                 key_file_path.as_deref(),
@@ -417,7 +475,7 @@ impl PrroFacade {
     /// POST /api/v2/prro/test-connection — 1:1 Python test_connection (ping).
     pub async fn test_connection(&self) -> Result<serde_json::Value, PrroApiError> {
         let mut ctx = self.context().await?;
-        let uc = PrroSettingsUseCase::new(self.key_store.clone());
+        let uc = PrroSettingsUseCase::new(self.key_store()?);
         Ok(uc
             .test_connection(&ctx.grpc, &mut ctx.builder, Some(ctx.signer.as_ref()))
             .await)
@@ -430,9 +488,10 @@ impl PrroFacade {
         manual: bool,
     ) -> Result<PrroFiscalizeDtoOut, PrroApiError> {
         let mut ctx = self.context().await?;
+        let ks = self.key_store()?;
         let dto = FiscalizeReceiptUseCase::fiscalize_receipt(
             &self.repo,
-            &self.key_store,
+            &ks,
             &ctx.grpc,
             &mut ctx.builder,
             ctx.signer.as_ref(),
@@ -549,7 +608,7 @@ pub async fn open_shift(
     let f = facade(&state)?;
     match f.open_shift().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -582,7 +641,7 @@ pub async fn close_shift(
     };
     match f.close_shift(comment).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -596,7 +655,7 @@ pub async fn list_shifts(
     f.list_shifts(page, size)
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// POST /api/v2/prro/fiscal/sync
@@ -608,7 +667,7 @@ pub async fn sync_queue(
     f.sync(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// GET /api/v2/prro/fiscal/queue
@@ -620,7 +679,7 @@ pub async fn queue(
     f.queue(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// GET /api/v2/prro/fiscal/status
@@ -629,7 +688,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<serde_json::Va
     f.status()
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 // ─── Група 8/9: settings + test-connection + fiscalize (TORGASHKA_RUST_PRRO_V2) ──
@@ -641,7 +700,7 @@ pub async fn settings_get(
     let f = facade(&state)?;
     match f.get_settings().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -715,7 +774,7 @@ pub async fn settings_put(
         .await
     {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -736,7 +795,7 @@ pub async fn test_connection(
     }
     match f.test_connection().await {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -761,7 +820,7 @@ pub async fn fiscalize_receipt(
     };
     match f.fiscalize(receipt_id, manual).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 

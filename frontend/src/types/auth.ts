@@ -15,7 +15,7 @@ export interface User {
   updated_at: string;
 }
 
-export type UserRole = 'admin' | 'cashier' | 'manager' | 'owner';
+export type UserRole = 'admin' | 'cashier' | 'store_manager' | 'manager' | 'owner';
 
 export interface LoginRequest {
   login: string;

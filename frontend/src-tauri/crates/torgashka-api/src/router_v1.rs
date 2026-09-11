@@ -19,24 +19,44 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use crate::{
-    auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger, ocr, pos,
-    print_templates, products_v2, proxy, prro, purchase_orders, readdirs, return_invoices, setup,
-    store_context, stores, suppliers, AppState,
+    admin, admin_audit, admin_db_sources, admin_migrate, admin_network_config, admin_prro,
+    admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
+    network, network_nodes, ocr, pos, print_templates, products_v2, proxy, prro, purchase_orders,
+    readdirs, return_invoices, route_local, setup, store_context, stores, suppliers, sync,
+    AppState,
 };
 
 /// Збирає роутер v1 зі станом.
 pub fn build_router(state: AppState) -> Router {
     // CORS-шар (GUI Tauri webview: tauri://localhost → http://127.0.0.1:8000).
     // Найзовніший шар: preflight OPTIONS обробляється до auth_middleware.
+    // Додаткові дозволені origin для ВЕБ-адмінки (Етап 6, §6): окрема SPA
+    // в браузері (build:admin) говорить з тим самим API. Origin веб-збірки
+    // задається при запуску сервера: TORGASHKA_CORS_ORIGINS=comma,separated
+    // (напр. https://admin.example.com). За замовчуванням — локальні + Tauri.
+    let mut origins = vec![
+        HeaderValue::from_static("tauri://localhost"),
+        HeaderValue::from_static("http://tauri.localhost"),
+        HeaderValue::from_static("http://localhost:5173"),
+        HeaderValue::from_static("http://127.0.0.1:5173"),
+        HeaderValue::from_static("http://localhost:8000"),
+        HeaderValue::from_static("http://127.0.0.1:8000"),
+    ];
+    if let Ok(extra) = std::env::var("TORGASHKA_CORS_ORIGINS") {
+        for origin in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(v) = HeaderValue::from_str(origin) {
+                if !origins.contains(&v) {
+                    origins.push(v);
+                }
+            } else {
+                eprintln!(
+                    "[torgashka-api] TORGASHKA_CORS_ORIGINS: невірний origin пропущено: {origin}"
+                );
+            }
+        }
+    }
     let cors = CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("tauri://localhost"),
-            HeaderValue::from_static("http://tauri.localhost"),
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-            HeaderValue::from_static("http://localhost:8000"),
-            HeaderValue::from_static("http://127.0.0.1:8000"),
-        ])
+        .allow_origin(origins)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -146,6 +166,16 @@ pub fn build_router(state: AppState) -> Router {
                 "/api/v1/suppliers/:supplier_id/products",
                 get(suppliers::products),
             );
+    }
+
+    // Rust-гілка sync (ЕТАП 3 offline-first) — pull майстер-даних.
+    if state.readdirs.is_some() {
+        router = router.route("/api/v1/sync/master", get(sync::master));
+    }
+    // Rust-гілка sync push (ЕТАП 4 offline-first) — каса → сервер. Потребує
+    // POS-гілки (створення чеків з client_uuid) + sync_meta/sync_log (0011).
+    if state.pos.is_some() {
+        router = router.route("/api/v1/sync/push", post(sync::push));
     }
 
     // Rust-гілка ledger (етап 4) — під тим самим feature-flag.
@@ -312,10 +342,11 @@ pub fn build_router(state: AppState) -> Router {
 
     // Setup (Частина 1+2): перший власник + персональна БД — ПУБЛІЧНІ шляхи
     // (без JWT; у auth.rs/store_context.rs is_public_path додано /api/v1/setup).
+    // Дефект 5: /setup/status монтується ЗАВЖДИ (readiness-проба фронтенду —
+    // без БД віддає 503 зі станом, а не 404 й не «тишу» в сокеті).
+    router = router.route("/api/v1/setup/status", get(setup::status));
     if state.setup.is_some() {
-        router = router
-            .route("/api/v1/setup/status", get(setup::status))
-            .route("/api/v1/setup", post(setup::setup));
+        router = router.route("/api/v1/setup", post(setup::setup));
     }
 
     // Rust-гілка auth/users/settings/RBAC (етап 6) — під TORGASHKA_RUST_AUTH=1.
@@ -608,7 +639,7 @@ pub fn build_router(state: AppState) -> Router {
     // Порядок шарів: cors → auth (JWT) → store (X-Store-Id + RLS-контекст) → handler.
     // StoreContext ПІСЛЯ auth: Claims доступні в extensions; контекст точки
     // проставляється в task-local для всіх запитів хендлера (RLS set_config).
-    router
+    let private = router
         .fallback(proxy::proxy_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -617,8 +648,199 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
-        ))
+        ));
+
+    // Мережевий рівень власника (Частина 3): активація каси — ПУБЛІЧНА
+    // (без JWT: каса ще не має токена). /admin/* — глобальні дії власника,
+    // НЕ прив'язані до X-Store-Id точки → окремий роутер БЕЗ store_middleware,
+    // але З auth (роль admin|owner перевіряється в require_admin хендлерів).
+    let activate = Router::new()
+        .route("/api/v1/devices/activate", post(network::activate_device))
+        // Мережа магазинів (ЕТАП 15): join — ПУБЛІЧНИЙ (як /devices/activate,
+        // rate-limit у хендлері); heartbeat автентифікується node_token (Bearer)
+        // САМИМ хендлером — поза JWT-шаром (вузол не є користувачем).
+        .route("/api/v1/network-nodes/join", post(network_nodes::join_node))
+        .route(
+            "/api/v1/network-nodes/:id/heartbeat",
+            put(network_nodes::heartbeat_node),
+        );
+    let admin_network = Router::new()
+        // Адмін-панель власника мережі (Етап 1): точки + працівники + деактивація.
+        .route(
+            "/api/v1/admin/stores",
+            get(admin::list_stores).post(admin::create_store),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id",
+            get(admin::get_store)
+                .put(admin::update_store)
+                .delete(admin::archive_store),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id/workers",
+            get(admin::list_workers).post(admin::create_worker),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id/delete",
+            post(admin::delete_empty_store),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/deactivate",
+            post(admin::deactivate_user),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/activate",
+            post(admin::activate_user),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/reset-password",
+            post(admin::reset_password),
+        )
+        .route(
+            "/api/v1/admin/users/:user_id/reset-pin",
+            post(admin::reset_pin),
+        )
+        .route(
+            "/api/v1/admin/stores/:store_id/activation-code",
+            post(network::generate_activation_code),
+        )
+        .route("/api/v1/admin/devices", get(network::list_devices))
+        .route(
+            "/api/v1/admin/devices/:device_id/block",
+            post(network::block_device),
+        )
+        .route(
+            "/api/v1/admin/devices/:device_id/unblock",
+            post(network::unblock_device),
+        )
+        .route(
+            "/api/v1/admin/db-sources",
+            get(admin_db_sources::list_sources).post(admin_db_sources::create_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/dumps",
+            get(admin_db_sources::list_dumps),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id",
+            put(admin_db_sources::update_source).delete(admin_db_sources::delete_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id/test",
+            post(admin_db_sources::test_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/:id/activate",
+            post(admin_db_sources::activate_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/provision",
+            post(admin_db_sources::provision_source),
+        )
+        .route(
+            "/api/v1/admin/db-sources/export-dump",
+            post(admin_db_sources::export_dump),
+        )
+        .route(
+            "/api/v1/admin/network-config/export",
+            post(admin_network_config::export_config),
+        )
+        .route(
+            "/api/v1/admin/network-config/import",
+            post(admin_network_config::import_config),
+        )
+        .route(
+            "/api/v1/admin/db-sources/import-dump",
+            post(admin_db_sources::import_dump),
+        )
+        // Звітність мережі (Етап 4, ТЗ 5.5/5.6): дашборд, каса, постачальники.
+        .route(
+            "/api/v1/admin/reports/network-sales",
+            get(admin_reports::network_sales),
+        )
+        .route(
+            "/api/v1/admin/reports/cash-operations",
+            get(admin_reports::cash_operations),
+        )
+        .route(
+            "/api/v1/admin/reports/supplier-ledger",
+            get(admin_reports::supplier_ledger),
+        )
+        .route("/api/v1/admin/audit-log", get(admin_audit::audit_log))
+        .route(
+            "/api/v1/admin/stores/:store_id/prro-settings",
+            get(admin_prro::prro_settings).put(admin_prro::prro_settings_put),
+        )
+        // Міграція існуючих інсталяцій (Етап 6, §9): одиночна каса → мережа.
+        .route(
+            "/api/v1/admin/migrate/legacy",
+            post(admin_migrate::migrate_legacy),
+        )
+        .route(
+            "/api/v1/admin/devices/:device_id",
+            delete(network::delete_device),
+        )
+        // Реєстр вузлів мережі магазинів (ЕТАП 15): owner-дії (create/archive/
+        // force-resync) + список (admin|owner через require_admin, як list_devices).
+        .route(
+            "/api/v1/admin/network-nodes",
+            get(network_nodes::list_nodes).post(network_nodes::create_node),
+        )
+        .route(
+            "/api/v1/admin/network-nodes/:node_id/archive",
+            post(network_nodes::archive_node),
+        )
+        .route(
+            "/api/v1/admin/network-nodes/:node_id/force-resync",
+            post(network_nodes::force_resync_node),
+        )
+        // Журнал мережевих подій (рішення Творця): діагностика взаємодії вузлів.
+        .route(
+            "/api/v1/admin/network-events",
+            get(network_nodes::list_network_events),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    // Локальний routing standby-вузла (ЕТАП 18): /api/v1/local/* — читання
+    // з локальної репліки (5433) + запис у SQLite-чергу, коли primary
+    // недоступний. Порожній Router, якщо вузол не standby або репліка не
+    // підключена (жодних маршрутів не додається). Auth+store шари — всередині
+    // route_local::router (як у private-гілки).
+    activate
+        .merge(admin_network)
+        .merge(private)
+        .merge(route_local::router(state.clone()))
+        // ЕТАП 19 (DR): promote + repoint-primary — ОКРЕМО від route_local::router:
+        // ці адмін-маршрути НЕ проходять store-middleware (він ходить у primary-пул,
+        // недоступний у момент аварії) — авторизація stateless JWT owner у хендлерах.
+        .merge(crate::promote::admin_router(state.clone()))
+        // ФАЗА 3.8: drain залишку SQLite-черги у власний PG. Монтується
+        // ЗАВЖДИ (не лише на standby): після promote+рестарту вузол уже
+        // mode=Primary, а черга в SQLite лишається — owner має мати шлях її
+        // застосувати. Авторизація — stateless JWT owner у хендлері.
+        .merge(route_local::outbox_router())
         .layer(cors)
+        // ADR-0007 §11 (WriteGate): ОДИН шар на весь роутер фасаду — після CORS,
+        // тобто найзовнішній. Класифікує запит (§11.1) і вирішує F2/§4:
+        // primary → незмінно; standby+ProxyToPrimary → HTTP pass-through;
+        // standby+DisabledOnStandby → 503; standby+LocalOutbox → локальний шлях.
+        // Кожна відповідь фасаду отримує `X-Torgashka-Node-Mode` (§4).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::write_gate::gate_middleware,
+        ))
+        // Read-only net (останній рубіж): ЗОВНІШНІЙ щодо гейта — бачить
+        // ОСТАТОЧНУ відповідь хендлера. Якщо у тілі є маркер
+        // `[READ_ONLY_REPLICA]` (запис у репліку пройшов повз фунел
+        // `StorePool`, напр. транзакцією), відповідь переписується на 503 §4.
+        // Власний 503 гейта (`STANDBY_DETAIL`, без маркера) не чіпається.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::readonly_net::readonly_net_middleware,
+        ))
         .with_state(state)
 }
 
@@ -636,8 +858,8 @@ mod tests {
     use axum::http::{header, Request, StatusCode};
     use std::sync::Arc;
     use torgashka_domain::{
-        AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto, SettingsBatchInput,
-        UserCreateInput, UserDto, UserListDto, UserUpdateInput,
+        AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto, UserCreateInput,
+        UserDto, UserListDto, UserUpdateInput,
     };
     use tower::ServiceExt;
     use uuid::Uuid;
@@ -777,6 +999,9 @@ mod tests {
             store_pool: None,
             stores: None,
             setup: None,
+            // ЕТАП 18: тестовий стан — режим Primary (локальна гілка не монтується).
+            node_config: torgashka_infrastructure::node_config::NodeConfig::default(),
+            local: None,
         };
         state.auth = Some(Arc::new(MockAuth) as Arc<dyn AuthService + Send + Sync>);
         state

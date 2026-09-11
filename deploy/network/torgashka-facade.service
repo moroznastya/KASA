@@ -1,0 +1,85 @@
+# ============================================================================
+# torgashka-facade.service — systemd unit Rust-фасаду torgashka-api
+# (мережевий режим сервера, ЕТАП 0 «Мережева доступність сервера»)
+# ============================================================================
+# ⚠️ ПЛЕЙСХОЛДЕРИ — замініть перед застосуванням на реальному сервері:
+#   <VPN-IP>          → реальна VPN-адреса сервера (tailscale ip -4)
+#   /opt/torgashka/...→ фактичний шлях до бінарника та конфігів
+#
+# Встановлення:
+#   sudo cp deploy/network/torgashka-facade.service /etc/systemd/system/
+#   sudo mkdir -p /etc/torgashka
+#   sudo cp backend/.env /etc/torgashka/facade.env        # секрети БД
+#   # або створіть /etc/torgashka/facade.env вручну (див. EnvironmentFile нижче)
+#   sudo chown root:root /etc/torgashka/facade.env
+#   sudo chmod 600 /etc/torgashka/facade.env              # паролі!
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now torgashka-facade
+#   sudo systemctl status torgashka-facade
+# ============================================================================
+
+[Unit]
+Description=Torgashka POS — Rust-фасад torgashka-api (мережевий сервер)
+Documentation=deploy/network/README.md
+# Фасад має стартувати після мережі та PostgreSQL
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+# ── Адреса прослуховування: VPN-IP:8000 (НЕ 0.0.0.0 — тільки VPN-інтерфейс) ─
+# ⚠️ ЗАМІНІТЬ <VPN-IP> на реальну адресу (напр. 100.64.0.3).
+Environment=TORGASHKA_FACADE_ADDR=<VPN-IP>:8000
+
+# ── Секрети та шляхи — у захищеному файлі (НЕ в unit-файлі!) ──────────────
+# Файл має містити (по одному KEY=VALUE на рядок):
+#   TORGASHKA_DBKEY=<base64 43 симв. або hex 64 симв.>   # ключ AES-256-GCM для db_sources.toml
+#   TORGASHKA_DB_SOURCES=/etc/torgashka/db_sources.toml  # шлях до джерел даних
+#   TORGASHKA_CONFIG=/etc/torgashka/config.toml          # шлях до основного конфіга (опц.)
+EnvironmentFile=/etc/torgashka/facade.env
+
+# ── Бінарник фасаду ────────────────────────────────────────────────────────
+# Шлях-плейсхолдер: замініть на реальний release-бінарник, напр.:
+#   /opt/torgashka/bin/facade        (після cargo build --release)
+# Для dev-машини можна: ExecStart=/home/<user>/.../target/release/facade
+ExecStart=/opt/torgashka/bin/facade
+
+# ── Поведінка при збої ─────────────────────────────────────────────────────
+Restart=on-failure
+RestartSec=5s
+# Зупинка: graceful (facade ловить SIGTERM і робить abort таску)
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# ── Hardening (принцип мінімальних привілеїв) ─────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# Фасаду потрібен доступ лише до /etc/torgashka (конфіги, ключі) — решта RO
+ReadWritePaths=/etc/torgashka
+# Заборона виконання коду зі стеків/пам'яті (за наявності підтримки)
+MemoryDenyWriteExecute=no
+# Обмеження капіталів (фасад = мережевий сервіс без привілеїв)
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Користувач без привілеїв (створіть: useradd --system --home /opt/torgashka torgashka)
+# User=torgashka
+# Group=torgashka
+
+# Логування в journald (перегляд: journalctl -u torgashka-facade -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
+# ============================================================================
+# Перевірка після старту:
+#   systemctl status torgashka-facade        # active (running)
+#   journalctl -u torgashka-facade -n 50     # лог старту
+#   curl http://<VPN-IP>:8000/api/v1/health  # → 200 (з точки у VPN)
+# ============================================================================

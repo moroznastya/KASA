@@ -254,11 +254,12 @@ async fn sync_is_idempotent_check_sign_unchanged() {
         calls: AtomicUsize::new(0),
     };
 
-    // Документ, як формує fiscalize: dat_xml → build_message → sign = check_sign
+    // Документ, як формує fiscalize: dat_xml → build_message → sign(cp1251)
     let dat_xml = XML;
-    let message = builder.build_message(dat_xml, None, true).unwrap();
-    let signed = MockSigner.sign(message.as_bytes()).unwrap();
-    let signed_str = String::from_utf8_lossy(&signed).into_owned();
+    let message = builder.build_message(dat_xml, None, "", true).unwrap();
+    let message_bytes = torgashka_prro::xml::cp1251_bytes(&message).unwrap();
+    let signed = MockSigner.sign(&message_bytes).unwrap();
+    let signed_str = torgashka_prro::xml::signed_bytes_to_text(&signed);
     assert_eq!(
         signer.calls.load(Ordering::SeqCst),
         0,
@@ -293,8 +294,8 @@ async fn sync_is_idempotent_check_sign_unchanged() {
     let first_sent = sender.calls.lock().unwrap()[0].check_sign.clone();
     assert_eq!(
         first_sent,
-        signed_str.as_bytes(),
-        "відправлено збережений check_sign as-is"
+        message_bytes.as_slice(),
+        "відправлено збережений check_sign as-is (cp1251-байти RQ)"
     );
 
     // Обрив на сервері: документ повертається у failed
@@ -353,10 +354,11 @@ async fn sync_legacy_item_formats_once_and_persists_check_sign() {
     // check_sign зафіксовано у черзі
     let stored = repo.get_queue_item(item.id).await.unwrap().unwrap();
     assert!(stored.check_sign.is_some(), "check_sign збережено у черзі");
+    // cp1251-байти збереженого тексту == відправлені байти (спека C)
+    let stored_bytes = torgashka_prro::xml::cp1251_bytes(&stored.check_sign.unwrap()).unwrap();
     assert_eq!(
-        stored.check_sign.unwrap().as_bytes(),
-        first_sent,
-        "у черзі саме те, що відправлено"
+        stored_bytes, first_sent,
+        "у черзі саме те, що відправлено (cp1251)"
     );
 
     // Повертаємо у failed і синхронізуємо вдруге → as-is, sign не викликається

@@ -1,6 +1,8 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
 import {
+  NavLink } from 'react-router-dom';
+import {
+  Server,
   LayoutDashboard,
   ShoppingCart,
   Package,
@@ -19,20 +21,22 @@ import {
   Clock,
   Printer,
   FileCheck2,
+  Network,
   PackageSearch,
+  Database,
+  Landmark,
+  FileClock,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
 import logo from '@/assets/logo.png';
 
-interface NavItem {
+export interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
   module: string;
-  roles?: ('admin' | 'cashier' | 'owner')[];
-  /** Пермішен (якщо вказаний) — пункт видимий лише з ним або для admin/owner. */
-  permission?: string;
+  roles?: ('admin' | 'cashier' | 'owner' | 'store_manager')[];
 }
 
 const navItems: NavItem[] = [
@@ -91,7 +95,6 @@ const navItems: NavItem[] = [
     icon: <PackageSearch className="w-5 h-5" />,
     module: 'products',
     roles: ['admin', 'cashier'],
-    permission: 'inventory.view_other_stores',
   },
   {
     path: '/categories',
@@ -122,6 +125,27 @@ const navItems: NavItem[] = [
     roles: ['admin'],
   },
   {
+    path: '/network/reports',
+    label: 'Звіти мережі',
+    icon: <BarChart3 className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/finances',
+    label: 'Фінанси мережі',
+    icon: <Landmark className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/audit',
+    label: 'Аудит-лог',
+    icon: <FileClock className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin'],
+  },
+  {
     path: '/work-time',
     label: 'Робочий час',
     icon: <Clock className="w-5 h-5" />,
@@ -143,6 +167,20 @@ const navItems: NavItem[] = [
     roles: ['admin'],
   },
   {
+    path: '/network/devices',
+    label: 'Каси мережі',
+    icon: <Network className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
+  },
+  {
+    path: '/network/nodes',
+    label: 'Вузли мережі',
+    icon: <Server className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
+  },
+  {
     path: '/prro',
     label: 'ПРРО',
     icon: <FileCheck2 className="w-5 h-5" />,
@@ -156,26 +194,36 @@ const navItems: NavItem[] = [
     module: 'settings',
     roles: ['admin'],
   },
+  {
+    path: '/settings/data-source',
+    label: 'Джерело даних',
+    icon: <Database className="w-5 h-5" />,
+    module: 'settings',
+    roles: ['admin', 'store_manager'],
+  },
 ];
 
-export const Sidebar: React.FC = () => {
+export interface SidebarProps {
+  /** Кастомна навігація (веб-адмінка §6: без POS/cash-пунктів). Якщо
+   *  не задано — стандартний набір navItems (поведінка без змін). */
+  items?: NavItem[];
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ items }) => {
   const { sidebarOpen, toggleSidebar, setActiveModule } = useUIStore();
   const user = useAuthStore((state) => state.user);
+  const sourceItems = items ?? navItems;
 
-  // Пермішен-перевірка: admin/owner мають усі права; решта — за списком прав.
-  const canViewOtherStores =
-    user?.role === 'admin' ||
-    user?.role === 'owner' ||
-    !!user?.permissions?.includes('inventory.view_other_stores');
-
-  const visibleItems = navItems.filter((item) => {
-    if (item.permission && !canViewOtherStores) return false;
+  // Видимість — тільки за ролями (admin/owner/manager бачать адмін-пункти;
+  // cashier — свої). Дані на сторінках обмежені RLS/user_stores на бекенді.
+  const visibleItems = sourceItems.filter((item) => {
     if (!item.roles) return true;
     if (!user) return false;
-    // owner/manager прирівнюються до admin (адмін-пункти).
-    const privileged = user.role === 'owner' || user.role === 'manager';
+    // owner/store_manager/manager прирівнюються до admin (адмін-пункти).
+    const privileged =
+      user.role === 'owner' || user.role === 'store_manager' || user.role === 'manager';
     if (privileged) return item.roles.includes('admin');
-    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner');
+    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner' | 'store_manager');
   });
 
   return (
@@ -241,7 +289,7 @@ export const Sidebar: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                  {user.name} ({user.role === 'admin' ? 'Адміністратор' : 'Касир'})
+                  {user.name} ({user.role === 'owner' ? 'Власник мережі' : user.role === 'store_manager' || user.role === 'manager' ? 'Керуючий мережею' : user.role === 'admin' ? 'Адміністратор' : 'Касир'})
                 </p>
               </div>
             </div>

@@ -90,7 +90,8 @@ CREATE TYPE public.transfer_status AS ENUM (
 CREATE TYPE public.user_role AS ENUM (
     'admin',
     'cashier',
-    'owner'
+    'owner',
+    'store_manager'
 );
 
 CREATE TABLE IF NOT EXISTS public.barcodes (
@@ -240,6 +241,7 @@ CREATE TABLE IF NOT EXISTS public.products (
 
 CREATE TABLE IF NOT EXISTS public.prro_queue_items (
     id uuid NOT NULL,
+    store_id uuid NOT NULL,
     receipt_id uuid,
     shift_id uuid,
     local_number integer NOT NULL,
@@ -254,6 +256,7 @@ CREATE TABLE IF NOT EXISTS public.prro_queue_items (
 
 CREATE TABLE IF NOT EXISTS public.prro_settings (
     id integer NOT NULL,
+    store_id uuid NOT NULL,
     key_name character varying(100) NOT NULL,
     value text,
     updated_at timestamp without time zone NOT NULL
@@ -271,6 +274,7 @@ ALTER SEQUENCE public.prro_settings_id_seq OWNED BY public.prro_settings.id;
 
 CREATE TABLE IF NOT EXISTS public.prro_shifts (
     id uuid NOT NULL,
+    store_id uuid NOT NULL,
     shift_number integer NOT NULL,
     opened_at timestamp without time zone NOT NULL,
     closed_at timestamp without time zone,
@@ -408,6 +412,8 @@ CREATE TABLE IF NOT EXISTS public.stores (
     name character varying(255) NOT NULL,
     address character varying(500),
     phone character varying(50),
+    legal_name character varying(255),
+    edrpou character varying(20),
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL
@@ -593,8 +599,6 @@ ALTER TABLE ONLY public.invoices
 ALTER TABLE ONLY public.print_templates
     ADD CONSTRAINT print_templates_pkey PRIMARY KEY (id);
 
-ALTER TABLE ONLY public.print_templates
-    ADD CONSTRAINT fk_print_templates_store FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.product_images
     ADD CONSTRAINT product_images_pkey PRIMARY KEY (id);
@@ -737,9 +741,13 @@ CREATE INDEX ix_prro_queue_items_shift_id ON public.prro_queue_items USING btree
 
 CREATE INDEX ix_prro_queue_items_status ON public.prro_queue_items USING btree (status);
 
-CREATE UNIQUE INDEX ix_prro_settings_key_name ON public.prro_settings USING btree (key_name);
+CREATE INDEX ix_prro_queue_items_store_status ON public.prro_queue_items USING btree (store_id, status, created_at);
+
+CREATE UNIQUE INDEX ux_prro_settings_store_key ON public.prro_settings USING btree (store_id, key_name);
 
 CREATE INDEX ix_prro_shifts_shift_number ON public.prro_shifts USING btree (shift_number);
+
+CREATE INDEX ix_prro_shifts_store_opened ON public.prro_shifts USING btree (store_id, opened_at);
 
 CREATE INDEX ix_purchase_order_items_product_id ON public.purchase_order_items USING btree (product_id);
 
@@ -960,6 +968,15 @@ ALTER TABLE ONLY public.prro_queue_items
 ALTER TABLE ONLY public.prro_queue_items
     ADD CONSTRAINT prro_queue_items_shift_id_fkey FOREIGN KEY (shift_id) REFERENCES public.prro_shifts(id) ON DELETE SET NULL;
 
+ALTER TABLE ONLY public.prro_settings
+    ADD CONSTRAINT prro_settings_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.prro_shifts
+    ADD CONSTRAINT prro_shifts_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.prro_queue_items
+    ADD CONSTRAINT prro_queue_items_store_id_fkey FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
+
 ALTER TABLE ONLY public.purchase_order_items
     ADD CONSTRAINT purchase_order_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE RESTRICT;
 
@@ -1035,6 +1052,8 @@ ALTER TABLE ONLY public.write_off_items
 ALTER TABLE ONLY public.write_off_items
     ADD CONSTRAINT write_off_items_write_off_id_fkey FOREIGN KEY (write_off_id) REFERENCES public.write_offs(id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.print_templates
+    ADD CONSTRAINT fk_print_templates_store FOREIGN KEY (store_id) REFERENCES public.stores(id) ON DELETE CASCADE;
 ALTER TABLE public.barcodes ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY barcodes_store_isolation ON public.barcodes USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
@@ -1230,6 +1249,32 @@ CREATE POLICY write_offs_store_isolation ON public.write_offs USING (((store_id 
   WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
 
 
+
+ALTER TABLE public.prro_settings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_settings_store_isolation ON public.prro_settings USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+ALTER TABLE public.prro_shifts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_shifts_store_isolation ON public.prro_shifts USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+ALTER TABLE public.prro_queue_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY prro_queue_items_store_isolation ON public.prro_queue_items USING (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid))))) WITH CHECK (((store_id = (NULLIF(current_setting('app.store_id'::text, true), ''::text))::uuid) OR (store_id IN ( SELECT user_stores.store_id
+   FROM public.user_stores
+  WHERE (user_stores.user_id = (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid)))));
+
+
 -- ============================================================================
 -- owners_db — мета-таблиця: персональна БД кожного власника (Частина 2)
 -- ============================================================================
@@ -1242,3 +1287,271 @@ CREATE TABLE IF NOT EXISTS public.owners_db (
     CONSTRAINT owners_db_owner_id_fkey FOREIGN KEY (owner_id)
         REFERENCES public.users(id) ON DELETE CASCADE
 );
+
+-- ============================================================================
+-- Мережевий рівень власника (Частина 3): devices, store_activation_codes,
+-- store_product_prices, audit_log, store_sync_state.
+-- Створюються ідемпотентно: fresh (schema.sql) і вже мігровані БД (NETWORK_DDL).
+-- ============================================================================
+
+-- device_status: PG не має CREATE TYPE IF NOT EXISTS — через DO-блок.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'device_status') THEN
+        CREATE TYPE public.device_status AS ENUM ('pending', 'active', 'blocked', 'deleted');
+    END IF;
+END
+$$;
+
+-- Фізичні каси/пристрої мережі. store_id → точка; status — життєвий цикл
+-- пристрою (pending → active → blocked/deleted). device_token_hash — токен
+-- аутентифікації пристрою (зберігається лише хеш).
+CREATE TABLE IF NOT EXISTS public.devices (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    store_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    device_token_hash character varying(255) NOT NULL,
+    source character varying(50),
+    status public.device_status DEFAULT 'pending'::public.device_status NOT NULL,
+    app_version character varying(50),
+    last_seen_at timestamp without time zone,
+    activated_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT devices_pkey PRIMARY KEY (id),
+    CONSTRAINT devices_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Код активації точки (8 символів; колонка varchar(9) — резерв під префікс).
+-- Один рядок на магазин: повторна генерація оновлює код (regenerated_at).
+CREATE TABLE IF NOT EXISTS public.store_activation_codes (
+    store_id uuid NOT NULL,
+    code character varying(9) NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    regenerated_at timestamp without time zone,
+    CONSTRAINT store_activation_codes_pkey PRIMARY KEY (store_id),
+    CONSTRAINT store_activation_codes_code_key UNIQUE (code),
+    CONSTRAINT store_activation_codes_created_by_fkey FOREIGN KEY (created_by)
+        REFERENCES public.users(id) ON DELETE SET NULL,
+    CONSTRAINT store_activation_codes_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Перевизначення ціни товару по конкретній точці (owner-рівень; на відміну
+-- від stock.price — окрема сутність, не залежить від залишків).
+CREATE TABLE IF NOT EXISTS public.store_product_prices (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    store_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    price numeric(10,2) NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT store_product_prices_pkey PRIMARY KEY (id),
+    CONSTRAINT store_product_prices_store_id_product_id_key UNIQUE (store_id, product_id),
+    CONSTRAINT store_product_prices_product_id_fkey FOREIGN KEY (product_id)
+        REFERENCES public.products(id) ON DELETE CASCADE,
+    CONSTRAINT store_product_prices_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+-- Аудит дій адмінки (хто/що/коли; payload — контекст дії в JSON).
+-- FK з ON DELETE SET NULL: аудит-слід зберігається при видаленні юзера/точки.
+CREATE TABLE IF NOT EXISTS public.audit_log (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    actor_user_id uuid,
+    action character varying(100) NOT NULL,
+    entity_type character varying(50),
+    entity_id uuid,
+    store_id uuid,
+    payload jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT audit_log_pkey PRIMARY KEY (id),
+    CONSTRAINT audit_log_actor_user_id_fkey FOREIGN KEY (actor_user_id)
+        REFERENCES public.users(id) ON DELETE SET NULL,
+    CONSTRAINT audit_log_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE SET NULL
+);
+
+-- Стан синхронізації точки (офлайн-first): час останньої синхронізації та
+-- останній локальний seq, до якого сервер отримав дані точки.
+CREATE TABLE IF NOT EXISTS public.store_sync_state (
+    store_id uuid NOT NULL,
+    device_id uuid,
+    last_synced_at timestamp without time zone,
+    last_local_seq bigint DEFAULT 0 NOT NULL,
+    status character varying(20) DEFAULT 'unknown'::character varying NOT NULL,
+    CONSTRAINT store_sync_state_pkey PRIMARY KEY (store_id),
+    CONSTRAINT store_sync_state_device_id_fkey FOREIGN KEY (device_id)
+        REFERENCES public.devices(id) ON DELETE SET NULL,
+    CONSTRAINT store_sync_state_store_id_fkey FOREIGN KEY (store_id)
+        REFERENCES public.stores(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_devices_store_id ON public.devices USING btree (store_id);
+
+-- Не більше одного legacy-пристрою (source='legacy_migration') на точку:
+-- ідемпотентність POST /admin/migrate/legacy на рівні БД (race-safe).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_migration_store
+    ON public.devices (store_id) WHERE (source = 'legacy_migration');
+
+CREATE INDEX IF NOT EXISTS ix_store_product_prices_product_id
+    ON public.store_product_prices USING btree (product_id);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_store_id_created_at
+    ON public.audit_log USING btree (store_id, created_at);
+
+-- ============================================================================
+-- Мережа магазинів (ЕТАП 15, network-replication-etap15-20.md §3.1):
+-- реєстр вузлів мережі (standby-копії primary). Реплікація — ЕТАП 16+.
+-- Створюються ідемпотентно: fresh (schema.sql) і вже мігровані БД (db.rs
+-- NETWORK_NODES_DDL).
+-- ============================================================================
+
+-- node_role: primary — сам сервер; standby — копія в магазині.
+-- PG не має CREATE TYPE IF NOT EXISTS — через DO-блок.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_role') THEN
+        CREATE TYPE public.node_role AS ENUM ('primary', 'standby');
+    END IF;
+END
+$$;
+
+-- node_status: життєвий цикл вузла (§4 стану-машина):
+-- provisioning → syncing → active/lagging → offline/archived.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'node_status') THEN
+        CREATE TYPE public.node_status AS ENUM (
+            'provisioning', 'syncing', 'active', 'lagging', 'offline', 'archived'
+        );
+    END IF;
+END
+$$;
+
+-- Вузол мережі. store_id NULL — сам сервер (primary). join_token_hash —
+-- SHA-256 одноразового join-коду (TTL 30 хв); node_token_hash — SHA-256
+-- довготривалого токена вузла для heartbeat. Секрети зберігаються лише
+-- хешами (як device_token_hash у network.rs).
+CREATE TABLE IF NOT EXISTS public.network_nodes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id uuid REFERENCES public.stores(id),  -- NULL для самого сервера (primary)
+    name text NOT NULL,
+    role public.node_role NOT NULL DEFAULT 'standby',
+    status public.node_status NOT NULL DEFAULT 'provisioning',
+
+    -- Провіжинінг (одноразовий код, аналог store_activation_codes)
+    join_token_hash text,               -- SHA-256, як device_token_hash
+    join_token_expires_at timestamp,    -- TTL 30 хв
+
+    -- Довготривалий токен вузла для heartbeat (окремо від JWT користувача)
+    node_token_hash text,
+
+    -- Реплікація (креденшли створюються в ЕТАП 16; імена резервуються тут)
+    replication_role_name text,         -- напр. replicator_a1b2c3
+    replication_slot_name text,         -- напр. standby_a1b2c3
+
+    -- Телеметрія (оновлюється heartbeat-ом)
+    host text,
+    app_version text,
+    last_seen_at timestamp,
+    replication_lag_bytes bigint,
+    db_size_bytes bigint,
+
+    created_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc'),
+    updated_at timestamp NOT NULL DEFAULT (now() AT TIME ZONE 'utc')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS network_nodes_replication_slot_uq
+    ON public.network_nodes (replication_slot_name)
+    WHERE replication_slot_name IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS network_nodes_store_id_idx
+    ON public.network_nodes (store_id);
+
+-- ============================================================================
+-- ЕТАП 7: FORCE ROW LEVEL SECURITY (реальний RLS)
+-- ----------------------------------------------------------------------------
+-- Політики визначені вище. FORCE змушує проходити політики навіть власника
+-- таблиць — єдиний шлях, коли фасад працює під роллю torgashka_app.
+-- Суперкористувач (postgres) обходить RLS і далі — адмін-операції безпечні.
+-- ============================================================================
+ALTER TABLE public.barcodes FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.categories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtor_payments FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.debtors FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventories FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.inventory_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.product_images FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_order_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.purchase_orders FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipt_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.receipts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoice_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.return_invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stock FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.supplier_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfer_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.transfers FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.user_stores FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.work_sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_off_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.write_offs FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_shifts FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.prro_queue_items FORCE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- ЕТАП 8: ідемпотентність синхронізації чеків (client_uuid)
+-- ----------------------------------------------------------------------------
+-- Клієнт (каса/офлайн-черга) генерує client_uuid один раз на чек і передає при
+-- push (sync.rs PushItem.client_uuid). UNIQUE-індекс ловить гонку двох
+-- одночасних push з тим самим client_uuid (Alembic 0013/0014, назва client_uuid).
+-- ============================================================================
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_client_uuid
+    ON public.receipts (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+
+-- ============================================================================
+-- ФАЗА 3.3b: ідемпотентність приймачів повернення постачальнику, оплати боргу
+-- і ручного запису книги постачальника (client_uuid каси + partial UNIQUE).
+-- Дзеркало Alembic 0018_return_debtor_ledger_idem (Python-БД).
+-- ============================================================================
+ALTER TABLE public.return_invoices ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_return_invoices_client_uuid
+    ON public.return_invoices (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+ALTER TABLE public.debtor_payments ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_debtor_payments_client_uuid
+    ON public.debtor_payments (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+ALTER TABLE public.supplier_ledger ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_ledger_client_uuid
+    ON public.supplier_ledger (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+
+-- ============================================================================
+-- Мережеві події (рішення Творця): діагностичний журнал взаємодії вузлів.
+-- Той самий ідемпотентний DDL, що й NETWORK_EVENTS_DDL у db.rs (для fresh БД).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.network_events (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    node_id uuid,
+    event character varying(64) NOT NULL,
+    level character varying(16) NOT NULL DEFAULT 'info',
+    detail jsonb,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT network_events_pkey PRIMARY KEY (id),
+    CONSTRAINT network_events_node_id_fkey FOREIGN KEY (node_id)
+        REFERENCES public.network_nodes(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_network_events_node_id_created_at
+    ON public.network_events (node_id, created_at DESC);

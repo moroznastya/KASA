@@ -99,6 +99,9 @@ async fn real_state() -> AppState {
         store_pool: Some(store_pool),
         stores: None,
         setup: None,
+        // ЕТАП 18: AppState розширено (local-режим standby + node_config).
+        local: None,
+        node_config: torgashka_infrastructure::node_config::NodeConfig::default(),
     }
 }
 
@@ -130,8 +133,11 @@ fn post(
 
 // ─── БАГ 1: test-connection з битим ключем → 4xx з текстом, процес НЕ падає ──
 
+mod common;
+
 #[tokio::test]
 async fn bug1_test_connection_bad_key_returns_4xx_no_crash() {
+    common::force_test_db();
     // Ключ із НЕПРАВИЛЬНИМ паролем через env-fallback (keystore-файл у CWD
     // тесту відсутній → PrroKeyStore::decrypt_password() помилка → контекст
     // бере PRRO_KEY_FILE/PRRO_KEY_PASSWORD).
@@ -192,6 +198,7 @@ async fn bug1_test_connection_bad_key_returns_4xx_no_crash() {
 
 #[tokio::test]
 async fn bug2_shift_open_no_body_not_415() {
+    common::force_test_db();
     let state = real_state().await;
     if state.pos.is_none() {
         eprintln!("SKIP: POS недоступний");
@@ -221,6 +228,7 @@ async fn bug2_shift_open_no_body_not_415() {
 
 #[tokio::test]
 async fn bug2_shift_close_no_body_not_415() {
+    common::force_test_db();
     let state = real_state().await;
     if state.pos.is_none() {
         eprintln!("SKIP: POS недоступний");

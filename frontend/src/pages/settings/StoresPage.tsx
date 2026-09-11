@@ -9,15 +9,20 @@ import {
   UserPlus,
   Store as StoreIcon,
   Star,
+  FileDown,
+  Trash2,
 } from 'lucide-react';
 import { storeService } from '@/services/storeService';
 import { userService } from '@/services/userService';
+import { networkConfigService, downloadTextFile } from '@/services/networkConfigService';
 import { useStoreStore } from '@/store/storeStore';
+import { useAuthStore } from '@/store/authStore';
 import type { Store } from '@/types/store';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Modal } from '@/components/ui/Modal';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Spinner } from '@/components/ui/Spinner';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from 'react-hot-toast';
@@ -25,6 +30,7 @@ import { toast } from 'react-hot-toast';
 // ── Конфігурація ролей ────────────────────────
 const ROLE_LABELS: Record<string, string> = {
   owner: 'Власник',
+  store_manager: 'Керуючий мережею',
   admin: 'Адміністратор',
   manager: 'Менеджер',
   cashier: 'Касир',
@@ -32,6 +38,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const ROLE_COLORS: Record<string, string> = {
   owner: 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
+  store_manager: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
   admin: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
   manager: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
   cashier: 'bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300',
@@ -39,6 +46,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 const ROLE_OPTIONS: SelectOption[] = [
   { value: 'owner', label: 'Власник' },
+  { value: 'store_manager', label: 'Керуючий мережею' },
   { value: 'admin', label: 'Адміністратор' },
   { value: 'manager', label: 'Менеджер' },
   { value: 'cashier', label: 'Касир' },
@@ -56,6 +64,19 @@ const StoresPage: React.FC = () => {
   const queryClient = useQueryClient();
   const activeStoreId = useStoreStore((state) => state.activeStoreId);
   const loadStores = useStoreStore((state) => state.loadStores);
+  const user = useAuthStore((state) => state.user);
+  // Фізичне видалення та експорт конфіг-файлу мережі — role=owner (бекенд:
+  // require_owner → admin/store_manager отримають 403; кнопки ховаємо).
+  const isOwner = user?.role === 'owner';
+
+  // ── Стан: видалення точки (owner) ─────────────
+  const [deleteTarget, setDeleteTarget] = useState<Store | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // ── Стан: експорт конфігурації мережі (owner) ─
+  const [exportTarget, setExportTarget] = useState<Store | null>(null);
+  const [exportUrl, setExportUrl] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   // ── Список точок ─────────────────────────────
   const { data: stores, isLoading, isError } = useQuery<Store[]>({
@@ -142,6 +163,50 @@ const StoresPage: React.FC = () => {
     setAssignForm({ user_id: '', role: 'cashier' });
   };
 
+  // ── Видалення (фіз. DELETE порожньої точки; 409 — «є дані у …») ──
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await storeService.removeStore(deleteTarget.id);
+      toast.success(`Точку «${deleteTarget.name}» видалено`);
+      setDeleteTarget(null);
+      // Оновлюємо перемикач у хедері та список
+      loadStores();
+      queryClient.invalidateQueries({ queryKey: ['stores'] });
+    } catch (err: any) {
+      // 409: сервер повертає detail «Точку неможливо видалити: є дані у …»
+      toast.error(err?.response?.data?.detail || 'Помилка видалення точки');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // ── Експорт конфіг-файлу мережі ──
+  const openExport = (store: Store) => {
+    // Префіл: запам'ятовуємо адресу між експортами (localStorage).
+    const saved = localStorage.getItem('torgashka_server_url');
+    setExportUrl(saved || 'http://127.0.0.1:8000');
+    setExportTarget(store);
+  };
+
+  const handleExport = async () => {
+    if (!exportTarget) return;
+    setExporting(true);
+    try {
+      const url = exportUrl.trim();
+      const result = await networkConfigService.exportNetworkConfig(exportTarget.id, url || undefined);
+      if (url) localStorage.setItem('torgashka_server_url', url);
+      downloadTextFile(result.filename, result.content);
+      toast.success(`Конфігурацію збережено: ${result.filename}`);
+      setExportTarget(null);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Помилка експорту конфігурації');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const userOptions: SelectOption[] = (users || []).map((u) => ({
     value: u.id,
     label: `${u.name} (${u.login})`,
@@ -215,7 +280,9 @@ const StoresPage: React.FC = () => {
           {storeList.map((store) => (
             <div
               key={store.id}
-              className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden hover:shadow-md transition-shadow"
+              onClick={() => navigate(`/settings/stores/${store.id}`)}
+              className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden hover:shadow-md transition-shadow cursor-pointer"
+              title="Відкрити картку точки"
             >
               <div className="p-5">
                 <div className="flex items-start justify-between gap-2 mb-3">
@@ -233,7 +300,12 @@ const StoresPage: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
-                    {store.id === activeStoreId && (
+                    {!store.is_active && (
+                      <Badge variant="default" size="sm">
+                        Архів
+                      </Badge>
+                    )}
+                    {store.is_active && store.id === activeStoreId && (
                       <Badge variant="success" size="sm">
                         Активна
                       </Badge>
@@ -268,16 +340,60 @@ const StoresPage: React.FC = () => {
                 </div>
               </div>
 
-              {canAssign(store) && (
-                <div className="px-5 py-3 bg-gray-50 dark:bg-slate-700/50 border-t border-gray-100 dark:border-slate-700 flex items-center gap-1">
+              {(canAssign(store) || isOwner) && (
+                <div className="px-5 py-3 bg-gray-50 dark:bg-slate-700/50 border-t border-gray-100 dark:border-slate-700 flex items-center gap-1 flex-wrap">
+                  {canAssign(store) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openAssign(store);
+                      }}
+                      icon={<UserPlus className="w-3.5 h-3.5" />}
+                      className="text-gray-600 dark:text-gray-400"
+                    >
+                      Призначити користувача
+                    </Button>
+                  )}
+                  {isOwner && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openExport(store);
+                      }}
+                      icon={<FileDown className="w-3.5 h-3.5" />}
+                      className="text-gray-600 dark:text-gray-400"
+                      title="Експортувати конфіг-файл мережі для нової каси"
+                    >
+                      Експорт конфігурації
+                    </Button>
+                  )}
+                  {isOwner && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(store);
+                      }}
+                      icon={<Trash2 className="w-3.5 h-3.5" />}
+                      className="text-gray-600 dark:text-gray-400 hover:text-danger-600 dark:hover:text-danger-400"
+                      title="Фізично видалити порожню точку (owner)"
+                    />
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => openAssign(store)}
-                    icon={<UserPlus className="w-3.5 h-3.5" />}
-                    className="text-gray-600 dark:text-gray-400"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/settings/stores/${store.id}`);
+                    }}
+                    className="text-primary-600 dark:text-primary-400 ml-auto"
                   >
-                    Призначити користувача
+                    Картка точки →
                   </Button>
                 </div>
               )}
@@ -363,6 +479,56 @@ const StoresPage: React.FC = () => {
           </Button>
         </div>
       </Modal>
+
+      {/* ── Модалка: адреса сервера для експорту конфігурації ── */}
+      <Modal
+        isOpen={!!exportTarget}
+        onClose={() => setExportTarget(null)}
+        title={`Експорт конфігурації — ${exportTarget?.name || ''}`}
+        size="md"
+      >
+        <div className="space-y-4">
+          <Input
+            label="Адреса сервера для точок"
+            value={exportUrl}
+            onChange={(e) => setExportUrl(e.target.value)}
+            placeholder="http://127.0.0.1:8000"
+            helperText="Наприклад, VPN-IP сервера: http://100.64.0.5:8000. Файл містить код активації точки — передавайте його лише своїм касам."
+          />
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            Пароль бази даних у файл не включається (include_db_password=false) —
+            каса працює через API, не через прямий доступ до БД.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-200 dark:border-slate-700">
+          <Button variant="secondary" onClick={() => setExportTarget(null)}>
+            Скасувати
+          </Button>
+          <Button
+            onClick={() => void handleExport()}
+            disabled={exporting}
+            icon={exporting ? undefined : <FileDown className="w-4 h-4" />}
+          >
+            {exporting ? 'Експорт...' : 'Експортувати файл'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* ── Confirm: фізичне видалення точки ── */}
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void handleDelete()}
+        title="Видалити точку?"
+        message={
+          deleteTarget
+            ? `Точку «${deleteTarget.name}» буде ВИДАЛЕНО безповоротно (разом з даними каси, якщо вони є). Сервер дозволяє видалення лише порожньої точки: за наявності даних (товари, чеки, пристрої…) ви отримаєте помилку 409. Продовжити?`
+            : ''
+        }
+        confirmText="Видалити"
+        variant="danger"
+        isLoading={deleting}
+      />
     </div>
   );
 };

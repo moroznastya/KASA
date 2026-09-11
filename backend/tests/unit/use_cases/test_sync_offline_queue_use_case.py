@@ -27,12 +27,20 @@ def _make_queue_item(
     local_number: int = 1,
     check_type: str = "CHK",
     xml_body: str = "<DAT>...</DAT>",
+    check_sign: str | None = None,
+    id_offline: str | None = None,
+    mac: str | None = None,
+    shift_id=None,
 ):
     return SimpleNamespace(
         id=uuid4(),
         local_number=str(local_number),
         check_type=check_type,
         xml_body=xml_body,
+        check_sign=check_sign,
+        id_offline=id_offline,
+        mac=mac,
+        shift_id=shift_id,
     )
 
 
@@ -68,6 +76,36 @@ def _build_use_case(
 
 class TestSync:
     """Тести синхронізації офлайн-черги."""
+
+    @pytest.mark.asyncio
+    async def test_sync_passes_id_offline_to_check(self):
+        """G: sync передає id_offline офлайн-чека в Check (не губиться)."""
+        items = [_make_queue_item(local_number=1, id_offline="1000042")]
+        offline_queue = AsyncMock()
+        offline_queue.get_pending.return_value = items
+
+        xml_builder = MagicMock()
+        xml_builder.build_message.return_value = "<m/>"
+        crypto = MagicMock()
+        crypto.sign.return_value = b"<s/>"
+        grpc_client = MagicMock()
+        grpc_client.send_chk = AsyncMock(return_value=_make_check_response(status=1))
+
+        context = _make_context()
+        context.build_xml_builder.return_value = xml_builder
+        context.build_crypto_signer.return_value = crypto
+        context.grpc_client.return_value = grpc_client
+
+        session = AsyncMock(spec=AsyncSession)
+        uc = _build_use_case(
+            offline_queue=offline_queue, context=context, session=session
+        )
+        result = await uc.sync()
+        assert result["synced"] == 1
+        # id_offline дійшов до build_check (і далі — у Check)
+        call_kwargs = context.build_check.await_args.kwargs
+        assert call_kwargs["id_offline"] == "1000042"
+        assert call_kwargs["check_sign"] == b"<s/>"
 
     @pytest.mark.asyncio
     async def test_sync_empty_queue(self):

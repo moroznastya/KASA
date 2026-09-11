@@ -1,0 +1,31 @@
+# ============================================================================
+# torgashka-meta-backup.service — бекап мета-БД pos_system (ЕТАП 14)
+# ============================================================================
+# Окремий, НАЙЧАСТІШИЙ бекап мета-БД: втрата owners_db = втрата
+# маршрутизації до ВСІХ власників. Тому pos_system бекапиться двічі на добу
+# незалежно від повного циклу (таймер torgashka-meta-backup.timer).
+# Скрипт з --meta-only виконує ТІЛЬКИ мета-БД (першою і завжди).
+#
+# Для Docker-розгортання (cron на host):
+#   0 14 * * * /opt/torgashka/scripts/backup.sh --meta-only >> /opt/torgashka/logs/cron-backup.log 2>&1
+#
+# Встановлення:
+#   sudo cp scripts/systemd/torgashka-meta-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now torgashka-meta-backup.timer
+# ============================================================================
+
+[Unit]
+Description=Torgashka POS — бекап мета-БД pos_system (2x/добу, ЕТАП 14)
+Documentation=docs/infrastructure/backup-restore.md
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/torgashka/backup.env
+ExecStart=/opt/torgashka/scripts/backup.sh --meta-only
+RemainAfterExit=no
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/opt/torgashka/backups /opt/torgashka/logs

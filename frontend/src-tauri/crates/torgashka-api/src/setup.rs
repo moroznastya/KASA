@@ -18,7 +18,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use torgashka_domain::{LoginResult, SetupError, SetupRequest, SetupService, SetupStatusDto};
+use torgashka_domain::{LoginResult, SetupError, SetupRequest, SetupService};
 
 use crate::auth_routes::{self, AuthRouteError};
 use crate::AppState;
@@ -83,10 +83,13 @@ impl IntoResponse for SetupHttpError {
                 )
                     .into_response(),
                 SetupError::Infrastructure(msg) => {
+                    // Причина — ЛИШЕ в лог (stderr); клієнту — людський текст.
                     eprintln!("[torgashka-api] setup infrastructure error: {msg}");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"detail": msg})),
+                        Json(serde_json::json!({
+                            "detail": "Не вдалося виконати налаштування, спробуйте ще раз"
+                        })),
                     )
                         .into_response()
                 }
@@ -104,9 +107,28 @@ fn setup_svc(state: &AppState) -> Result<Arc<dyn SetupService + Send + Sync>, Se
 }
 
 /// GET /api/v1/setup/status — публічний, без JWT.
-pub async fn status(State(state): State<AppState>) -> Result<Json<SetupStatusDto>, SetupHttpError> {
-    let svc = setup_svc(&state)?;
-    Ok(Json(svc.status().await?))
+///
+/// ФІКС ДЕФЕКТУ 5: маршрут змонтовано ЗАВЖДИ (це readiness-проба фронтенду —
+/// LoginPage/SetupPage ретраять його кожні 2 с). Без БД хендлер віддає чесний
+/// 503 `{"status":"db_unavailable", ...}` НЕГАЙНО — раніше роут не монтувався
+/// (404) або запит висів без відповіді, і UI застигав на «Підключення до
+/// сервера…». Жодного очікування: відповідь формується з наявного стану.
+pub async fn status(State(state): State<AppState>) -> Response {
+    let Some(svc) = state.setup.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "2")],
+            Json(serde_json::json!({
+                "status": "db_unavailable",
+                "detail": "БД недоступна — Rust-гілка setup не ініціалізована (фасад працює, чекаємо PostgreSQL)"
+            })),
+        )
+            .into_response();
+    };
+    match svc.status().await {
+        Ok(s) => Json(s).into_response(),
+        Err(e) => SetupHttpError::Service(e).into_response(),
+    }
 }
 
 /// POST /api/v1/setup — створити першого власника + точку + персональну БД.

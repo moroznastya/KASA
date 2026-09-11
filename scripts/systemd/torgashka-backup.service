@@ -1,0 +1,35 @@
+# ============================================================================
+# torgashka-backup.service — повний щоденний бекап PostgreSQL (ЕТАП 11.1)
+# ============================================================================
+# Викликається таймером torgashka-backup.timer (щодня 02:00).
+# Для Docker-розгортання використовуйте cron на host-машині:
+#   0 2 * * * /opt/torgashka/scripts/backup.sh >> /opt/torgashka/logs/cron-backup.log 2>&1
+#   (host повинен мати postgresql-client; порт бекапу = проброшений порт, напр. 5434)
+#
+# Встановлення:
+#   sudo cp scripts/systemd/torgashka-backup.{service,timer} /etc/systemd/system/
+#   sudo cp scripts/systemd/backup.env.example /etc/torgashka/backup.env
+#   sudo chmod 600 /etc/torgashka/backup.env   # паролі!
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now torgashka-backup.timer
+#   sudo systemctl list-timers torgashka-backup.timer
+# ============================================================================
+
+[Unit]
+Description=Torgashka POS — щоденний повний бекап PostgreSQL (pos_system + torgashka_owner_*)
+Documentation=docs/infrastructure/backup-restore.md
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Облікові дані БД — у /etc/torgashka/backup.env (НЕ хардкодити паролі тут!)
+EnvironmentFile=/etc/torgashka/backup.env
+# Шлях до скрипта — замініть на фактичне розташування репозиторію
+ExecStart=/opt/torgashka/scripts/backup.sh
+# Надійне завершення: oneshot-сервіс без RemainAfterExit
+RemainAfterExit=no
+# Обмеження безпеки (опційно)
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/opt/torgashka/backups /opt/torgashka/logs

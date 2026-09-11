@@ -135,6 +135,7 @@ async fn confirm_invoice_updates_products_stock_and_store_stock() {
             cost_price: Some("50.00".into()),
             markup_percent: None,
         }],
+        client_uuid: None,
     };
 
     let r = with_store_ctx(ctx.clone(), async {

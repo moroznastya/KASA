@@ -7,14 +7,13 @@ use torgashka_prro::prro::{
     InMemoryPrroRepository, PrroOfflineQueue, PrroQueueStatus, CHECK_TYPE_CHK,
     CHECK_TYPE_SERVICECHK, CHECK_TYPE_ZREPORT, PRRO_OFFLINE_LIMIT_HOURS,
 };
-use torgashka_prro::xml::compute_mac;
 
 const XML: &str = r#"<DAT FN="400000000000" TN="400000000000" ZN="400000000000" DI="1" V="2.1.7"><C T="0"><P C="120" NM="Товар" PRC="100" Q="1" SM="100" TX="0"></P><E N="1" SM="100" TX="0" TXPR="20.00" TXSM="16.67"></E></C><TS>20260807112601</TS></DAT>"#;
 
 #[tokio::test]
 async fn add_document_ok() {
     let repo = InMemoryPrroRepository::new();
-    let mac = compute_mac(XML, None);
+    let mac = "7b427da3a6706ae9f30fce38ed92e3e6b7f9f934468aaf6fb2d1ae3a41fa2722".to_string();
     let item = PrroOfflineQueue::add_document(
         &repo,
         None,

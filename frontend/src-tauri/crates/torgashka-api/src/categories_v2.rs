@@ -48,6 +48,17 @@ impl From<torgashka_domain::DirectoryError> for CatV2Error {
             torgashka_domain::DirectoryError::NotFound(msg) => {
                 CatV2Error::Service(WriteError::NotFound(msg))
             }
+            // Санація (ADR-0007 §D): сирий текст БД/драйвера → лог; клієнту —
+            // людський текст. Статус не змінюємо (був 400 через BadRequest).
+            torgashka_domain::DirectoryError::Infrastructure(msg) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[categories_v2] DirectoryError::Infrastructure: {msg}"),
+                );
+                CatV2Error::Service(WriteError::BadRequest(
+                    "Помилка БД довідників, спробуйте ще раз".to_string(),
+                ))
+            }
             other => CatV2Error::Service(WriteError::BadRequest(other.to_string())),
         }
     }
@@ -80,11 +91,28 @@ impl IntoResponse for CatV2Error {
                 Json(serde_json::json!({"detail": msg})),
             )
                 .into_response(),
-            CatV2Error::Service(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"detail": e.to_string()})),
-            )
-                .into_response(),
+            CatV2Error::Service(e) => {
+                // Санація (ADR-0007 §D): технічний текст → лог, користувачу —
+                // стабільне повідомлення. Людські варіанти (Conflict/Forbidden/
+                // NotFound) лишаються як були — вони не містять тексту БД.
+                if matches!(e, WriteError::Infrastructure(_)) {
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[categories_v2] WriteError::Infrastructure: {e}"),
+                    );
+                }
+                let detail = match &e {
+                    WriteError::Infrastructure(_) => {
+                        "Не вдалося виконати операцію, спробуйте ще раз".to_string()
+                    }
+                    other => other.to_string(),
+                };
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"detail": detail})),
+                )
+                    .into_response()
+            }
             CatV2Error::Forbidden(msg) => (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"detail": msg})),

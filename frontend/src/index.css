@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* ── Висота смуги оновлень (UpdateBanner, Tauri) ──
+   За замовчуванням 0. Component UpdateBanner виставляє 44px, поки смуга видима,
+   щоб сторінки з 100vh-розкладкою віднімали її: calc(100vh - Xrem - var(--update-banner-h, 0px)). */
+:root { --update-banner-h: 0px; }
+
 /* ── Google Font «Bad Script» (рукописний) для друку чеків/етикеток/цінників ──
    Два subsets: кирилиця (укр.) + латиниця/цифри.
    Значення налаштування print_font_family = 'Bad Script, cursive'. */

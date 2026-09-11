@@ -250,7 +250,45 @@ pub fn run() {
             // ще до завантаження webview, тож фронтенд не ловить ECONNREFUSED
             // (гонка: ініціалізація БД/роутів у serve триває секунди, а webview
             // одразу стріляє GET /auth/verify при відновленні сесії).
-            let facade_addr = torgashka_api::DEFAULT_FACADE_ADDR.to_string();
+            // Дефект 3 (recovery): `[node] mode="standby"` пише ЛИШЕ
+            // start_standby_provision (після успішного провіжингу). Якщо провіжн
+            // обірвався або застосунок перезапустили до запису — конфіг губиться
+            // і каса назавжди вважає себе Primary (немає /api/v1/local/*, немає
+            // локальної репліки). Recovery відновлює режим за наявними слідами
+            // (PG_VERSION у data_dir + node_node_id у SQLite settings), НЕ
+            // роблячи повторний pg_basebackup. Викликаємо ДО `load()` нижче й ДО
+            // бінда фасаду :8000 — інакше init_local_standby не змонтується.
+            match torgashka_infrastructure::node_config::recover_standby_if_needed() {
+                Ok(true) => eprintln!(
+                    "[standby] recovery: [node] mode=standby відновлено (дефект 3)"
+                ),
+                Ok(false) => {}
+                Err(e) => eprintln!("[standby] recovery: не вдалося ({e})"),
+            }
+
+            // Дефект 2 (ЕТАП 16): у standby-режимі локальна embedded-репліка
+            // (127.0.0.1:5433) мусить бути піднята ДО бінда фасаду :8000 —
+            // інакше `init_local_standby` не підключиться, `/api/v1/local/*`
+            // не змонтуються, а UI вічно висить на «Підключення до сервера…».
+            // Ідемпотентно (уже слухає / не провіжнено → no-op); primary-режим
+            // не чіпаємо (is_standby() = false → виклику немає).
+            if torgashka_infrastructure::node_config::NodeConfig::load().is_standby() {
+                match torgashka_infrastructure::embedded_pg::ensure_local_replica_running() {
+                    Ok(true) => {
+                        eprintln!("[standby] локальну репліку піднято при старті (дефект 2)")
+                    }
+                    Ok(false) => {
+                        eprintln!("[standby] локальна репліка вже слухає або ще не провіжнена — no-op")
+                    }
+                    Err(e) => eprintln!("[standby] локальну репліку не піднято: {e}"),
+                }
+            }
+
+            // B2 (рішення Творця): адреса фасаду з env TORGASHKA_LISTEN_ADDR
+            // (напр. 0.0.0.0:8000 на VPS, щоб standby-каси достукувались через
+            // інтернет); дефолт — 127.0.0.1:8000 (повна зворотна сумісність).
+            let facade_addr = std::env::var("TORGASHKA_LISTEN_ADDR")
+                .unwrap_or_else(|_| torgashka_api::DEFAULT_FACADE_ADDR.to_string());
             let std_listener = std::net::TcpListener::bind(&facade_addr).map_err(|e| {
                 format!(
                     "Torgashka: не вдалося зайняти порт {facade_addr} ({e}).\n\
@@ -302,6 +340,31 @@ pub fn run() {
                 });
             }
 
+            // ЕТАП 5: фоновий push-цикл (outbox → сервер). Стартує, якщо
+            // налаштування server_url/api_token/store_id уже збережені в
+            // SQLite; інакше — запуститься після set_setting (commands.rs).
+            tauri::async_runtime::spawn(async move {
+                match torgashka_infrastructure::offline::commands::ensure_push_task_started() {
+                    Ok(true) => eprintln!("[sync_push] фоновий цикл запущено (ЕТАП 5)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[sync_push] spawn при старті: {e}"),
+                }
+                // ЕТАП 7b (HIGH QA §5.1): pull-цикл стартує разом з push —
+                // каса оновлює довідники, last_pull_ok_at у health заповнюється.
+                match torgashka_infrastructure::offline::commands::ensure_pull_task_started() {
+                    Ok(true) => eprintln!("[sync_pull] фоновий цикл запущено (ЕТАП 7b)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[sync_pull] spawn при старті: {e}"),
+                }
+                // B1b: heartbeat standby-вузла — якщо node_* settings уже є
+                // (повторний старт після join+provision). Один на процес.
+                match torgashka_infrastructure::standby_heartbeat::start_standby_heartbeat() {
+                    Ok(true) => eprintln!("[standby_heartbeat] фоновий цикл запущено (B1b)"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("[standby_heartbeat] spawn при старті: {e}"),
+                }
+            });
+
             Ok(())
         })
         // Реєстрація команд
@@ -323,10 +386,20 @@ pub fn run() {
             torgashka_infrastructure::offline::commands::save_receipt_offline,
             torgashka_infrastructure::offline::commands::get_unsynced_receipts,
             torgashka_infrastructure::offline::commands::mark_receipt_synced,
+            torgashka_infrastructure::offline::commands::sync_now,
+            torgashka_infrastructure::offline::commands::sync_status,
+            torgashka_infrastructure::offline::commands::sync_health,
             torgashka_infrastructure::offline::commands::get_setting,
             torgashka_infrastructure::offline::commands::set_setting,
             torgashka_infrastructure::offline::commands::clear_product_cache,
             torgashka_infrastructure::offline::commands::get_offline_stats,
+            // ЕТАП 6: самодостатні операції каси (локальний запис + stock).
+            torgashka_infrastructure::offline::commands::save_purchase_order_offline,
+            torgashka_infrastructure::offline::commands::save_inventory_offline,
+            torgashka_infrastructure::offline::commands::save_transfer_offline,
+            torgashka_infrastructure::offline::commands::save_write_off_offline,
+            torgashka_infrastructure::offline::commands::get_stock_level,
+            torgashka_infrastructure::offline::commands::get_stock_levels,
             // ── Команди системної інтеграції ──────────────────────────
             commands::system::get_app_version,
             commands::system::get_platform,
@@ -336,6 +409,9 @@ pub fn run() {
             commands::system::get_system_status,
             commands::system::get_keyboard_layout,
             commands::system::send_notification,
+            // ── Команди standby-вузла мережі (B1a/B1c) ────────────────
+            commands::standby::start_standby_provision,
+            commands::standby::restart_app,
             // ── Команди підключених пристроїв (ваги, термінали) ─────────
             get_available_ports,
             torgashka_infrastructure::devices::get_devices,
@@ -365,6 +441,13 @@ pub fn run() {
                 // 2) Flush черг офлайн-синхронізації. На етапі 0 черг немає;
                 //    місце для sync-флашу на наступних етапах.
                 // Python sidecar дезактивовано (етап 8) — нема чого зупиняти.
+                // 3) Graceful-зупинка вбудованого PostgreSQL (Windows): tokio
+                //    abort() фасаду не гарантує Drop його локальних змінних до
+                //    завершення процесу. Без явного pg_ctl stop postgres.exe
+                //    лишається сиротою і падає з 0xC000013A при закритті
+                //    консолі → crash recovery 30-60 с на наступному старті.
+                //    Ідемпотентно: якщо PG уже зупинено — без дій.
+                torgashka_infrastructure::embedded_pg::stop_running_instance();
             }
         });
 }

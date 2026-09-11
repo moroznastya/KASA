@@ -1,68 +1,42 @@
 """
-Побудова XML-документів СЗЗД 2.1.7 для передачі на фіскальний сервер ДПС (ПРРО).
+Побудова XML-документів ПРРО для передачі на фіскальний сервер ДПС
+(API ФСКО, тест. API `cabinet.tax.gov.ua:9443`).
 
-Джерело протоколу: docs/scr/SZZD_RRO_Protokol_peredach_nformats_2_1_7.doc
+Джерело: `resources/262576.docx` («Опис API фіскального сервера…») +
+        `docs/scr/SZZD_RRO_Protokol_peredach_nformats_2_1_7.doc` (структура чеку).
 
-СТРУКТУРА ПОВІДОМЛЕННЯ ВІД РРО (розділ 5):
+СТРУКТУРА ПОВІДОМЛЕННЯ (ПРРО, розділ «XML-формати чеку та Z-звіту»):
     <?xml version="1.0" encoding="windows-1251"?>
     <RQ V="1">
-      <DAT FN="4538765845" TN="ПН 345612052809" ZN="АА57506761"
-           DI="238" DT="0" V="1">
+      <DAT FN="..." TN="..." ZN="..." DI="..." DT="0" V="1">
         {зміст пакету даних}   ← <C ...> чек / <Z ...> Z-звіт
-        <TS>20110801112601</TS>
+        <TS>YYYYMMDDHHMMSS</TS>
       </DAT>
-      <MAC DI="238" NT="34">
-        {значення MAC}
-      </MAC>
+      <MAC ID="">{hex}</MAC>
     </RQ>
 
-В повідомленні може бути одна або декілька пар <DAT>…<MAC>…
-(хеш-ланцюжок: MAC = хеш канонічного <DAT>).
+- В повідомленні може бути ТІЛЬКИ одна пара <DAT>…<MAC>… (ПРРО).
+- <TS> — ЛОКАЛЬНИЙ час у форматі YYYYMMDDhhmmss (не UTC, не epoch).
+- <MAC> атрибути: лише ID (без DI/NT):
+    * ID=""               — онлайн-документи;
+    * ID={резервний №}    — офлайн-документи (той самий номер, що й id_offline);
+    * T=112 — без атрибута ID; T=111 (ping) — <MAC></MAC> без значення.
+- Значення MAC = hex (lowercase) sha256 XML ПОПЕРЕДНЬОГО повідомлення Check
+  (повний RQ-документ, байти windows-1251). Перший документ ПРРО після
+  реєстрації/скидання ланцюга — значення ПОРОЖНЄ. <H>-ланцюжка в тілі чеку
+  НЕМАЄ — ланцюг контролюється самим <MAC>.
+- Кодування: windows-1251, XML-декларація обов'язкова.
 
-АТРИБУТИ <DAT>:
-    FN — фіскальний номер РРО (String)
-    TN — податковий номер / індивідуальний номер платника ПДВ (String)
-    ZN — заводський номер РРО (String)
-    DI — ідентифікатор пакету даних, унікальний в межах РРО (Decimal)
-    DT — тип РРО (0 — загального призначення; може не вказуватись при DT="0")
-    V  — версія формату пакету даних (Decimal)
+КАНОНІЧНИЙ ВИГЛЯД (Додаток А СЗЗД):
+    1. Всі пробіли/табуляції/переноси між тегами видаляються.
+    2. Теги завжди закриті (<tag/> → <tag></tag>).
+    3. Атрибути — в АЛФАВІТНОМУ порядку в кожному тегу.
 
-<TS> — дата та час формування пакету в форматі YYYYMMDDhhmmss.
-
-<MAC> атрибути:
-    DI — ідентифікатор пакету даних, для якого обчислено MAC
-    NT — порядковий номер MAC; унікальний і постійно зростаючий в межах РРО
-
-КАНОНІЧНИЙ ВИГЛЯД (Додаток А):
-    1. Всі пробіли, табуляції, переноси рядків між тегами видаляються.
-    2. Всі теги приводяться до вигляду <tag_name …>…</tag_name>
-       (самозакривні <tag/> → <tag></tag>).
-    3. Пробіли в старт-тегах, окрім значень атрибутів, замінюються на один.
-    4. Всі атрибути всередині кожного тегу розміщуються в АЛФАВІТНОМУ порядку.
-
-ФОРМАТ ЧЕКУ (розділ 7.1): пакет даних чеку:
-    <DAT FN="..." TN="..." ZN="..." DI="..." DT="0" V="1">
-      <C T="0">            ← T: 0 — продаж, 1 — повернення
-        <P N="1" C="120" NM="Хліб" SM="370" Q="1000" PRC="370" TX="1"/>
-        <M N="2" T="0" NM="ГОТІВКА" SM="500"/>
-        <E N="3" NO="1" SM="370" FN="..." TS="..." TX="1" TXPR="20.00"
-           TXSM="125" DTPR="0.00" DTSM="0" TXTY="0" TXAL="0"/>
-      </C>
-      <TS>20110801112601</TS>
-    </DAT>
-    <MAC DI="..." NT="...">{Base64}</MAC>
-
-ОДИНИЦІ ВИМІРУ:
-    - суми вказуються в копійках (грн × 100), ціле число;
-    - кількість товару × 1000 (ціле число).
-
-MAC: обчислюється для тегу <DAT> з усім його вмістом (канонічний вигляд),
-як SHA-256 хеш, переведений у Base64 (див. compute_mac).
+ФОРМАТ ЧЕКУ (СЗЗД §7.1): суми — копійки (×100), кількість ×1000.
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import re
 from datetime import datetime
@@ -70,6 +44,9 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from lxml import etree
+
+# ─── XML-декларація (обов'язкова, windows-1251) ─────────────────────────────
+XML_DECLARATION = '<?xml version="1.0" encoding="windows-1251"?>'
 
 # ─── Коди типів чеку в <C T="..."> ───────────────────────────────────────────
 CHK_TYPE_SALE = "0"        # Чек продажу
@@ -88,8 +65,11 @@ SERVICE_TYPES = frozenset(
     {SERVICE_OPEN_SHIFT, SERVICE_OFFLINE, SERVICE_ONLINE, SERVICE_PING, SERVICE_RESERVE}
 )
 
-# Шаблон для витягування DI з канонічного <DAT>
-_DI_PATTERN = re.compile(r'<DAT\b[^>]*\bDI="(\d+)"')
+# Розмір діапазону резервних номерів для T=112 (за зразком ДПС)
+DEFAULT_RESERVE_SIZE = 150
+
+# Шаблон для визначення типу службового чеку <C T="..."> всередині <DAT>
+_C_TYPE_PATTERN = re.compile(r"<C\b[^>]*\bT=\"(\d+)\"")
 
 
 # ─── Утиліти для роботи з числами та XML ────────────────────────────────────
@@ -98,8 +78,6 @@ def _as_decimal(value: Decimal | float | str | int) -> Decimal:
     """Перетворює значення на Decimal без втрати точності."""
     if isinstance(value, Decimal):
         return value
-    if isinstance(value, float):
-        return Decimal(str(value))
     return Decimal(str(value))
 
 
@@ -160,13 +138,47 @@ def _esc_attr(value: str) -> str:
 
 
 def _fmt_datetime(date_time: datetime) -> str:
-    """Форматує дату/час у формат YYYYMMDDhhmmss (для тегу <TS>)."""
+    """Форматує дату/час у формат YYYYMMDDhhmmss (тег <TS>)."""
     return date_time.strftime("%Y%m%d%H%M%S")
 
 
 def _fmt_date(date_time: datetime) -> str:
-    """Форматує дату у формат YYYYMMDD (для тегу <TS> у <TXS>)."""
+    """Форматує дату у формат YYYYMMDD (тег <TS> у <TXS>)."""
     return date_time.strftime("%Y%m%d")
+
+
+def signed_bytes_to_text(signed: bytes) -> str:
+    """
+    Перетворює підписані байти у текст для колонки Text (check_sign).
+
+    Для XAdES-бекенду підпис — XML у windows-1251 → декодується у текст;
+    для бінарного CAdES (ІІТ) — base64 з префіксом "b64:" (sync кодує назад).
+    """
+    import base64 as _b64
+
+    for enc in ("cp1251", "utf-8"):
+        try:
+            return signed.decode(enc)
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return f"b64:{_b64.b64encode(signed).decode('ascii')}"
+
+
+def cp1251_bytes(message: str) -> bytes:
+    """
+    Кодує повне RQ-повідомлення у байти windows-1251.
+
+    Саме ці байти підписуються (CAdES/XAdES) і саме над ними обчислюється
+    хеш-ланцюжок (MAC наступного чеку). Символи поза windows-1251 →
+    UnicodeEncodeError (краще явна помилка, ніж мовчазне спотворення).
+
+    Args:
+        message: повне повідомлення <RQ>…</RQ> (з XML-декларацією).
+
+    Returns:
+        bytes — документ у кодуванні windows-1251.
+    """
+    return message.encode("cp1251")
 
 
 # ─── Канонічний вигляд (Додаток А) ──────────────────────────────────────────
@@ -240,7 +252,90 @@ def canonicalize(xml_str: str) -> str:
     return _canonical_serialize(root)
 
 
-# ─── Обчислення MAC ─────────────────────────────────────────────────────────
+# ─── Хеш-ланцюжок / MAC ──────────────────────────────────────────────────────
+
+def _service_type_of(dat_xml: str) -> str | None:
+    """Визначає тип службового чеку <C T="..."> у канонічному <DAT> (або None)."""
+    match = _C_TYPE_PATTERN.search(dat_xml)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _mac_tag(dat_xml: str, mac_value: str, mac_id: str) -> str:
+    """
+    Будує тег <MAC> за зразками ДПС (262576.docx).
+
+    - T=111 (ping): `<MAC></MAC>` — без ID, без значення;
+    - T=112 (резерв): `<MAC>{value}</MAC>` — без атрибута ID;
+    - решта: `<MAC ID="{mac_id}">{value}</MAC>` — ID="" для онлайн,
+      ID={резервний фіскальний номер} для офлайн-документів.
+    """
+    service = _service_type_of(dat_xml)
+    if service == SERVICE_PING:
+        return "<MAC></MAC>"
+    if service == SERVICE_RESERVE:
+        return f"<MAC>{_esc_text(mac_value)}</MAC>"
+    return f'<MAC ID="{_esc_attr(mac_id)}">{_esc_text(mac_value)}</MAC>'
+
+
+def compute_mac(data: str | bytes) -> str:
+    """
+    Обчислює MAC = hex (lowercase) sha256 XML попереднього Check.
+
+    Джерело (API ФСКО): «Значення MAC розраховується за допомогою функції
+    гешування sha256 попереднього чеку … Геш записується як хекс строка».
+    Хешується ПОВНИЙ RQ-документ попереднього повідомлення у байтах
+    windows-1251 (те, що «бачить» сервер через CAdES).
+
+    Args:
+        data: повне RQ-повідомлення попереднього Check (str — кодується
+            у windows-1251; bytes — використовуються як є).
+
+    Returns:
+        str — 64-символьний hex sha256 (lowercase). Для першого документа
+        ПРРО (ланцюг порожній) значення MAC не заповнюється ("").
+    """
+    raw = data.encode("cp1251") if isinstance(data, str) else data
+    if not raw:
+        return ""
+    return hashlib.sha256(raw).hexdigest()
+
+
+# Аліас: назва, що описує призначення в коді ланцюга.
+chain_hash = compute_mac
+
+
+def reconstruct_full_rq(
+    dat_xml: str,
+    mac_value: str,
+    *,
+    mac_id: str = "",
+) -> str:
+    """
+    Відтворює ПОВНЕ RQ-повідомлення зі збережених частин.
+
+    Використовується для обчислення хешу ланцюга документа з офлайн-черги:
+    sha256(повний RQ попереднього Check). Відтворення детерміноване і
+    байт-ідентичне оригінальному build_message(), якщо збережені ті самі
+    частини (xml_body=канонічний <DAT>, mac=значення <MAC> документа,
+    id_offline → ID тега MAC для офлайн-чеків).
+
+    Args:
+        dat_xml: канонічний XML <DAT>…</DAT> (як збережено у черзі).
+        mac_value: значення <MAC> документа (hex-ланцюг попереднього RQ).
+        mac_id: ID тега <MAC> (для офлайн-документів = резервний №; інакше "").
+
+    Returns:
+        str — повне повідомлення з XML-декларацією windows-1251.
+    """
+    dat_xml = canonicalize(dat_xml)
+    mac_value = mac_value or ""
+    return (
+        f"{XML_DECLARATION}<RQ V=\"1\">"
+        f"{dat_xml}{_mac_tag(dat_xml, mac_value, mac_id or '')}</RQ>"
+    )
+
 
 def extract_check_no(xml: str) -> int | None:
     """Дістає NO (номер операції) з XML чека — H1: lastChk повертає XML
@@ -254,40 +349,11 @@ def extract_check_no(xml: str) -> int | None:
     return int(match.group(1))
 
 
-def compute_mac(dat_xml_canonical: str, key: bytes | None = None) -> str:
-    """
-    Обчислює MAC для пакету даних <DAT>.
-
-    MAC = Base64( SHA-256( канонічний <DAT> ) ).
-
-    Для ПРРО (не модем) значення залежить лише від самого <DAT> — це дає
-    можливість перевіряти цілісність пакету та будувати хеш-ланцюжок
-    (значення зберігається у PrroShift.last_mac).
-
-    Args:
-        dat_xml_canonical: канонічний XML тегу <DAT> (результат canonicalize).
-        key: опціональний додатковий ключ, який додається до даних перед
-            хешуванням (для майбутньої сумісності з модемним режимом).
-
-    Returns:
-        str — значення MAC у форматі Base64 (ASCII).
-    """
-    data = dat_xml_canonical.encode("utf-8")
-    if key:
-        data = data + key
-    digest = hashlib.sha256(data).digest()
-    return base64.b64encode(digest).decode("ascii")
-
-
 # ─── Білдер XML ─────────────────────────────────────────────────────────────
 
 class XmlBuilder:
     """
-    Побудова XML-документів СЗЗД 2.1.7 для фіскалізації через ПРРО.
-
-    Призначення: формувати пакети даних (чек / Z-звіт / службовий чек),
-    приводити їх до канонічного вигляду та обчислювати MAC для
-    передачі через gRPC (grpc_client.PrroGrpcClient.send_chk).
+    Побудова XML-документів ПРРО для фіскалізації через gRPC.
 
     Конструктор отримує реквізити ПРРО, які підставляються в атрибути <DAT>.
     """
@@ -313,9 +379,8 @@ class XmlBuilder:
             rro_type: тип РРО (DT), за замовчуванням "0".
             version: версія формату пакету даних (V), за замовчуванням "1".
             initial_packet_id: початковий лічильник пакетів (DI).
-                Ініціалізується з останнього значення (наприклад,
-                з PrroShift / prro_queue), щоб DI залишався унікальним.
-            initial_mac_number: початковий лічильник MAC (NT).
+            initial_mac_number: початковий лічильник MAC (NT; збережено для
+                сумісності — ПРРО-формат не використовує NT).
         """
         self.rro_fn = rro_fn
         self.tax_number = tax_number
@@ -323,7 +388,7 @@ class XmlBuilder:
         self.rro_type = rro_type
         self.version = version
 
-        # Монотонні лічильники (DI / NT) — унікальні в межах одного ПРРО
+        # Монотонний лічильник DI — унікальний в межах одного ПРРО
         self._packet_id = int(initial_packet_id)
         self._mac_number = int(initial_mac_number)
 
@@ -335,7 +400,7 @@ class XmlBuilder:
         return self._packet_id
 
     def _next_mac_number(self) -> int:
-        """Повертає наступний порядковий номер MAC (NT)."""
+        """Повертає наступний порядковий номер MAC (NT) — для сумісності."""
         self._mac_number += 1
         return self._mac_number
 
@@ -395,73 +460,34 @@ class XmlBuilder:
         discounts: list[dict[str, Any]] | None = None,
         comment: str | None = None,
         return_type: str | None = None,
-        prev_hash: str | None = None,
     ) -> str:
         """
         Формує канонічний XML пакету даних чеку (<DAT><C>…</C><TS>…</TS></DAT>).
 
+        Хеш-ланцюжок у тіло чеку НЕ вставляється (тег <H> відсутній) — контроль
+        послідовності забезпечує <MAC> повідомлення (див. build_message).
+
         Args:
             check_type: тип чеку (T): "0" — продаж, "1" — повернення.
             items: список позицій чеку. Кожна позиція — словник:
-                {
-                    "code": str,           # Код товару (C)
-                    "barcode": str,        # Штрихкод (CD, опційно)
-                    "name": str,           # Назва товару (NM)
-                    "quantity": Decimal,   # Кількість (Q; ×1000 в XML)
-                    "price": Decimal,      # Ціна за одиницю, грн (PRC; ×100)
-                    "total": Decimal,      # Сума позиції, грн (SM; ×100)
-                    "tax_rate": str,       # Податок (TX): "0"|"1"|"2"|"-1"
-                }
-            payments: список оплат:
-                {
-                    "code": str,           # Форма оплати (T): "0" готівка, ≠0 безготівка
-                    "name": str,           # Назва оплати (NM, опційно)
-                    "amount": Decimal,     # Сума, грн (SM; ×100)
-                    "change": Decimal,     # Решта, грн (RM, опційно; ×100)
-                }
-            totals: підсумкові суми чеку:
-                {
-                    "total": Decimal,          # Загальна сума чеку (SM; ×100)
-                    "fiscal_number": int,      # Номер фіскального чеку (NO)
-                    "se": Decimal,             # Сума без ПДВ (SE, опційно; ×100)
-                    "tax_total": Decimal,      # Сума ПДВ (TXSM; ×100)
-                    "tax_rate": str,           # Податок (TX): "0"|"1"|"2"|"-1"
-                    "tax_percent": Decimal,    # Ставка податку % (TXPR, "20.00")
-                    "dtpr": Decimal,           # Ставка доп. збору % (DTPR)
-                    "dtsm": Decimal,           # Сума доп. збору (DTSM; ×100)
-                    "tax_type": str,           # Ознака податку (TXTY): "0"|"1"
-                    "tax_algorithm": str,      # Алгоритм (TXAL): "0".."3"
-                    "cashier": int,            # Номер касира (CS, опційно)
-                    "tax_groups": list,        # Опційно: декілька податкових груп,
-                                               #   кожна: {tax, tax_percent, tax_total,
-                                               #            dtpr, dtsm, tax_type, tax_algorithm}
-                }
-            date_time: дата/час операції (None — поточний час UTC).
-            discounts: список знижок/націнок (теги <D>/<S>, опційно):
-                {
-                    "type": "D"|"S",       # D — знижка, S — націнка
-                    "tr": str,             # Тип застосування (TR): "0"|"1"|"2"
-                    "ty": str,             # Тип (TY): "0" сумова | "1" відсоткова
-                    "percent": Decimal,    # Відсоток (PR, для TY="1", опційно)
-                    "total": Decimal,      # Загальна сума знижки (SM; ×100)
-                    "ni": int,             # Номер операції, до якої відноситься (NI)
-                }
+                {"code", "barcode"(опц.), "name", "quantity", "price",
+                 "total", "tax_rate"}
+            payments: список оплат: {"code", "name"(опц.), "amount",
+                "change"(опц.) — <M RM> додається лише якщо решта > 0}.
+            totals: підсумкові суми чеку: {"total", "fiscal_number", "se",
+                "tax_total", "tax_rate", "tax_percent", "dtpr", "dtsm",
+                "tax_type", "tax_algorithm", "cashier"(опц.),
+                "tax_groups"(опц.)}.
+            date_time: дата/час операції (None — поточний ЛОКАЛЬНИЙ час).
+            discounts: список знижок/націнок (<D>/<S>, опційно).
             comment: текстовий коментар чеку (<L>, опційно).
-            prev_hash: хеш (MAC) XML попереднього Check — тег <H N="..."> всередині
-                <C> (СЗЗД 2.1.7, службова інформація, Base64). Не вставляється для
-                ping T=111 та службових чеків 108/109/110/112 (None — без <H>).
             return_type: тип виплати для чеку повернення (RT, опційно):
-                "0" — повернення товару або рекомпенсація послуги
-                      (за замовчуванням для T="1");
-                "1" — рекомпенсація послуги;
-                "2" — прийняття цінностей під заставу;
-                "3" — виплата виграшу.
-                Для чеків продажу ігнорується (RT вказується тільки для T="1").
+                "0" — повернення товару (за замовчуванням для T="1") тощо.
 
         Returns:
             str — канонічний XML тегу <DAT> (без <MAC>).
         """
-        date_time = date_time or datetime.utcnow()
+        date_time = date_time or datetime.now()
         ts = _fmt_datetime(date_time)
 
         # ── Послідовність операцій у чеку ─────────────────────────────────
@@ -471,13 +497,6 @@ class XmlBuilder:
             nonlocal seq
             seq += 1
             return seq
-
-        # B1: хеш попереднього Check (СЗЗД 2.1.7, тег <H> — службова інформація,
-        # Base64; не друкується; крім ping T=111 та службових 108/109/110/112).
-        # H — перша операція чеку (N=1), щоб Python/Rust були байт-ідентичні.
-        h_tag: list[str] = []
-        if prev_hash:
-            h_tag.append(f'<H N="{next_n()}">{_esc_text(prev_hash)}</H>')
 
         # ── Позиції продажу/повернення (<P>) ─────────────────────────────
         p_tags: list[str] = []
@@ -516,8 +535,10 @@ class XmlBuilder:
             if pay.get("name"):
                 attrs.append(f'NM="{_esc_attr(str(pay["name"]))}"')
             attrs.append(f'SM="{_to_cents(pay["amount"])}"')
-            if pay.get("change") is not None:
-                attrs.append(f'RM="{_to_cents(pay["change"])}"')
+            # RM: решта в гривнях — НЕ вказується, якщо решта відсутня
+            change = pay.get("change")
+            if change is not None and _as_decimal(change) > 0:
+                attrs.append(f'RM="{_to_cents(change)}"')
             m_tags.append(f"<M {' '.join(attrs)}></M>")
 
         # ── Коментар (<L>) ────────────────────────────────────────────────
@@ -582,7 +603,6 @@ class XmlBuilder:
         body = "".join(
             [
                 f"<C {' '.join(c_attrs)}>",
-                *h_tag,
                 *p_tags,
                 *d_tags,
                 *m_tags,
@@ -607,49 +627,16 @@ class XmlBuilder:
         Формує канонічний XML пакету даних Z-звіту (<DAT><Z>…</Z><TS>…</TS></DAT>).
 
         Args:
-            shift_data: дані зміни (Z-звіту):
-                {
-                    "shift_number": int,     # Номер звіту (NO)
-                    "sales_count": int,      # Кількість чеків продажу (NC NI)
-                    "returns_count": int,    # Кількість чеків повернення (NC NO)
-                    "taxes": list,           # Підсумки по податках (<TXS>):
-                        {
-                            "tax": str,            # TX: "0"|"-1"|"1"|"2"...
-                            "ts": str,             # Дата встановлення (TS, YYYYMMDD)
-                            "tax_percent": Decimal,# TXPR "20.00"
-                            "tax_in": Decimal,     # TXI (×100)
-                            "tax_out": Decimal,    # TXO (×100)
-                            "dtpr": Decimal,       # DTPR
-                            "dti": Decimal,        # DTI (×100)
-                            "dto": Decimal,        # DTO (×100)
-                            "tax_type": str,       # TXTY
-                            "tax_algorithm": str,  # TXAL
-                            "smi": Decimal,        # SMI (×100)
-                            "smo": Decimal,        # SMO (×100)
-                        }
-                    "payments": list,        # Обороти по формах оплати (<M>):
-                        {
-                            "code": str,           # T: "0" готівка, ≠0 безготівка
-                            "name": str,           # NM
-                            "smi": Decimal,        # SMI (×100)
-                            "smo": Decimal,        # SMO (×100)
-                        }
-                    "cash_io": list,         # Внесення/видачі (<IO>, опційно):
-                        {
-                            "code": str,           # T
-                            "name": str,           # NM
-                            "smi": Decimal,        # SMI (×100)
-                            "smo": Decimal,        # SMO (×100)
-                        }
-                    "operations": dict,      # Операції переказу (<OP>, опційно):
-                        {"qp": int, "qs": Decimal}   # QP, QS (×100)
-                }
-            date_time: дата/час закриття зміни (None — поточний час UTC).
+            shift_data: дані зміни (Z-звіту): shift_number, sales_count,
+                returns_count, taxes[{tax,ts,tax_percent,tax_in,tax_out,dtpr,
+                dti,dto,tax_type,tax_algorithm,smi,smo}], payments[{code,name,
+                smi,smo}], cash_io[{code,name,smi,smo}], operations{qp,qs}.
+            date_time: дата/час закриття зміни (None — поточний ЛОКАЛЬНИЙ час).
 
         Returns:
             str — канонічний XML тегу <DAT> (без <MAC>).
         """
-        date_time = date_time or datetime.utcnow()
+        date_time = date_time or datetime.now()
         ts = _fmt_datetime(date_time)
 
         # ── Підсумки по податках (<TXS>) ──────────────────────────────────
@@ -732,21 +719,21 @@ class XmlBuilder:
         *,
         service_type: str = SERVICE_PING,
         date_time: datetime | None = None,
+        reserve_size: int = DEFAULT_RESERVE_SIZE,
     ) -> str:
         """
         Формує канонічний XML пакету даних службового чеку.
 
-        Для службових чеків (з 01.10.2021) вказуються лише атрибути N і VD,
-        структура: <C T="108"><E N="1"/></C>.
+        Тіло — за зразками ДПС (262576.docx), БЕЗ <E N="1">:
+          - 108/109/110/111: `<C T="..."></C>`;
+          - 112: `<C T="112"><H SIZE="150"></H></C>` (SIZE = розмір діапазону).
 
         Args:
-            service_type: тип службового чеку:
-                "108" — відкриття зміни (local_number=0),
-                "109" — перехід в офлайн,
-                "110" — перехід в онлайн,
-                "111" — перевірка зв'язку (ping),
-                "112" — запит діапазону резервних номерів.
-            date_time: дата/час операції (None — поточний час UTC).
+            service_type: тип службового чеку: 108 — відкриття зміни,
+                109 — перехід в офлайн, 110 — перехід в онлайн,
+                111 — перевірка зв'язку (ping), 112 — запит резервних номерів.
+            date_time: дата/час операції (None — поточний ЛОКАЛЬНИЙ час).
+            reserve_size: розмір діапазону резервних номерів для T=112.
 
         Returns:
             str — канонічний XML тегу <DAT> (без <MAC>).
@@ -760,10 +747,15 @@ class XmlBuilder:
                 f"Допустимі значення: {sorted(SERVICE_TYPES)}"
             )
 
-        date_time = date_time or datetime.utcnow()
+        date_time = date_time or datetime.now()
         ts = _fmt_datetime(date_time)
 
-        body = f'<C T="{service_type}"><E N="1"></E></C>'
+        if service_type == SERVICE_RESERVE:
+            body = (
+                f'<C T="{service_type}"><H SIZE="{int(reserve_size)}"></H></C>'
+            )
+        else:
+            body = f'<C T="{service_type}"></C>'
         dat_xml = self._build_dat(body, ts)
         return canonicalize(dat_xml)
 
@@ -774,45 +766,35 @@ class XmlBuilder:
         dat_xml: str,
         mac_value: str | None = None,
         *,
+        mac_id: str = "",
         include_mac: bool = True,
     ) -> str:
         """
-        Обгортає канонічний <DAT> у повне повідомлення <RQ>…</RQ> з <MAC>.
+        Обгортає канонічний <DAT> у повне повідомлення <RQ>…</RQ>.
+
+        Формат (ПРРО):
+            <?xml version="1.0" encoding="windows-1251"?>
+            <RQ V="1"><DAT …>…<TS>…</TS></DAT><MAC …>{hex}</MAC></RQ>
+
+        MAC-значення = hex sha256 XML ПОПЕРЕДНЬОГО Check (передається в
+        mac_value). None/"" — перший документ після скидання ланцюга.
 
         Args:
             dat_xml: канонічний XML тегу <DAT> (результат build_*_xml).
-            mac_value: готове значення MAC; якщо None — обчислюється
-                автоматично через compute_mac(dat_xml).
-            include_mac: якщо False — MAC не додається (для ping).
+            mac_value: значення MAC (hex sha256 попереднього RQ); None → "".
+            mac_id: ID тега <MAC>: "" для онлайн; резервний фіскальний номер
+                для офлайн-документів (T=112/T=111 форму тега визначає білдер).
+            include_mac: якщо False — тег <MAC> не додається (для сумісності).
 
         Returns:
-            str — повне XML-повідомлення:
-                <RQ V="1"><DAT ...>...</DAT><MAC DI="..." NT="...">...</MAC></RQ>
-
-        Raises:
-            ValueError: якщо в <DAT> відсутній атрибут DI (потрібен для <MAC>).
+            str — повне XML-повідомлення з XML-декларацією windows-1251.
         """
         dat_xml = canonicalize(dat_xml)  # гарантуємо канонічний вигляд
+        if not include_mac:
+            return f"{XML_DECLARATION}<RQ V=\"1\">{dat_xml}</RQ>"
 
-        match = _DI_PATTERN.search(dat_xml)
-        if match is None:
-            raise ValueError(
-                "Не вдалося визначити DI пакету даних: у <DAT> відсутній атрибут DI"
-            )
-        di = match.group(1)
-
-        parts: list[str] = ['<RQ V="1">', dat_xml]
-
-        if include_mac:
-            mac = mac_value if mac_value is not None else compute_mac(dat_xml)
-            nt = self._next_mac_number()
-            parts.append(
-                f'<MAC DI="{di}" NT="{nt}">{_esc_text(mac)}</MAC>'
-            )
-
-        parts.append("</RQ>")
-        return "".join(parts)
-
+        mac_value = "" if mac_value is None else mac_value
+        return reconstruct_full_rq(dat_xml, mac_value, mac_id=mac_id)
 
 
 # ─── Парсер підсумків чеку (для Z-звіту) ─────────────────────────────────────
@@ -822,27 +804,11 @@ def parse_receipt_xml_totals(dat_xml: str) -> dict:
     Розбирає канонічний XML чеку (<DAT><C>…</C><TS>…</TS></DAT>) і повертає
     підсумкові дані для Z-звіту: тип чеку, суму, оплати та податки.
 
-    Джерело даних — XML, що був фактично відправлений на фіскальний сервер
-    (зберігається у PrroQueueItem.xml_body). Це гарантує, що Z-звіт
-    формується на основі реально переданих чеків.
-
     Args:
         dat_xml: канонічний XML тегу <DAT> (результат build_receipt_xml).
 
     Returns:
-        dict:
-            {
-                "check_type": "0" | "1",          # T з <C> (0 — продаж, 1 — повернення)
-                "total": Decimal,                 # сума чеку, грн (SM з <E>)
-                "payments": {code: Decimal},      # оплати: {T: сума, грн}
-                "taxes": {                         # податкові групи:
-                    tx_code: {
-                        "percent": Decimal,        # TXPR, %
-                        "tax_total": Decimal,      # TXSM, грн (ПДВ)
-                        "smi": Decimal,            # обіг групи, грн (сума <P>)
-                    }
-                }
-            }
+        dict: {"check_type", "total", "payments", "taxes"} (див. код).
 
     Raises:
         ValueError: якщо XML некоректний або не містить тегу <C>.
@@ -856,7 +822,7 @@ def parse_receipt_xml_totals(dat_xml: str) -> dict:
     except etree.XMLSyntaxError as exc:
         raise ValueError(f"Некоректний XML чеку: {exc}") from exc
 
-    c = root.find("C")
+    c = root.find(".//C")
     if c is None:
         raise ValueError("У пакеті даних відсутній тег <C>")
 
@@ -915,16 +881,22 @@ __all__ = [
     "CHK_TYPE_RETURN",
     "CHK_TYPE_SALE",
     "CHK_TYPE_SERVICE",
+    "DEFAULT_RESERVE_SIZE",
     "SERVICE_OFFLINE",
     "SERVICE_ONLINE",
     "SERVICE_OPEN_SHIFT",
     "SERVICE_PING",
     "SERVICE_RESERVE",
     "SERVICE_TYPES",
+    "XML_DECLARATION",
     "XmlBuilder",
     "_to_cents",
     "_to_thousandths",
     "canonicalize",
+    "chain_hash",
     "compute_mac",
+    "cp1251_bytes",
     "parse_receipt_xml_totals",
+    "reconstruct_full_rq",
+    "signed_bytes_to_text",
 ]

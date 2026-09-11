@@ -2,7 +2,9 @@
 // auth — JWT-валідація (jsonwebtoken, HS256)
 // ─────────────────────────────────────────────────────────────────────────────
 // Секрет береться з env TORGASHKA_JWT_SECRET; fallback — backend/.env (SECRET_KEY,
-// спільний із Python-бекендом). Хардкодити секрет у коді ЗАБОРОНЕНО.
+// спільний із Python-бекендом); last-resort — локальний файл вузла
+// `<data_dir>/jwt_secret.key` (створюється при першому старті, див.
+// torgashka_infrastructure::jwt_secret). Хардкодити секрет у коді ЗАБОРОНЕНО.
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
@@ -47,7 +49,12 @@ pub struct Claims {
     pub exp: usize,
 }
 
-/// Резолв JWT-секрету: env TORGASHKA_JWT_SECRET → backend/.env (SECRET_KEY) → Err.
+/// Резолв JWT-секрету: env `TORGASHKA_JWT_SECRET` → `backend/.env` (SECRET_KEY) →
+/// локальний файл вузла `<data_dir>/jwt_secret.key` (last-resort: генерується
+/// при першому старті) → `Err(AuthError::MissingSecret)`.
+///
+/// Локальний файл потрібен інстальованій касі без `backend/.env` і без env:
+/// інакше bootstrap падає з `MissingSecret`, і фасад вічно віддає 503.
 pub fn resolve_jwt_secret() -> Result<String, AuthError> {
     if let Ok(s) = std::env::var("TORGASHKA_JWT_SECRET") {
         if !s.trim().is_empty() {
@@ -62,7 +69,15 @@ pub fn resolve_jwt_secret() -> Result<String, AuthError> {
             }
         }
     }
-    Err(AuthError::MissingSecret)
+    // Last-resort: локальний секрет вузла поряд із pgdata (створюється один раз).
+    // Значення секрету НІКОЛИ не логуємо — лише текст помилки.
+    match torgashka_infrastructure::jwt_secret::load_or_create() {
+        Ok(secret) => Ok(secret),
+        Err(e) => {
+            eprintln!("[auth] локальний JWT-секрет недоступний: {e}");
+            Err(AuthError::MissingSecret)
+        }
+    }
 }
 
 /// Кандидати шляхів до backend/.env (залежно від робочої директорії запуску).
@@ -175,6 +190,8 @@ fn is_public_path(path: &str) -> bool {
         "/api/v1/auth/refresh",
         "/api/v1/auth/users-list",
         "/api/v1/auth/verify",
+        // Мережа магазинів (ЕТАП 15): join — публічний (як /devices/activate).
+        "/api/v1/network-nodes/join",
     ];
     if PUBLIC.contains(&path) {
         return true;
@@ -216,6 +233,15 @@ fn is_rust_print_route(path: &str) -> bool {
         || path.starts_with("/api/v1/print-templates/")
 }
 
+/// JSON 403-відповідь (тіло 1:1 Python middleware).
+fn forbidden_json(msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({"detail": msg})),
+    )
+        .into_response()
+}
+
 /// JSON 401-відповідь (тіло 1:1 Python middleware).
 fn unauthorized_json(msg: &str) -> Response {
     (
@@ -225,6 +251,91 @@ fn unauthorized_json(msg: &str) -> Response {
         .into_response()
 }
 
+/// Контекст device-каси (Частина 4): auth_middleware кладе в extensions,
+/// store_context будує StoreCtx точки БЕЗ X-Store-Id (точка — з DeviceCtx,
+/// захист від підміни X-Store-Id касою).
+#[derive(Debug, Clone)]
+pub struct DeviceCtx {
+    pub device_id: uuid::Uuid,
+    pub store_id: uuid::Uuid,
+}
+
+/// Шляхи, на яких каса може автентифікуватись device_token (Bearer)
+/// замість JWT касира. Інші шляхи device-авторизації НЕ дають.
+fn is_device_sync_path(path: &str) -> bool {
+    path == "/api/v1/sync/master" || path == "/api/v1/sync/push"
+}
+
+enum DeviceAuthError {
+    /// Пристрій знайдено, але статус не дозволяє sync.
+    Forbidden(&'static str),
+    /// БД недоступна або запит упав — автентифікувати неможливо.
+    Unavailable,
+}
+
+/// SHA-256 hex — той самий формат, що network.rs зберігає в
+/// devices.device_token_hash (токен віддається один раз, зберігається хеш).
+fn sha256_hex(s: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(s.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Device fallback: sha256(Bearer token) → devices. Таблиця БЕЗ RLS
+/// (мережевий рівень, NETWORK_DDL) — звичайний SELECT через store_pool.
+/// Активний пристрій → Claims(role="device") + DeviceCtx.
+async fn authenticate_device(
+    state: &AppState,
+    token: &str,
+) -> Result<Option<(Claims, DeviceCtx)>, DeviceAuthError> {
+    let store_pool = state
+        .store_pool
+        .clone()
+        .ok_or(DeviceAuthError::Unavailable)?;
+    let hash = sha256_hex(token);
+    let row: Option<(uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT id, store_id, status::text FROM devices WHERE device_token_hash = $1",
+    )
+    .bind(&hash)
+    .fetch_optional(&store_pool)
+    .await
+    .map_err(|e| {
+        eprintln!("[torgashka-api] device auth: запит devices не виконано: {e}");
+        DeviceAuthError::Unavailable
+    })?;
+    let Some((device_id, store_id, status)) = row else {
+        return Ok(None);
+    };
+    match status.as_str() {
+        "active" => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as usize)
+                .unwrap_or(0);
+            let claims = Claims {
+                sub: device_id.to_string(),
+                role: "device".to_string(),
+                permissions: None,
+                token_type: "access".to_string(),
+                iat: now,
+                exp: now + 480 * 60,
+            };
+            Ok(Some((
+                claims,
+                DeviceCtx {
+                    device_id,
+                    store_id,
+                },
+            )))
+        }
+        "blocked" | "deleted" => Err(DeviceAuthError::Forbidden(
+            "Пристрій заблоковано або видалено",
+        )),
+        _ => Err(DeviceAuthError::Forbidden("Пристрій не активовано")),
+    }
+}
+
+/// Middleware JWT-валідації (1:1 Python AuthMiddleware).
 /// Middleware JWT-валідації (1:1 Python AuthMiddleware).
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -251,6 +362,24 @@ pub async fn auth_middleware(
     let claims = match validate_jwt(token, &state.jwt_secret) {
         Ok(c) => c,
         Err(e) => {
+            // Device fallback (Частина 4): на sync-шляхах каса може бути
+            // автентифікована device_token (Bearer) замість JWT касира.
+            // Спрацьовує ЛИШЕ коли JWT невалідний — старі каси без змін.
+            if is_device_sync_path(path) {
+                return match authenticate_device(&state, token).await {
+                    Ok(Some((device_claims, dctx))) => {
+                        req.extensions_mut().insert(device_claims);
+                        req.extensions_mut().insert(dctx);
+                        next.run(req).await
+                    }
+                    Ok(None) => unauthorized_json("Недійсний токен пристрою"),
+                    Err(DeviceAuthError::Forbidden(msg)) => forbidden_json(msg),
+                    Err(DeviceAuthError::Unavailable) => {
+                        eprintln!("[torgashka-api] device auth: БД недоступна");
+                        unauthorized_json("Недійсний або прострочений токен")
+                    }
+                };
+            }
             eprintln!("[torgashka-api] JWT відхилено: {e}");
             return unauthorized_json("Недійсний або прострочений токен");
         }

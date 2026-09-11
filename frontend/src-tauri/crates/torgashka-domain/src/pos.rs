@@ -344,6 +344,12 @@ pub struct ReceiptCreateInput {
     pub terminal_created_at: Option<NaiveDateTime>,
     pub is_fiscal: bool,
     pub split_group_id: Option<Uuid>,
+    /// Ідемпотентний ключ каси (ЕТАП 4 offline-first): client_uuid з outbox
+    /// каси; NULL для чеків, створених напряму через API (не push).
+    pub client_uuid: Option<Uuid>,
+    /// Час операції каси (ЕТАП 7b, sync push): RFC3339-created_at з конверта
+    /// каси, нормалізований в UTC. None → сервер пише now() (звичайний API).
+    pub created_at: Option<NaiveDateTime>,
 }
 
 /// POST /api/v1/receipts — v1 create_receipt (ReceiptCreate + боргова семантика).
