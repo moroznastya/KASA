@@ -252,27 +252,90 @@ primary, і жоден старий primary не підключається са
 - Наслідок: `GET /api/v1/local/status` і `GET /api/v1/local/stock-reconciliation` після promote
   → **404**. Тобто звірка §10.3 доступна **лише поки вузол standby** (до promote).
 
-### 6.3 Код: push-цикл promote НЕ зупиняє → АНОМАЛІЯ
+### 6.3 Код: push-цикл після promote — ВИПРАВЛЕНО (Фаза 3.8)
 
-- Фоновий push стартує за наявності `server_url`+токена в SQLite-налаштуваннях
-  (`src-tauri/src/lib.rs:347`, `offline/commands.rs:123-140`, `read_sync_auth` — `:74-120`) і
-  **не перевіряє `mode` вузла** — коду, який вимикає push після promote, немає. Коментар
-  `promote.rs:89` («push-черги/деградація вимкнені») **суперечить коду**.
-- Наслідок на практиці: залишок черги продовжує слатися на **старий** `server_url`; після 10
-  невдач (5xx/немає мережі) агрегати стають `failed` («потребує уваги», тихого ack немає) —
-  `sync_push.rs:38`, `:630-660`.
+**Було (аномалія, знайдена NIKO):** фоновий push стартував за наявності
+`server_url`+токена в SQLite-налаштуваннях (`src/lib.rs:347`,
+`offline/commands.rs:123-140`, `read_sync_auth` — `:74-120`) і **не перевіряв
+`mode` вузла**; `promote` не чистив SQLite-налаштування активації каси
+(`server_url`/`api_token`/`device_token`), тож залишок черги після promote
+продовжував слатися на **старий** `server_url` (ризик split-brain). Коментар
+`promote.rs:89` («push-черги вимкнені») **суперечив коду**.
 
-### 6.4 НЕ РЕАЛІЗОВАНО (підтверджено grep)
+**Стало:** ґейт у push-клієнті — `sync_push::push_pending_batch_with_node`
+(`offline/sync_push.rs:507`; прод-обгортка `push_pending_batch` — `:483`) +
+чистий предикат `NodeConfig::push_blocked_reason` (`node_config.rs:246`,
+`has_configured_upstream` — `:218`, `is_self_local_url` — `:539`):
 
-- **Шляху застосування залишку SQLite-черги до ВЛАСНОГО PostgreSQL після promote немає**:
-  grep `replay|drain|flush_outbox|apply_outbox` по `frontend/src-tauri/**/*.rs` → лише ПРРО
-  (`torgashka-prro/src/prro/sync.rs:37`, інша черга — фіскальна) та не пов'язані `drain` у
-  буферах. Drain/relay SQLite-`outbox` у PG після promote — **НЕ РЕАЛІЗОВАНО**.
-- Бекапу черги в скриптах немає (`scripts/backup.sh` — лише PG) — **НЕ РЕАЛІЗОВАНО**.
+* **умова ґейта = САМЕ КОМБІНАЦІЯ** `mode == Primary` **І** апстріму немає →
+  HTTP-push **не виконується взагалі** (0 з'єднань), повертається `Ok` із
+  `sent=0` і маркером `gated`; повідомлення в stderr — **один раз на процес**
+  (`sync_push.rs:452`, анти-спам для циклу 30 с);
+* **норма НЕ зламана:** `mode=Standby` (штатна каса) і `mode=Primary` **із**
+  заданим `[node] primary_db_url` (standalone POS, що пише на віддалений
+  сервер) пушать як і раніше — тести `gate_lets_standby_push`,
+  `gate_lets_primary_with_remote_upstream_push`,
+  `gate_is_inactive_without_explicit_node_section`
+  (`offline/sync_push.rs:1548`, `:1524`, `:1567`);
+* ґейт читає **ЯВНО записану** секцію `[node]` (`NodeConfig::load_explicit` —
+  `node_config.rs:273`): файлу/секції немає → ґейт не діє (дефолт `Primary` —
+  не рішення вузла);
+* «посилання на себе» апстрімом не вважається (`is_self_local_url`): після
+  promote оператор переналаштовує активне джерело на `127.0.0.1:<local_port>`
+  — ґейт лишається увімкненим, інакше черга знову пішла б на мертвий сервер
+  (тест `self_reference_is_not_an_upstream` — `:1583`);
+* `sync_now` віддає це оператору явно: `gated: true` + `gate_reason`
+  (`offline/commands.rs:518`, `:560`) — «push не пішов» більше не виглядає як
+  «немає мережі». Коментар `promote.rs:92` тепер відповідає коду;
+* шлях вузла на МЕРТВИЙ порт доведено тестом `gate_blocks_http_push_on_promoted_primary`
+  (`offline/sync_push.rs:1493`) — 0 TCP-з'єднань, черга лишається `pending`.
 
-**Правило для оператора:** promote з непорожньою чергою залишає ці продажі в SQLite каси.
-Перед promote — вивантажити чергу (`pending` = 0) і зробити бекап `offline.db`
-(`docs/infrastructure/backup-restore.md` §9).
+### 6.4 Drain залишку черги → ВЛАСНИЙ PG — РЕАЛІЗОВАНО (Фаза 3.8)
+
+**Було:** шляху застосування залишку SQLite-черги до власного PostgreSQL після
+promote не існувало (grep `replay|drain|flush_outbox|apply_outbox` → лише ПРРО).
+
+**Стало:** `route_local::drain_local_outbox`
+(`crates/torgashka-api/src/route_local.rs:689`) + ендпоінт
+`POST /api/v1/local/outbox/drain` (owner-only, як `promote`;
+`drain_outbox_handler` — `:800`, `outbox_router` — `:822`, монтується завжди —
+`router_v1.rs:824`).
+
+* джерело черги — `pending_outbox` (FIFO) з SQLite каси; **кожен `payload` — уже
+  серіалізований конверт `PushEnvelope`**, який десеріалізується й
+  застосовується **наявним ядром** `sync::process_push_item`
+  (`crates/torgashka-api/src/sync.rs:564`, `pub(crate)`) — жодного дублювання
+  логіки apply;
+* ціль — **власний** PG: `state.local.pool` (standby, у т.ч. щойно promote-нутий
+  до рестарту), інакше `state.store_pool` (рестарт після promote:
+  `mode=Primary`); сервіси будуються **сирі**
+  (`SqlxPos`/`SqlxInvoices`/`SqlxReturnInvoices`), НЕ outbox-адаптери — інакше
+  drain замкнувся б сам на себе;
+* `created`/`already_exists` → `sync_push::mark_done`
+  (`offline/sync_push.rs:729`) → черга зменшується; `error` → агрегат
+  **лишається `pending`** (дані не втрачено), причина у `errors_detail` (до 10);
+* **ідемпотентність** — `client_uuid` (як у push): повторний drain →
+  `already_exists`, 0 дублів (E2E
+  `repeated_drain_is_idempotent_already_exists` —
+  `tests/promote_drain_e2e.rs:500`);
+* повертає `{drained, created, already_exists, errors, pending_left,
+  errors_detail}`;
+* **promote викликає drain автоматично** (best-effort, крок 7 —
+  `crates/torgashka-api/src/promote.rs:246`, підсумок у відповіді `outbox_drain`,
+  `:270`); помилка drain promote НЕ валить (він уже відбувся) — оператор
+  повторює ендпоінт вручну;
+* Е2Е доказ «накладна офлайн → promote → drain → агрегат у власному PG, черга
+  порожня»: `tests/promote_drain_e2e.rs:371` (`promote_drains_local_outbox_into_own_pg`).
+
+**Залишається відкритим (не входить у Фазу 3.8):** бекапу самої черги в
+скриптах немає (`scripts/backup.sh` — лише PG) — копію `offline.db` робить
+оператор вручну (`docs/infrastructure/backup-restore.md` §9).
+
+**Правило для оператора:** promote з непорожньою чергою БІЛЬШЕ НЕ лишає продажі
+в SQLite — вони застосовуються у власний PG (крок 7) або пізніше вручну
+(`POST /api/v1/local/outbox/drain`). Бекап `offline.db` перед DR усе одно
+обов'язковий (`docs/infrastructure/backup-restore.md` §9): drain — не заміна
+бекапу, а шлях доїзду.
 
 ### 6.5 Порядок дій, коли черга накопичилась за час офлайну
 
@@ -284,9 +347,10 @@ primary, і жоден старий primary не підключається са
    2. зафіксувати борг: `sqlite3 <db_path> "SELECT status, COUNT(*) FROM outbox GROUP BY status;"`
       (`db_path` — з `get_offline_stats`, `offline/commands.rs:559-578`);
    3. promote;
-   4. пам'ятати: «автоматичного доїзду» в коді немає (§6.4). Варіанти: (i) підняти колишній
-      primary як standby, повернути канал і вивантажити чергу на нього; (ii) зафіксувати борг
-      і перевести документи вручну.
+   4. drain виконується АВТОМАТИЧНО кроком 7 promote (§6.4) і застосовує залишок у
+      власний PG; якщо він не пройшов (помилка в `outbox_drain`) — повторити
+      `POST /api/v1/local/outbox/drain` (ідемпотентно) і звірити `pending_left` = 0.
+      HTTP-push при цьому свідомо вимкнено (§6.3, `gated: true` у `sync_now`).
 3. Не видаляти й не перезаписувати `offline.db` до звірки — це єдина копія невивантажених
    продажів цього вузла.
 

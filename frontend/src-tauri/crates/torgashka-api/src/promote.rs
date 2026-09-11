@@ -42,7 +42,7 @@ const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// `/api/v1/local/promote` та `/api/v1/local/repoint-primary`: вони лежать
 /// ПОЗА auth/store middleware приватної гілки саме для того, щоб працювати,
 /// коли primary (і його БД) недоступний.
-fn require_owner_offline(state: &AppState, headers: &HeaderMap) -> Result<Claims, LocalErr> {
+pub(crate) fn require_owner_offline(state: &AppState, headers: &HeaderMap) -> Result<Claims, LocalErr> {
     let Some(h) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -85,13 +85,25 @@ fn require_owner_offline(state: &AppState, headers: &HeaderMap) -> Result<Claims
 /// 5. Файловий захист split-brain: видаляє `standby.signal` і `primary_conninfo`
 ///    з `postgresql.auto.conf` ЛОКАЛЬНОГО кластера — вузол НІКОЛИ не
 ///    повернеться в standby автоматично;
-/// 6. `node_config` → mode=primary (збереження файлу; `primary_db_url`
-///    очищується — більше немає primary, push-черги/деградація вимкнені).
+/// 6. `node_config` → mode=primary (збереження файлу; `primary_db_url` і
+///    `upstream_write_url` очищуються — апстріму більше немає);
+/// 7. drain залишку SQLite-черги у ВЛАСНИЙ PG (best-effort, `drain_local_outbox`).
+///
+/// ⚠️ ПРО PUSH (Фаза 3.8, виправлено): `node_config` НЕ керує HTTP-push'ем
+/// напряму — ціль push береться з SQLite-налаштувань каси (`server_url` +
+/// `device_token`/`api_token`), і `promote` їх НЕ чистить (це налаштування
+/// активації каси). Тому самé лише `mode=primary` НЕ гарантувало, що черга не
+/// поллється на СТАРИЙ сервер. Гарантію дає ґейт у push-клієнті
+/// (`sync_push::push_pending_batch_with_node` + `NodeConfig::push_blocked_reason`):
+/// «mode=primary І апстріму немає» → HTTP-push вимкнено, залишок черги
+/// застосовується локально (п.7). Норма НЕ ламається: `mode=Standby` і
+/// `mode=Primary` ІЗ апстрімом (standalone POS на віддалений сервер) пушать як
+/// і раніше.
 pub async fn promote_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, LocalErr> {
-    require_owner_offline(&state, &headers)?;
+    let claims = require_owner_offline(&state, &headers)?;
     let ls = local(&state)?;
     let old_mode = match ls.cfg.mode {
         torgashka_infrastructure::node_config::NodeMode::Standby => "standby",
@@ -226,6 +238,26 @@ pub async fn promote_handler(
     )
     .await;
 
+    // ── 7. Drain залишку SQLite-черги у ВЛАСНИЙ PG (Фаза 3.8) ──────────────
+    // Best-effort: PG уже writable (кроки 2-3), тож агрегати, зроблені офлайн,
+    // застосовуються тут же тим самим ядром, що й серверний push. Помилка drain
+    // НЕ валить promote (він уже відбувся) — оператор бачить підсумок і може
+    // повторити вручну (`POST /api/v1/local/outbox/drain`, ідемпотентно).
+    let drain = match crate::route_local::drain_local_outbox(&state, &claims).await {
+        Ok(s) => json!({
+            "drained": s.drained,
+            "created": s.created,
+            "already_exists": s.already_exists,
+            "errors": s.errors,
+            "pending_left": s.pending_left,
+            "errors_detail": s.errors_detail,
+        }),
+        Err(e) => {
+            eprintln!("[promote] увага: drain черги не виконано ({e}) — повторіть вручну \n                 POST /api/v1/local/outbox/drain після виправлення причини");
+            json!({ "error": e.to_string() })
+        }
+    };
+
     let promoted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     Ok(Json(json!({
         "ok": true,
@@ -235,6 +267,7 @@ pub async fn promote_handler(
         "network_nodes_updated": network_nodes_updated,
         "standby_markers_cleared": markers_cleared,
         "config_file": config_file.display().to_string(),
+        "outbox_drain": drain,
         "note": "вузол тепер primary. Переналаштуйте активне джерело БД фасаду \
                  на 127.0.0.1:<local_port> (Налаштування → джерела даних) і \
                  перезапустіть застосунок. Інші вузли — repoint-primary + \

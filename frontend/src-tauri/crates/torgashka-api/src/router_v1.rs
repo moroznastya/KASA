@@ -817,6 +817,11 @@ pub fn build_router(state: AppState) -> Router {
         // ці адмін-маршрути НЕ проходять store-middleware (він ходить у primary-пул,
         // недоступний у момент аварії) — авторизація stateless JWT owner у хендлерах.
         .merge(crate::promote::admin_router(state.clone()))
+        // ФАЗА 3.8: drain залишку SQLite-черги у власний PG. Монтується
+        // ЗАВЖДИ (не лише на standby): після promote+рестарту вузол уже
+        // mode=Primary, а черга в SQLite лишається — owner має мати шлях її
+        // застосувати. Авторизація — stateless JWT owner у хендлері.
+        .merge(route_local::outbox_router())
         .layer(cors)
         // ADR-0007 §11 (WriteGate): ОДИН шар на весь роутер фасаду — після CORS,
         // тобто найзовнішній. Класифікує запит (§11.1) і вирішує F2/§4:

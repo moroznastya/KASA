@@ -154,6 +154,16 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("catalog_directories", WritePolicy::ProxyToPrimary),
     ("documents_batch", WritePolicy::ProxyToPrimary),
     ("setup", WritePolicy::ProxyToPrimary),
+    // ФАЗА 3.8: drain залишку SQLite-черги каси у ВЛАСНИЙ PG («поверхня»:
+    // пише receipts/invoices/return_invoices/inventories/... тим самим ядром
+    // `sync::process_push_item`). Клас `LocalOutbox` — локальний канал вузла:
+    //   * на standby → Pass (`decide` §2.2): drain викликається з `promote`,
+    //     коли in-memory режим ЩЕ standby (диск уже primary), і будь-який
+    //     інший клас зламав би DR (Proxy → pass-through на мертвий primary,
+    //     Disabled → 503 на єдиний шлях вивантаження);
+    //   * на не-promote-нутому standby запис фізично не пройде (репліка
+    //     read-only) → помилка PG у підсумку, тихого запису в репліку немає (F5).
+    ("outbox_drain", WritePolicy::LocalOutbox),
 ];
 
 /// Супутні таблиці документів (`satellite`): пишуться ЛИШЕ всередині
@@ -309,6 +319,8 @@ pub fn classify_request(method: &Method, path: &str) -> Option<&'static str> {
     if let Some(rest) = p.strip_prefix("/api/v1/local/") {
         return match rest {
             "receipts" | "ops" | "sync/now" => Some("receipt"),
+            // ФАЗА 3.8: drain черги у власний PG (клас LocalOutbox → Pass).
+            "outbox/drain" => Some("outbox_drain"),
             _ => None,
         };
     }

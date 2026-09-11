@@ -929,11 +929,11 @@ fn pg_table_registry_is_complete_and_consistent() {
     );
 
     // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 28 таблиць
-    // PG-шару (§11.7) + 3 поверхневих сутності (§11.7.9, Фаза 3.2).
+    // PG-шару (§11.7) + 4 поверхневих сутності (§11.7.9, Фази 3.2/3.8).
     assert_eq!(
         POLICY_TABLE.len(),
-        56,
-        "POLICY_TABLE: 25 гейт-сутностей + 28 таблиць PG-шару + 3 поверхневих §11.7.9"
+        57,
+        "POLICY_TABLE: 25 гейт-сутностей + 28 таблиць PG-шару + 4 поверхневих §11.7.9"
     );
     assert_eq!(
         PG_TABLE_REGISTRY.len() + SQLITE_ONLY_TABLES.len() + NO_DML_TABLES.len(),
@@ -984,8 +984,8 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
     );
     assert_eq!(
         POLICY_TABLE.len(),
-        56,
-        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 28 таблиць PG-шару §11.7 + 3 поверхневих §11.7.9"
+        57,
+        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 28 таблиць PG-шару §11.7 + 4 поверхневих §11.7.9"
     );
     eprintln!(
         "[guard] POLICY_TABLE: {} рядків, усі покриті реєстром §3/§11.6/§11.7 або каналом документів",
@@ -1002,7 +1002,15 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
 /// хендлери пишуть PG через mode-agnostic сервіс, а таблиці-цілі належать
 /// різним класам. Мусять мати рядок у `POLICY_TABLE` (інакше `admin_pool`
 /// поверне локальну РЕПЛІКУ на standby — F5).
-const SURFACE_ENTITIES: &[&str] = &["catalog_directories", "documents_batch", "setup"];
+const SURFACE_ENTITIES: &[&str] = &[
+    "catalog_directories",
+    "documents_batch",
+    "setup",
+    // ФАЗА 3.8: drain черги вузла у власний PG — поверхня, що пише агрегати
+    // різних класів (receipts/invoices/return_invoices/inventories/...)
+    // через ядро `sync::process_push_item`.
+    "outbox_drain",
+];
 
 const ROUTE_FILES: &[&str] = &[
     "crates/torgashka-api/src/router_v1.rs",
@@ -1018,7 +1026,8 @@ const ROUTE_FILES: &[&str] = &[
 const CONSCIOUS_PASS: &[(&str, &str)] = &[
     (
         "POST /api/v1/local/promote",
-        "DR: підвищення ЦЬОГО вузла (pg_promote) + запис реєстру вже в стані primary (§3 #36)",
+        "DR: підвищення ЦЬОГО вузла (pg_promote) + запис реєстру вже в стані primary (§3 #36); \
+         Фаза 3.8 — напр. drain залишку SQLite-черги у власний PG (поверхня `outbox_drain`, клас LocalOutbox)",
     ),
     (
         "POST /api/v1/local/repoint-primary",

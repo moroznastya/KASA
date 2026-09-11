@@ -201,6 +201,93 @@ impl NodeConfig {
             .map(str::to_string)
     }
 
+    /// Чи заданий АПСТРІМ (куди вузол має щось вивантажувати) — для ґейта
+    /// HTTP-push (Фаза 3.8, дефект «promote → push на мертвий old primary»).
+    ///
+    /// `true`, якщо є хоч одне з:
+    ///   * явний `[node] primary_db_url` (standalone POS, що пише на віддалений
+    ///     сервер — норма, push мусить працювати);
+    ///   * явний `upstream_write_url` (ADR-0007 F1/F3);
+    ///   * розв'язаний primary (явний або активне джерело db_sources.toml),
+    ///     який НЕ вказує на ВЛАСНИЙ локальний кластер вузла.
+    ///
+    /// Остання умова критична: після promote оператор переналаштовує активне
+    /// джерело на `127.0.0.1:local_port` (власний PG — тепер primary). Це НЕ
+    /// апстрім, тож «посилання на себе» апстрімом не вважається — інакше ґейт
+    /// відкрився б і вузол знову лив би чергу на мертвий старий сервер.
+    pub fn has_configured_upstream(&self) -> bool {
+        if self
+            .primary_db_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
+        {
+            return true;
+        }
+        if self.resolve_upstream_write_url().is_some() {
+            return true;
+        }
+        match self.resolve_primary_db_url() {
+            Some(url) => !is_self_local_url(&url, self.local_port),
+            None => false,
+        }
+    }
+
+    /// Причина, з якої HTTP-push черги каси МУСИТЬ бути вимкнений, або `None`
+    /// (push — норма).
+    ///
+    /// Ґейт строго за КОМБІНАЦІЄЮ (Фаза 3.8, вимога контракту):
+    ///   * `mode == Primary` **і** апстріму немає → вузол promote-нутий
+    ///     (або первинна каса без апстріму): черга належить ЦЬОМУ вузлу,
+    ///     її місце — власний PG (drain), а не HTTP на колишній primary;
+    ///   * `mode == Standby` → норма (push — штатний канал каси);
+    ///   * `mode == Primary` **із** апстрімом → норма (standalone POS, що пише
+    ///     на віддалений сервер; ламати його заборонено).
+    pub fn push_blocked_reason(&self) -> Option<&'static str> {
+        if self.mode != NodeMode::Primary {
+            return None;
+        }
+        if self.has_configured_upstream() {
+            return None;
+        }
+        Some(
+            "promoted primary без апстріму (mode=primary, primary_db_url/upstream_write_url \
+             очищені promote): HTTP-push вимкнено — черга застосовується до ВЛАСНОГО PG \
+             (POST /api/v1/local/outbox/drain)",
+        )
+    }
+
+    /// Те саме для виклику з фону: читає ЯВНО записану секцію `[node]` з диска.
+    ///
+    /// `None` — файлу/секції немає (дефолт `Primary` не є рішенням вузла):
+    /// ґейт НЕ вмикається. Це і безпечно (немає конфігурації — немає й
+    /// promote-історії), і сумісно з тестами/чистою касою без db_sources.toml.
+    pub fn push_blocked_reason_from_disk() -> Option<&'static str> {
+        Self::load_explicit()?.push_blocked_reason()
+    }
+
+    /// ЯВНО записана секція `[node]` з диска: `Some(cfg)` лише коли файл
+    /// існує І містить секцію `[node]`. Відрізняється від [`Self::load`], яка
+    /// «дефолт Primary» віддає і без файлу (там ця різниця не важлива, тут —
+    /// принципова: дефолт ≠ рішення вузла).
+    pub fn load_explicit() -> Option<Self> {
+        let path = crate::db_sources::existing_path()?;
+        Self::load_explicit_from_path(&path)
+    }
+
+    /// Те саме з КОНКРЕТНОГО файлу (тести — без env/CWD).
+    pub fn load_explicit_from_path(path: &Path) -> Option<Self> {
+        let content = std::fs::read_to_string(path).ok()?;
+        Self::load_explicit_from_str(&content)
+    }
+
+    /// Те саме з тексту: `None`, якщо секції `[node]` немає або текст не TOML.
+    pub fn load_explicit_from_str(content: &str) -> Option<Self> {
+        let v: toml::Value = toml::from_str(content).ok()?;
+        let node = v.get("node")?;
+        node.clone().try_into().ok()
+    }
+
     /// Копія зі зміненим режимом.
     pub fn with_mode(mut self, mode: NodeMode) -> Self {
         self.mode = mode;
@@ -444,6 +531,18 @@ pub fn primary_endpoint(url: &str) -> Option<(String, u16)> {
         Some((h, p)) => Some((h.to_string(), p.parse::<u16>().ok()?)),
         None => Some((hostport.to_string(), 5432)),
     }
+}
+
+/// Чи URL вказує на ВЛАСНИЙ локальний кластер вузла (`127.0.0.1`/`localhost`/
+/// `::1` + `local_port`). Використовується ґейтом push (Фаза 3.8):
+/// «посилання на себе» — не апстрім, а ознака вузла-джерела істини.
+pub fn is_self_local_url(url: &str, local_port: u16) -> bool {
+    let Some((host, port)) = primary_endpoint(url) else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    let is_loopback = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1");
+    is_loopback && port == local_port
 }
 
 /// Перевірка доступності primary: TCP-конект до host:port з таймаутом

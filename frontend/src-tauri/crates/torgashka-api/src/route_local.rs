@@ -39,10 +39,14 @@ use torgashka_domain::{
     ReadDirectories, ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, WriteDirectories,
     WriteError,
 };
+use torgashka_domain::{InvoicesV1Service, ReturnInvoicesService};
 use torgashka_infrastructure::{
     node_config::{self, NodeConfig},
     offline,
-    store_ctx::{current_store_ctx, StorePool},
+    repositories::{
+        invoices::SqlxInvoices, pos::SqlxPos, return_invoices::SqlxReturnInvoices,
+    },
+    store_ctx::{current_store_ctx, with_store_ctx, StoreCtx, StorePool},
 };
 use uuid::Uuid;
 
@@ -638,6 +642,186 @@ async fn authoritative_milli(
 // ─────────────────────────────────────────────────────────────────────────────
 // Збірка роутера
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/v1/local/outbox/drain (ФАЗА 3.8 — безпека черги при promote)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Підсумок drain-у черги вузла у ВЛАСНИЙ PG.
+#[derive(Debug, Clone, Default)]
+pub struct DrainSummary {
+    /// Скільки агрегатів знято з черги (created + already_exists).
+    pub drained: usize,
+    pub created: usize,
+    pub already_exists: usize,
+    /// Агрегати, які застосувати НЕ вдалось (лишаються `pending` — дані не
+    /// втрачено; причина в `errors_detail`).
+    pub errors: usize,
+    /// Скільки ще лишилось pending після циклу (батчі по 50: якщо > 0 —
+    /// викликати drain ще раз).
+    pub pending_left: usize,
+    /// Перші (до 10) тексти помилок — оператору, без проксіювання коду.
+    pub errors_detail: Vec<String>,
+}
+
+/// Залишок SQLite-черги каси → ВЛАСНИЙ PostgreSQL ТИМ САМИМ ядром, що й
+/// серверний прийом push (`sync::process_push_item`): жодного дублювання
+/// логіки застосування агрегатів (накладна/чек/повернення/інвентаризація...).
+///
+/// Навіщо: після `promote` вузол став джерелом істини — старого primary немає
+/// ані в `[node] primary_db_url`, ані в реальності. Агрегати, зроблені
+/// офлайн, мусять потрапити у ВЛАСНИЙ PG (а не в HTTP на мертвий сервер,
+/// див. ґейт `sync_push::push_pending_batch_with_node`).
+///
+/// Ідемпотентність — `client_uuid` (як у push): повторний drain дає
+/// `already_exists` і НЕ створює дублів. Помилка конкретного агрегата НЕ
+/// знімає його з черги (статус лишається `pending`) і не валить решту: підсумок
+/// показує `errors` + перші причини.
+///
+/// Ціль (пул/сервіси) — `state.local`, якщо є (standby, у т.ч. щойно
+/// promote-нутий до рестарту: локальний кластер ЛИШЕ ЩО став writable),
+/// інакше `state.store_pool` (рестарт після promote: mode=Primary, локальних
+/// маршрутів немає) — БД, у яку фасад і так пише.
+///
+/// Сервіси будуються СИРІ (`SqlxPos`/`SqlxInvoices`/`SqlxReturnInvoices`) —
+/// НЕ outbox-адаптери: інакше drain замкнувся б сам на себе (адаптер знову
+/// поклав би агрегат у SQLite-чергу).
+pub async fn drain_local_outbox(
+    state: &AppState,
+    claims: &crate::auth::Claims,
+) -> Result<DrainSummary, LocalErr> {
+    let cashier = Uuid::parse_str(&claims.sub).map_err(|_| {
+        LocalErr::BadRequest("sub власника не є UUID — drain неможливий".into())
+    })?;
+    let db_path = offline::db::OfflineDatabase::default_db_path().map_err(LocalErr::Queue)?;
+    let mut conn = offline::sync_push::open_connection(&db_path).map_err(LocalErr::Queue)?;
+
+    let pool: StorePool = match state.local.as_ref() {
+        Some(ls) => ls.pool.clone(),
+        None => state.store_pool.clone().ok_or_else(|| {
+            LocalErr::Unavailable(
+                "немає пула БД: ні локальної репліки (standby), ні store_pool (primary) — \
+                 застосувати чергу нікуди"
+                    .into(),
+            )
+        })?,
+    };
+
+    let svc = torgashka_application::PosServiceFacade::new(
+        Arc::new(SqlxPos::new(pool.clone())) as Arc<dyn PosService + Send + Sync>
+    );
+    let invoices_v1: Arc<dyn InvoicesV1Service + Send + Sync> =
+        Arc::new(SqlxInvoices::new(pool.clone()));
+    let return_invoices: Arc<dyn ReturnInvoicesService + Send + Sync> =
+        Arc::new(SqlxReturnInvoices::new(pool.clone()));
+
+    let mut summary = DrainSummary::default();
+    // До 5 батчів × 50 (як sync_now): поки є pending і прогрес.
+    for _ in 0..5 {
+        let batch =
+            offline::sync_push::pending_outbox(&conn, offline::sync_push::PUSH_BATCH_MAX)
+                .map_err(LocalErr::Queue)?;
+        if batch.is_empty() {
+            break;
+        }
+        let mut progressed = 0usize;
+        for item in &batch {
+            let Ok(envelope) = serde_json::from_str::<crate::sync::PushEnvelope>(&item.payload)
+            else {
+                summary.errors += 1;
+                if summary.errors_detail.len() < 10 {
+                    summary.errors_detail.push(format!(
+                        "outbox#{} ({}): payload не є конвертом push",
+                        item.id, item.outbox_type
+                    ));
+                }
+                continue;
+            };
+            // RLS-контекст = точка САМОГО документа (черга вузла; X-Store-Id
+            // у drain немає — store-middleware недоступний у DR-режимі).
+            let ctx = StoreCtx {
+                user_id: cashier,
+                store_id: envelope.store_id,
+                role: claims.role.clone(),
+            };
+            let res = with_store_ctx(
+                ctx,
+                crate::sync::process_push_item(
+                    &svc,
+                    &pool,
+                    Some(&invoices_v1),
+                    Some(&return_invoices),
+                    &envelope,
+                    Some(cashier),
+                    envelope.store_id,
+                ),
+            )
+            .await;
+            match res.status {
+                "created" | "already_exists" => {
+                    offline::sync_push::mark_done(&mut conn, item)
+                        .map_err(LocalErr::Queue)?;
+                    if res.status == "created" {
+                        summary.created += 1;
+                    } else {
+                        summary.already_exists += 1;
+                    }
+                    summary.drained += 1;
+                    progressed += 1;
+                }
+                _ => {
+                    summary.errors += 1;
+                    if summary.errors_detail.len() < 10 {
+                        summary.errors_detail.push(format!(
+                            "outbox#{} ({}): {}",
+                            item.id,
+                            item.outbox_type,
+                            res.error.unwrap_or_else(|| "невідома помилка".to_string())
+                        ));
+                    }
+                }
+            }
+        }
+        if progressed == 0 {
+            break; // далі молотити нічого (усі помилки) — решта лишається pending
+        }
+    }
+    summary.pending_left = offline::sync_push::outbox_stats(&conn)
+        .map_err(LocalErr::Queue)?
+        .pending;
+    Ok(summary)
+}
+
+/// POST /api/v1/local/outbox/drain — ручний виклик drain-у (owner-only, як
+/// `promote`; без store-middleware: у DR-режимі він ходить у недоступний
+/// primary-пул). Автоматично викликається напр. `promote_handler`
+/// (best-effort) — вручну потрібен, якщо promote стався раніше/черга дійшла
+/// пізніше.
+pub async fn drain_outbox_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, LocalErr> {
+    let claims = crate::promote::require_owner_offline(&state, &headers)?;
+    let s = drain_local_outbox(&state, &claims).await?;
+    Ok(Json(json!({
+        "drained": s.drained,
+        "created": s.created,
+        "already_exists": s.already_exists,
+        "errors": s.errors,
+        "pending_left": s.pending_left,
+        "errors_detail": s.errors_detail,
+        "note": "залишок SQLite-черги вузла застосовано до ВЛАСНОГО PostgreSQL; \
+                 повторний виклик безпечний (ідемпотентність client_uuid)",
+    })))
+}
+
+/// Підроутер drain-у: монтується БЕЗ auth+store middleware приватної гілки
+/// (як `promote`) — авторизація stateless JWT owner усередині хендлера.
+/// Монтується ЗАВЖДИ (не лише на standby): після promote+рестарту вузол уже
+/// `mode=Primary`, локальних маршрутів немає, а черга в SQLite лишається.
+pub fn outbox_router() -> Router<AppState> {
+    Router::<AppState>::new().route("/api/v1/local/outbox/drain", post(drain_outbox_handler))
+}
 
 /// Будує підроутер `/api/v1/local/*`.
 ///

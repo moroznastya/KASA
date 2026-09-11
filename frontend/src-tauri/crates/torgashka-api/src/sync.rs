@@ -559,7 +559,9 @@ pub async fn push(
 /// чеки + типи каси ЕТАПУ 6 — purchase_order/inventory/transfer/write_off)
 /// та прибуткова накладна (invoice, ADR-0007 §3.4 — іде ЧЕРЕЗ СЕРВІС
 /// інвойсів, а не через SQL-приймачі sync_receivers).
-async fn process_push_item(
+/// ФАЗА 3.8: `pub(crate)` — drain черги каси після promote застосовує агрегати
+/// до ВЛАСНОГО PG ТИМ САМИМ ядром (жодного дублювання логіки apply).
+pub(crate) async fn process_push_item(
     svc: &torgashka_application::PosServiceFacade<
         std::sync::Arc<dyn torgashka_domain::PosService + Send + Sync>,
     >,

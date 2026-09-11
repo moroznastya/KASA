@@ -515,12 +515,17 @@ pub async fn sync_now() -> Result<serde_json::Value, String> {
     let mut pushed = 0usize;
     let mut already_exists = 0usize;
     let mut failed = 0usize;
+    let mut gated = false;
     let mut cycle_error: Option<String> = None;
 
     // До 5 батчів × 50: поки є pending і попередній батч успішний.
     for _ in 0..5 {
         match sync_push::push_pending_batch(&path, &client, &cfg).await {
             Ok(s) => {
+                // ФАЗА 3.8: ґейт «promoted primary без апстріму» — HTTP не
+                // робився; це НЕ «мережа відсутня», і оператор мусить бачити
+                // різницю (черга застосовується drain-ом у власний PG).
+                gated |= s.gated;
                 pushed += s.done;
                 already_exists += s.already_exists;
                 failed += s.failed;
@@ -550,6 +555,14 @@ pub async fn sync_now() -> Result<serde_json::Value, String> {
         "already_exists": already_exists,
         "failed": failed,
         "remaining": stats.pending,
+        // ФАЗА 3.8: вузол — promote-нутий primary без апстріму: HTTP-push
+        // вимкнено СВІДОМО (не «немає мережі»); чергу застосовує drain.
+        "gated": gated,
+        "gate_reason": if gated {
+            Some("promoted primary без апстріму: HTTP-push вимкнено — застосуйте POST /api/v1/local/outbox/drain")
+        } else {
+            None
+        },
         "last_error": last_error,
     }))
 }

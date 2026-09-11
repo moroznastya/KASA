@@ -1259,7 +1259,7 @@ SQLite-каналом, а не PG).
 | `POST /api/v1/print/test` | `print_templates.rs:304` `print_templates::test_print` | СВІДОМО Pass (немає DML у PG; |
 | `POST /api/v2/prro/test-connection` | `prro.rs:435` `prro::test_connection` | СВІДОМО Pass (немає DML у PG; |
 
-#### 11.7.9.5 Нові поверхневі сутності (не таблиці) — 3
+#### 11.7.9.5 Нові поверхневі сутності (не таблиці) — 4
 
 Поверхня не завжди дорівнює таблиці: три хендлери пишуть PG через
 mode-agnostic сервіс, а таблиці-цілі належать РІЗНИМ класам. Клас — найбезпечніший
@@ -1270,6 +1270,7 @@ mode-agnostic сервіс, а таблиці-цілі належать РІЗН
 | `catalog_directories` | `ProxyToPrimary` | друга лінія `crud.rs` (`require_admin`): довідники каталогу | `POST/PUT/DELETE /api/v1/products`,`/categories`,`/suppliers`, `/api/v2/*` |
 | `documents_batch` | `ProxyToPrimary` | batch-операції над наявними документами складу пишуть і `products` (ProxyToPrimary), і `stock`/`supplier_ledger` | `POST /api/v1/documents/batch-confirm`, `POST /api/v1/documents/:id/copy`, `DELETE /api/v1/documents/:id` |
 | `setup` | `ProxyToPrimary` | первинна ініціалізація власника/точки — глобальні таблиці (`stores`, `users`, `user_stores`, `owners_db`) | `POST /api/v1/setup` |
+| `outbox_drain` | `LocalOutbox` | Фаза 3.8: drain залишку SQLite-черги у ВЛАСНИЙ PG пише агрегати різних класів (`receipts`, `invoices`, `return_invoices`, `inventories`, …) тим самим ядром `sync::process_push_item` | `POST /api/v1/local/outbox/drain` |
 
 `setup` — свідоме рішення: хендлер іде в PG лише коли в БД **немає жодного
 користувача** (`repositories/setup.rs:196-204` → інакше `409 Conflict` без DML).
@@ -1384,6 +1385,32 @@ device-авторизація. Точка належить шару локаль
   §4` + маркери, жодного `500` (`write_gate_behavior`, 5 passed) → ✅;
 * друга лінія `admin_pool` під гейтом: 9/9 літералів мають політику → ✅;
 * жодного нового механізму, жодного адаптера, `SqlxPos`/`OutboxPos` не змінені → ✅.
+
+#### 11.7.11 ФАЗА 3.8: безпека черги при `promote` (ґейт push + drain)
+
+Аномалія, знайдена NIKO: `promote` робив вузол primary, але **не** вимикав HTTP-push
+(мета даних «push вимкнено» жила лише в `node_config`, а ціль береться з SQLite
+`server_url`), і **не мав шляху** застосування залишку SQLite-черги до власного PG.
+Наслідок: залишок черги йшов на мертвий старий primary (ризик split-brain), а
+офлайн-продажі лишались у SQLite назавжди.
+
+| Що | Рішення | Файл:рядок |
+|---|---|---|
+| Ґейт HTTP-push | `mode == Primary` **І** апстріму немає (`[node] primary_db_url`/`upstream_write_url` очищені, а розв'язаний primary — «посилання на себе») → 0 HTTP, `Ok(sent=0, gated=true)`, лог раз на процес | `offline/sync_push.rs:507` (`push_pending_batch_with_node`), прод-обгортка `:483`; предикат `node_config.rs:246` (+`has_configured_upstream` `:218`, `is_self_local_url` `:539`, `load_explicit` `:273`) |
+| Норма не зламана | `mode=Standby` і `mode=Primary` **із** апстрімом (standalone POS на віддалений сервер) пушать як раніше; без ЯВНОЇ секції `[node]` ґейт не діє | тести `offline/sync_push.rs:1548`, `:1524`, `:1567` |
+| Прозорість для оператора | `sync_now` → `gated: true` + `gate_reason` | `offline/commands.rs:518`, `:560` |
+| Drain черги у власний PG | `pending_outbox` (FIFO) → `PushEnvelope` → **наявне ядро** `sync::process_push_item` (без дублювання apply); `created`/`already_exists` → `mark_done`, `error` → лишається `pending`; RLS-контекст = точка документа | `route_local.rs:689` (`drain_local_outbox`), ядро `sync.rs:564`, `mark_done` `offline/sync_push.rs:729` |
+| Поверхня | `POST /api/v1/local/outbox/drain` — owner-only (`require_owner_offline`), без store-middleware (DR: він ходить у недоступний primary-пул), монтується ЗАВЖДИ (потрібен і після рестарту, коли `mode=Primary` і локальних маршрутів немає); клас `LocalOutbox` | `route_local.rs:800`, `:822`; `router_v1.rs:824`; `write_gate.rs:166`, `:323` |
+| Автоматизм | `promote` крок 7 викликає drain (best-effort; підсумок у `outbox_drain`, помилка не валить promote) | `promote.rs:246`, `:270` |
+| Ідемпотентність | повторний drain → `already_exists` (0 дублів) | `tests/promote_drain_e2e.rs:500` |
+| E2E доказ | накладна офлайн → `promote` → агрегат у власному PG (`invoices`+`invoice_items`+`stock 3.000`), `pending_outbox` = 0, 0 HTTP до старого сервера | `tests/promote_drain_e2e.rs:371` |
+
+**Межі (свідомі):** (1) `mode=Primary` **без** апстріму більше не пушить — якщо в
+майбутньому з'явиться топологія «локальна БД + HTTP-sync на інший вузол», їй
+потрібен **явний** апстрім у `[node]`; (2) drain застосовує агрегати від імені
+власника (`claims.sub`), бо SQLite-черга не зберігає касира — те саме обмеження,
+що й у device-режимі push (касир = sub токена); (3) `repoint-primary` не оновлює
+SQLite `server_url` — окрема тема (АНОМАЛІЯ звіту Фази 3.8).
 
 #### 11.7.10 Контрольні підсумки
 
