@@ -110,11 +110,22 @@ impl IntoResponse for PosErr {
                     Json(serde_json::json!({"detail": msg})),
                 )
                     .into_response(),
-                PosError::Infrastructure(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-                )
-                    .into_response(),
+                PosError::Infrastructure(msg) => {
+                    // Санація (ADR-0007, контракт §D): сирий технічний текст
+                    // (імена таблиць/колонок, SQL, драйвер PG) іде у
+                    // torgashka.log; користувачу — стабільне повідомлення.
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[pos] PosError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "detail": "Не вдалося зберегти зміну, спробуйте ще раз"
+                        })),
+                    )
+                        .into_response()
+                }
                 PosError::Integrity(_) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -126,6 +137,26 @@ impl IntoResponse for PosErr {
             },
         }
     }
+}
+
+// ─── Статус створення: 201 Created / 202 Accepted (LocalOutbox) ────────────
+
+/// ADR-0007 §11.1: на standby POS-документ не створюється на primary, а
+/// кладеться в локальну чергу (`LocalOutbox`) → **202 Accepted** з ознакою
+/// `queued` у тілі. Ознаку ставить ЄДИНЕ місце — `OutboxPos`
+/// (`fiscal_status`/`status` = "queued"); на primary вона не з'являється,
+/// тому F2 (201, байт-в-байт) не змінюється.
+fn created_or_queued(queued: bool) -> StatusCode {
+    if queued {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::CREATED
+    }
+}
+
+/// Чи документ поставлено в локальну чергу (`OutboxPos::QUEUED_STATUS`).
+fn queued(marker: &str) -> bool {
+    marker == torgashka_infrastructure::repositories::outbox_pos::QUEUED_STATUS
 }
 
 // ─── Доступ до репозиторію ─────────────────────────────────────────────────
@@ -769,10 +800,8 @@ pub async fn create_sale(
     let input = parse_receipt_create(&body, cashier)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_sale_receipt(&input).await?),
-    ))
+    let dto = svc.create_sale_receipt(&input).await?;
+    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
 }
 
 /// POST /api/v2/receipts/return → 201
@@ -785,10 +814,8 @@ pub async fn create_return(
     let input = parse_receipt_create(&body, cashier)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_return_receipt(&input).await?),
-    ))
+    let dto = svc.create_return_receipt(&input).await?;
+    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
 }
 
 /// POST /api/v1/receipts — v1 create_receipt (боргова семантика) → 201.
@@ -1105,10 +1132,8 @@ pub async fn create_write_off(
     let input = parse_write_off_create(&body, user_id)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_write_off(&input).await?),
-    ))
+    let dto = svc.create_write_off(&input).await?;
+    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
 }
 
 /// PUT /api/v1/write-offs/{id}
@@ -1252,10 +1277,8 @@ pub async fn create_transfer(
     let input = parse_transfer_create(&body, user_id)?;
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
-    Ok((
-        StatusCode::CREATED,
-        Json(svc.create_transfer(&input).await?),
-    ))
+    let dto = svc.create_transfer(&input).await?;
+    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
 }
 
 /// PUT /api/v1/transfers/{id}

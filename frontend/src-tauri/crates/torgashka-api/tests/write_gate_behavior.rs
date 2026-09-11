@@ -264,7 +264,10 @@ async fn standby_local_outbox_routes_are_not_gate_blocked() {
     let routes = [
         ("POST", "/api/v1/invoices", "invoice"),
         ("POST", "/api/v2/receipts", "receipt"),
-        ("POST", "/api/v1/local/receipts", "receipt"),
+        // Маршрут `/api/v1/local/receipts` прибрано (ADR-0007 §11.5):
+        // канонічний шлях чека — `POST /api/v2/receipts/sale|return`.
+        ("POST", "/api/v1/write-offs", "write_off"),
+        ("POST", "/api/v1/transfers", "transfer"),
         ("POST", "/api/v1/purchase-orders", "purchase_order"),
     ];
     for (method, path, entity) in routes {

@@ -406,42 +406,15 @@ impl PageSize {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Хендлери: запис у SQLite-чергу
+// Хендлер: запис у SQLite-чергу
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Витягує store_id із заголовка X-Store-Id (як основний API) або з тіла.
-fn store_id_from(headers: &HeaderMap, body: &Value) -> Option<String> {
-    headers
-        .get("x-store-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| body["store_id"].as_str().map(|s| s.to_string()))
-}
-
-/// POST /api/v1/local/receipts — чек у SQLite-чергу (атомарно + outbox).
-///
-/// Тіло — той самий JSON чека, що каса передає у звичайний
-/// `POST /api/v2/receipts/sale` / офлайн-команду `save_receipt_offline`
-/// (валідація/снапшоти/enqueue виконуються offline-шаром, ЕТАП 4).
-/// Відповідь 202 Accepted — чек прийнято в чергу, НЕ на primary.
-pub async fn local_enqueue_receipt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<impl IntoResponse, LocalErr> {
-    let _ = local(&state)?; // переконатись, що локальний режим увімкнено
-    let raw = String::from_utf8(body.to_vec())
-        .map_err(|e| LocalErr::BadRequest(format!("тіло чека не UTF-8: {e}")))?;
-    let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|e| LocalErr::BadRequest(format!("тіло чека не JSON: {e}")))?;
-    let store = store_id_from(&headers, &parsed);
-    let local_id = offline::commands::save_receipt_offline(raw, store).map_err(LocalErr::Queue)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({"queued": true, "local_receipt_id": local_id})),
-    ))
-}
+//
+// B (ADR-0007 §11.5): ДРУГОЇ реалізації запису чека тут немає. Маршрут
+// `POST /api/v1/local/receipts` видалено: канонічний (єдиний) шлях чека —
+// `POST /api/v2/receipts/sale|return` → `state.pos` (на standby це
+// `OutboxPos` → та сама SQLite-черга через
+// `sync_push::enqueue_receipt_with_uuid`). Причина — два входи з різними
+// контрактами (сирий JSON vs `ReceiptCreateInput`) на ту саму чергу.
 
 /// Тіло POST /api/v1/local/ops — універсальний запис POS-операції в чергу.
 #[derive(Debug, Deserialize)]
@@ -476,8 +449,11 @@ pub async fn local_enqueue_op(
         })?;
     let payload = body.payload.to_string();
     let out = match body.kind.as_str() {
-        "receipt" => offline::commands::save_receipt_offline(payload, Some(store))
-            .map(|id| json!({"queued": true, "local_id": id})),
+        // Другої реалізації запису чека тут немає (§11.5): чек приймає
+        // канонічний `POST /api/v2/receipts/sale|return` → `state.pos`.
+        "receipt" => Err(
+            "kind 'receipt' прибрано: чек приймає POST /api/v2/receipts/sale|return".to_string(),
+        ),
         "purchase_order" => offline::commands::save_purchase_order_offline(payload, store)
             .map(|id| json!({"queued": true, "local_id": id})),
         "inventory" => offline::commands::save_inventory_offline(payload, store)
@@ -488,7 +464,7 @@ pub async fn local_enqueue_op(
             .map(|id| json!({"queued": true, "local_id": id})),
         other => {
             return Err(LocalErr::BadRequest(format!(
-                "невідомий kind '{other}' (очікується receipt|purchase_order|inventory|transfer|write_off)"
+                "невідомий kind '{other}' (очікується purchase_order|inventory|transfer|write_off)"
             )))
         }
     };
@@ -541,7 +517,6 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(local_inventory_counts),
         )
         .route("/api/v1/local/queue/status", get(local_queue_status))
-        .route("/api/v1/local/receipts", post(local_enqueue_receipt))
         .route("/api/v1/local/ops", post(local_enqueue_op))
         .route("/api/v1/local/sync/now", post(local_sync_now))
         // Ті самі шари, що й private-гілка основного API: auth (JWT) → store
@@ -631,24 +606,5 @@ mod tests {
         assert_eq!(to.hour(), 23);
         assert_eq!(rq.page, 1);
         assert_eq!(rq.size, 20);
-    }
-
-    #[test]
-    fn store_id_prefers_header_then_body() {
-        let mut h = HeaderMap::new();
-        h.insert(
-            "x-store-id",
-            "11111111-1111-1111-1111-111111111111".parse().unwrap(),
-        );
-        let body = json!({"store_id": "22222222-2222-2222-2222-222222222222"});
-        assert_eq!(
-            store_id_from(&h, &body).unwrap(),
-            "11111111-1111-1111-1111-111111111111"
-        );
-        assert_eq!(
-            store_id_from(&HeaderMap::new(), &body).unwrap(),
-            "22222222-2222-2222-2222-222222222222"
-        );
-        assert_eq!(store_id_from(&HeaderMap::new(), &json!({})), None);
     }
 }

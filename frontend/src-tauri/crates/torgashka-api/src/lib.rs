@@ -61,6 +61,8 @@ use torgashka_domain::{
     LedgerService, PosService, PrintTemplatesService, ProductsV2Service, PurchaseOrdersService,
     ReadDirectories, ReturnInvoicesService, SetupService, StoreService, WriteDirectories,
 };
+use torgashka_infrastructure::node_config::NodeMode;
+use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::store_ctx::StorePool;
 
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
@@ -239,17 +241,26 @@ async fn init_readdirs() -> Result<
                     store_pool.clone(),
                 ),
             ) as Arc<dyn WriteDirectories + Send + Sync>;
-            let pos = Arc::new(torgashka_infrastructure::repositories::pos::SqlxPos::new(
-                store_pool.clone(),
-            )) as Arc<dyn PosService + Send + Sync>;
             let ledger = Arc::new(
                 torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
             ) as Arc<dyn LedgerService + Send + Sync>;
-            // ADR-0007 F6: на standby `work_sessions` НЕ пишуться в PG
-            // (репліка read-only — логін був фізично неможливий). Режим
-            // читається локально: цей блок виконується РАНІШЕ за
-            // завантаження node_config у фасаді (дешеве читання файлу).
+            // ADR-0007 F6 (режим читається локально, дешеве читання файлу)
+            // + §11.1: вибір POS-АДАПТЕРА за режимом вузла.
+            //   * primary — PG-репозиторій (F2: поведінка байт-в-байт);
+            //   * standby — `OutboxPos`: читання з локальної репліки (§10),
+            //     запис POS-документів — у SQLite-чергу (`LocalOutbox`).
+            //     До цього standby писав у read-only репліку → 500
+            //     «read-only transaction» на кожному чеку.
             let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
+            let pos: Arc<dyn PosService + Send + Sync> = match node_cfg.mode {
+                NodeMode::Primary => Arc::new(
+                    torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
+                ),
+                NodeMode::Standby => Arc::new(OutboxPos::new(Arc::new(
+                    torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
+                ))),
+            };
+            let pos = pos as Arc<dyn PosService + Send + Sync>;
             let auth = Arc::new(
                 torgashka_infrastructure::repositories::auth::SqlxAuth::with_standby(
                     store_pool.clone(),
@@ -1070,7 +1081,11 @@ async fn init_local_standby(
         upstream_pool,
         readdirs: Arc::new(SqlxDirectories::new(sp.clone()))
             as Arc<dyn ReadDirectories + Send + Sync>,
-        pos: Arc::new(SqlxPos::new(sp.clone())) as Arc<dyn PosService + Send + Sync>,
+        // Той самий інваріант, що в init_readdirs: на standby жоден
+        // POS-хендл не пише в репліку (тут — лише читання, але адаптер
+        // єдиний для вузла).
+        pos: Arc::new(OutboxPos::new(Arc::new(SqlxPos::new(sp.clone()))))
+            as Arc<dyn PosService + Send + Sync>,
         write: Arc::new(SqlxWriteDirectories::new(sp)) as Arc<dyn WriteDirectories + Send + Sync>,
     })
 }
