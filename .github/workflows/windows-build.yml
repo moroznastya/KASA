@@ -80,7 +80,7 @@ jobs:
           updaterJsonGlob: '**/*.sig'
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: Torgashka ${{ github.ref_name }}
-          releaseDraft: true
+          releaseDraft: false
 
       - name: 📤 Upload artifacts (installers + updater)
         uses: actions/upload-artifact@v4
