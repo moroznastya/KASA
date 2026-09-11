@@ -120,5 +120,6 @@ jobs:
       - name: 🧹 cargo clippy (warnings = errors)
         run: cargo clippy --workspace -- -D warnings
 
+      # --no-fail-fast: один прогін дає ПОВНИЙ список червоних тестів, а не по одному
       - name: 🧪 cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
