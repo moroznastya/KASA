@@ -835,8 +835,8 @@ mod tests {
     use axum::http::{header, Request, StatusCode};
     use std::sync::Arc;
     use torgashka_domain::{
-        AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto, SettingsBatchInput,
-        UserCreateInput, UserDto, UserListDto, UserUpdateInput,
+        AuthError, AuthService, LoginPinRequest, LoginRequest, SettingDto, UserCreateInput,
+        UserDto, UserListDto, UserUpdateInput,
     };
     use tower::ServiceExt;
     use uuid::Uuid;

@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::json;
-use sqlx::Row;
 use torgashka_api::run_facade;
 use torgashka_infrastructure::offline::sync_push::{
     open_connection, pending_count, push_pending_batch, PushConfig,
@@ -214,7 +213,7 @@ fn build_cash_db(
     fix_outbox_created_at(&conn, &o.client_uuid, TS_OLD);
 
     // 4) transfer: парні каси — out (−4 у свою точку), непарні — in (+4).
-    let (from, to) = if k % 2 == 0 {
+    let (from, to) = if k.is_multiple_of(2) {
         (store, other)
     } else {
         (other, store)

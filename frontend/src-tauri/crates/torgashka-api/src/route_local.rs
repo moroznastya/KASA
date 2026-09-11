@@ -557,7 +557,6 @@ mod tests {
             category_id: Some("not-a-uuid".into()),
             page: Some(0),
             size: Some(500),
-            ..Default::default()
         };
         let f = q.into_filters();
         assert_eq!(f.query.as_deref(), Some("  молоко "));

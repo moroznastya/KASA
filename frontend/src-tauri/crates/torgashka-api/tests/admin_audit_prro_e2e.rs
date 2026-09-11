@@ -206,7 +206,7 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     .await
     .expect("truncate");
 
-    let tag = format!("{}", Uuid::new_v4().simple().to_string()[..8].to_string());
+    let tag = Uuid::new_v4().simple().to_string()[..8].to_string();
     let (owner_login, cashier_login) = seed_users(&pool, &tag).await;
 
     // ─── Точки: А (активна) та Б (активна) ──────────────────────────────────
@@ -346,7 +346,7 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     for it in &items {
         assert_eq!(it["actor_name"], "E2E Audit Owner", "автор: {v}");
         assert_eq!(it["actor_login"], json!(owner_login), "{v}");
-        assert_eq!(it["actor_user_id"].is_null(), false);
+        assert!(!it["actor_user_id"].is_null());
     }
     let upd = items
         .iter()
@@ -580,7 +580,7 @@ async fn audit_log_filters_rbac_and_prro_per_store() {
     assert_eq!(shift["shift_number"], 7);
     assert_eq!(shift["status"], "open");
     assert_eq!(shift["receipt_count"], 12);
-    assert_eq!(v["settings_updated_at"].is_null(), false);
+    assert!(!v["settings_updated_at"].is_null());
 
     // 5h. Audit-запис після PUT prro (2 PUT: конфіг А + ключ А + конфіг Б —
     //     тільки успішні PUT А(конфіг), А(ключ), Б(конфіг) = 3 записи).

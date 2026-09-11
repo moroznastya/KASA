@@ -303,7 +303,7 @@ mod tests {
     /// Закупка (ЕТАП 7b): агрегат (synced=1) + outbox-запис + stock +qty.
     #[test]
     fn purchase_enqueues_aggregate_outbox_and_adds_stock() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         let payload = json!({
             "supplier_id": "sup-1",
@@ -346,7 +346,7 @@ mod tests {
     /// Інвентаризація: АБСОЛЮТНИЙ рівень (факт перерахунку), не дельта.
     #[test]
     fn inventory_sets_absolute_level() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         stock::apply_stock_delta(&c, STORE, "p1", 5000).expect("до: 5 шт");
         let payload = json!({
@@ -363,7 +363,7 @@ mod tests {
     /// Списання: stock −qty.
     #[test]
     fn write_off_subtracts_stock() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         stock::apply_stock_delta(&c, STORE, "p1", 10_000).expect("до: 10 шт");
         let payload = json!({
@@ -379,7 +379,7 @@ mod tests {
     /// Переміщення З каси (from=store): −qty.
     #[test]
     fn transfer_out_subtracts_stock() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         stock::apply_stock_delta(&c, STORE, "p1", 10_000).expect("до: 10 шт");
         let payload = json!({
@@ -395,7 +395,7 @@ mod tests {
     /// Переміщення НА касу (to=store): +qty.
     #[test]
     fn transfer_in_adds_stock() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         let payload = json!({
             "from_store_id": "22222222-2222-2222-2222-222222222222",
@@ -410,7 +410,7 @@ mod tests {
     /// Переміщення між чужими точками: агрегат збережено, stock не змінено.
     #[test]
     fn transfer_foreign_stores_keeps_aggregate_only() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         let payload = json!({
             "from_store_id": "33333333-3333-3333-3333-333333333333",
@@ -426,7 +426,7 @@ mod tests {
     /// Збій mid-транзакції (невалідний JSON) → ROLLBACK: ні агрегата, ні stock.
     #[test]
     fn mid_tx_failure_rolls_back_aggregate_and_stock() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         stock::apply_stock_delta(&c, STORE, "p1", 500).expect("до");
 
@@ -450,7 +450,7 @@ mod tests {
     /// ЕТАП 7b: накопичені synced=0 (стара версія) → outbox при першому sync.
     #[test]
     fn sweep_moves_legacy_unsynced_into_outbox() {
-        let mut conn = migrated_conn();
+        let conn = migrated_conn();
         let mut c = conn;
         // Симулюємо СТАРУ версію: агрегат synced=0 без outbox.
         let po = json!({"items": [{"product_id": "p1", "quantity": 5}]}).to_string();

@@ -349,6 +349,10 @@ fn suffix() -> String {
 // Група 1: ізоляція даних per-store на pull
 // ═════════════════════════════════════════════════════════════════════════════
 
+// gate() тримається НАВМИСНО на весь тест: серіалізує 3 тести, що ділять
+// одну тестову БД (DDL/seed/активації). Звуження scope ламає взаємне
+// виключення → флейки. Тут дозволено свідомо.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pull_isolates_store_scoped_and_global_rows() {
     let _g = gate();
@@ -636,6 +640,10 @@ async fn pull_isolates_store_scoped_and_global_rows() {
 // Група 2: op=delete доходить ЛИШЕ до точки-власника рядка
 // ═════════════════════════════════════════════════════════════════════════════
 
+// gate() тримається НАВМИСНО на весь тест: серіалізує 3 тести, що ділять
+// одну тестову БД (DDL/seed/активації). Звуження scope ламає взаємне
+// виключення → флейки. Тут дозволено свідомо.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn soft_delete_reaches_only_owner_store() {
     let _g = gate();
@@ -757,6 +765,10 @@ async fn soft_delete_reaches_only_owner_store() {
 // Група 3: навантаження — 5 точок, паралельний push, 0 конфліктів, ізоляція
 // ═════════════════════════════════════════════════════════════════════════════
 
+// gate() тримається НАВМИСНО на весь тест: серіалізує 3 тести, що ділять
+// одну тестову БД (DDL/seed/активації). Звуження scope ламає взаємне
+// виключення → флейки. Тут дозволено свідомо.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn five_stores_concurrent_push_no_conflicts_isolated() {
     let _g = gate();

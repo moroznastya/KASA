@@ -1091,7 +1091,7 @@ mod tests {
     /// Продаж: stock −qty, receipt_items записано — У ТІЙ САМІЙ транзакції.
     #[test]
     fn sale_enqueue_applies_stock_delta_and_items() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
         let mut c = conn;
         // Передпродажний залишок: +3 шт.
@@ -1131,7 +1131,7 @@ mod tests {
     /// Повернення: stock +qty (товар повертається на склад).
     #[test]
     fn return_enqueue_applies_positive_stock_delta() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
         let mut c = conn;
         let receipt = json!({
@@ -1151,7 +1151,7 @@ mod tests {
     /// деталізація записуються (поведінка ЕТАП 4 збережена).
     #[test]
     fn enqueue_without_store_skips_stock_but_writes_items() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         let mut c = conn;
         let out = enqueue_receipt(&mut c, &sale_receipt_json(3001), None).expect("sale");
         let n: i64 = c
@@ -1172,7 +1172,7 @@ mod tests {
     /// outbox, ні receipt_items, ні stock-ефекту.
     #[test]
     fn mid_tx_items_error_rolls_back_stock_and_items() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         let store = "d9be9608-c011-49be-b776-3317ca5e9af6";
         let mut c = conn;
         stock::apply_stock_delta(&c, store, "t-1", 1000).expect("початковий");
@@ -1347,7 +1347,7 @@ mod tests {
     /// log_event приймає pull-події (pull_ok/pull_fail) — той самий журнал.
     #[test]
     fn sync_log_accepts_pull_events() {
-        let mut conn = test_conn();
+        let conn = test_conn();
         log_event(&conn, "pull_ok", Some("products"), Some("→ v7"), None).expect("pull_ok");
         log_event(
             &conn,

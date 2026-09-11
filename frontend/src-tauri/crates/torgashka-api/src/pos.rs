@@ -1591,14 +1591,8 @@ mod tests {
             parse_cash_amount(&json!({"amount": "0.00"})),
             Err(PosErr::Validation(_))
         ));
-        assert!(matches!(
-            parse_cash_amount(&json!({"amount": 500.50})),
-            Ok(_)
-        ));
-        assert!(matches!(
-            parse_cash_amount(&json!({"amount": "500.50"})),
-            Ok(_)
-        ));
+        assert!(parse_cash_amount(&json!({"amount": 500.50})).is_ok());
+        assert!(parse_cash_amount(&json!({"amount": "500.50"})).is_ok());
         // Відсутній amount → 422.
         assert!(matches!(
             parse_cash_amount(&json!({})),
@@ -1620,18 +1614,13 @@ mod tests {
             Err(PosErr::Validation(_))
         ));
         // Коректні значення — проходять.
-        assert!(matches!(
-            parse_cash_operation_create(
-                &json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})
-            ),
-            Ok(_)
-        ));
-        assert!(matches!(
-            parse_cash_operation_create(
+        assert!(parse_cash_operation_create(
+            &json!({"operation_type": "deposit", "cash_type": "cash", "amount": 100})
+        )
+        .is_ok());
+        assert!(parse_cash_operation_create(
                 &json!({"operation_type": "collection", "cash_type": "card", "amount": "42.00", "comment": "Розмін"})
-            ),
-            Ok(_)
-        ));
+            ).is_ok());
     }
 
     #[test]

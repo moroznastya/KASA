@@ -69,7 +69,6 @@ struct PgParts {
     port: u16,
     user: String,
     password: String,
-    database: String,
 }
 
 fn split_url(url: &str) -> PgParts {
@@ -82,7 +81,7 @@ fn split_url(url: &str) -> PgParts {
         Some((u, p)) => (u.to_string(), p.to_string()),
         None => (userinfo.to_string(), String::new()),
     };
-    let (hostport, database) = host_db.rsplit_once('/').expect("db");
+    let (hostport, _database) = host_db.rsplit_once('/').expect("db");
     let (host, port) = match hostport.rsplit_once(':') {
         Some((h, p)) => (h.to_string(), p.parse::<u16>().expect("port")),
         None => (hostport.to_string(), 5432),
@@ -92,7 +91,6 @@ fn split_url(url: &str) -> PgParts {
         port,
         user,
         password,
-        database: database.to_string(),
     }
 }
 

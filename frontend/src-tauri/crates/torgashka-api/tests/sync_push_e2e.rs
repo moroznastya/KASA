@@ -17,7 +17,7 @@
 //! Потребує доступної PostgreSQL (backend/.env) — як інші інтеграційні
 //! тести крейта. Схема: Alembic head (0011 + 0012 + 0013_sync_push_idempotency).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -173,12 +173,12 @@ fn new_cash_db(dir: &tempfile::TempDir, product: Uuid, n: i64) -> (PathBuf, Stri
     (db_path, out.client_uuid)
 }
 
-fn push_cfg(db_path: &PathBuf, base: &str, token: &str) -> PushConfig {
+fn push_cfg(db_path: &Path, base: &str, token: &str) -> PushConfig {
     PushConfig {
         base_url: base.to_string(),
         token: token.to_string(),
         store_id: Some(STORE1.to_string()),
-        db_path: db_path.clone(),
+        db_path: db_path.to_path_buf(),
         interval_secs: 30,
     }
 }

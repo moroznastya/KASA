@@ -160,7 +160,7 @@ fn build_cash_db(
     let mut conn = open_connection(&db_path).expect("каса БД");
 
     let n_sale = 3 + k; // 3,4,5,6 чеки
-    let n_return = if k % 2 == 0 { 1 } else { 0 }; // 2 каси з поверненням
+    let n_return = if k.is_multiple_of(2) { 1 } else { 0 }; // 2 каси з поверненням
     let mut expected_total = 0.0;
 
     for n in 0..n_sale {

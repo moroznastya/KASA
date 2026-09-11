@@ -215,6 +215,9 @@ async fn network_reports_aggregates_are_correct_and_rbac_403() {
     // Точка А: sale 100.00 (P1=60, P2=40); return 30.00 (P1=30).
     // Точка Б: sale 50.00 (P1=20, P3=30).
     // Точка В (архів): sale 999.00 (P9) — НЕ має увійти у звіт.
+    // 8 аргументів: фікстура чеків; рефакторинг у структуру ризикує змінити
+    // семантику вставки — дозволено свідомо.
+    #[allow(clippy::too_many_arguments)]
     async fn insert_receipt(
         pool: &sqlx::PgPool,
         id: Uuid,
@@ -583,10 +586,7 @@ async fn network_reports_aggregates_are_correct_and_rbac_403() {
     .await;
     assert_eq!(s, 200);
     assert_eq!(v["suppliers"].as_array().expect("sup").len(), 2);
-    assert_eq!(
-        cents(v["suppliers"][0]["period_inflow"].as_str().unwrap()) > 0,
-        true
-    );
+    assert!(cents(v["suppliers"][0]["period_inflow"].as_str().unwrap()) > 0);
 
     // ═══ 4. RBAC: cashier → 403 на всіх /admin/reports/* ════════════════════
     for path in [

@@ -18,7 +18,7 @@
 //!
 //! Потребує доступної PostgreSQL (backend/.env) — як sync_push_e2e.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -153,12 +153,12 @@ async fn login(base: &str) -> String {
     panic!("login: сервер не піднявся");
 }
 
-fn push_cfg(db_path: &PathBuf, base: &str, token: &str) -> PushConfig {
+fn push_cfg(db_path: &Path, base: &str, token: &str) -> PushConfig {
     PushConfig {
         base_url: base.to_string(),
         token: token.to_string(),
         store_id: Some(STORE1.to_string()),
-        db_path: db_path.clone(),
+        db_path: db_path.to_path_buf(),
         interval_secs: 30,
     }
 }

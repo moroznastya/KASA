@@ -584,8 +584,8 @@ mod tests {
         assert_eq!(scaled3("-3"), Some(-3000));
         assert_eq!(scaled2("20.00"), Some(2000));
         assert_eq!(scaled2("5"), Some(500));
-        assert_eq!(dec2(250_00), "250.00");
-        assert_eq!(dec2(-250_00), "-250.00");
+        assert_eq!(dec2(25_000), "250.00");
+        assert_eq!(dec2(-25_000), "-250.00");
     }
 
     #[test]

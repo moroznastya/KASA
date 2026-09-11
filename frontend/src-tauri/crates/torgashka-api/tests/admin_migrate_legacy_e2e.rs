@@ -20,7 +20,6 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use sqlx::Row;
 use torgashka_api::run_facade;
 use uuid::Uuid;
 
