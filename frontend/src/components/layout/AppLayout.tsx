@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { UpdateBanner } from '@/components/update/UpdateBanner';
 import { useUIStore } from '@/store/uiStore';
 import { useStoreStore } from '@/store/storeStore';
 import { useAuthStore } from '@/store/authStore';
@@ -77,6 +78,7 @@ export const AppLayout: React.FC = () => {
         `}
       >
         <Header />
+        <UpdateBanner />
         <main className="p-6">
           <Outlet />
         </main>

@@ -6,33 +6,41 @@ import { useUpdater } from '@/hooks/useUpdater';
 import { isTauri } from '@/hooks/useTauri';
 
 /**
- * Ненав'язливий банер «Доступне оновлення» (десктоп-обгортка Tauri).
+ * Смуга «Доступне оновлення» (десктоп-обгортка Tauri).
  *
- * Принципи:
- *  • Працює ЛИШЕ в Tauri: у web-режимі компонент одразу повертає null і не
- *    робить жодних мережевих запитів.
- *  • Перевірка одноразова на сесію: module-level (in-memory) прапорці гасять і
- *    повторні монтування, і StrictMode double-mount у dev.
- *  • БЕЗ автовстановлення: install() викликається ВИКЛЮЧНО по кліку «Оновити зараз».
- *  • «Пізніше» — in-memory (до наступного запуску застосунку). Свідомо НЕ localStorage.
- *  • Помилки мережі/404 тихо логуються сервісом (services/tauri/updater) →
- *    банер просто не рендериться, жодних toast про помилку тут немає.
+ * Це ЗВИЧАЙНИЙ блок У ПОТОЦІ документа: жодних шарів поверх контенту — смуга
+ * НЕ перекриває UI, а резервує своє місце між хедером і контентом. Поки смуга
+ * видима, її висота публікується у CSS-змінній --update-banner-h, щоб сторінки
+ * з 100vh-розкладкою (POS, друк) віднімали її від calc(100vh - ...).
+ *
+ * Логіка:
+ *  • ЛИШЕ Tauri: у web-режимі компонент не рендериться і не робить запитів.
+ *  • Перевірка одноразова на сесію, через 5 с після монтування (гасить
+ *    StrictMode double-mount через module-level прапорці).
+ *  • БЕЗ автовстановлення: install() — тільки по кліку «Оновити зараз».
+ *  • «Пізніше» — in-memory (до наступного запуску). Свідомо НЕ localStorage.
+ *  • Помилки мережі/404 тихо логуються сервісом updater — банер просто не
+ *    рендериться, без toast.
  */
+
+/** Висота смуги у px — мусить дорівнювати класу h-11 (44px). */
+export const UPDATE_BANNER_H = 44;
 
 const CHECK_DELAY_MS = 5000;
 
 /** Сесійні (in-memory) прапорці — навмисно НЕ localStorage. */
-let pendingTimer: ReturnType<typeof setTimeout> | null = null; // активний таймер перевірки
-let checkDone = false; // перевірку вже запущено в цій сесії
-let dismissedThisSession = false; // «Пізніше» — до наступного запуску застосунку
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let checkDone = false;
+let dismissedThisSession = false;
 
 export const UpdateBanner: React.FC = () => {
   const { installing, available, checkForUpdates, install } = useUpdater();
   const [dismissed, setDismissed] = useState(dismissedThisSession);
 
+  // Перевірка одноразово на сесію, через 5 с після монтування.
   useEffect(() => {
     if (!isTauri()) return; // web-режим: жодних запитів
-    if (checkDone || pendingTimer) return; // уже перевірено / вже заплановано
+    if (checkDone || pendingTimer) return;
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
       checkDone = true;
@@ -46,12 +54,22 @@ export const UpdateBanner: React.FC = () => {
     };
   }, [checkForUpdates]);
 
-  if (!isTauri()) return null;
-  if (dismissed || !available) return null;
+  const visible = isTauri() && !dismissed && !!available;
+
+  // Публікуємо висоту смуги в CSS-змінну, щоб сторінки віднімали її від 100vh.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--update-banner-h', visible ? `${UPDATE_BANNER_H}px` : '0px');
+    return () => {
+      root.style.setProperty('--update-banner-h', '0px');
+    };
+  }, [visible]);
+
+  if (!visible || !available) return null;
 
   const handleInstall = async () => {
-    // Успіх: installAndRelaunch() сам перезапускає застосунок. false —
-    // оновлення не встановлено: банер лишаємо як є, нічого не ламаємо.
+    // installAndRelaunch() сам перезапускає застосунок при успіху; false —
+    // лишаємо смугу як є, нічого не ламаємо.
     await install();
   };
 
@@ -64,23 +82,18 @@ export const UpdateBanner: React.FC = () => {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9990] w-[min(92vw,640px)]
-                 flex flex-wrap items-center gap-3 rounded-xl border border-primary-200
-                 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg px-4 py-3"
+      className="h-11 w-full flex items-center gap-3 border-b border-primary-200 dark:border-slate-700 bg-primary-50 dark:bg-slate-800 px-6 text-sm"
     >
-      <Download className="w-5 h-5 text-primary-600 shrink-0" />
-      <p className="flex-1 min-w-[12rem] text-sm text-gray-700 dark:text-gray-200">
+      <Download className="w-4 h-4 text-primary-600 shrink-0" />
+      <p className="flex-1 min-w-0 truncate text-gray-700 dark:text-gray-200">
         Доступна версія <b>{available.version}</b> (у вас {available.currentVersion})
       </p>
-      <div className="flex items-center gap-2 ml-auto">
+      <div className="ml-auto flex items-center gap-2 shrink-0">
         <Button
           variant="primary"
           size="sm"
           disabled={installing}
           onClick={() => void handleInstall()}
-          // Спінер усередині primary-кнопки має бути білим: у Spinner базовий
-          // text-primary-600 збігається з фоном, тому перекриваємо через
-          // descendant-варіант (вища специфічність за звичайну utility).
           className={installing ? '[&_svg]:text-white' : undefined}
           icon={installing ? <Spinner size="sm" /> : undefined}
         >
