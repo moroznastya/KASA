@@ -626,25 +626,148 @@ pub fn standby_local_url_or_err(
     user: &str,
     env_db: Option<&str>,
 ) -> Result<String, String> {
-    if let Some(primary) = primary_url.map(str::trim).filter(|u| !u.is_empty()) {
-        if db_name_from_url(primary).is_some() {
-            return torgashka_infrastructure::node_config::local_readonly_url(primary, local_port)
-                .ok_or_else(|| format!("primary_db_url не є postgresql:// URL: {primary}"));
+    // Тонка делегація: джерела (c)/(d) у цій сигнатурі відсутні (None) —
+    // старі виклики/тести працюють без змін.
+    standby_local_url_wide(primary_url, local_port, user, env_db, None, None).map(|(url, _src)| url)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ЛАНЦЮГ ДЖЕРЕЛ ІМЕНІ ЛОКАЛЬНОЇ БД (standby-каса без провіжну)
+// ─────────────────────────────────────────────────────────────────────────────
+// На касі, де `[node] primary_db_url` не зберігся (провіжн обірвався) і env
+// `TORGASHKA_PG_DB` не задано, фасад визначає ім'я локальної репліки САМ —
+// без оператора. Джерела в порядку пріоритету:
+//   (a) `[node] primary_db_url`                        → PrimaryUrl
+//   (b) env `TORGASHKA_PG_DB`                          → EnvDb
+//   (c) SQLite settings `node_replication_database`    → NodeSettings
+//   (d) проба ЖИВОЇ репліки на 127.0.0.1:<local_port>  → ReplicaProbe
+// Здогадок немає: жодне джерело не дало РІВНО одного імені → Err із переліком
+// УСЬОГО, що перевірено (причина йде в torgashka.log).
+
+/// Результат проби живої репліки (передається у чисту логіку як дані).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicaDbProbe {
+    /// Рівно одне ім'я БД знайдено на живій репліці.
+    Ok(String),
+    /// Проба неможлива / дала 0 або ≥2 БД (текст — причина з переліком).
+    Err(String),
+    /// Пробу не виконували (напр. ім'я вже відоме з джерела (c)).
+    NotAttempted,
+}
+
+/// Звідки взято ім'я локальної БД (для логу/діагностики).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalDbNameSource {
+    /// `[node] primary_db_url` (або активне джерело db_sources.toml).
+    PrimaryUrl,
+    /// env `TORGASHKA_PG_DB`.
+    EnvDb,
+    /// SQLite settings `node_replication_database` (збережено join-екраном).
+    NodeSettings,
+    /// Проба живої репліки (рівно одна не-шаблонна БД).
+    ReplicaProbe,
+}
+
+impl LocalDbNameSource {
+    /// Коротке ім'я джерела для логів.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LocalDbNameSource::PrimaryUrl => "[node] primary_db_url",
+            LocalDbNameSource::EnvDb => "env TORGASHKA_PG_DB",
+            LocalDbNameSource::NodeSettings => "SQLite settings node_replication_database",
+            LocalDbNameSource::ReplicaProbe => "проба живої репліки",
         }
-        // primary_db_url є, але БЕЗ імені БД — не підставляємо нічого, пробуємо
-        // env-джерело нижче (теж без здогадок).
+    }
+}
+
+/// ЧИСТА: класифікація результату проби (список datname → Ok(1) / Err(0 чи ≥2)).
+///
+/// Жодних здогадок: 0 БД (репліка не провіжнена/порожня) і ≥2 БД (неоднозначно)
+/// — це Err із ПЕРЕЛІКОМ знайденого.
+pub fn classify_replica_probe(databases: &[String]) -> Result<String, String> {
+    let names: Vec<String> = databases
+        .iter()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .collect();
+    match names.len() {
+        1 => Ok(names.into_iter().next().unwrap_or_default()),
+        0 => Err(
+            "проба живої репліки: знайдено 0 баз (очікували рівно 1) — імені БД немає".to_string(),
+        ),
+        n => Err(format!(
+            "проба живої репліки: знайдено {n} баз [{}] (очікували рівно 1 — яку взяти, невідомо)",
+            names.join(", ")
+        )),
+    }
+}
+
+/// Спільний текст помилки: перелік УСІХ перевірених джерел (для логу/тестів).
+fn local_db_name_sources_err(detail: &str) -> String {
+    format!(
+        "локальна репліка недоступна: імені БД немає — перевірено [node] primary_db_url, \
+         env TORGASHKA_PG_DB, SQLite settings node_replication_database, пробу живої репліки \
+         ({detail}); пул НЕ створюється, здогадка імені БД («torgashka») вимкнена"
+    )
+}
+
+/// ЧИСТА логіка ланцюга (a>b>c>d). `Ok` = (ім'я БД, джерело).
+pub fn local_db_name_or_err(
+    primary_url: Option<&str>,
+    env_db: Option<&str>,
+    settings_db: Option<&str>,
+    probe: Option<&ReplicaDbProbe>,
+) -> Result<(String, LocalDbNameSource), String> {
+    if let Some(name) = primary_url.and_then(db_name_from_url) {
+        return Ok((name, LocalDbNameSource::PrimaryUrl));
     }
     if let Some(db) = env_db.map(str::trim).filter(|d| !d.is_empty()) {
-        return Ok(torgashka_infrastructure::node_config::fallback_local_url(
-            local_port, db, user,
-        ));
+        return Ok((db.to_string(), LocalDbNameSource::EnvDb));
     }
-    Err(
-        "локальна репліка недоступна: імені БД немає ні в [node] primary_db_url, ні в env \
-        TORGASHKA_PG_DB — вкажіть primary_db_url або TORGASHKA_PG_DB; пул НЕ створюється, \
-        здогадка імені БД («torgashka») вимкнена"
-            .to_string(),
-    )
+    if let Some(db) = settings_db.map(str::trim).filter(|d| !d.is_empty()) {
+        return Ok((db.to_string(), LocalDbNameSource::NodeSettings));
+    }
+    match probe {
+        Some(ReplicaDbProbe::Ok(name)) => {
+            let db = classify_replica_probe(std::slice::from_ref(name))?;
+            Ok((db, LocalDbNameSource::ReplicaProbe))
+        }
+        Some(ReplicaDbProbe::Err(e)) => Err(local_db_name_sources_err(e)),
+        None | Some(ReplicaDbProbe::NotAttempted) => {
+            Err(local_db_name_sources_err("пробу не виконували"))
+        }
+    }
+}
+
+/// ЧИСТА: локальний URL з джерел; `Err` — перелік УСІХ перевірених джерел.
+///
+/// `primary_db_url` з іменем БД → host:port переписується на `127.0.0.1:local_port`
+/// ([`torgashka_infrastructure::node_config::local_readonly_url`], без пароля);
+/// джерела (b)/(c)/(d) → [`torgashka_infrastructure::node_config::fallback_local_url`]
+/// (`postgresql://{user}@127.0.0.1:{local_port}/{db}`).
+pub fn standby_local_url_wide(
+    primary_url: Option<&str>,
+    local_port: u16,
+    user: &str,
+    env_db: Option<&str>,
+    settings_db: Option<&str>,
+    probe: Option<&ReplicaDbProbe>,
+) -> Result<(String, LocalDbNameSource), String> {
+    if let Some(primary) = primary_url.map(str::trim).filter(|u| !u.is_empty()) {
+        if db_name_from_url(primary).is_some() {
+            let url =
+                torgashka_infrastructure::node_config::local_readonly_url(primary, local_port)
+                    .ok_or_else(|| format!("primary_db_url не є postgresql:// URL: {primary}"))?;
+            return Ok((url, LocalDbNameSource::PrimaryUrl));
+        }
+        // primary_db_url є, але БЕЗ імені БД — не підставляємо нічого, пробуємо
+        // джерела нижче (теж без здогадок).
+    }
+    let (db, src) = local_db_name_or_err(primary_url, env_db, settings_db, probe)?;
+    Ok((
+        torgashka_infrastructure::node_config::fallback_local_url(local_port, &db, user),
+        src,
+    ))
 }
 
 /// Резолв + лог: ядро [`standby_url_for`] із ін'єкцією логера (тестовано).
@@ -1197,6 +1320,192 @@ async fn start_local_replica_logged() {
     }
 }
 
+/// Проба ЖИВОЇ репліки: підключення БЕЗ пароля до БД `postgres` на
+/// `127.0.0.1:{local_port}` і перелік не-шаблонних БД (детермінований порядок).
+///
+/// НЕ панікує і НЕ `unwrap`-ить: будь-яка помилка (драйвер/connect/запит/
+/// таймаут 5 с) → [`ReplicaDbProbe::Err`] із текстом причини.
+async fn probe_live_replica(local_port: u16, user: &str) -> ReplicaDbProbe {
+    use sqlx::postgres::PgPoolOptions;
+    let dsn = format!("postgresql://{user}@127.0.0.1:{local_port}/postgres");
+    let pool = match PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&dsn)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return ReplicaDbProbe::Err(format!("підключення до {dsn}: {e}")),
+    };
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT datname FROM pg_database \
+         WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY datname",
+    )
+    .fetch_all(&pool)
+    .await;
+    pool.close().await;
+    match rows {
+        Ok(names) => match classify_replica_probe(&names) {
+            Ok(name) => ReplicaDbProbe::Ok(name),
+            Err(e) => ReplicaDbProbe::Err(e),
+        },
+        Err(e) => ReplicaDbProbe::Err(format!("запит pg_database (порт {local_port}): {e}")),
+    }
+}
+
+/// Перевірка «пул реально піднявся»: `SELECT 1` на candidate-URL.
+/// `Err(text)` — з'єднання/запит не вдались (жодного `set_var` тоді не буде).
+async fn candidate_url_alive(url: &str) -> Result<(), String> {
+    use sqlx::postgres::PgPoolOptions;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(url)
+        .await
+        .map_err(|e| format!("підключення до candidate-URL {url}: {e}"))?;
+    let probe = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&pool)
+        .await;
+    pool.close().await;
+    probe
+        .map(|_| ())
+        .map_err(|e| format!("SELECT 1 на candidate-URL {url}: {e}"))
+}
+
+/// Самолікування standby-каси: визначити ім'я локальної БД із (c)/(d), ПЕРЕВІРИТИ
+/// живість URL, і лише тоді `DATABASE_URL` + запис `[node] primary_db_url`.
+///
+/// Повертає `None` завжди (standby-реплікою фасад не володіє — Drop її не
+/// зупиняє). Будь-яка невдача → ERROR у `torgashka.log` із ПЕРЕЛІКОМ джерел;
+/// без `set_var`, без запису у файл (регресії для primary немає — ця функція
+/// викликається лише з гілки `StandbyWithoutDbName`).
+async fn self_heal_standby_db_name(
+    reason: &str,
+) -> Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres> {
+    use torgashka_infrastructure::embedded_pg::pg_log;
+    let user = std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
+    // cfg: тонка impure-обгортка (env → файл) — тут потрібен local_port + host/port.
+    let cfg = torgashka_infrastructure::node_config::NodeConfig::load();
+    let settings = torgashka_infrastructure::standby_heartbeat::read_standby_settings()
+        .ok()
+        .flatten();
+    let settings_db = settings
+        .as_ref()
+        .and_then(|s| s.replication_database.as_deref())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    // (d) пробу виконуємо ЛИШЕ якщо (c) не дало імені — зайвих з'єднань немає.
+    let probe = if settings_db.is_some() {
+        ReplicaDbProbe::NotAttempted
+    } else {
+        probe_live_replica(cfg.local_port, &user).await
+    };
+    if let ReplicaDbProbe::Err(e) = &probe {
+        pg_log(
+            "INFO",
+            &format!("крок 2 (standby): проба живої репліки не дала імені — {e}"),
+        );
+    }
+    let primary = cfg.resolve_primary_db_url();
+    let env_db = std::env::var("TORGASHKA_PG_DB").ok();
+    match standby_local_url_wide(
+        primary.as_deref(),
+        cfg.local_port,
+        &user,
+        env_db.as_deref(),
+        settings_db.as_deref(),
+        Some(&probe),
+    ) {
+        Ok((url, src)) => {
+            // Пул мусить РЕАЛЬНО піднятись — інакше не чіпаємо ні env, ні файл.
+            if let Err(e) = candidate_url_alive(&url).await {
+                pg_log(
+                    "ERROR",
+                    &format!(
+                        "крок 2 (standby): ім'я БД знайдено ({}, джерело: {}), але з'єднання \
+                         НЕ піднялось — DATABASE_URL не встановлено, файл НЕ змінено ({e}); \
+                         підстава: {reason}",
+                        url,
+                        src.as_str()
+                    ),
+                );
+                return None;
+            }
+            std::env::set_var("DATABASE_URL", &url);
+            pg_log(
+                "INFO",
+                &format!(
+                    "крок 2 (standby): DATABASE_URL = {url} (джерело: {}) — пули/роути \
+                     змонтуються, /api/v1/setup/status відповідатиме",
+                    src.as_str()
+                ),
+            );
+            // Самолікування [node] primary_db_url: лише для (c)/(d) — (a)/(b)
+            // не потребують запису (ім'я вже є у файлі/env).
+            if matches!(
+                src,
+                LocalDbNameSource::NodeSettings | LocalDbNameSource::ReplicaProbe
+            ) {
+                // Ім'я БД беремо з URL, який щойно перевірили (fallback_local_url:
+                // postgresql://user@127.0.0.1:port/<db>).
+                let db = db_name_from_url(&url).unwrap_or_else(|| url.clone());
+                let host = settings
+                    .as_ref()
+                    .and_then(|s| s.replication_host.clone())
+                    .map(|h| h.trim().to_string())
+                    .filter(|h| !h.is_empty())
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let port = settings
+                    .as_ref()
+                    .and_then(|s| s.replication_port)
+                    .unwrap_or(cfg.local_port);
+                let healed = torgashka_infrastructure::node_config::primary_db_url_from_parts(
+                    &user, &host, port, &db,
+                );
+                let healed_cfg = torgashka_infrastructure::node_config::NodeConfig {
+                    mode: torgashka_infrastructure::node_config::NodeMode::Standby,
+                    local_port: cfg.local_port,
+                    primary_db_url: Some(healed.clone()),
+                    // Решта полів — з реально завантаженого конфіга: `..default()`
+                    // затирав `degrade_to_local`/`repoint_pending` дефолтами.
+                    ..cfg.clone()
+                };
+                match healed_cfg.save_to_disk() {
+                    Ok(path) => pg_log(
+                        "INFO",
+                        &format!(
+                            "крок 2 (standby): самолікування [node] primary_db_url = {healed} \
+                             (mode=standby, local_port={}) записано у {}",
+                            cfg.local_port,
+                            path.display()
+                        ),
+                    ),
+                    Err(e) => pg_log(
+                        "ERROR",
+                        &format!(
+                            "крок 2 (standby): самолікування [node] primary_db_url НЕ записано ({e}); \
+                             робота продовжується з DATABASE_URL = {url}"
+                        ),
+                    ),
+                }
+            }
+            None
+        }
+        Err(reason_full) => {
+            pg_log(
+                "ERROR",
+                &format!(
+                    "крок 2 (standby): DATABASE_URL НЕ встановлено — {reason_full}; \
+                     локальні пули (readdirs/write/pos/ledger/auth) і /api/v1/setup/status \
+                     НЕ монтуються; здогадок імені БД немає; підстава: {reason}"
+                ),
+            );
+            None
+        }
+    }
+}
+
 /// Виконує план підготовки БД (ФІКС дефектів 5+6).
 ///
 /// * `ExternalUrl` — БД ззовні: embedded PG не чіпаємо;
@@ -1239,18 +1548,14 @@ pub async fn apply_db_startup_plan(
                 "INFO",
                 "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО — це каталог репліки",
             );
-            // Саму репліку піднімаємо (її стан не залежить від імені БД у URL),
-            // але DATABASE_URL НЕ вигадуємо — пули/роути лишаться немонтованими.
+            // Саму репліку піднімаємо (її стан не залежить від імені БД у URL).
             start_local_replica_logged().await;
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "ERROR",
-                &format!(
-                    "крок 2 (standby): DATABASE_URL НЕ встановлено — {reason}; \
-                     локальні пули (readdirs/write/pos/ledger/auth) і /api/v1/setup/status \
-                     НЕ монтуються; здогадок імені БД немає"
-                ),
-            );
-            None
+            // САМОЛІКУВАННЯ ІМЕНІ БД (гілка доступна ЛИШЕ тут — репліку вже
+            // піднято): (c) SQLite settings `node_replication_database` →
+            // (d) проба живої репліки на 127.0.0.1:<local_port>. Джерела (a)/(b)
+            // сюди не дійшли (plan = StandbyWithoutDbName), але лишаються в
+            // ланцюзі для повноти переліку в помилці.
+            self_heal_standby_db_name(&reason).await
         }
         DbStartupPlan::PrimaryBootstrap => {
             torgashka_infrastructure::embedded_pg::pg_log(
@@ -1525,6 +1830,170 @@ mod tests {
         assert_eq!(db_name_from_url("postgresql://u@h:5432"), None);
         assert_eq!(db_name_from_url("postgresql://u@h:5432/"), None);
         assert_eq!(db_name_from_url("не-url"), None);
+    }
+
+    // ── Ланцюг джерел імені БД (a>b>c>d) — самолікування standby-каси ────────
+
+    #[test]
+    fn classify_replica_probe_one_ok_zero_and_many_err() {
+        // Рівно одна БД (порожні/пробільні відкидаємо) → Ok з trimmed іменем.
+        assert_eq!(
+            classify_replica_probe(&["  pos_system_fresh  ".to_string()]),
+            Ok("pos_system_fresh".to_string())
+        );
+        // 0 БД → Err зі згадкою «0».
+        let e0 = classify_replica_probe(&[]).expect_err("0 баз — це помилка");
+        assert!(e0.contains('0'), "текст мусить згадувати 0: {e0}");
+        assert_eq!(
+            classify_replica_probe(&["   ".to_string()]).expect_err("порожні імена = 0 баз"),
+            e0,
+            "порожні рядки = ті самі 0 баз"
+        );
+        // ≥2 БД → Err зі згадкою ОБОХ імен (жодних здогадок).
+        let e2 = classify_replica_probe(&["a".to_string(), "b".to_string()])
+            .expect_err("2 БД — неоднозначно");
+        assert!(e2.contains('a') && e2.contains('b'), "текст: {e2}");
+        assert!(e2.contains('2'), "текст мусить згадувати кількість: {e2}");
+    }
+
+    #[test]
+    fn local_db_name_priority_a_b_c_d() {
+        let probe = ReplicaDbProbe::Ok("from_probe".to_string());
+        let all = |p: Option<&ReplicaDbProbe>| {
+            local_db_name_or_err(
+                Some("postgresql://postgres@10.0.0.5:5432/from_primary"),
+                Some("from_env"),
+                Some("from_settings"),
+                p,
+            )
+        };
+        // (a) primary_db_url виграє над усіма.
+        assert_eq!(
+            all(Some(&probe)),
+            Ok(("from_primary".to_string(), LocalDbNameSource::PrimaryUrl))
+        );
+        // (b) env виграє над (c)/(d).
+        assert_eq!(
+            local_db_name_or_err(None, Some("from_env"), Some("from_settings"), Some(&probe)),
+            Ok(("from_env".to_string(), LocalDbNameSource::EnvDb))
+        );
+        // (b) порожній/пробільний env не блокує (c).
+        assert_eq!(
+            local_db_name_or_err(None, Some("   "), Some("from_settings"), Some(&probe)),
+            Ok(("from_settings".to_string(), LocalDbNameSource::NodeSettings))
+        );
+        // (c) settings виграє над пробою (d).
+        assert_eq!(
+            local_db_name_or_err(None, None, Some("from_settings"), Some(&probe)),
+            Ok(("from_settings".to_string(), LocalDbNameSource::NodeSettings))
+        );
+        // (d) проба — останнє джерело.
+        assert_eq!(
+            local_db_name_or_err(None, None, None, Some(&probe)),
+            Ok(("from_probe".to_string(), LocalDbNameSource::ReplicaProbe))
+        );
+        // (a) без імені БД (URL лише з host:port) → падаємо далі ланцюгом.
+        assert_eq!(
+            local_db_name_or_err(
+                Some("postgresql://postgres@10.0.0.5:5432"),
+                None,
+                None,
+                Some(&probe)
+            ),
+            Ok(("from_probe".to_string(), LocalDbNameSource::ReplicaProbe))
+        );
+        // Проба Err / NotAttempted → Err із переліком УСІХ джерел.
+        for p in [
+            ReplicaDbProbe::Err("проба: 2 бази [a, b]".to_string()),
+            ReplicaDbProbe::NotAttempted,
+        ] {
+            let e = local_db_name_or_err(None, None, None, Some(&p))
+                .expect_err("жодного імені — помилка");
+            for needle in [
+                "primary_db_url",
+                "TORGASHKA_PG_DB",
+                "node_replication_database",
+                "живої репліки",
+            ] {
+                assert!(e.contains(needle), "у тексті немає «{needle}»: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn all_sources_empty_err_lists_every_source() {
+        let e = local_db_name_or_err(None, None, None, None).expect_err("порожньо — Err");
+        assert!(e.contains("primary_db_url"), "{e}");
+        assert!(e.contains("TORGASHKA_PG_DB"), "{e}");
+        assert!(e.contains("node_replication_database"), "{e}");
+        assert!(e.contains("локальна репліка недоступна"), "{e}");
+    }
+
+    #[test]
+    fn standby_local_url_wide_probe_ok_is_passwordless_local_url() {
+        let probe = ReplicaDbProbe::Ok("pos_system_fresh".to_string());
+        let (url, src) = standby_local_url_wide(None, 5433, "postgres", None, None, Some(&probe))
+            .expect("URL з проби");
+        assert_eq!(url, "postgresql://postgres@127.0.0.1:5433/pos_system_fresh");
+        assert_eq!(src, LocalDbNameSource::ReplicaProbe);
+        assert!(
+            !url.contains('@')
+                || !url[url.find("://").unwrap() + 3..url.rfind('@').unwrap()].contains(':'),
+            "пароль у URL заборонений: {url}"
+        );
+
+        // settings (c) → той самий формат URL, джерело NodeSettings.
+        let (url_c, src_c) =
+            standby_local_url_wide(None, 5432, "postgres", None, Some("pos_system_fresh"), None)
+                .expect("URL зі settings");
+        assert_eq!(
+            url_c,
+            "postgresql://postgres@127.0.0.1:5432/pos_system_fresh"
+        );
+        assert_eq!(src_c, LocalDbNameSource::NodeSettings);
+
+        // (a) і (b) — як раніше (регресія).
+        let (url_a, src_a) = standby_local_url_wide(
+            Some("postgresql://repuser:s3cret@10.0.0.5:5432/pos_net"),
+            5433,
+            "repuser",
+            Some("ignored"),
+            Some("ignored"),
+            Some(&probe),
+        )
+        .expect("URL з primary");
+        assert_eq!(url_a, "postgresql://repuser@127.0.0.1:5433/pos_net");
+        assert_eq!(src_a, LocalDbNameSource::PrimaryUrl);
+        let (url_b, src_b) =
+            standby_local_url_wide(None, 5433, "postgres", Some("envdb"), None, None)
+                .expect("URL з env");
+        assert_eq!(url_b, "postgresql://postgres@127.0.0.1:5433/envdb");
+        assert_eq!(src_b, LocalDbNameSource::EnvDb);
+    }
+
+    #[test]
+    fn standby_local_url_wide_probe_err_mentions_reason_and_all_sources() {
+        let probe = ReplicaDbProbe::Err("знайдено 2 баз [a, b]".to_string());
+        let e = standby_local_url_wide(None, 5433, "postgres", None, None, Some(&probe))
+            .expect_err("жодного імені — Err");
+        assert!(e.contains("знайдено 2 баз [a, b]"), "причина проби: {e}");
+        for needle in [
+            "primary_db_url",
+            "TORGASHKA_PG_DB",
+            "node_replication_database",
+        ] {
+            assert!(e.contains(needle), "у тексті немає «{needle}»: {e}");
+        }
+        // NotAttempted (пробу не виконували) — теж Err, а не URL.
+        assert!(standby_local_url_wide(
+            None,
+            5433,
+            "postgres",
+            None,
+            None,
+            Some(&ReplicaDbProbe::NotAttempted)
+        )
+        .is_err());
     }
 
     #[test]
