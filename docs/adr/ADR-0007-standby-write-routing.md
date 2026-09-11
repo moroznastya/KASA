@@ -944,8 +944,8 @@ SQLite-каналом, а не PG).
 
 | Клас | Поверхонь |
 |---|---|
-| `ProxyToPrimary` | 69 |
-| `LocalOutbox` | 49 |
+| `ProxyToPrimary` | 71 |
+| `LocalOutbox` | 47 |
 | `DisabledOnStandby` | 1 (`POST /api/v1/sync/push`) |
 | Свідомо `Pass` (жодного DML у PG) | 18 |
 | **Усього** | **137** |
@@ -953,10 +953,12 @@ SQLite-каналом, а не PG).
 
 Реєстрація класів: `write_gate.rs` (`classify_request`, нові правила — каталог,
 друк, налаштування, ПРРО, документи складу, борги, журнал, setup);
-`POLICY_TABLE` = **54** рядки (25 гейт-сутностей §11.1/§11.6 + 26 таблиць PG-шару
-§11.7 + 3 поверхневих §11.7.9.5).
+`POLICY_TABLE` = **58** рядків (25 гейт-сутностей: 23 §11.1 + 2 §11.6; 28 таблиць
+PG-шару §11.7; 5 поверхневих §11.7.9) — звіряється тестом
+`write_gate_guard.rs::pg_table_registry_is_complete_and_consistent` /
+`every_policy_entity_is_covered_by_adr_registry_or_document_channel`.
 
-#### 11.7.9.1 `ProxyToPrimary` — 69 поверхонь (усі на standby → HTTP pass-through §11.2)
+#### 11.7.9.1 `ProxyToPrimary` — 71 поверхонь (усі на standby → HTTP pass-through §11.2)
 
 **`barcodes`** — 4 поверхонь
 
@@ -1057,6 +1059,13 @@ SQLite-каналом, а не PG).
 | `POST /api/v2/prro/shift/close` | `pos.rs:1390` `pos::close_shift` |
 | `POST /api/v2/prro/shift/open` | `pos.rs:1354` `pos::open_shift` |
 
+**`prro_sync`** — 2 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v2/prro/sync` | `prro.rs:621` `prro::sync_queue` |
+| `POST /api/v2/prro/fiscal/sync` | `prro.rs:621` `prro::sync_queue` |
+
 **`setup`** — 1 поверхонь
 
 | метод + шлях | хендлер (визначення) |
@@ -1117,7 +1126,16 @@ SQLite-каналом, а не PG).
 |---|---|
 | `POST /api/v1/write-off-reasons` | `pos.rs:1193` `pos::create_write_off_reason` |
 
-#### 11.7.9.2 `LocalOutbox` — 49 поверхонь (на standby → локальний шлях; ⚠ = хендлер пише PG напряму, адаптера ще немає — АНОМАЛІЯ 3)
+#### 11.7.9.2 `LocalOutbox` — 47 поверхонь (на standby → локальний шлях; ⚠ = історичний знімок Фази 3.2 — див. статус)
+
+**Статус «АНОМАЛІЯ 3» — ЗАКРИТО (Фази 3.2/3.3a/3.3b/3.8): боргу немає.** Усі 47 поверхонь
+мають або локальний канал (адаптери `outbox_*` Фаз 3.3a/3.3b/3.8, §11.7.9.7), або належать
+свідомому класу відмови §11.6.2. Позначка ⚠ лишається історичним слідом знімка Фази 3.2
+(тоді хендлер ішов у PG напряму); на сьогодні такі поверхні закриті адаптерами — це не борг.
+Дві поверхні синхронізації ПРРО (`POST /api/v2/prro/sync`, `POST /api/v2/prro/fiscal/sync`)
+**більше не належать цьому класу**: у них власна поверхнева сутність `prro_sync` =
+`ProxyToPrimary` (§11.7.9.1, §11.7.9.5): фіскалізація через ДПС із КЕП-ключем вузла — межа,
+а не канал каси (§11.7.9.7).
 
 **`cash_operation`** — 1 поверхонь
 
@@ -1158,13 +1176,6 @@ SQLite-каналом, а не PG).
 | `POST /api/v2/invoices/:invoice_id/cancel` ✅ адаптер 3.3a | `invoices.rs:487` `invoices::v2_cancel` |
 | `POST /api/v2/invoices/:invoice_id/print-items` ✅ адаптер 3.3a | `invoices.rs:471` `invoices::v2_print_items` |
 | `POST /api/v2/invoices/confirm` ✅ адаптер 3.3a | `invoices.rs:391` `invoices::v2_confirm` |
-
-**`prro_queue_items`** — 2 поверхонь
-
-| метод + шлях | хендлер (визначення) |
-|---|---|
-| `POST /api/v2/prro/fiscal/sync` ⚠ PG-only | `prro.rs:621` `prro::sync_queue` |
-| `POST /api/v2/prro/sync` ⚠ PG-only | `prro.rs:621` `prro::sync_queue` |
 
 **`purchase_order`** — 4 поверхонь
 
@@ -1259,7 +1270,7 @@ SQLite-каналом, а не PG).
 | `POST /api/v1/print/test` | `print_templates.rs:304` `print_templates::test_print` | СВІДОМО Pass (немає DML у PG; |
 | `POST /api/v2/prro/test-connection` | `prro.rs:435` `prro::test_connection` | СВІДОМО Pass (немає DML у PG; |
 
-#### 11.7.9.5 Нові поверхневі сутності (не таблиці) — 4
+#### 11.7.9.5 Нові поверхневі сутності (не таблиці) — 5
 
 Поверхня не завжди дорівнює таблиці: три хендлери пишуть PG через
 mode-agnostic сервіс, а таблиці-цілі належать РІЗНИМ класам. Клас — найбезпечніший
@@ -1271,6 +1282,7 @@ mode-agnostic сервіс, а таблиці-цілі належать РІЗН
 | `documents_batch` | `ProxyToPrimary` | batch-операції над наявними документами складу пишуть і `products` (ProxyToPrimary), і `stock`/`supplier_ledger` | `POST /api/v1/documents/batch-confirm`, `POST /api/v1/documents/:id/copy`, `DELETE /api/v1/documents/:id` |
 | `setup` | `ProxyToPrimary` | первинна ініціалізація власника/точки — глобальні таблиці (`stores`, `users`, `user_stores`, `owners_db`) | `POST /api/v1/setup` |
 | `outbox_drain` | `LocalOutbox` | Фаза 3.8: drain залишку SQLite-черги у ВЛАСНИЙ PG пише агрегати різних класів (`receipts`, `invoices`, `return_invoices`, `inventories`, …) тим самим ядром `sync::process_push_item` | `POST /api/v1/local/outbox/drain` |
+| `prro_sync` | `ProxyToPrimary` | друга половина таблиці `prro_queue_items`: `sync`/`fiscal/sync` — фіскалізація через ДПС із КЕП-ключем вузла (межа §11.7.9.7) | `POST /api/v2/prro/sync`, `POST /api/v2/prro/fiscal/sync` |
 
 `setup` — свідоме рішення: хендлер іде в PG лише коли в БД **немає жодного
 користувача** (`repositories/setup.rs:196-204` → інакше `409 Conflict` без DML).
@@ -1289,7 +1301,7 @@ Some("catalog_directories"))` → `policy_for` → `None` → `Pass` → дру�
 `api/src/**` і вимагає політику для КОЖНОГО літерала, переданого в `admin_pool`
 (9 викликів).
 
-#### 11.7.9.7 АНОМАЛІЯ 2: клас `LocalOutbox`, але хендлер пише PG → сирий `500` на standby (Фази 3.3a+3.3b: 31 з 31 закрито, 2 поверхні → межа)
+#### 11.7.9.7 АНОМАЛІЯ 2: клас `LocalOutbox`, але хендлер пише PG → сирий `500` на standby (Фази 3.3a+3.3b: 31 з 31 закрито, 2 поверхні → межа: клас `prro_sync`)
 
 Клас цих таблиць у §11.7.2 **оголошений** (черга/локальна БД), однак
 HTTP-хендлер ішов у PG через mode-agnostic сервіс. Наслідок на standby:
@@ -1307,9 +1319,11 @@ HTTP-хендлер ішов у PG через mode-agnostic сервіс. Нас
 | `return_invoice` | 4 | ✅ 3.3b | `repositories/outbox_return_invoices.rs` + тип `return_invoice` (`transactions.rs`) + локальний агрегат `return_invoices` (offline-0012, stock **−qty**) + приймач-СЕРВІС `sync.rs::accept_return_invoice_kind` + partial UNIQUE `uq_return_invoices_client_uuid` (Alembic 0018) |
 | `debtor_payment` | 4 | ✅ 3.3b | `repositories/outbox_debtors.rs` + тип `debtor_payment`, агрегат `debtors_ledger` (0006), похідний борг `debtor_balances` (0012) + приймач `sync_receivers::accept_debtor_payment` (`debtor_payments` + `UPDATE debtors.total_debt`) + UNIQUE 0018 |
 | `supplier_ledger` | 2 | ✅ 3.3b | `repositories/outbox_ledger.rs` + тип `supplier_ledger`, агрегат `supplier_ledger` (0012), похідний `supplier_balances` + приймач `sync_receivers::accept_supplier_ledger` (`SUM(amount)+amount` в одній транзакції) + UNIQUE 0018 |
-| `prro_queue_items` | 2 | 🚫 межа `ProxyToPrimary` (АНОМАЛІЯ нижче) | фіскалізація — див. пояснення |
+| `prro_queue_items` | 2 | 🚫 межа `ProxyToPrimary` — поверхня `prro_sync` (§11.7.9.5) | фіскалізація — див. пояснення |
 | heartbeat `api/store_context.rs:108` | внутр. (не маршрут) | ✅ 3.3b | `standby_heartbeat::record_device_seen` → SQLite `device_heartbeats` (offline-0013) |
 | **Разом** | **31 + heartbeat** | **29 ✅ / 2 🚫** | |
+
+**Клас `prro_sync` (Фаза 1):** дві поверхні `POST /api/v2/prro/sync` і `POST /api/v2/prro/fiscal/sync` — рядок `("prro_sync", WritePolicy::ProxyToPrimary)` (`write_gate.rs:179`), тоді як політика самої ТАБЛИЦІ `prro_queue_items` лишилась `LocalOutbox` (`write_gate.rs:111`); решта цього класу тепер додатково захищена рубцем 1 (`store_ctx.rs:147` → SQLSTATE 25006) і рубцем 2 (`readonly_net.rs:87`) — §11.8.
 
 **`return_invoice` — повний стек (була АНОМАЛІЯ §11.7.9.7 фази 3.3a).** Тип
 `TYPE_RETURN_RECEIPT` (`sync_push.rs:50`) — це **чек повернення ПОКУПЦЯ**
@@ -1352,9 +1366,14 @@ HTTP-хендлер ішов у PG через mode-agnostic сервіс. Нас
 політика вже `ProxyToPrimary`, §11.1); дублювання фіскалізації на другому вузлі
 дало б подвійні чеки в ДПС. Тому клас поверхні на standby — прохід на primary
 (§11.2) / відмова користувачу людським текстом, а НЕ SQLite-черга каси: локально
-каса не має ні КЕП-ключа, ні права фіскалізувати чужу зміну. Класифікація
-`write_gate.rs` НЕ змінювалась (вона валідована guard'ом); межу зафіксовано тут
-як свідоме рішення, а не борг.
+каса не має ні КЕП-ключа, ні права фіскалізувати чужу зміну. **Класифікація
+`write_gate.rs` ЗМІНЕНА (Фаза 1 фіксу):** обидві поверхні мають власну поверхневу
+сутність `prro_sync` = `ProxyToPrimary` (`write_gate.rs:179` — рядок `POLICY_TABLE`,
+`:502` — `classify_request`), політика самої ТАБЛИЦІ `prro_queue_items` лишається
+`LocalOutbox` для DML-точок `prro/repository.rs`; guard
+`tests/write_gate_guard.rs::prro_sync_surfaces_are_proxy_to_primary_not_local_outbox`
+фіксує саме це (було `Pass` → запис у read-only репліку → 400 із сирим текстом PG).
+Межу зафіксовано тут як свідоме рішення, а не борг.
 
 **`heartbeat` (§11.7.9.8) закрито у Фазі 3.3b**: `store_context.rs` на standby
 більше не робить `UPDATE devices` у репліку → `standby_heartbeat::record_device_seen`
@@ -1431,13 +1450,130 @@ SQLite `server_url` — окрема тема (АНОМАЛІЯ звіту Фа�
 
 * guard бачить УСІ 6 крейтів: 141 файл, 335 DML-рядків → ✅;
 * 100 % таблиць PG-шару мають політику або батька: 43/43 → ✅;
-* `POLICY_TABLE` = **54** рядки (25 гейт-сутностей §11.1/§11.6 + 26 таблиць §11.7 + 3 поверхневих §11.7.9.5) → ✅;
+* `POLICY_TABLE` = **58** рядків (25 гейт-сутностей: 23 §11.1 + 2 §11.6; 28 таблиць PG-шару §11.7; 5 поверхневих §11.7.9) — звіряється тестом `write_gate_guard.rs::pg_table_registry_is_complete_and_consistent` / `every_policy_entity_is_covered_by_adr_registry_or_document_channel` → ✅;
 * два нові негативні контролі (infrastructure-файл без класу; `satellite`/динамічна/шар SQLite) → ✅ (7 тестів, 0 failed);
 * **Фаза 3.2 (§11.7.9)**: 137/137 write-поверхонь мають явний клас, `classify_request → None` = 0 (було 47); guard 9 тестів, 0 failed; pass-through верифіковано на 63 шляхах (`write_gate_behavior`, 5 passed) → ✅;
 * жодного виправлення коду Фази 3 (адаптерів) — лише карта + запобіжник → ✅.
 * **Фаза 3.3a (§11.7.9.7)**: 19 із 31 поверхні закрито адаптерами (`outbox_invoices.rs`, `outbox_purchase_orders.rs`, `outbox_write.rs` + спільна обв'язка `outbox_local.rs`), `lib.rs` вибирає адаптер раз на старті за `node_cfg.mode`; e2e: `invoice_standby_outbox_e2e` (2, включно з push на primary) + `purchase_order_standby_outbox_e2e` + `inventory_standby_outbox_e2e` → ✅
 * **Фаза 3.3b (§11.7.9.7)**: 12 поверхонь закрито — `return_invoice` (4, ПОВНИЙ стек: тип + локальний агрегат 0012 + stock −qty + приймач-сервіс + UNIQUE 0018), `debtor_payment` (4, §11.6.4 варіант 1: `debtors_ledger` + `debtor_balances` + приймач `debtor_payments`/`UPDATE debtors`), `supplier_ledger` (2, самостійний документ: `supplier_ledger` + `supplier_balances` + приймач з `SUM(amount)+amount`); heartbeat `store_context.rs:108` закрито SQLite-каналом (§11.7.9.8); e2e `return_invoice_standby_outbox_e2e` (2, включно з push на primary) + `debtor_standby_outbox_e2e` (2, включно з ідемпотентним push) → ✅
 * **межа, а не борг (§11.7.9.7)**: `prro_queue_items` (2 поверхні `sync`) — фіскалізація через ДПС із КЕП-ключем вузла: `ProxyToPrimary`/відмова; SQLite-черга каси тут неможлива (подвійна фіскалізація зміни) → 🚫
+
+### 11.8 Генеричний перехоплювач запису в read-only репліку (Фаза 2)
+
+Рубіж 1 — **ручна** таблиця політик (`write_gate::classify_request`, §11.1): вона
+описує світ, а світ змінюється швидше. Рубіж 2 — **генеричний** перехоплювач,
+який не знає ні назв таблиць, ні маршрутів і спрацьовує на самому факті фізичної
+відмови PostgreSQL (`read_only_sql_transaction`).
+
+#### 11.8.1 Проблема: таблиця політик завжди відстає (3 інциденти)
+
+| # | Інцидент | Що показав | Де закрито / описано |
+|---|---|---|---|
+| 1 | **чек** — друга реалізація запису чека (`POST /api/v1/local/receipts` + `kind: "receipt"` в `/api/v1/local/ops`) жила паралельно канонічному маршруту | класифікація знала про один вхід, а писав інший | §11.5: дубль видалено, `400` + вказівка на канонічний маршрут |
+| 2 | **аудит DML усіх крейтів** (`write_gate_guard`: 141 файл / 335 DML-рядків, §11.7) | виявив цілий клас, якого таблиця не знала — **21 таблиця / 117 точок** «ВІДКРИТО (Фаза 3)» | §11.7.8 (карта для Фази 3) |
+| 3 | **ПРРО** — клас таблиці оголошений `LocalOutbox`, а HTTP-хендлер ішов у PG через mode-agnostic сервіс | **31 поверхня** з сирим `500` на standby | §11.7.9.7: Фази 3.3a/3.3b закрили 29 адаптерами, 2 — свідома межа (поверхня `prro_sync`) |
+
+Спільний корінь усіх трьох: безпека трималась на **перелікові, який треба
+пам'ятати**. Фаза 2 прибирає цю залежність: безпеку дає фізика БД, а не список;
+ручна таблиця лишається картою дрейфу й швидкою смугою в CI (§11.8.8).
+
+#### 11.8.2 Рубіж 1 — фунел пулу: `Executor for &StorePool` (SQLSTATE 25006)
+
+| Що | Де |
+|---|---|
+| `impl<'p> Executor<'p> for &'_ StorePool` — ЄДИНЕ фізичне місце, через яке проходять усі одиночні запити репозиторіїв (`query(...).fetch_*` / `execute` з `&self.pool`) | `crates/torgashka-infrastructure/src/store_ctx.rs:147` |
+| перекрито `fetch_many`, `fetch_optional`, `prepare_with`, `describe`; `fetch_one` / `execute` — дефолтні методи трейту, ідуть через `fetch_many` | `store_ctx.rs:150`, `:190`, `:216`, `:232` |
+| інваріант зафіксовано в коді: ручна таблиця політик більше **не є обов'язковою умовою безпеки** | `store_ctx.rs:133-141` |
+| ловиться SQLSTATE **25006** (`read_only_sql_transaction`) — сигнал **бібліотеки** (sqlx), не текст помилки | `store_ctx.rs:179`, `:208`, `:227`, `:242` → `readonly_guard::normalize_with_sql` |
+| константа коду | `readonly_guard.rs:36` (`SQLSTATE_READ_ONLY`) |
+| типізований маркер `ReadOnlyReplicaError`, `impl DatabaseError`: `code() == "25006"`, `kind() == ErrorKind::Other` (у sqlx 0.8 немає варіанта `ReadOnly` — єдиний сигнал класу це SQLSTATE) | `readonly_guard.rs:91`, `:104`, `:110`, `:114` |
+| `Display` = `MARKER + HUMAN_MESSAGE`; сирий текст PostgreSQL у `Display` НЕ потрапляє (лише stderr під час нормалізації) | `readonly_guard.rs:43` (`[READ_ONLY_REPLICA]`), `:98` |
+| `is_read_only_replica` — два незалежні сигнали: SQLSTATE 25006 АБО downcast маркера (коли помилку завернув інший шар) | `readonly_guard.rs:145` |
+| метрики: `hits()`, `fallback_hits()`, `sanitized_hits()`, `last_hit()`, `hits_by_fingerprint()` (топ-20) | `readonly_guard.rs:274`, `:280`, `:289`, `:309`, `:299` |
+| fingerprint = SQL із підстановкою `?` замість літералів, стиснуті пробіли, обрізано до 80 символів | `readonly_guard.rs:157`, `:164` |
+| `db_error_class` — машинний клас для діагностики іншого вузла: `[DB_ERROR <sqlstate>]`, без SQLSTATE — `[DB_ERROR]` | `readonly_guard.rs:75`, `:78` |
+
+#### 11.8.3 Рубіж 2 (останній) — middleware `readonly_net`
+
+`readonly_net_middleware` (`crates/torgashka-api/src/readonly_net.rs:87`)
+змонтований у `router_v1.rs:842` **зовнішнім** щодо `write_gate::gate_middleware`
+(`router_v1.rs:833`), тобто бачить уже сформовану відповідь хендлера.
+
+Умови втручання:
+
+| Умова | Значення | Де |
+|---|---|---|
+| метод | write-методи (`write_gate::is_write_method`); читання не інспектується НІКОЛИ | `readonly_net.rs:93` |
+| режим | `standby` **АБО** `readonly_guard::hits() > 0` (пули фактично read-only, хоч `mode` ще `primary`: невдалий promote / кабель у репліку) | `readonly_net.rs:107` |
+| розмір тіла | інспектуються ЛИШЕ тіла відомого розміру, ≤ 64 КіБ; стрімінгові та більші не читаються | `readonly_net.rs:56` (`MAX_INSPECT_BYTES = 64 * 1024`), перевірка `:114` |
+
+Дві сигнатури (в порядку пріоритету):
+
+| # | Сигнатура | Дія |
+|---|---|---|
+| 1 | маркер `[READ_ONLY_REPLICA]` у тілі (пошук побайтовий, без припущень про UTF-8) | тіло → `503` за контрактом §4 (`write_gate::standby_503`, `write_gate.rs:562`) + `X-Torgashka-Node-Mode: standby` (`readonly_net.rs:208-214`) + `X-Torgashka-Upstream: down` (`write_gate.rs:239`, `:569`) + `Retry-After: 30` (`write_gate.rs:241`, `:243`, `:570`); метрика `record_fallback()` (`readonly_guard.rs:332`) |
+| 2 | префікс `Display` помилки БД sqlx `error returned from database: `, жорстко прив'язаний до `sqlx-core-0.8.6/src/error.rs:44` | тіло → `{"detail": "помилка бази даних: деталі приховано (див. журнал сервера)"}` (`readonly_net.rs:74`), **статус хендлера збережено** (`400` лишається `400`, `500` — `500`), додано `X-Torgashka-Sanitized: db-error` (`readonly_net.rs:67`, `:70`), сирий фрагмент → stderr з throttle 1 с (`:80`); метрики `record_sanitized()` (`readonly_guard.rs:326`), `last_sanitized()` (`:294`) |
+
+Тіла без обох сигнатур повертаються **байт-у-байт** (`readonly_net.rs:157`; тести — §11.8.7).
+
+#### 11.8.4 Видимість дрейфу: `GET /api/v1/local/status`
+
+Поле `readonly_net` — **адитивне**: маршрут `route_local.rs:912`, поле `route_local.rs:396`, реалізація `readonly_net_status()` — `route_local.rs:401`.
+
+| Поле | Зміст |
+|---|---|
+| `funnel_hits` | скільки разів рубіж 1 спіймав 25006 (`guard::hits()`) |
+| `fallback_hits` | скільки разів рубіж 2 переписав відповідь на `503` §4 |
+| `sanitized_hits` | скільки разів рубіж 2 санував сирий текст БД (гілка 2) |
+| `last` | `{fingerprint, at}` — останнє влучання фунела |
+| `last_sanitized` | `{fingerprint, at}` — остання санація |
+| `top` | `[[fingerprint, n], …]` — топ-20 за кількістю (спадання) |
+
+#### 11.8.5 Санація сирого тексту БД (клас A) — окремий рубіж
+
+16 витоків сирого тексту PostgreSQL у тіла відповідей (**клас A**) закрито в **12 файлах**: `categories_v2.rs`, `crud.rs`, `readdirs.rs`, `print_templates.rs`, `products_v2.rs`, `documents.rs`, `setup.rs`, `suppliers.rs`, `route_local.rs`, `promote.rs`, `sync.rs`, `admin_db_sources.rs` — `docs/audit/db_error_leak_audit.md:106`.
+
+Правило: сирий текст → `pg_log`/stderr; клієнту — людський текст; коли потрібна діагностика **іншого вузла** — машинний клас `[DB_ERROR <sqlstate>]` (`readonly_guard.rs:75`).
+
+Метод аудиту й повний перелік: `docs/audit/db_error_leak_audit.md` (`to_string()` → 479 входжень; прод-виклики `api_err(` → 17, усі в `prro.rs`, клас A = 0 — `:75-76`).
+
+#### 11.8.6 Що НЕ покрито (межі, свідомі)
+
+| # | Межа | Наслідок / доказ |
+|---|---|---|
+| (a) | **Транзакції**: `StorePool::begin()` (`store_ctx.rs:73`) віддає `sqlx::Transaction` з виконавцем `&mut PgConnection` — це минає фунел | рубіж 1 бачить лише одиночні запити; такі випадки ловить ЛИШЕ рубіж 2 (межу описано в коді: `store_ctx.rs:142-146`) |
+| (b) | тіла **> 64 КіБ** не інспектуються | `readonly_net.rs:56`, `:114` — тіло не читається, щоб його не зруйнувати |
+| (c) | **GET-тіла** не інспектуються | рубіж 2 діє лише на write-методи (`readonly_net.rs:93`) |
+| (d) | на вузлі **`primary`** рубіж 2 не втручається, **поки** фунел не зафіксував жодного 25006 (`!is_standby() && hits() == 0`) | `readonly_net.rs:107`; після першого влучання — втручається (тест `primary_node_with_read_only_pool_answers_503_not_raw_400`) |
+| (e) | помилки **connect/IO** SQLx (напр. `admin_db_sources.rs:378`, `:382` — `ping_source`) не мають префікса `error returned from database: `, сигнатура відсутня | покриваються лише тим, що їх прибрано per-handler (`docs/audit/db_error_leak_audit.md:100`) |
+| (f) | **«прозоре перекладення операції в SQLite-чергу на рівні пулу» — НЕ реалізовано і недосяжне** | пул не знає предметної семантики запиту (що це за документ, чи можна його відкласти, який `client_uuid`), тому автоматичний переклад у чергу живе там, де відома суть — в обробниках + ручній таблиці політик (§11.1). Рубежі 1/2 зупиняють запис і роблять відмову чесною, але **не** перетворюють її на відкладене виконання |
+
+#### 11.8.7 Докази (без другого вузла)
+
+| Факт | Доказ (`файл:рядок`) |
+|---|---|
+| справжній SQLSTATE **25006** відтворюється локально read-only сесією `PgConnectOptions::options("-c default_transaction_read_only=on")`; фізична репліка не потрібна | `crates/torgashka-infrastructure/tests/readonly_guard.rs::real_postgres_read_only_session_raises_25006_and_is_normalized` (`:236`, опція — `:250`) |
+| нормалізація, маркер, класифікація SQLSTATE | `readonly_guard.rs::sqlstate_25006_is_read_only_other_codes_are_not` (`:83`), `::normalize_replaces_plain_pg_error_and_keeps_marker_without_pg_text` (`:106`), `::typed_error_exposes_sqlstate_and_marker` (`:159`), `::db_error_class_25006_contains_sqlstate_without_pg_text` (`:192`) |
+| гілка 1: маркер → `503` за контрактом §4, без тексту PG | `crates/torgashka-api/tests/readonly_net_e2e.rs::marker_body_is_rewritten_to_503_contract_without_pg_text` (`:228`) |
+| гілка 2: `400`/`500` сануються, **статус хендлера збережено**; маркер має пріоритет | `::sqlx_db_error_prefix_status_400_is_sanitized_without_pg_text` (`:477`), `::sqlx_db_error_prefix_status_500_keeps_handler_status` (`:525`), `::read_only_marker_takes_priority_over_db_error_prefix` (`:551`) |
+| тіла без сигнатур — байт-у-байт | `::bodies_without_marker_are_byte_identical` (`:272`), `::bodies_without_either_signature_stay_byte_identical` (`:592`) |
+| читання та тіла > 64 КіБ не інспектуються | `::reads_and_oversized_bodies_are_never_inspected` (`:313`), `::reads_and_oversized_db_error_bodies_are_never_sanitized` (`:619`) |
+| сценарій «гейт не знав про маршрут»: пул read-only при `mode = primary` → `503`, не сирий `400` | `::primary_node_with_read_only_pool_answers_503_not_raw_400` (`:371`) |
+| поле `/local/status` адитивне та коректне | `crates/torgashka-api/src/route_local.rs::readonly_net_status_is_additive_and_well_formed` (`route_local.rs:968`) |
+
+🕐-позначки в таблиці §5 (докази, що вимагають рядків `postgres.log` **репліки**) лишаються чинними для свого предмета; рубіж 1/2 закриває той клас доказів, який раніше вимагав фізичної репліки.
+
+#### 11.8.8 Як це виявляє дрейф
+
+Дрейф таблиці політик більше не «тихий»: якщо додано новий шлях запису, якого
+таблиця не знає, то на standby (або на вузлі, де пули фактично read-only)
+відповідь дасть маркер `[READ_ONLY_REPLICA]` чи префікс sqlx — і це **збільшить
+`funnel_hits` / `fallback_hits` / `sanitized_hits` у `GET /api/v1/local/status`**.
+Тобто борг видно в моніторингу, а не зі скарги користувача. Швидкою смугою
+лишається статичний guard `write_gate_guard::every_write_route_has_explicit_class`
+(`crates/torgashka-api/tests/write_gate_guard.rs`) — він ловить це в CI **до**
+релізу; рубежі 1/2 — страховка в рантаймі на те, чого статичний guard не бачить
+(транзакції, більші тіла, точки поза маршрутами).
 
 ---
 

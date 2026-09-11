@@ -211,21 +211,63 @@ impl IntoResponse for LocalErr {
     }
 }
 
+// Інфраструктурні варіанти несуть сирий текст БД (sqlx/PG) — він іде ЛИШЕ в
+// лог; у тілі відповіді лишається людський текст (ADR-0007 §D). Людські
+// варіанти (NotFound/BadRequest/Conflict/Forbidden) — без змін.
 impl From<torgashka_domain::DirectoryError> for LocalErr {
     fn from(e: torgashka_domain::DirectoryError) -> Self {
-        LocalErr::Read(e.to_string())
+        match e {
+            torgashka_domain::DirectoryError::Infrastructure(msg) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[route_local] DirectoryError::Infrastructure: {msg}"),
+                );
+                LocalErr::Read("Не вдалося виконати операцію з даними, спробуйте ще раз".into())
+            }
+            other => LocalErr::Read(other.to_string()),
+        }
     }
 }
 
 impl From<PosError> for LocalErr {
     fn from(e: PosError) -> Self {
-        LocalErr::Read(e.to_string())
+        match e {
+            PosError::Infrastructure(msg) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[route_local] PosError::Infrastructure: {msg}"),
+                );
+                LocalErr::Read("Не вдалося виконати операцію, спробуйте ще раз".into())
+            }
+            other => LocalErr::Read(other.to_string()),
+        }
     }
 }
 
 impl From<WriteError> for LocalErr {
     fn from(e: WriteError) -> Self {
-        LocalErr::Read(e.to_string())
+        match e {
+            WriteError::Infrastructure(msg) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[route_local] WriteError::Infrastructure: {msg}"),
+                );
+                LocalErr::Read("Не вдалося зберегти зміну, спробуйте ще раз".into())
+            }
+            other => LocalErr::Read(other.to_string()),
+        }
+    }
+}
+
+impl LocalErr {
+    /// Стабільний машинний код для машинних споживачів (`promote.outbox_drain.error`):
+    /// `LocalErr::Read`/`Queue` народжуються з помилок БД, їхній Display може
+    /// містити текст PG/SQLite — назовні віддаємо код, сирий текст уже в лог.
+    pub fn db_class(&self) -> String {
+        match self {
+            LocalErr::Read(_) | LocalErr::Queue(_) => "[DB_ERROR]".to_string(),
+            other => other.to_string(),
+        }
     }
 }
 
@@ -347,7 +389,32 @@ pub async fn local_status(State(state): State<AppState>) -> Result<Json<Value>, 
         "primary_reachable": primary_up,
         "effective": status,
         "queue_pending": pending,
+        // Видимість дрейфу (АДИТИВНЕ поле, наявні поля не змінені): скільки
+        // разів фунел `StorePool` спіймав запис у read-only репліку і скільки
+        // разів HTTP-шар (`readonly_net`) переписав таку відповідь на 503 §4.
+        // Порожні метрики = «гейт нічого не пропустив у репліку».
+        "readonly_net": readonly_net_status(),
     })))
+}
+
+/// Метрика «запис у read-only репліку» (дрейф ручної таблиці політик).
+fn readonly_net_status() -> Value {
+    use torgashka_infrastructure::readonly_guard as guard;
+    json!({
+        "fallback_hits": guard::fallback_hits(),
+        "funnel_hits": guard::hits(),
+        "last": guard::last_hit().map(|(fingerprint, at)| json!({
+            "fingerprint": fingerprint,
+            "at": at,
+        })),
+        // Гілка 2 «останнього рубежу»: санація сирої помилки БД (не 25006).
+        "last_sanitized": guard::last_sanitized().map(|(fingerprint, at)| json!({
+            "fingerprint": fingerprint,
+            "at": at,
+        })),
+        "sanitized_hits": guard::sanitized_hits(),
+        "top": guard::hits_by_fingerprint(),
+    })
 }
 
 /// GET /api/v1/local/categories?page=&size= — категорії з ЛОКАЛЬНОЇ репліки.
@@ -629,7 +696,14 @@ async fn authoritative_milli(
     .bind(product)
     .fetch_optional(pool)
     .await
-    .map_err(|e| LocalErr::Read(format!("репліка (stock {product_id}): {e}")))?;
+    .map_err(|e| {
+        // Сирий текст PG → лог; у тілі (500) — людський текст (ADR-0007 §D).
+        torgashka_infrastructure::embedded_pg::pg_log(
+            "ERROR",
+            &format!("[route_local] читання stock з репліки ({product_id}): {e}"),
+        );
+        LocalErr::Read("Не вдалося прочитати залишок з локальної репліки, спробуйте ще раз".into())
+    })?;
     Ok(Some(match qty {
         // Рядка stock немає = залишок 0 (та сама семантика, що локальна).
         None => 0,
@@ -886,6 +960,49 @@ mod tests {
             event_log_pool(None).is_none(),
             "без апстрім-пулу подія не пишеться нікуди (репліка — не ціль, F5)"
         );
+    }
+
+    // ── Видимість дрейфу: поле `readonly_net` у /local/status (АДИТИВНЕ) ──
+
+    #[test]
+    fn readonly_net_status_is_additive_and_well_formed() {
+        let v = readonly_net_status();
+        let obj = v.as_object().expect("обʼєкт");
+        // Ключі рівно ті, що обіцяні касі/діагностиці (без зайвих).
+        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "fallback_hits",
+                "funnel_hits",
+                "last",
+                "last_sanitized",
+                "sanitized_hits",
+                "top"
+            ],
+            "склад поля readonly_net"
+        );
+        assert!(obj["fallback_hits"].is_u64() || obj["fallback_hits"].is_i64());
+        assert!(obj["funnel_hits"].is_u64() || obj["funnel_hits"].is_i64());
+        assert!(obj["sanitized_hits"].is_u64() || obj["sanitized_hits"].is_i64());
+        assert!(obj["last_sanitized"].is_null() || obj["last_sanitized"].is_object());
+        if let Some(last) = obj["last_sanitized"].as_object() {
+            assert!(last["fingerprint"].is_string());
+            assert!(last["at"].is_u64() || last["at"].is_i64());
+        }
+        assert!(obj["top"].is_array(), "top — масив пар [fingerprint, n]");
+        assert!(obj["last"].is_null() || obj["last"].is_object());
+        if let Some(last) = obj["last"].as_object() {
+            assert!(last["fingerprint"].is_string());
+            assert!(last["at"].is_u64() || last["at"].is_i64());
+        }
+        for pair in obj["top"].as_array().expect("масив") {
+            let p: &Vec<serde_json::Value> = pair.as_array().expect("пара");
+            assert_eq!(p.len(), 2, "top: [fingerprint, count]");
+            assert!(p[0].is_string() && (p[1].is_u64() || p[1].is_i64()));
+        }
+        eprintln!("[local/status] readonly_net={v}");
     }
 
     #[test]

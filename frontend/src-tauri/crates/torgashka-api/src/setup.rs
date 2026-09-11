@@ -83,10 +83,13 @@ impl IntoResponse for SetupHttpError {
                 )
                     .into_response(),
                 SetupError::Infrastructure(msg) => {
+                    // Причина — ЛИШЕ в лог (stderr); клієнту — людський текст.
                     eprintln!("[torgashka-api] setup infrastructure error: {msg}");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"detail": msg})),
+                        Json(serde_json::json!({
+                            "detail": "Не вдалося виконати налаштування, спробуйте ще раз"
+                        })),
                     )
                         .into_response()
                 }

@@ -21,9 +21,10 @@ use std::path::{Path, PathBuf};
 
 use axum::http::Method;
 use torgashka_api::write_gate::{
-    classify_request, is_local_sqlite_layer, policy_for, policy_for_dml_table, satellite_parent,
-    WritePolicy, POLICY_TABLE, SATELLITE_TABLE,
+    classify_request, decide, is_local_sqlite_layer, policy_for, policy_for_dml_table,
+    satellite_parent, GateDecision, WritePolicy, POLICY_TABLE, SATELLITE_TABLE,
 };
+use torgashka_infrastructure::node_config::NodeMode;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Чиста функція скану (тестується на синтетичних джерелах — негативний контроль)
@@ -929,11 +930,11 @@ fn pg_table_registry_is_complete_and_consistent() {
     );
 
     // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 28 таблиць
-    // PG-шару (§11.7) + 4 поверхневих сутності (§11.7.9, Фази 3.2/3.8).
+    // PG-шару (§11.7) + 5 поверхневих сутностей (§11.7.9, Фази 3.2/3.8 + §11.7.9.7).
     assert_eq!(
         POLICY_TABLE.len(),
-        57,
-        "POLICY_TABLE: 25 гейт-сутностей + 28 таблиць PG-шару + 4 поверхневих §11.7.9"
+        58,
+        "POLICY_TABLE: 25 гейт-сутностей + 28 таблиць PG-шару + 5 поверхневих §11.7.9"
     );
     assert_eq!(
         PG_TABLE_REGISTRY.len() + SQLITE_ONLY_TABLES.len() + NO_DML_TABLES.len(),
@@ -984,8 +985,8 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
     );
     assert_eq!(
         POLICY_TABLE.len(),
-        57,
-        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 28 таблиць PG-шару §11.7 + 4 поверхневих §11.7.9"
+        58,
+        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 28 таблиць PG-шару §11.7 + 5 поверхневих §11.7.9"
     );
     eprintln!(
         "[guard] POLICY_TABLE: {} рядків, усі покриті реєстром §3/§11.6/§11.7 або каналом документів",
@@ -1010,6 +1011,12 @@ const SURFACE_ENTITIES: &[&str] = &[
     // різних класів (receipts/invoices/return_invoices/inventories/...)
     // через ядро `sync::process_push_item`.
     "outbox_drain",
+    // §11.7.9.7 (Фаза 1 фіксу): поверхні синхронізації ПРРО
+    // (`POST /api/v2/prro/sync`, `POST /api/v2/prro/fiscal/sync`) пишуть PG
+    // через фіскальний сервіс (`prro/repository.rs`) із КЕП-ключем вузла —
+    // авторитетна черга фіскалізації на primary, тому ProxyToPrimary
+    // (на standby Pass = запис у read-only репліку → 400 із сирим текстом PG).
+    "prro_sync",
 ];
 
 const ROUTE_FILES: &[&str] = &[
@@ -1271,4 +1278,84 @@ fn every_admin_pool_entity_has_policy() {
         missing.join("\n")
     );
     eprintln!("[guard] admin_pool: {found} викликів, усі мають політику");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11.7.9.7 (Фаза 1 фіксу): ПРРО-sync — ProxyToPrimary, НЕ канал каси
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Регресійний тест на КОНКРЕТНИЙ дефект §11.7.9.7 (реальні `classify_request`
+/// + `decide`, без PostgreSQL).
+///
+/// Було: обидві поверхні синхронізації ПРРО класифікувалися як
+/// `prro_queue_items` (LocalOutbox) → `decide(Standby, …)` = `Pass` → хендлер
+/// `prro::sync_queue` писав у read-only репліку → `PrroRepoError::Db`
+/// (`prro/repository.rs:118`) → 400 із СИРИМ текстом PostgreSQL.
+///
+/// Стало: клас `prro_sync` (ProxyToPrimary) → на standby `Proxy` (HTTP
+/// pass-through §11.2), на primary `Pass` (F2). Політика ТАБЛИЦІ
+/// `prro_queue_items` лишається `LocalOutbox` (DML-точки `prro/repository.rs`).
+#[test]
+fn prro_sync_surfaces_are_proxy_to_primary_not_local_outbox() {
+    let post = Method::POST;
+    let fiscalize = "/api/v2/prro/receipts/11111111-1111-1111-1111-111111111111/fiscalize";
+
+    for path in ["/api/v2/prro/sync", "/api/v2/prro/fiscal/sync"] {
+        let entity = classify_request(&post, path);
+        assert_eq!(
+            entity,
+            Some("prro_sync"),
+            "{path}: класифікація поверхні §11.7.9.7"
+        );
+        assert_eq!(
+            policy_for("prro_sync"),
+            Some(WritePolicy::ProxyToPrimary),
+            "{path}: політика поверхні §11.7.9.7"
+        );
+        let standby = decide(NodeMode::Standby, entity);
+        let primary = decide(NodeMode::Primary, entity);
+        assert_eq!(
+            standby,
+            GateDecision::Proxy,
+            "{path}: на standby — pass-through на primary (§11.2), а не Pass у репліку"
+        );
+        assert_eq!(
+            primary,
+            GateDecision::Pass,
+            "{path}: F2 — на primary поведінка не змінюється"
+        );
+        // Рядок ТАБЛИЦІ не чіпали: `prro_queue_items` — канал каси для DML
+        // `prro/repository.rs`, він лишається LocalOutbox.
+        assert_eq!(
+            policy_for("prro_queue_items"),
+            Some(WritePolicy::LocalOutbox),
+            "{path}: політика таблиці prro_queue_items мусить лишитись LocalOutbox"
+        );
+        eprintln!(
+            "[probe] POST {path} → entity={entity:?}; Standby={standby:?}; Primary={primary:?} ✓"
+        );
+    }
+
+    // НЕ зламано: змішана поверхня фіскалізації чека — усе ще ProxyToPrimary.
+    let ent = classify_request(&post, fiscalize);
+    assert_eq!(ent, Some("prro_shifts"), "{fiscalize}: класифікація");
+    assert_eq!(
+        decide(NodeMode::Standby, ent),
+        GateDecision::Proxy,
+        "{fiscalize}: на standby лишається Proxy (лічильник чека зміни — primary)"
+    );
+    assert_eq!(
+        decide(NodeMode::Primary, ent),
+        GateDecision::Pass,
+        "{fiscalize}: F2"
+    );
+    // Читання НЕ гейтується (§10: репліка — джерело читання).
+    assert_eq!(
+        classify_request(&Method::GET, "/api/v2/prro/sync"),
+        None,
+        "GET /api/v2/prro/sync мусить лишатись None (читання не гейтується)"
+    );
+    eprintln!(
+        "[probe] POST {fiscalize} → entity={ent:?}; Standby=Proxy; GET /api/v2/prro/sync → None ✓"
+    );
 }

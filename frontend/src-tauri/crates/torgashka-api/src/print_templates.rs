@@ -64,11 +64,20 @@ impl IntoResponse for PrintErr {
             PrintErr::Service(PrintError::BadRequest(msg)) => {
                 (StatusCode::BAD_REQUEST, Json(json!({"detail": msg}))).into_response()
             }
-            PrintErr::Service(PrintError::Infrastructure(msg)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"detail": msg})),
-            )
-                .into_response(),
+            PrintErr::Service(PrintError::Infrastructure(msg)) => {
+                // Санація (ADR-0007 §D): сирий текст БД → лог, клієнту — людський.
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[print_templates] PrintError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "detail": "Не вдалося виконати операцію з шаблонами друку, спробуйте ще раз"
+                    })),
+                )
+                    .into_response()
+            }
             PrintErr::Auth(e) => e.into_response(),
             PrintErr::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({"detail": msg}))).into_response()

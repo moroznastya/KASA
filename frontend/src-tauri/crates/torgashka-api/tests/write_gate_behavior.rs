@@ -235,6 +235,10 @@ const PROXY_ROUTES: &[(&str, &str, &str)] = &[
     ("POST", "/api/v2/prro/fiscal/shift/open", "prro_shifts"),
     ("POST", "/api/v2/prro/fiscal/shift/close", "prro_shifts"),
     ("POST", "/api/v2/prro/receipts/11111111-1111-1111-1111-111111111111/fiscalize", "prro_shifts"),
+    // §11.7.9.7: синхронізація черги фіскалізації — фіскальний сервіс ДПС із
+    // КЕП-ключем вузла, авторитетна черга на primary (не канал каси).
+    ("POST", "/api/v2/prro/sync", "prro_sync"),
+    ("POST", "/api/v2/prro/fiscal/sync", "prro_sync"),
     ("POST", "/api/v1/documents/batch-confirm", "documents_batch"),
     ("POST", "/api/v1/documents/11111111-1111-1111-1111-111111111111/copy", "documents_batch"),
     ("DELETE", "/api/v1/documents/11111111-1111-1111-1111-111111111111", "documents_batch"),

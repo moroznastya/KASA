@@ -150,7 +150,12 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     //     складу (`documents.rs`): пише і `products` (ProxyToPrimary), і
     //     `stock`/`supplier_ledger` → клас вирішує найбезпечніший член;
     //   * `setup` — первинна ініціалізація власника/точки (глобальні таблиці
-    //     `stores`/`users`/`user_stores`/`owners_db`).
+    //     `stores`/`users`/`user_stores`/`owners_db`);
+    //   * `prro_sync` — ДВІ поверхні синхронізації ПРРО (`POST /api/v2/prro/sync`
+    //     і `POST /api/v2/prro/fiscal/sync`, §11.7.9.7): фіскалізація йде через
+    //     ДПС із КЕП-ключем ВУЗЛА, а авторитетна черга фіскалізації живе на
+    //     primary — тому HTTP pass-through (§11.2), НЕ канал каси: SQLite-черга
+    //     тут неможлива (подвійна фіскалізація → дубль чека в ДПС).
     ("catalog_directories", WritePolicy::ProxyToPrimary),
     ("documents_batch", WritePolicy::ProxyToPrimary),
     ("setup", WritePolicy::ProxyToPrimary),
@@ -164,6 +169,14 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     //   * на не-promote-нутому standby запис фізично не пройде (репліка
     //     read-only) → помилка PG у підсумку, тихого запису в репліку немає (F5).
     ("outbox_drain", WritePolicy::LocalOutbox),
+    // §11.7.9.7 (Фаза 1 фіксу): ПОВЕРХНЯ синхронізації ПРРО — не таблиця.
+    // Рядок вище `("prro_queue_items", LocalOutbox)` лишається політикою самої
+    // ТАБЛИЦІ для DML-точок `prro/repository.rs` (канал каси) — його не чіпаємо.
+    // Поверхня ж `prro_sync` пише через фіскальний сервіс ДПС із КЕП-ключем
+    // вузла: джерело істини черги — primary, на standby клас `ProxyToPrimary`
+    // → `decide` = `Proxy` (замість `Pass` + запис у read-only репліку → 400 з
+    // сирим текстом PG, дефект зафіксований у `write_gate_guard`).
+    ("prro_sync", WritePolicy::ProxyToPrimary),
 ];
 
 /// Супутні таблиці документів (`satellite`): пишуться ЛИШЕ всередині
@@ -481,7 +494,12 @@ pub fn classify_request(method: &Method, path: &str) -> Option<&'static str> {
         return Some("prro_shifts");
     }
     if p == "/api/v2/prro/sync" || p == "/api/v2/prro/fiscal/sync" {
-        return Some("prro_queue_items");
+        // §11.7.9.7: синхронізація черги фіскалізації — це НЕ документ каси
+        // (`prro_queue_items` — політика таблиці для DML у `prro/repository.rs`),
+        // а відправка черги у фіскальний сервіс ДПС із КЕП-ключем вузла:
+        // авторитетна черга — на primary, локальна SQLite-черга тут неможлива
+        // (подвійна фіскалізація через ДПС) → HTTP pass-through (§11.2).
+        return Some("prro_sync");
     }
 
     // ── Документи складу: batch-операції (ProxyToPrimary) ────────────────────

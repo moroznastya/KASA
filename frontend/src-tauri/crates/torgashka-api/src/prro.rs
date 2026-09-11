@@ -20,6 +20,7 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::Deserialize;
 use serde_json::json;
 use torgashka_infrastructure::prro::SqlxPrroRepository;
+use torgashka_infrastructure::readonly_guard::MARKER as READONLY_MARKER;
 use torgashka_infrastructure::store_ctx::current_store_ctx;
 use torgashka_prro::crypto::{signer_from_key_material, PrroSigner};
 use torgashka_prro::grpc::{PrroGrpcClient, TlsConfig};
@@ -68,6 +69,46 @@ impl From<PrroShiftError> for PrroApiError {
         PrroApiError::Shift {
             message: source.message.clone(),
             source,
+        }
+    }
+}
+
+impl PrroApiError {
+    /// Текст для HTTP-тіла: ЛЮДСЬКИЙ, без сирого SQLx/PostgreSQL.
+    ///
+    /// Санація (ADR-0007 §D, той самий принцип, що в `PosError::Infrastructure`):
+    /// імена таблиць/колонок, SQL-фрагменти й текст драйвера PG ідуть ЛИШЕ у
+    /// stderr (`torgashka.log`); користувачу — стабільне повідомлення.
+    ///
+    /// Виняток — read-only репліка: маркер [`READONLY_MARKER`] СВІДОМО
+    /// зберігається у тілі (це контракт для шару відповіді
+    /// `crate::readonly_net`, який перепише відповідь на 503 §4). Сам маркер
+    /// не містить ні SQL, ні тексту PostgreSQL.
+    pub fn public_message(&self) -> String {
+        let raw = self.to_string();
+        if raw.contains(READONLY_MARKER) {
+            return format!(
+                "{READONLY_MARKER} вузол у режимі standby: запис у локальну репліку неможливий"
+            );
+        }
+        if self.is_db_backed() {
+            eprintln!("[torgashka-api] ПРРО: помилка БД (сирий текст): {raw}");
+            return "помилка бази даних ПРРО: операцію не виконано на цьому вузлі (деталі — у журналі вузла)"
+                .to_string();
+        }
+        raw
+    }
+
+    /// Чи несе помилка сирий текст помилки БД (власний `PrroRepoError::Db`,
+    /// у будь-якому вкладенні: Repo / Queue / Settings / Shift).
+    fn is_db_backed(&self) -> bool {
+        match self {
+            PrroApiError::Repo(PrroRepoError::Db(_)) => true,
+            // `QueueError::Repo(...)`, `PrroSettingsError` (текст із `PrroRepoError`)
+            // і `PrroShiftError` з кодом PRRO_REPO_ERROR несуть `PrroRepoError`
+            // лише рядком — стабільний маркер нашого власного Display:
+            // `PrroRepoError::Db` = "помилка БД: {0}".
+            _ => self.to_string().contains("помилка БД:"),
         }
     }
 }
@@ -567,7 +608,7 @@ pub async fn open_shift(
     let f = facade(&state)?;
     match f.open_shift().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -600,7 +641,7 @@ pub async fn close_shift(
     };
     match f.close_shift(comment).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -614,7 +655,7 @@ pub async fn list_shifts(
     f.list_shifts(page, size)
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// POST /api/v2/prro/fiscal/sync
@@ -626,7 +667,7 @@ pub async fn sync_queue(
     f.sync(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// GET /api/v2/prro/fiscal/queue
@@ -638,7 +679,7 @@ pub async fn queue(
     f.queue(limit_q(&req))
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 /// GET /api/v2/prro/fiscal/status
@@ -647,7 +688,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<serde_json::Va
     f.status()
         .await
         .map(Json)
-        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.public_message()))
 }
 
 // ─── Група 8/9: settings + test-connection + fiscalize (TORGASHKA_RUST_PRRO_V2) ──
@@ -659,7 +700,7 @@ pub async fn settings_get(
     let f = facade(&state)?;
     match f.get_settings().await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -733,7 +774,7 @@ pub async fn settings_put(
         .await
     {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -754,7 +795,7 @@ pub async fn test_connection(
     }
     match f.test_connection().await {
         Ok(v) => Ok(Json(v)),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 
@@ -779,7 +820,7 @@ pub async fn fiscalize_receipt(
     };
     match f.fiscalize(receipt_id, manual).await {
         Ok(dto) => Ok(Json(serde_json::to_value(dto).unwrap_or_default())),
-        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(api_err(StatusCode::BAD_REQUEST, e.public_message())),
     }
 }
 

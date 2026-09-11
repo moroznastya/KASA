@@ -85,8 +85,30 @@ impl From<ProvisionError> for DbSrcErr {
             ProvisionError::DatabaseExists(db) => DbSrcErr::Conflict(format!(
                 "База даних '{db}' уже існує на цільовому сервері — виберіть інше ім'я"
             )),
-            other => DbSrcErr::BadRequest(other.to_string()),
+            // Санація (ADR-0007 §D): `ProvisionError` несе `reason`/`stderr`
+            // pg_basebackup/psql — сирий текст інструментів; клієнту — людський
+            // текст, причина — у stderr-лог. Статус 400 не змінюється.
+            other => {
+                eprintln!("[torgashka-api] db-sources: provision: {other}");
+                DbSrcErr::BadRequest(provision_human(&other))
+            }
         }
+    }
+}
+
+/// Людський текст для помилок провіжну (без `reason`/`stderr` інструментів).
+fn provision_human(e: &ProvisionError) -> String {
+    match e {
+        ProvisionError::DatabaseExists(db) => {
+            format!("База даних '{db}' уже існує на цільовому сервері — виберіть інше ім'я")
+        }
+        ProvisionError::Connect { host, port, .. } => format!(
+            "Не вдалося підключитись до {host}:{port} суперкористувачем [DB_ERROR] — \
+             перевірте host/port/логін/пароль (подробиці в логі сервісу)"
+        ),
+        ProvisionError::Failed(_) => "Не вдалося створити базу даних на цільовому сервері \
+             [DB_ERROR] — подробиці в логі сервісу"
+            .to_string(),
     }
 }
 
@@ -367,7 +389,16 @@ fn source_url(src: &DbSource) -> Result<String, DbSrcErr> {
 /// Реальний пінг джерела: TCP-з'єднання + SELECT 1. Таймаут 4 c — жорсткий
 /// (tokio::time::timeout навколо всієї операції): недосяжний host не підвішує
 /// admin-запит на 30+ секунд дефолтного connect timeout sqlx.
-async fn ping_source(url: &str) -> Result<u64, String> {
+/// Помилка перевірки з'єднання: сирий текст (лише лог) + стабільний машинний
+/// клас (тіло 400). Тіло відповіді НЕ має містити тексту PostgreSQL/sqlx.
+struct PingError {
+    /// `[DB_ERROR <sqlstate>]` / `[DB_ERROR]` — те, що бачить клієнт.
+    class: String,
+    /// Сирий текст драйвера/PG — для логу.
+    raw: String,
+}
+
+async fn ping_source(url: &str) -> Result<u64, PingError> {
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
         let pool = PgPoolOptions::new()
@@ -375,11 +406,17 @@ async fn ping_source(url: &str) -> Result<u64, String> {
             .acquire_timeout(std::time::Duration::from_secs(3))
             .connect(url)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| PingError {
+                class: torgashka_infrastructure::readonly_guard::db_error_class(&e),
+                raw: e.to_string(),
+            })?;
         let r = sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&pool)
             .await
-            .map_err(|e| e.to_string());
+            .map_err(|e| PingError {
+                class: torgashka_infrastructure::readonly_guard::db_error_class(&e),
+                raw: e.to_string(),
+            });
         pool.close().await;
         r
     })
@@ -387,9 +424,12 @@ async fn ping_source(url: &str) -> Result<u64, String> {
     match result {
         Ok(Ok(_)) => Ok(start.elapsed().as_millis() as u64),
         Ok(Err(e)) => Err(e),
-        Err(_) => {
-            Err("таймаут з'єднання (4 c): host/port недосяжні або БД не відповідає".to_string())
-        }
+        // Таймаут — не текст БД (sqlx-помилки немає): людська причина і в тілі,
+        // і в логі; сирий текст сюди не потрапляє взагалі.
+        Err(_) => Err(PingError {
+            class: "таймаут з'єднання (4 c): host/port недосяжні або БД не відповідає".to_string(),
+            raw: "таймаут з'єднання (4 c): host/port недосяжні або БД не відповідає".to_string(),
+        }),
     }
 }
 
@@ -629,9 +669,17 @@ pub async fn test_source(
             ok: true,
             latency_ms,
         })),
-        Err(e) => Err(DbSrcErr::BadRequest(format!(
-            "Джерело '{id}' недосяжне: {e}"
-        ))),
+        Err(e) => {
+            // Сирий текст драйвера/PG → лог; клієнту — host:port + клас (§4).
+            eprintln!(
+                "[torgashka-api] db-sources: пінг '{id}' ({}:{}): {}",
+                src.host, src.port, e.raw
+            );
+            Err(DbSrcErr::BadRequest(format!(
+                "Не вдалося підключитись до {}:{} (джерело '{id}'): {}",
+                src.host, src.port, e.class
+            )))
+        }
     }
 }
 
@@ -656,8 +704,14 @@ pub async fn activate_source(
     // 1) Обов'язкова перевірка з'єднання ПЕРЕД перемиканням.
     let url = source_url(&src)?;
     if let Err(e) = ping_source(&url).await {
+        eprintln!(
+            "[torgashka-api] db-sources: activate '{id}' ({}:{}): {}",
+            src.host, src.port, e.raw
+        );
         return Err(DbSrcErr::BadRequest(format!(
-            "Джерело '{id}' недосяжне ({e}); активним НЕ зроблено — перевірте host/port/пароль"
+            "Джерело '{id}' ({}:{}) недосяжне: {}; активним НЕ зроблено — \
+             перевірте host/port/пароль",
+            src.host, src.port, e.class
         )));
     }
     // 2) Збереження active у db_sources.toml.
@@ -695,8 +749,13 @@ pub async fn export_dump(
     // Превентивна перевірка з'єднання — зрозуміла помилка до запуску pg_dump.
     let url = source_url(&src)?;
     if let Err(e) = ping_source(&url).await {
+        eprintln!(
+            "[torgashka-api] db-sources: dump '{source_id}' ({}:{}): {}",
+            src.host, src.port, e.raw
+        );
         return Err(DbSrcErr::BadRequest(format!(
-            "Джерело '{source_id}' недосяжне ({e}); дамп не створено"
+            "Джерело '{source_id}' ({}:{}) недосяжне: {}; дамп не створено",
+            src.host, src.port, e.class
         )));
     }
     let pg_dump = db_sources::find_binary("pg_dump")?;
@@ -812,9 +871,13 @@ pub async fn import_dump(
     // Приймач має бути досяжним до запуску pg_restore.
     let url = source_url(&src)?;
     if let Err(e) = ping_source(&url).await {
+        eprintln!(
+            "[torgashka-api] db-sources: import у '{}' ({}:{}): {}",
+            body.source_id, src.host, src.port, e.raw
+        );
         return Err(DbSrcErr::BadRequest(format!(
-            "Джерело-приймач '{}' недосяжне ({e}); імпорт не виконано",
-            body.source_id
+            "Джерело-приймач '{}' ({}:{}) недосяжне: {}; імпорт не виконано",
+            body.source_id, src.host, src.port, e.class
         )));
     }
     let dumps_dir = db_sources::dumps_dir();

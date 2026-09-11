@@ -40,6 +40,15 @@ impl From<DirectoryError> for SupplierError {
     fn from(e: DirectoryError) -> Self {
         match e {
             DirectoryError::NotFound(msg) => SupplierError::NotFound(msg),
+            // Санація (ADR-0007 §D): сирий текст БД → лог; клієнту — людський
+            // текст (статус 500 не змінюється).
+            DirectoryError::Infrastructure(msg) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[suppliers] DirectoryError::Infrastructure: {msg}"),
+                );
+                SupplierError::Internal("Помилка БД довідників, спробуйте ще раз".to_string())
+            }
             other => SupplierError::Internal(other.to_string()),
         }
     }

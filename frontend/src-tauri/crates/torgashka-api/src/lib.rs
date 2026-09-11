@@ -41,6 +41,7 @@ pub mod proxy;
 pub mod prro;
 pub mod purchase_orders;
 pub mod readdirs;
+pub mod readonly_net;
 pub mod return_invoices;
 pub mod route_local;
 pub mod router_v1;

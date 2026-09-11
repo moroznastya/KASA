@@ -135,11 +135,21 @@ impl IntoResponse for CrudError {
                     )})),
                 )
                     .into_response(),
-                ServiceError::Directory(torgashka_domain::DirectoryError::Infrastructure(msg)) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД довідників: {msg}")})),
-                )
-                    .into_response(),
+                ServiceError::Directory(torgashka_domain::DirectoryError::Infrastructure(msg)) => {
+                    // Санація (ADR-0007 §D): сирий текст БД → лог, користувачу —
+                    // стабільний людський текст.
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[crud] DirectoryError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "detail": "Помилка БД довідників, спробуйте ще раз"
+                        })),
+                    )
+                        .into_response()
+                }
             },
         }
     }

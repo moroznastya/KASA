@@ -254,7 +254,9 @@ pub async fn promote_handler(
         }),
         Err(e) => {
             eprintln!("[promote] увага: drain черги не виконано ({e}) — повторіть вручну \n                 POST /api/v1/local/outbox/drain після виправлення причини");
-            json!({ "error": e.to_string() })
+            // Тіло — лише машинний код: `outbox_drain.error` читає інший вузол,
+            // сирий текст PG/SQLite там зайвий (причина — у stderr вище).
+            json!({ "error": e.db_class() })
         }
     };
 

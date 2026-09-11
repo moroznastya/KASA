@@ -728,7 +728,9 @@ async fn accept_receipt_kind(
                 }
             }
             log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-            PushItemResult::error(item.client_uuid, msg)
+            // Тіло — БЕЗ сирого тексту БД: машинний клас `[DB_ERROR <sqlstate>]`.
+            // Сирий текст причини лишається у `sync_log` (рядок вище).
+            PushItemResult::error(item.client_uuid, domain_error_body(&e))
         }
     }
 }
@@ -800,8 +802,8 @@ async fn accept_invoice_kind(
             return PushItemResult::error(item.client_uuid, msg);
         }
         Err(e) => {
-            log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
-            return PushItemResult::error(item.client_uuid, e);
+            log_sync(pool, item, ctx_store, "error", hash, Some(e.to_string())).await;
+            return PushItemResult::error(item.client_uuid, db_error_class_of(&e));
         }
     }
     for it in &input.items {
@@ -816,8 +818,8 @@ async fn accept_invoice_kind(
                 return PushItemResult::error(item.client_uuid, msg);
             }
             Err(e) => {
-                log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
-                return PushItemResult::error(item.client_uuid, e);
+                log_sync(pool, item, ctx_store, "error", hash, Some(e.to_string())).await;
+                return PushItemResult::error(item.client_uuid, db_error_class_of(&e));
             }
         }
     }
@@ -831,9 +833,17 @@ async fn accept_invoice_kind(
             }
             Err(e) => {
                 // Чернетка вже в БД (аномалія 2: create_v1 не атомарний).
+                // Сирий текст причини → лог (sync_log + stderr).
                 let msg = format!("накладну {} створено, але confirm не вдався: {e}", dto.id);
-                log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-                PushItemResult::error(item.client_uuid, msg)
+                log_sync(pool, item, ctx_store, "error", hash, Some(msg)).await;
+                // Клієнту — людський контекст + машинний клас (без тексту БД).
+                PushItemResult::error(
+                    item.client_uuid,
+                    format!(
+                        "накладну {} створено, але confirm не вдався [DB_ERROR]",
+                        dto.id
+                    ),
+                )
             }
         },
         Err(e) => {
@@ -848,7 +858,9 @@ async fn accept_invoice_kind(
                 }
             }
             log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-            PushItemResult::error(item.client_uuid, msg)
+            // Тіло — БЕЗ сирого тексту БД: машинний клас `[DB_ERROR <sqlstate>]`.
+            // Сирий текст причини лишається у `sync_log` (рядок вище).
+            PushItemResult::error(item.client_uuid, domain_error_body(&e))
         }
     }
 }
@@ -918,8 +930,8 @@ async fn accept_return_invoice_kind(
             return PushItemResult::error(item.client_uuid, msg);
         }
         Err(e) => {
-            log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
-            return PushItemResult::error(item.client_uuid, e);
+            log_sync(pool, item, ctx_store, "error", hash, Some(e.to_string())).await;
+            return PushItemResult::error(item.client_uuid, db_error_class_of(&e));
         }
     }
     for it in &input.items {
@@ -934,8 +946,8 @@ async fn accept_return_invoice_kind(
                 return PushItemResult::error(item.client_uuid, msg);
             }
             Err(e) => {
-                log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
-                return PushItemResult::error(item.client_uuid, e);
+                log_sync(pool, item, ctx_store, "error", hash, Some(e.to_string())).await;
+                return PushItemResult::error(item.client_uuid, db_error_class_of(&e));
             }
         }
     }
@@ -953,12 +965,20 @@ async fn accept_return_invoice_kind(
                     PushItemResult::created(item.client_uuid, dto.id)
                 }
                 Err(e) => {
+                    // Сирий текст причини → лог (sync_log + stderr).
                     let msg = format!(
                         "повернення {} створено, але confirm не вдався: {e}",
                         dto.id
                     );
-                    log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-                    PushItemResult::error(item.client_uuid, msg)
+                    log_sync(pool, item, ctx_store, "error", hash, Some(msg)).await;
+                    // Клієнту — людський контекст + машинний клас (без тексту БД).
+                    PushItemResult::error(
+                        item.client_uuid,
+                        format!(
+                            "повернення {} створено, але confirm не вдався [DB_ERROR]",
+                            dto.id
+                        ),
+                    )
                 }
             }
         }
@@ -974,7 +994,9 @@ async fn accept_return_invoice_kind(
                 }
             }
             log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-            PushItemResult::error(item.client_uuid, msg)
+            // Тіло — БЕЗ сирого тексту БД: машинний клас `[DB_ERROR <sqlstate>]`.
+            // Сирий текст причини лишається у `sync_log` (рядок вище).
+            PushItemResult::error(item.client_uuid, domain_error_body(&e))
         }
     }
 }
@@ -982,14 +1004,13 @@ async fn accept_return_invoice_kind(
 /// Чи існує рядок каталогу за id (pre-flight валідація перед INSERT).
 /// Помилка самої БД — окремо від «немає рядка» (щоб не маскувати збій БД
 /// під «немає в каталозі»).
-async fn exists_in(pool: &StorePool, table: &str, id: Uuid) -> Result<bool, String> {
+async fn exists_in(pool: &StorePool, table: &str, id: Uuid) -> Result<bool, sqlx::Error> {
     let q = format!("SELECT 1 FROM {table} WHERE id = $1 LIMIT 1");
     sqlx::query_scalar::<_, i32>(&q)
         .bind(id)
         .fetch_optional(pool)
         .await
         .map(|r| r.is_some())
-        .map_err(|e| format!("каталог {table} недоступний: {e}"))
 }
 
 /// Не-чекові типи каси ЕТАПУ 6 → SQL-приймачі sync_receivers.
@@ -1107,7 +1128,9 @@ async fn accept_non_receipt_kind(
                 }
             }
             log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
-            PushItemResult::error(item.client_uuid, msg)
+            // Приймачі `sync_receivers` віддають String (тип `sqlx::Error` утрачено):
+            // для DB-шляху — стабільний клас, людська валідація — як є.
+            PushItemResult::error(item.client_uuid, receiver_error_body(&msg))
         }
     }
 }
@@ -1121,6 +1144,88 @@ async fn find_by_client_uuid_in(pool: &StorePool, table: &str, client_uuid: Uuid
         .await
         .ok()
         .flatten()
+}
+
+/// Стабільний машинний код помилки БД для тіла відповіді (ADR-0007 §D, §3):
+/// `[DB_ERROR <sqlstate>]` / `[DB_ERROR]`. Сирий текст PG — лише в лог.
+fn db_error_class_of(e: &sqlx::Error) -> String {
+    torgashka_infrastructure::readonly_guard::db_error_class(e)
+}
+
+/// Той самий код без SQLSTATE (коли на руках лише текст причини: приймачі
+/// `sync_receivers` віддають String і тип `sqlx::Error` утрачено).
+const DB_ERROR_BODY: &str = "[DB_ERROR]";
+
+/// Доменна помилка, яка може нести сирий текст БД усередині.
+trait InfraCarrier {
+    /// `true`, якщо Display помилки містить текст PostgreSQL/драйвера.
+    fn is_infra(&self) -> bool;
+}
+
+impl InfraCarrier for torgashka_domain::PosError {
+    fn is_infra(&self) -> bool {
+        matches!(
+            self,
+            torgashka_domain::PosError::Infrastructure(_)
+                | torgashka_domain::PosError::Integrity(_)
+        )
+    }
+}
+
+impl InfraCarrier for torgashka_domain::invoices::InvoicesError {
+    fn is_infra(&self) -> bool {
+        matches!(
+            self,
+            torgashka_domain::invoices::InvoicesError::Infrastructure(_)
+        )
+    }
+}
+
+impl InfraCarrier for torgashka_domain::return_invoices::ReturnInvoicesError {
+    fn is_infra(&self) -> bool {
+        matches!(
+            self,
+            torgashka_domain::return_invoices::ReturnInvoicesError::Infrastructure(_)
+        )
+    }
+}
+
+/// Тіло `error` для доменної помилки сервісу: інфраструктурна (текст БД
+/// усередині) → машинний клас; людська (валідація/конфлікт) → як була.
+fn domain_error_body<T: InfraCarrier + std::fmt::Display>(e: &T) -> String {
+    if e.is_infra() {
+        DB_ERROR_BODY.to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Чи текст причини приймача є текстом помилки БД (а не валідації payload).
+///
+/// Префікси — з `sync_receivers`: DB-шлях завжди маркує операцію
+/// (`BEGIN`/`INSERT`/`COMMIT`/`номер`/`stock_*`), валідація дає людський текст.
+fn receiver_error_is_db(msg: &str) -> bool {
+    const DB_PREFIXES: [&str; 9] = [
+        "BEGIN:",
+        "COMMIT:",
+        "INSERT ",
+        "UPDATE ",
+        "DELETE ",
+        "SELECT ",
+        "номер ",
+        "stock_effect:",
+        "stock_set:",
+    ];
+    DB_PREFIXES.iter().any(|p| msg.starts_with(p))
+}
+
+/// Тіло `error` для нечекових приймачів: DB-текст → клас, решта — як була.
+fn receiver_error_body(msg: &str) -> String {
+    if receiver_error_is_db(msg) {
+        DB_ERROR_BODY.to_string()
+    } else {
+        msg.to_string()
+    }
 }
 
 /// Людське повідомлення помилки парсингу (PosErr не реалізує Display).

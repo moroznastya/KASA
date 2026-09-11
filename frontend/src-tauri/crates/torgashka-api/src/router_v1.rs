@@ -832,6 +832,15 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             crate::write_gate::gate_middleware,
         ))
+        // Read-only net (останній рубіж): ЗОВНІШНІЙ щодо гейта — бачить
+        // ОСТАТОЧНУ відповідь хендлера. Якщо у тілі є маркер
+        // `[READ_ONLY_REPLICA]` (запис у репліку пройшов повз фунел
+        // `StorePool`, напр. транзакцією), відповідь переписується на 503 §4.
+        // Власний 503 гейта (`STANDBY_DETAIL`, без маркера) не чіпається.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::readonly_net::readonly_net_middleware,
+        ))
         .with_state(state)
 }
 
