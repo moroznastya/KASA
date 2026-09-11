@@ -7,8 +7,13 @@
     поруч із owner; каса: admin/cashier).
 
 Revision ID: 0015_admin_stores_legal_edrpou
-Revises: 0014_drop_receipts_client_receipt_uuid
+Revises: 0014 (короткий id — саме ним заштампована прод-БД: alembic_version = '0014')
 Create Date: 2026-08-02
+
+Примітка (фікс зламаного ланцюга): down_revision — КОРОТКИЙ id "0014", а не
+довге ім'я файлу `0014_drop_receipts_client_receipt_uuid`: файл 0014 оголошує
+саме `revision = "0014"`, тож довге посилання висіло в повітрі й валило весь
+alembic (KeyError). Перейменовувати 0014 заборонено — БД заштампована "0014".
 """
 
 from typing import Sequence, Union
@@ -19,7 +24,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "0015_admin_stores_legal_edrpou"
-down_revision: Union[str, Sequence[str], None] = "0014_drop_receipts_client_receipt_uuid"
+down_revision: Union[str, Sequence[str], None] = "0014"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

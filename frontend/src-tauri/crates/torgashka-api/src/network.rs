@@ -123,10 +123,9 @@ fn parse_uuid(raw: &str, field: &str) -> Result<Uuid, NetworkErr> {
 
 /// Пул PostgreSQL фасаду (мережеві таблиці — у тій самій public-схемі).
 fn pool(state: &AppState) -> Result<PgPool, NetworkErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| NetworkErr::Unavailable("write_pool не ініціалізовано".to_string()))
+    // ADR-0007 §11.1: `devices`/`store_activation_codes` — `ProxyToPrimary`
+    // (реєстр кас і коди активації дійсні для всієї мережі).
+    crate::write_gate::admin_pool(state, "devices").map_err(NetworkErr::Unavailable)
 }
 
 // ─── Rate limiting активації (in-memory, per-IP) ────────────────────────────

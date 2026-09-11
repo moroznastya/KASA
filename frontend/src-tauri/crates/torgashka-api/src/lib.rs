@@ -50,6 +50,7 @@ pub mod stores;
 pub mod suppliers;
 pub mod sync;
 pub mod sync_receivers;
+pub mod write_gate;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

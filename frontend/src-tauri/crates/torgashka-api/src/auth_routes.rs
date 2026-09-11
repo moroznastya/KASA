@@ -70,24 +70,15 @@ impl IntoResponse for AuthRouteError {
                     AuthError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
                     AuthError::Validation(_) => unreachable!("validation handled above"),
                     AuthError::Infrastructure(m) => {
+                        // ADR-0007 §7.7: евристику «503 за текстом PG-помилки»
+                        // (`m.contains("read-only transaction")`) ПРИБРАНО —
+                        // рішення «куди писати» ухвалює виключно гейт
+                        // (`crate::write_gate`), а не розпізнавання рядка
+                        // помилки (залежало від локалі/версії PostgreSQL).
+                        // Auth-поверхня на standby: політики в §11.1 немає
+                        // (F6 — work_sessions у SQLite — окремий обсяг) →
+                        // pass-through; тут лишається чесний 500 без тексту PG.
                         eprintln!("[torgashka-api] auth infrastructure error: {m}");
-                        // F4 ADR-0007 §4: на standby локальна репліка
-                        // read-only, тому спроба адмін-запису дає саме цю
-                        // PG-помилку. Контракт: 503 + фіксований `detail`;
-                        // сирий текст PG у тіло відповіді НЕ потрапляє і 500
-                        // замість 503 не віддається.
-                        if m.contains("read-only transaction") {
-                            eprintln!(
-                                "[torgashka-api] upstream-write rejected (standby): auth-route"
-                            );
-                            return (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                Json(json!({
-                                    "detail": "primary недоступний (standby-вузол): адміністративна операція не може бути виконана локально — повторіть, коли мережа відновиться"
-                                })),
-                            )
-                                .into_response();
-                        }
                         (StatusCode::INTERNAL_SERVER_ERROR, "Помилка БД".to_string())
                     }
                 };
@@ -1042,7 +1033,13 @@ fn _sqlx_auth(pool: sqlx::PgPool) -> SqlxAuth {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P5 (ADR-0007 §4, F4): контракт 503 для read-only primary на standby.
+// ADR-0007 §7.7: рішення «куди писати» ухвалює ГЕЙТ, а не текст PG-помилки.
+//
+// Евристику `m.contains("read-only transaction") → 503` ПРИБРАНО (вона залежала
+// від локалі/версії PostgreSQL і була другим, неперевірюваним місцем рішення).
+// 503 §4 для admin-поверхонь тепер віддає `crate::write_gate::gate_middleware`
+// (або `write_gate::admin_pool` як друга лінія) — див. tests/write_gate_*.rs.
+// Логін/логаут на standby взагалі не торкаються PG (F6: SQLite + outbox).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1055,22 +1052,25 @@ mod upstream_error_contract_tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    /// `read-only transaction` → 503 з контрактним `detail` (§4 ADR-0007).
+    /// §7.7: текст PG-помилки БІЛЬШЕ НЕ вирішує нічого — жодного «магічного»
+    /// 503 з `read-only transaction`; відповідь без сирого тексту PG і без
+    /// вигаданої §4-деталі (503 §4 віддає гейт на HTTP-поверхні, не цей мапінг).
     #[tokio::test]
-    async fn read_only_transaction_error_maps_to_503_with_adr_detail() {
-        let err = AuthRouteError::from(AuthError::Infrastructure(
-            "error returned from database: cannot execute INSERT in a read-only transaction"
-                .to_string(),
-        ));
+    async fn read_only_transaction_text_no_longer_guesses_503() {
+        let pg_text =
+            "error returned from database: cannot execute INSERT in a read-only transaction";
+        let err = AuthRouteError::from(AuthError::Infrastructure(pg_text.to_string()));
         let resp = err.into_response();
         assert_eq!(
             resp.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "standby: апстрім-запис недоступний → 503, а не 500"
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "рішення про 503 — виключно в гейті (ADR-0007 §7.7), не в тексті помилки"
         );
-        assert_eq!(
-            body_json(resp).await["detail"],
-            "primary недоступний (standby-вузол): адміністративна операція не може бути виконана локально — повторіть, коли мережа відновиться"
+        let body = body_json(resp).await;
+        assert_eq!(body["detail"], "Помилка БД");
+        assert!(
+            !body.to_string().contains("read-only"),
+            "сирий текст PG заборонений у тілі: {body}"
         );
     }
 

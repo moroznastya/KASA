@@ -158,10 +158,12 @@ fn write_repo(
 /// require_admin: перевіряє роль користувача в БД (як Python
 /// `AuthService.require_admin` → `user.role != ADMIN` → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), CrudError> {
-    let pool = state
-        .write_pool
-        .clone()
-        .ok_or_else(|| CrudError::Forbidden("Rust-гілка довідників вимкнена".to_string()))?;
+    // ADR-0007 §11.1 НЕ має рядка для довідників (products/categories/
+    // suppliers/settings) — вони пишуться сервісами, а не літералами DML,
+    // тому їх не бачить скан §3 → політики немає → `Pass` (АНОМАЛІЯ №1 звіту).
+    // Поведінка на standby лишається колишньою; тут — доступ до пулу гейта.
+    let pool = crate::write_gate::admin_pool(state, "catalog_directories")
+        .map_err(CrudError::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         CrudError::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

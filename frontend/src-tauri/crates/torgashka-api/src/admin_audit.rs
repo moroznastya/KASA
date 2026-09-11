@@ -80,10 +80,9 @@ impl IntoResponse for AdminAuditErr {
 }
 
 fn pool(state: &AppState) -> Result<sqlx::PgPool, AdminAuditErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| AdminAuditErr::BadRequest("write_pool не ініціалізовано".to_string()))
+    // Журнал аудиту — ЧИТАННЯ (GET) з локальної репліки (ADR-0007 §10);
+    // сам запис аудиту йде через `network::audit` машинним каналом (§11.2 F3).
+    crate::write_gate::read_pool(state).map_err(AdminAuditErr::BadRequest)
 }
 
 /// Парсер дати YYYY-MM-DD → NaiveDate (400 з текстом помилки).

@@ -143,10 +143,10 @@ fn parse_uuid(raw: &str, field: &str) -> Result<Uuid, NodeErr> {
 
 /// Пул PostgreSQL фасаду (network_nodes — у тій самій public-схемі).
 fn pool(state: &AppState) -> Result<PgPool, NodeErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| NodeErr::Unavailable("write_pool не ініціалізовано".to_string()))
+    // ADR-0007 §11.1: `network_nodes` (create/join/heartbeat/archive) —
+    // `ProxyToPrimary`: реєстр вузлів мережі живе на primary. На standby пул
+    // не повертається; HTTP-поверхня перехоплюється гейтом раніше (§4).
+    crate::write_gate::admin_pool(state, "network_nodes").map_err(NodeErr::Unavailable)
 }
 
 // ─── Rate limiting /join (in-memory, per-IP, ОКРЕМИЙ від /devices/activate) ─

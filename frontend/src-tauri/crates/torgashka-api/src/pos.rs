@@ -141,10 +141,10 @@ fn pos_repo(
 
 /// require_admin (Python AuthService.require_admin → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), PosErr> {
-    let pool = state
-        .write_pool
-        .clone()
-        .ok_or_else(|| PosErr::Forbidden("Rust-гілка POS вимкнена".to_string()))?;
+    // ADR-0007 §11.1: POS-документи каси — `LocalOutbox` → на standby гейт
+    // пропускає цю поверхню (лічені операції каси не блокуються). Пул тут
+    // потрібен лише для перевірки ролі (читання) — див. `admin_pool`.
+    let pool = crate::write_gate::admin_pool(state, "receipt").map_err(PosErr::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         PosErr::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

@@ -77,10 +77,9 @@ impl IntoResponse for MigrateErr {
 }
 
 fn pool(state: &AppState) -> Result<PgPool, MigrateErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| MigrateErr::BadRequest("write_pool не ініціалізовано".to_string()))
+    // ADR-0007 §11.1: `migrate_legacy` — `ProxyToPrimary` (реєстрація
+    // legacy-точки/каси в реєстрі мережі = primary-only операція).
+    crate::write_gate::admin_pool(state, "migrate_legacy").map_err(MigrateErr::BadRequest)
 }
 
 /// Тіло POST /admin/migrate/legacy — обидва поля опційні.

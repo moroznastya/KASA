@@ -818,6 +818,15 @@ pub fn build_router(state: AppState) -> Router {
         // недоступний у момент аварії) — авторизація stateless JWT owner у хендлерах.
         .merge(crate::promote::admin_router(state.clone()))
         .layer(cors)
+        // ADR-0007 §11 (WriteGate): ОДИН шар на весь роутер фасаду — після CORS,
+        // тобто найзовнішній. Класифікує запит (§11.1) і вирішує F2/§4:
+        // primary → незмінно; standby+ProxyToPrimary → HTTP pass-through;
+        // standby+DisabledOnStandby → 503; standby+LocalOutbox → локальний шлях.
+        // Кожна відповідь фасаду отримує `X-Torgashka-Node-Mode` (§4).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::write_gate::gate_middleware,
+        ))
         .with_state(state)
 }
 

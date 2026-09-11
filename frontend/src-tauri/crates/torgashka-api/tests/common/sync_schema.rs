@@ -6,6 +6,7 @@
 //!   * `server_version` колонки + BEFORE-тригери bump — немає;
 //!   * soft-delete `is_deleted` на довідниках — немає;
 //!   * `client_uuid` + partial UNIQUE на приймачах push — немає.
+//!
 //! У проді цей шар додає Alembic (backend, міграції 0011–0014). Rust-тести
 //! не можуть запускати alembic → sync-e2e відтворюють ФІНАЛЬНИЙ стан
 //! sync-шару цим хелпером (ідемпотентно, IF NOT EXISTS / OR REPLACE) —
@@ -117,6 +118,9 @@ ALTER TABLE transfers       ADD COLUMN IF NOT EXISTS client_uuid uuid;
 ALTER TABLE write_offs      ADD COLUMN IF NOT EXISTS client_uuid uuid;
 ALTER TABLE debtor_payments ADD COLUMN IF NOT EXISTS client_uuid uuid;
 ALTER TABLE work_sessions   ADD COLUMN IF NOT EXISTS client_uuid uuid;
+-- 0016 (invoice push idempotency): дзеркало Alembic 0016 для тестової БД
+-- (schema.sql її не має) — partial UNIQUE, як на проді.
+ALTER TABLE invoices        ADD COLUMN IF NOT EXISTS client_uuid uuid;
 
 DROP INDEX IF EXISTS uq_receipts_client_uuid;
 CREATE UNIQUE INDEX uq_receipts_client_uuid ON receipts (client_uuid) WHERE client_uuid IS NOT NULL;
@@ -134,6 +138,8 @@ DROP INDEX IF EXISTS uq_debtor_payments_client_uuid;
 CREATE UNIQUE INDEX uq_debtor_payments_client_uuid ON debtor_payments (client_uuid) WHERE client_uuid IS NOT NULL;
 DROP INDEX IF EXISTS uq_work_sessions_client_uuid;
 CREATE UNIQUE INDEX uq_work_sessions_client_uuid ON work_sessions (client_uuid) WHERE client_uuid IS NOT NULL;
+DROP INDEX IF EXISTS uq_invoices_client_uuid;
+CREATE UNIQUE INDEX uq_invoices_client_uuid ON invoices (client_uuid) WHERE client_uuid IS NOT NULL;
 
 DROP INDEX IF EXISTS uq_receipts_client_receipt_uuid;
 ALTER TABLE receipts DROP COLUMN IF EXISTS client_receipt_uuid;

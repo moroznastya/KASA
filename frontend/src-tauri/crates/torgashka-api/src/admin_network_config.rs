@@ -121,10 +121,9 @@ impl IntoResponse for NetCfgErr {
 
 /// Пул PostgreSQL фасаду (мережеві таблиці — у тій самій public-схемі).
 fn pool(state: &AppState) -> Result<sqlx::PgPool, NetCfgErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| NetCfgErr::Internal("write_pool не ініціалізовано".to_string()))
+    // ADR-0007 §11.1: імпорт/експорт мережевого конфігу торкається реєстру
+    // точок мережі (`stores`) → `ProxyToPrimary` (глобальні дані primary).
+    crate::write_gate::admin_pool(state, "stores").map_err(NetCfgErr::Internal)
 }
 
 // ─── Модель конфіг-файлу мережі (schema_version=1) ──────────────────────────

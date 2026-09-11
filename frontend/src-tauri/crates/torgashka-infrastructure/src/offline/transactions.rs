@@ -35,6 +35,10 @@ pub const TYPE_WRITE_OFF: &str = "write_off";
 /// та в outbox-опу; це ОКРЕМИЙ шлях, а не агрегат каси: [`table_of`] його не
 /// знає, `apply_effects` не викликається — **stock-ефекту немає**.
 pub const TYPE_WORK_SESSION: &str = "work_session";
+/// Тип агрегата «прибуткова накладна» (ADR-0007 §3.4, клас LOCAL_SQLITE).
+/// Локальна таблиця — `invoices`/`invoice_items` (міграція 0010), outbox-опу
+/// `invoice`; stock-ефект прибуткової — +qty (як purchase_order).
+pub const TYPE_INVOICE: &str = "invoice";
 
 /// Результат локального запису транзакції (агрегат + outbox).
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +87,7 @@ fn apply_effects(
         return Ok(()); // немає позицій з кількістю — ефекту немає
     }
     match kind {
-        TYPE_PURCHASE_ORDER => {
+        TYPE_PURCHASE_ORDER | TYPE_INVOICE => {
             for (pid, q) in items {
                 stock::apply_stock_delta(conn, store_id, &pid, q)?;
             }
@@ -123,6 +127,7 @@ fn table_of(kind: &str) -> Result<&'static str, String> {
         TYPE_INVENTORY => Ok("inventories"),
         TYPE_TRANSFER => Ok("transfers"),
         TYPE_WRITE_OFF => Ok("write_offs"),
+        TYPE_INVOICE => Ok("invoices"),
         other => Err(format!("тип транзакції без локальної таблиці: {other}")),
     }
 }
@@ -138,6 +143,7 @@ pub fn is_supported_outbox_type(kind: &str) -> bool {
             | TYPE_TRANSFER
             | TYPE_WRITE_OFF
             | TYPE_WORK_SESSION
+            | TYPE_INVOICE
             | super::sync_push::TYPE_RECEIPT
             | super::sync_push::TYPE_RETURN_RECEIPT
     )
@@ -210,6 +216,141 @@ pub fn enqueue_transaction(
     })
 }
 
+/// Позиція накладної для локальної деталізації `invoice_items`.
+struct InvoiceLine {
+    product_id: Option<String>,
+    qty_milli: i64,
+    price: Option<String>,
+    sum: Option<String>,
+}
+
+/// Позиції накладної для локальної деталізації `invoice_items`.
+///
+/// На відміну від [`stock::parse_items`] (stock-ефект: лише валідні позиції з
+/// qty > 0) ДЕТАЛІЗАЦІЯ зберігає КОЖНУ позицію payload — локальний перегляд
+/// накладної не має «губити» рядки.
+fn invoice_lines(payload: &Value) -> Vec<InvoiceLine> {
+    let Some(items) = payload.get("items").and_then(|i| i.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|it| {
+            let pid = it
+                .get("product_id")
+                .or_else(|| it.get("productId"))
+                .and_then(|p| p.as_str())
+                .map(str::to_string);
+            let qty = it
+                .get("quantity")
+                .or_else(|| it.get("fact_quantity"))
+                .map(stock::qty_to_milli)
+                .unwrap_or(0);
+            InvoiceLine {
+                product_id: pid,
+                qty_milli: qty,
+                price: json_num(it.get("price")),
+                sum: json_num(it.get("total").or_else(|| it.get("sum"))),
+            }
+        })
+        .collect()
+}
+
+/// число|рядок → текст числа (Decimal-сумісний для SQLite NUMERIC).
+fn json_num(v: Option<&Value>) -> Option<String> {
+    match v {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Атомарний локальний запис ПРИБУТКОВОЇ НАКЛАДНОЇ (invoice, ADR-0007 §3.4,
+/// клас LOCAL_SQLITE) — ТОЧНА копія контуру [`enqueue_transaction`]: одна
+/// `BEGIN IMMEDIATE` → агрегат `invoices` (synced=1) → деталізація
+/// `invoice_items` → outbox-запис (pending) → локальний stock **+qty** по
+/// позиціях → COMMIT. Помилка будь-де → ROLLBACK: ні агрегата, ні позицій,
+/// ні outbox, ні stock-ефекту.
+pub fn enqueue_invoice(
+    conn: &mut Connection,
+    payload_json: &str,
+    store_id: &str,
+) -> Result<EnqueuedTransaction, String> {
+    let payload: Value = serde_json::from_str(payload_json)
+        .map_err(|e| format!("Payload {TYPE_INVOICE} — невалідний JSON: {e}"))?;
+    // Реквізити з payload — окремими колонками (локальні запити/діагностика).
+    let supplier_id = payload
+        .get("supplier_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let number = payload
+        .get("number")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let client_uuid = Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+    // Конверт push (дизайн 2.2) — ідентичний чекам/агрегатам каси.
+    let envelope = serde_json::json!({
+        "type": TYPE_INVOICE,
+        "client_uuid": client_uuid,
+        "store_id": store_id,
+        "created_at": created_at,
+        "payload": payload,
+    })
+    .to_string();
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN IMMEDIATE ({TYPE_INVOICE}): {e}"))?;
+
+    // 1. Агрегат: data = payload як є (фронтовий /v2-формат), synced = 1.
+    tx.execute(
+        "INSERT INTO invoices (client_uuid, store_id, supplier_id, number, data, synced) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+        params![client_uuid, store_id, supplier_id, number, payload_json],
+    )
+    .map_err(|e| format!("INSERT invoices (client_uuid={client_uuid}): {e}"))?;
+    let id = tx.last_insert_rowid();
+
+    // 2. Деталізація позицій (той самий поіменний контур, що receipt_items).
+    for line in invoice_lines(&payload) {
+        tx.execute(
+            "INSERT INTO invoice_items (invoice_client_uuid, product_id, quantity, price, sum) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                client_uuid,
+                line.product_id,
+                line.qty_milli,
+                line.price,
+                line.sum
+            ],
+        )
+        .map_err(|e| format!("INSERT invoice_items (client_uuid={client_uuid}): {e}"))?;
+    }
+
+    // 3. Outbox-запис (pending) — доставка на сервер (дизайн 4.2).
+    tx.execute(
+        "INSERT INTO outbox (type, client_uuid, payload, status) \
+         VALUES (?1, ?2, ?3, 'pending')",
+        params![TYPE_INVOICE, client_uuid, envelope],
+    )
+    .map_err(|e| format!("INSERT outbox ({TYPE_INVOICE}, client_uuid={client_uuid}): {e}"))?;
+    let outbox_id = tx.last_insert_rowid();
+
+    // 4. Stock-ефект прибуткової (+qty по позиціях) — у тій самій транзакції.
+    apply_effects(&tx, TYPE_INVOICE, &payload, store_id)
+        .map_err(|e| format!("stock-ефект {TYPE_INVOICE} (client_uuid={client_uuid}): {e}"))?;
+
+    tx.commit()
+        .map_err(|e| format!("COMMIT ({TYPE_INVOICE}): {e}"))?;
+
+    Ok(EnqueuedTransaction {
+        id,
+        client_uuid,
+        outbox_id,
+    })
+}
+
 /// Підмітає в outbox агрегати synced=0, накопичені СТАРОЮ версією коду
 /// (ЕТАП 6: запис без outbox). Ідемпотентно: INSERT OR IGNORE за client_uuid
 /// (outbox.client_uuid UNIQUE) + позначка synced=1. Викликається на початку
@@ -225,6 +366,7 @@ pub fn sweep_legacy_unsynced(conn: &mut Connection) -> Result<usize, String> {
         TYPE_INVENTORY,
         TYPE_TRANSFER,
         TYPE_WRITE_OFF,
+        TYPE_INVOICE,
     ] {
         let table = table_of(kind)?;
         let rows: Vec<(String, String, Option<String>)> = {
@@ -675,6 +817,125 @@ mod tests {
         assert!(is_supported_outbox_type(TYPE_WORK_SESSION));
         // реально невідомий тип — як і раніше помилка ДО транзакції.
         assert!(enqueue_transaction(&mut c, "totally_unknown_kind", "{}", STORE).is_err());
+    }
+
+    // ── Прибуткова накладна (invoice, ADR-0007 §3.4 LOCAL_SQLITE) ──────────
+
+    /// payload накладної у форматі фронта (/v2) — як його бере enqueue_invoice.
+    fn invoice_payload(supplier: &str, product: &str, qty: &str, total: &str) -> String {
+        json!({
+            "number": "INV-LOCAL-1",
+            "supplier_id": supplier,
+            "invoice_date": "2026-08-30T12:00:00+03:00",
+            "payment_method": null,
+            "is_fiscal": false,
+            "notes": "локальна прибуткова (тест)",
+            "total_amount": total,
+            "items": [{
+                "product_id": product,
+                "quantity": qty,
+                "price": "100.00",
+                "total": total,
+            }],
+        })
+        .to_string()
+    }
+
+    /// Критерій A: накладна пише агрегат (synced=1) + деталізацію + рівно один
+    /// outbox-оп (pending, той самий uuid) + stock +qty по позиціях.
+    #[test]
+    fn invoice_enqueues_aggregate_outbox_and_adds_stock() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        let payload = invoice_payload("sup-1", "p1", "3", "300.00");
+        let out = enqueue_invoice(&mut c, &payload, STORE).expect("накладна");
+
+        // 1. Агрегат: data = payload, synced = 1, реквізити в окремих колонках.
+        let (data, synced, sid, sup, num): (String, i64, String, String, String) = c
+            .query_row(
+                "SELECT data, synced, store_id, supplier_id, number FROM invoices \
+                 WHERE client_uuid = ?1",
+                params![out.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("агрегат накладної");
+        assert!(data.contains("INV-LOCAL-1"), "data = payload як є");
+        assert_eq!(synced, 1, "агрегат одразу push-кандидат");
+        assert_eq!(sid, STORE);
+        assert_eq!(sup, "sup-1");
+        assert_eq!(num, "INV-LOCAL-1");
+        assert_eq!(
+            unsynced_count(&c, TYPE_INVOICE).unwrap(),
+            0,
+            "synced=0 немає"
+        );
+
+        // 2. Деталізація: 1 позиція, 3 шт = 3000 міліодиниць (scale 3).
+        // sum/price — колонки NUMERIC (як receipt_items, 0006): SQLite
+        // застосовує NUMERIC-афінність, тому читаємо як число.
+        let (qty, sum): (i64, f64) = c
+            .query_row(
+                "SELECT quantity, sum FROM invoice_items WHERE invoice_client_uuid = ?1",
+                params![out.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("позиція накладної");
+        assert_eq!(qty, 3000, "3 шт у міліодиницях");
+        assert!((sum - 300.0).abs() < 0.001, "sum = 300.00, маємо {sum}");
+
+        // 3. Outbox: type='invoice', pending, той самий client_uuid.
+        let (typ, cu, status): (String, String, String) = c
+            .query_row(
+                "SELECT type, client_uuid, status FROM outbox WHERE id = ?1",
+                params![out.outbox_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("outbox");
+        assert_eq!(typ, TYPE_INVOICE);
+        assert_eq!(cu, out.client_uuid);
+        assert_eq!(status, "pending");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM outbox WHERE type = 'invoice'"),
+            1,
+            "рівно один outbox-оп"
+        );
+
+        // 4. Stock: прибуткова = +qty.
+        assert_eq!(level(&c, "p1"), 3000, "+3 шт локально");
+        assert!(is_supported_outbox_type(TYPE_INVOICE));
+    }
+
+    /// Критерій A (rollback): невдала накладна НЕ лишає ні агрегата, ні
+    /// позицій, ні outbox-запису, ні stock-ефекту.
+    #[test]
+    fn invoice_mid_tx_failure_rolls_back_everything() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        stock::apply_stock_delta(&c, STORE, "p1", 500).expect("до: 0.5 шт");
+
+        // (а) битий JSON — помилка ДО транзакції.
+        assert!(enqueue_invoice(&mut c, "{не-json", STORE).is_err());
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM invoices"), 0);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0);
+        assert_eq!(level(&c, "p1"), 500, "stock без змін");
+
+        // (б) помилка ВСЕРЕДИНІ транзакції (агрегат уже вставлено, далі —
+        //     деталізація падає: таблиці немає) → усе відкочується.
+        c.execute_batch("DROP TABLE invoice_items;").expect("drop");
+        let payload = invoice_payload("sup-1", "p1", "3", "300.00");
+        let res = enqueue_invoice(&mut c, &payload, STORE);
+        assert!(res.is_err(), "помилка деталізації → Err");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM invoices"),
+            0,
+            "агрегат відкочено (ROLLBACK)"
+        );
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM outbox WHERE type = 'invoice'"),
+            0,
+            "outbox-запису немає (ROLLBACK)"
+        );
+        assert_eq!(level(&c, "p1"), 500, "stock без змін (ROLLBACK)");
     }
 
     /// ЕТАП 7b: накопичені synced=0 (стара версія) → outbox при першому sync.

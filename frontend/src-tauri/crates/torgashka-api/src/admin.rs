@@ -103,10 +103,12 @@ impl IntoResponse for AdminErr {
 
 /// Пул PostgreSQL фасаду (як network.rs — адмін-таблиці в тій самій схемі).
 fn pool(state: &AppState) -> Result<sqlx::PgPool, AdminErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| AdminErr::BadRequest("write_pool не ініціалізовано".to_string()))
+    // ADR-0007 §11.1: адмін-поверхня `stores`/`user_stores`/`devices` —
+    // `ProxyToPrimary`. primary → рівно `state.write_pool` (F2, без змін);
+    // standby → пул НЕ повертається (жодного запису в read-only репліку, F5).
+    // HTTP-поверхня при цьому раніше перехоплюється гейтом (503 §4 —
+    // `write_gate::gate_middleware`), це друга лінія захисту.
+    crate::write_gate::admin_pool(state, "stores").map_err(AdminErr::BadRequest)
 }
 
 fn path_uuid(raw: String, field: &'static str) -> Result<Uuid, AdminErr> {

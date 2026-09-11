@@ -175,17 +175,33 @@ mode == standby:
 
 | Клас | Кількість | Точки |
 |------|-----------|-------|
-| `UPSTREAM_NOW` | 20 | #1–#20 |
+| `UPSTREAM_NOW` (гейт: `ProxyToPrimary`) | 20 | #1–#20 |
 | `DISABLED_ON_STANDBY` | 16 | #21–#36 |
-| `QUEUE` | 1 | #37 |
-| `LOCAL_SQLITE` | 3 | #38–#40 |
-| **Усього** | **40** | з них 37 у `torgashka-api/src/` + 3 у `torgashka-infrastructure` |
+| `QUEUE` (гейт: `LocalOutbox`) | 1 | #37 |
+| `LOCAL_SQLITE` (гейт: `LocalOutbox`) | 3 | #38–#40 |
+| `LocalOutbox` (§3.6, накладна) | 1 | #41 |
+| **Усього** | **41** | 37 statement-точок `torgashka-api/src/` + 1 REST-поверхня накладної (`repositories/invoices.rs`) + 3 у `torgashka-infrastructure` |
 
 Перевірки критерію прийняття:
 * `UPSTREAM_NOW` **не містить** `work_sessions` → ✅ (#38–#40 = `LOCAL_SQLITE`).
 * жоден клас не пише в локальну репліку → ✅ (усі цілі: `upstream_write_url`,
   SQLite, або «вимкнено»).
 * 100 % точок мають клас і `файл:рядок` → ✅.
+* класифікація накладних — **без «TBD»** (§3.6, #41 = `LocalOutbox`) → ✅.
+
+### 3.6 Накладна `invoice` — клас `LocalOutbox` (остаточно, без «TBD»)
+
+| # | Файл:рядок | Операція / таблиця | Клас | Обґрунтування |
+|---|-----------|--------------------|------|---------------|
+| 41 | REST `POST /api/v1/invoices` (`crates/torgashka-api/src/invoices.rs:195` → `router_v1.rs:446-451`) → `crates/torgashka-infrastructure/src/repositories/invoices.rs:263` (`update_stock`) | `INSERT invoices` + `INSERT invoice_items` + `stock.quantity + EXCLUDED.quantity` + `products.stock` + `supplier_ledger` (INVOICE, рядок 1112) | `LocalOutbox` | Прибуткова накладна (`STRUCTURE.md:202`, `ROADMAP.md:45`) — документ, який створює каса, а не транзакція push каси (Alembic 0013, рядок 48). Клас — **той самий, що `receipts`**: локальний агрегат + outbox-запис + локальний stock-ефект в ОДНІЙ SQLite-транзакції (§10). Термінологія гейта: `LocalOutbox` ≡ `LOCAL_SQLITE` + `QUEUE` (§11). |
+
+**Обов'язкова умова вмикання (порядок — §12):** клас `LocalOutbox` для
+`invoice` вмикається в гейті ТІЛЬКИ після того, як приймач накладних (§9)
+реально приймає чергу та застосовує її на primary (AT-11…AT-13 зелені).
+До цього моменту `invoice` на standby класифікується як `ProxyToPrimary`
+(→ 503 при недосяжному primary), і **черга не накопичується**: інакше
+порушується інваріант «жодного запису в нікуди» — саме від такого боргу
+страхує `transactions.rs` (`sweep_legacy_unsynced`).
 
 ---
 
@@ -228,6 +244,12 @@ mode == standby:
 | AT-8 | статичний guard (CI) | Тест сканує `crates/torgashka-api/src/**` і падає, якщо будь-який `INSERT/UPDATE/DELETE`-рядок виконується на пулі локального стану (`state.local.pool` / `store_pool` у standby-гілці); ціль запису ∈ {`upstream_write_pool`, SQLite}. |
 | AT-9 | регресія `mode="primary"` (F2) | Секція `[node]` відсутня або `mode="primary"` → повний наявний набір інтеграційних тестів зелений; unit-тест `NodeConfig::load_from_str` підтверджує, що `upstream_write_url` не впливає на резолв пулів. |
 | AT-10 | негативний: standby без `upstream_write_url` | Будь-який `UPSTREAM_NOW`-запит → `503` (той самий контракт §4), **не** тихий запис у репліку і **не** `500`. |
+
+| AT-11 | primary: `POST /api/v1/sync/push` з типом `invoice` (приймач §9) | `200`; накладна видима в `GET /api/v1/invoices` на primary; `stock.quantity` точки виріс на кількість позиції; `products.stock` і `supplier_ledger` (INVOICE) оновлені |
+| AT-12 | ідемпотентність: той самий `client_uuid` двічі (§9) | другий push → `already_exists`; `stock` більше **не** зростає; `sync_log` містить `already_exists` |
+| AT-13 | негативний: `invoices_v1 = None` (фасад без `TORGASHKA_RUST_INVOICES=1`) | приймач → `PushItemResult::error`; `sync_log.status='error'`; outbox лишається `pending` (тихого ack немає) |
+| AT-14 | standby + primary down: створення накладної касою | документ у локальній таблиці `invoices` (offline 0010); SQLite `stock +qty` в **одній** транзакції з outbox; підміна невалідного `product_id` → rollback: немає ні агрегата, ні outbox, ні stock; маркер «очікує синку» |
+| AT-15 | звірка після відновлення репліки (§10) | локальний (SQLite) і авторитетний (репліка PG) залишки показані окремо + дельта; вирівнювання доступне інвентаризацією (`set_stock_level`) |
 
 ---
 
@@ -289,15 +311,225 @@ mode == standby:
 4. **АНОМАЛІЯ (за визначенням контракту): не виявлено.** Жодна write-точка не
    залишилась некласифікованою; жодне формулювання не суперечить F1–F6.
 
+5. **Alembic 0013 vs 0016.** `backend/alembic/versions/0013_sync_push_idempotency.py:48`
+   фіксує рішення «`invoices` — документи закупівель, не транзакції каси push,
+   не чіпати». §9 **свідомо переглядає** його: `invoices` стає приймачем
+   (`0016_invoice_push_idempotency.py`). Це еволюція рішення, зафіксована явно
+   (не суперечність коду).
+6. **F3 звужено: DB-пул → HTTP pass-through.** §2.1 F3 і §3.1 описували
+   `UPSTREAM_NOW` як запис через **пул** на `upstream_write_url`
+   (реалізовано: `lib.rs:1040-1069`, `route_local.rs:66-88`). Рішення Творця
+   вимагає `ProxyToPrimary` = HTTP pass-through із JWT користувача й **без
+   нової БД-ролі** → для HTTP-поверхонь пул більше не ціль запису. Зафіксовано
+   як **F3'** (§11); реалізований F3-код не видаляється (зворотна сумісність),
+   але HTTP-хендлери на standby йдуть через гейт.
+7. **Евристика 503 за текстом PG-помилки.** `auth_routes.rs:76-92` розпізнає
+   деградацію рядком `m.contains("read-only transaction")` — залежить від
+   локалі й версії PostgreSQL. Гейт (§11) замінює її явною політикою; після
+   реалізації `write_gate.rs` евристику треба **видалити**, інакше лишається
+   другий (неперевірюваний) шлях рішення «куди писати».
+
 ---
 
 ## 8. Додаток: як додати нову write-точку
 
 1. Визнач, чи дані мають сенс **тільки** на primary (адмін/мережа/агрегатор) →
-   `UPSTREAM_NOW` або `DISABLED_ON_STANDBY`.
+   `UPSTREAM_NOW` (гейт: `ProxyToPrimary`) або `DISABLED_ON_STANDBY`.
 2. Якщо це операційні дані **вузла** (сесії, локальні налаштування) →
-   `LOCAL_SQLITE`.
-3. Якщо дані мусять зрештою дійти до primary, але не зараз → `QUEUE`.
+   `LOCAL_SQLITE` (гейт: `LocalOutbox`).
+3. Якщо дані мусять зрештою дійти до primary, але не зараз → `QUEUE`
+   (гейт: `LocalOutbox`).
 4. **Ніколи** не писати в `local`/`store_pool` на standby (F5).
-5. Додати рядок у §3 цього ADR (файл:рядок, клас, обґрунтування) і, за
-   потреби, тест у §5.
+5. Додати рядок у §3 цього ADR (файл:рядок, клас, обґрунтування), рядок у
+   таблицю політик гейта (§11) і, за потреби, тест у §5.
+6. Якщо це POS-документ каси: пиши локальний агрегат + outbox + stock-ефект
+   однією транзакцією (`transactions.rs::enqueue_transaction`) і додай тип у
+   `is_supported_outbox_type`; приймач на primary мусить існувати **раніше**
+   за вмикання класу (порядок §12).
+
+---
+
+## 9. Приймач накладних (`invoice`) на primary
+
+Будується **перевикористанням** наявних серверних механізмів — другого підходу
+не вводимо.
+
+| Елемент | Що використовується (наявне) | Доказ |
+|---------|------------------------------|-------|
+| Транспорт push | `POST /api/v1/sync/push` — той самий, що для чеків | `offline/sync_push.rs:495` |
+| Розбір конверта | `PushEnvelope` + `process_push_item` | `torgashka-api/src/sync.rs:546` |
+| Реєстр типів | `receiver_table` += `"invoice" => Some("invoices")` | `sync.rs:618-627` |
+| Гілка прийому | новий `match`-арм поряд з `"receipt" \| "return_receipt" => accept_receipt_kind` | `sync.rs:601-606` |
+| Бізнес-операція | `InvoicesV1Facade` (порт `InvoicesV1Service`): `create` → `confirm` | `torgashka-application/src/services/invoices.rs:15`, `lib.rs:12` |
+| Stock-ефект **на primary** | `update_stock`: `stock.quantity + EXCLUDED.quantity` — викликає сервіс, не приймач | `repositories/invoices.rs:263`, виклик `:1095` |
+| Побічні ефекти | `products.stock` `:281`; `fiscal_stock` `:294-309`; `change_price` `:1101`; `supplier_ledger` INVOICE `:1112` | `repositories/invoices.rs` |
+| Ідемпотентність | `client_uuid` + partial UNIQUE на `invoices` — нова Alembic **0016**, за зразком 0013 | `alembic/versions/0013_sync_push_idempotency.py:74-99` |
+| Повторний push | `find_by_client_uuid_in` → `already_exists` | `sync.rs:591-594` |
+| `created_at` каси | `parse_created_at_utc` (не `now()`) | `sync.rs:598`, `sync_receivers.rs:35` |
+| Перевірка точки | `item.store_id == ctx_store` | `sync.rs:571-588` |
+
+Чому сервіс, а не SQL-приймач рівня `sync_receivers`: накладна має **п'ять**
+побічних ефектів (stock точки, `products.stock`, фіскальний залишок, ціна
+товару, борг постачальника) — SQL-копія створила б друге джерело істини.
+Чек іде саме так: `accept_receipt_kind` → `PosServiceFacade`
+(`svc.create_sale_receipt` / `create_return_receipt`), `sync.rs:631-648`.
+
+Обмеження (зафіксовано, не «TBD»):
+* сервіс накладних монтується лише під `TORGASHKA_RUST_INVOICES=1`
+  (`router_v1.rs:446-448`; `AppState.invoices_v1 = Option<...>`, `lib.rs:143`).
+  Якщо `invoices_v1.is_none()` → приймач повертає `PushItemResult::error`
+  («приймач накладних не змонтовано»), пише `sync_log` зі `status='error'`
+  і **не** підтверджує чергу (outbox лишається `pending`) — тихого ack немає;
+* `invoice_items` власного `client_uuid` не отримує: ідемпотентність агрегатна
+  (як у `purchase_order_items`, §3.2 #27);
+* Alembic 0013 (рядок 48) свідомо виключав `invoices` з приймачів; 0016 —
+  явний перегляд цього рішення (§7.5).
+
+---
+
+## 10. Рішення: **(a)** оптимістичне локальне відображення
+
+**Рішення: (a).** Накладна в локальній черзі на standby **негайно** змінює
+локальний SQLite-залишок у тій самій транзакції, що й outbox-запис; остаточний
+(авторитетний) перерахунок залишку виконує **лише primary** після синку.
+
+**Обґрунтування — узгодженість з чеками, а не UX.** Офлайн-чек уже робить (a):
+локальний stock-ефект виконується **всередині** тієї самої SQLite-транзакції,
+що `INSERT receipts` + `INSERT outbox`:
+
+| Крок атомарного контуру чека | Файл:рядок |
+|------------------------------|-----------|
+| Відкриття транзакції | `offline/sync_push.rs:112` (`BEGIN IMMEDIATE`) |
+| INSERT агрегата чека | `offline/sync_push.rs:117-121` |
+| INSERT outbox(`pending`) | `offline/sync_push.rs:125-128` |
+| **Локальний stock-ефект у ТІЙ САМІЙ транзакції** | **`offline/sync_push.rs:204`** — `stock::apply_stock_delta(&tx, sid, pid, delta)` |
+| Знак дельти (продаж −q / повернення +q) | `offline/sync_push.rs:199-203` |
+| COMMIT | `offline/sync_push.rs:218` |
+| Той самий контур для не-чекових агрегатів | `offline/transactions.rs:153` → `apply_effects` `:200` → `apply_stock_delta` `:88` |
+
+Відповідь на питання-детектор: **ТАК** — офлайн-чек змінює локальний
+SQLite-залишок у тій самій транзакції, що й outbox-запис. Отже (a) вже
+реалізовано для чеків → для накладних приймаємо **той самий** контур, щоб на
+одному вузлі не виникло двох різних семантик залишку.
+
+### 10.1 Що саме змінюється локально на standby
+
+1. нова offline-міграція `offline/migrations/offline/0010_invoices.sql`:
+   локальні `invoices` + `invoice_items` (дзеркало payload /v2) з `client_uuid`
+   і `synced` — наявні `0001–0009` таблиці `invoices` не мають;
+2. `TYPE_INVOICE = "invoice"` (`transactions.rs:26` за зразком),
+   `table_of("invoice") → "invoices"` (`transactions.rs:120`),
+   гілка `apply_effects` → **+qty** (дзеркало `TYPE_PURCHASE_ORDER`,
+   `transactions.rs:86-90`), тип у білий список `is_supported_outbox_type`
+   (`transactions.rs:133-144`);
+3. один виклик `enqueue_transaction(conn, "invoice", payload, store_id)`
+   (`transactions.rs:153-204`): агрегат + outbox(`pending`) + `stock +qty`
+   атомарно; будь-яка помилка → ROLLBACK усього трьох;
+4. `products.stock` і `supplier_ledger` локально **не** чіпаються: загальний
+   залишок і борг — прерогатива primary (їх застосовує приймач, §9).
+
+### 10.2 Маркер «очікує синку» (наявні примітиви, без нових полів)
+
+* документ: `outbox.status` для цього `client_uuid` (`pending`/`sending` →
+  «очікує синку»; `sent` → «синхронізовано») + `synced` у локальному агрегаті;
+* UI: бейдж на документі + лічильник `pending_count()` — той самий, що для чеків;
+* вузол: `/api/v1/local/status` (edge-детектор up/down, `route_local.rs:332`) →
+  банер «немає зв'язку з головним сервером».
+
+### 10.3 Звірка після повернення репліки
+
+1. outbox-push доставив накладну → приймач застосував її на primary
+   (`stock +qty`, борг, ціна) → WAL доніс зміну до репліки;
+2. на standby існують **два** числа залишку: локальний оптимістичний (SQLite
+   каси, `stock_with_catalog`, `offline/stock.rs`) і авторитетний (репліка PG,
+   `LocalApiState.write`, `route_local.rs:79`);
+3. master-pull **не** віддає сутність `stock` (обмеження зафіксовано в шапці
+   `offline/stock.rs`, міграція 0005) — тому звірка не може бути «тихим
+   перезаписом»: показуємо обидва числа й **дельту** по товарах накладної;
+   розбіжність вирівнюється **наявним** механізмом — інвентаризацією
+   (`set_stock_level`, `offline/stock.rs`), а не новим reconcile-движком;
+4. після ack помилкова дельта не накопичується: агрегат позначено `synced`,
+   повторний push не створює другого stock-ефекту (ідемпотентність
+   `client_uuid`, §9).
+
+Наслідок, який приймаємо свідомо: локальний залишок на standby — **оцінка**, а
+не істина. Для чеків це вже зафіксовано (`offline/stock.rs`: від'ємний
+залишок допустимий, продаж не блокується неточним локальним рівнем);
+накладні підпадають під те саме правило.
+
+---
+
+## 11. Гейт запису (WriteGate)
+
+**Один компонент, одне місце рішення:** `crates/torgashka-api/src/write_gate.rs`
+(новий модуль). Причина: сьогодні класифікація розсіяна — адмін-хендлери
+беруть `state.write_pool` напряму (`admin.rs:105-109`), а контракт 503
+реалізовано евристикою за текстом PG-помилки в auth-маршруті
+(`auth_routes.rs:76-92`: `m.contains("read-only transaction")`). Евристика не
+масштабується на 41 write-точку і мовчки пропустить новий DML.
+
+### 11.1 Таблиця політик «сутність → політика»
+
+| Сутність / поверхня | Політика | Механізм і доказ |
+|---|---|---|
+| POS-документи каси: `receipt`, `return_receipt`, `purchase_order`, `inventory`, `transfer`, `write_off`, **`invoice`** | **`LocalOutbox`** | SQLite агрегат + outbox + stock в одній транзакції: `sync_push.rs:112-219`, `transactions.rs:153-204` |
+| `work_session` (логін/логаут) | **`LocalOutbox`** | SQLite 0009 + outbox-op `work_session` (`transactions.rs:37`, `auth.rs:76-92`) |
+| heartbeat пристрою (`devices.last_seen_at`, `store_context.rs:108`) | **`LocalOutbox`** | некритичний side-effect, не блокує запит (§3.3) |
+| Адмін/мережа: `stores`, `user_stores`, `devices` (activate/status/delete), `store_activation_codes`, `network_nodes` (create/join/heartbeat/archive), `prro_settings`, `migrate_legacy`, `audit_log`, `network_events` | **`ProxyToPrimary`** | HTTP pass-through (§3.1 #1–#20) |
+| Агрегатор-only приймачі: `/api/v1/sync/push`, `store_sync_state`, `sync_log` | **`DISABLED_ON_STANDBY`** | §3.2 #22–#33: 503, чужі deltas не приймаються |
+| DDL провіжну реплікації (`CREATE/ALTER ROLE`) | **`DISABLED_ON_STANDBY`** | §3.2 #34–#35 |
+| фоновий `network_nodes offline-job` | **`DISABLED_ON_STANDBY`** | §3.2 #21 |
+
+### 11.2 Семантика `ProxyToPrimary` (без нової БД-ролі)
+
+* реверс-проксі на рівні хендлера: `method + path + query + body` переносяться
+  **як є** у `{server_url}{path}`; `server_url` — те саме налаштування SQLite,
+  яке використовує outbox (`offline/commands.rs:74-80`; виклик `sync_push.rs:495`),
+  тож нового конфіг-ключа не вводимо;
+* заголовки переносяться **автентично**: `Authorization: Bearer <JWT
+  користувача>` + `X-Store-Id`; гейт не має власних DB-credentials і **не
+  відкриває** з'єднання до БД primary;
+* відповідь primary (статус + тіло + `X-Torgashka-*`) повертається **verbatim** —
+  контракт маршруту не змінюється, змінюється лише хост-виконавець;
+* жодних retry/черги: адмін-операція або виконується зараз, або 503 (§4);
+* `upstream_write_url` (F3) лишається **тільки** для машинних side-effect
+  записів без HTTP-носія (напр. `note_connectivity_transition` →
+  `log_node_event`, `route_local.rs:332`). Для HTTP-поверхонь DB-пул більше не
+  ціль запису → **F3 звужено** (див. §7.6).
+
+### 11.3 UX, коли primary недоступний
+
+* POS-екран: працює; документи отримують «очікує синку» (§10.2), банер
+  «Немає зв'язку з головним сервером» (за `X-Torgashka-Upstream` / `/local/status`);
+* адмін-екран: адмін-дії **заблоковані** (disabled) одразу, без чекання помилки;
+  підказка — «Зміни магазину/мережі доступні лише на головному сервері»;
+* якщо дія все ж надіслана: `503` + `{"detail": ...}` з §4 (не 500, не сирий
+  текст PostgreSQL).
+
+### 11.4 Як CI перевіряє відсутність обходу гейта
+
+1. **Статичний guard.** Рекурсивний скан `crates/torgashka-api/src/**/*.rs`:
+   кожен рядок з `INSERT/UPDATE/DELETE` мусить мати або (а) виняток приймача
+   (`sync.rs`, `sync_receivers.rs`), або (б) рядок у таблиці політик §11.1;
+   новий DML без політики → тест падає (той самий метод, що верифікація §3).
+2. **Повнота покриття.** Множина сутностей політик == множина write-точок §3
+   (41) — реєстри порівнюються тестом (після реалізації `write_gate.rs` —
+   автоматично; до того — у review обов'язковим чек-лістом).
+3. **Поведінковий.** standby + primary down: кожен `ProxyToPrimary` маршрут дає
+   `503` за політикою §4 і **нуль** рядків у `postgres.log` репліки;
+   `LocalOutbox`-маршрути дають бізнес-статус і **не роблять жодного**
+   `INSERT/UPDATE` у PG.
+
+---
+
+## 12. Порядок викатки (обов'язковий, не переставляти)
+
+| Крок | Зміст | Критерій «можна далі» |
+|------|-------|------------------------|
+| **1. Приймач + тест** | Alembic `0016_invoice_push_idempotency.py` (`invoices.client_uuid` + partial UNIQUE, за зразком 0013) → `receiver_table("invoice")` + гілка `process_push_item` (§9) → e2e-тест | AT-11, AT-12, AT-13 зелені: push накладної створює документ на primary, `stock +qty`, борг постачальника; повторний push → `already_exists` без другого stock-ефекту |
+| **2. Політика в гейті** | offline `0010_invoices.sql` + `TYPE_INVOICE` + рядок `invoice → LocalOutbox` у `write_gate.rs` (§11.1) | AT-14, AT-15: накладна створюється офлайн, локальний `stock +qty` атомарний з outbox, маркер «очікує синку»; **до Кроку 2** класифікація `invoice` у гейті — `ProxyToPrimary` |
+
+**Заборона:** вмикати клас `LocalOutbox` для `invoice` раніше за Крок 1.
+Черга без приймача = накопичення `pending`, яке ніколи не буде застосоване на
+primary — саме від такого боргу страхує `sweep_legacy_unsynced`
+(`transactions.rs:218` — sweep_legacy_unsynced).

@@ -526,7 +526,17 @@ pub async fn push(
 
     let mut results = Vec::with_capacity(body.len());
     for item in &body {
-        results.push(process_push_item(&svc, &pool, item, cashier, ctx_store).await);
+        results.push(
+            process_push_item(
+                &svc,
+                &pool,
+                state.invoices_v1.as_ref(),
+                item,
+                cashier,
+                ctx_store,
+            )
+            .await,
+        );
     }
 
     // Частина 4: device-каса — після успішного прийому пакета (усі агрегати
@@ -542,12 +552,15 @@ pub async fn push(
 }
 
 /// Обробляє ОДИН агрегат: ідемпотентний прийом + sync_log (ЕТАП 7b:
-/// чеки + типи каси ЕТАПУ 6 — purchase_order/inventory/transfer/write_off).
+/// чеки + типи каси ЕТАПУ 6 — purchase_order/inventory/transfer/write_off)
+/// та прибуткова накладна (invoice, ADR-0007 §3.4 — іде ЧЕРЕЗ СЕРВІС
+/// інвойсів, а не через SQL-приймачі sync_receivers).
 async fn process_push_item(
     svc: &torgashka_application::PosServiceFacade<
         std::sync::Arc<dyn torgashka_domain::PosService + Send + Sync>,
     >,
     pool: &StorePool,
+    invoices_v1: Option<&std::sync::Arc<dyn torgashka_domain::InvoicesV1Service + Send + Sync>>,
     item: &PushEnvelope,
     cashier: Option<Uuid>,
     ctx_store: Uuid,
@@ -558,7 +571,7 @@ async fn process_push_item(
         Some(t) => t,
         None => {
             log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
-                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off)", item.kind
+                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off; ADR-0007 — invoice)", item.kind
             ))).await;
             return PushItemResult::error(
                 item.client_uuid,
@@ -605,6 +618,12 @@ async fn process_push_item(
             )
             .await
         }
+        // Прибуткова накладна: приймач іде ЧЕРЕЗ СЕРВІС інвойсів (draft →
+        // confirm: stock +qty, supplier_ledger, fiscal_stock, price-changes),
+        // а не через SQL-приймачі sync_receivers.
+        "invoice" => {
+            accept_invoice_kind(invoices_v1, pool, item, table, cashier, ctx_store, &hash).await
+        }
         kind => {
             accept_non_receipt_kind(
                 pool, item, table, kind, cashier, ctx_store, created_at, &hash,
@@ -622,6 +641,8 @@ fn receiver_table(kind: &str) -> Option<&'static str> {
         "inventory" => Some("inventories"),
         "transfer" | "transfer_out" | "transfer_in" => Some("transfers"),
         "write_off" => Some("write_offs"),
+        // ADR-0007 §3.4: прибуткова накладна каси (partial UNIQUE 0016).
+        "invoice" => Some("invoices"),
         _ => None,
     }
 }
@@ -684,6 +705,139 @@ async fn accept_receipt_kind(
             PushItemResult::error(item.client_uuid, msg)
         }
     }
+}
+
+/// Прибуткова накладна каси (invoice, ADR-0007 §3.4, клас LOCAL_SQLITE).
+///
+/// Приймач іде ЧЕРЕЗ СЕРВІС [`torgashka_domain::InvoicesV1Service`] (а не
+/// через SQL-приймачі sync_receivers), бо накладна має власну бізнес-логіку:
+/// `create_v1` пише чернетку + позиції, а stock-ефект (+qty), supplier_ledger
+/// і price-changes робить САМЕ `confirm_v1` (Python-еталон v1).
+///
+/// Ідемпотентність: `client_uuid` каси → `invoices.client_uuid`
+/// (partial UNIQUE `uq_invoices_client_uuid`, Alembic 0016) + звичайний
+/// SELECT-дублікат вище (крок 3 process_push_item).
+///
+/// Pre-flight валідація каталогу (постачальник, товари) — обов'язкова:
+/// `create_v1` НЕ атомарний (INSERT invoices окремо від insert_items_v1), тож
+/// неіснуючий постачальник/товар лишив би «сироту»-чернетку без позицій або
+/// з частковою деталізацією. Валідація виконується ДО будь-якого INSERT.
+#[allow(clippy::too_many_arguments)]
+async fn accept_invoice_kind(
+    invoices_v1: Option<&std::sync::Arc<dyn torgashka_domain::InvoicesV1Service + Send + Sync>>,
+    pool: &StorePool,
+    item: &PushEnvelope,
+    table: &str,
+    cashier: Option<Uuid>,
+    ctx_store: Uuid,
+    hash: &str,
+) -> PushItemResult {
+    // 1. Rust-гілка інвойсів не змонтована (TORGASHKA_RUST_INVOICES≠1) —
+    //    НЕ тихий ack: каса має побачити error і лишити оп у outbox.
+    let Some(invoices) = invoices_v1 else {
+        let msg = format!(
+            "Rust-гілка інвойсів вимкнена ({}≠1) — накладну не прийнято",
+            crate::RUST_INVOICES_ENV
+        );
+        log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+        return PushItemResult::error(item.client_uuid, msg);
+    };
+
+    // 2. push вимагає JWT sub (created_by_id накладної).
+    let Some(cashier) = cashier else {
+        let msg = "invoice: push вимагає автентифікованого користувача (JWT sub)".to_string();
+        log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+        return PushItemResult::error(item.client_uuid, msg);
+    };
+
+    // 3. Парсинг payload каси → вхідні дані v1 (+ ідемпотентний ключ).
+    let mut input: torgashka_domain::invoices::InvoiceCreateV1Input =
+        match serde_json::from_value(item.payload.clone()) {
+            Ok(i) => i,
+            Err(e) => {
+                let msg = format!("invoice: невалідний payload накладної — {e}");
+                log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+                return PushItemResult::error(item.client_uuid, msg);
+            }
+        };
+    input.client_uuid = Some(item.client_uuid);
+
+    // 4. Pre-flight: каталог (постачальник + товари) ПЕРЕД будь-яким INSERT.
+    match exists_in(pool, "suppliers", input.supplier_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let msg = format!(
+                "Постачальника {} не знайдено в каталозі — накладну відхилено",
+                input.supplier_id
+            );
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            return PushItemResult::error(item.client_uuid, msg);
+        }
+        Err(e) => {
+            log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
+            return PushItemResult::error(item.client_uuid, e);
+        }
+    }
+    for it in &input.items {
+        match exists_in(pool, "products", it.product_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let msg = format!(
+                    "Товар {} не знайдено в каталозі — накладну відхилено",
+                    it.product_id
+                );
+                log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+                return PushItemResult::error(item.client_uuid, msg);
+            }
+            Err(e) => {
+                log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
+                return PushItemResult::error(item.client_uuid, e);
+            }
+        }
+    }
+
+    // 5. Чернетка + позиції, далі confirm (stock +qty, ledger) — як v1-роут.
+    match invoices.create_v1(&input, cashier).await {
+        Ok(dto) => match invoices.confirm_v1(dto.id, "confirmed").await {
+            Ok(_) => {
+                log_sync(pool, item, ctx_store, "ok", hash, None).await;
+                PushItemResult::created(item.client_uuid, dto.id)
+            }
+            Err(e) => {
+                // Чернетка вже в БД (аномалія 2: create_v1 не атомарний).
+                let msg = format!("накладну {} створено, але confirm не вдався: {e}", dto.id);
+                log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+                PushItemResult::error(item.client_uuid, msg)
+            }
+        },
+        Err(e) => {
+            let msg = e.to_string();
+            // Гонка: два одночасні push з тим самим client_uuid — partial
+            // UNIQUE uq_invoices_client_uuid (0016) зловив другий атомарно.
+            if msg.contains("uq_invoices_client_uuid") {
+                if let Some(existing) = find_by_client_uuid_in(pool, table, item.client_uuid).await
+                {
+                    log_sync(pool, item, ctx_store, "already_exists", hash, None).await;
+                    return PushItemResult::already_exists(item.client_uuid, existing);
+                }
+            }
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            PushItemResult::error(item.client_uuid, msg)
+        }
+    }
+}
+
+/// Чи існує рядок каталогу за id (pre-flight валідація перед INSERT).
+/// Помилка самої БД — окремо від «немає рядка» (щоб не маскувати збій БД
+/// під «немає в каталозі»).
+async fn exists_in(pool: &StorePool, table: &str, id: Uuid) -> Result<bool, String> {
+    let q = format!("SELECT 1 FROM {table} WHERE id = $1 LIMIT 1");
+    sqlx::query_scalar::<_, i32>(&q)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map(|r| r.is_some())
+        .map_err(|e| format!("каталог {table} недоступний: {e}"))
 }
 
 /// Не-чекові типи каси ЕТАПУ 6 → SQL-приймачі sync_receivers.

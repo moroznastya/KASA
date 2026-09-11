@@ -99,10 +99,9 @@ impl IntoResponse for AdminReportsErr {
 
 /// Пул PostgreSQL фасаду (як admin.rs / admin_db_sources.rs).
 fn pool(state: &AppState) -> Result<sqlx::PgPool, AdminReportsErr> {
-    state
-        .write_pool
-        .clone()
-        .ok_or_else(|| AdminReportsErr::BadRequest("write_pool не ініціалізовано".to_string()))
+    // Звіти — ЧИТАННЯ (GET): локальна репліка є дозволеним джерелом читання
+    // (ADR-0007 §10), F5 забороняє лише запис → гейт цей шлях не блокує.
+    crate::write_gate::read_pool(state).map_err(AdminReportsErr::BadRequest)
 }
 
 // ─── Парсинг періоду ────────────────────────────────────────────────────────
