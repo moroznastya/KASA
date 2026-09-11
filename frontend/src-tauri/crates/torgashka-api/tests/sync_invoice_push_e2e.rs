@@ -145,7 +145,39 @@ fn invoice_payload(supplier: Uuid, product: Uuid, qty: &str) -> String {
     .to_string()
 }
 
+/// Локальний каталог каси (SQLite `products_v2`) — як після master-pull.
+/// Шляхи ПРИЙМАННЯ валідують позиції проти нього (ADR-0007 §5 AT-14).
+fn seed_local_catalog(conn: &rusqlite::Connection, product_ids: &[String]) {
+    for id in product_ids {
+        conn.execute(
+            "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
+             VALUES (?1, 'E2E каталог (pull)', 100.0, 0, 1) \
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+            [id],
+        )
+        .expect("products_v2 (локальний каталог)");
+    }
+}
+
+/// product_id позицій payload (щоб каса «знала» товари документа).
+fn payload_products(payload: &str) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).expect("payload JSON");
+    v["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|it| it["product_id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Каса: накладна в локальному контурі (агрегат + позиції + outbox + stock).
+///
+/// Каталог каси заповнюється товарами payload (як після master-pull):
+/// приймання товару, якого точка не знає, локальний шлях НЕ створює
+/// (ADR-0007 §5 AT-14).
 fn build_cash_db(
     dir: &tempfile::TempDir,
     tag: &str,
@@ -154,6 +186,7 @@ fn build_cash_db(
 ) -> (PathBuf, String) {
     let db_path = dir.path().join(format!("invoice-{tag}.db"));
     let mut conn = open_connection(&db_path).expect("каса БД");
+    seed_local_catalog(&conn, &payload_products(payload));
     let out = transactions::enqueue_invoice(&mut conn, payload, &store.to_string())
         .expect("enqueue_invoice на касі");
 
@@ -169,6 +202,42 @@ fn build_cash_db(
     assert_eq!(pending_count(&conn).expect("pending"), 1, "1 оп в outbox");
     drop(conn);
     (db_path, out.client_uuid)
+}
+
+/// Каса, яка НЕ знає товару (порожній локальний каталог) і НЕ валідує позиції:
+/// агрегат + outbox-запис створюються напряму в SQLite — так виглядає черга,
+/// написана СТАРОЮ версією каси / іншим вузлом. Потрібно, щоб перевірити
+/// СЕРВЕРНИЙ pre-flight приймача (незалежний від локальної валідації каси).
+fn build_cash_db_raw(
+    dir: &tempfile::TempDir,
+    tag: &str,
+    store: Uuid,
+    payload: &str,
+) -> (PathBuf, String) {
+    let db_path = dir.path().join(format!("invoice-{tag}.db"));
+    let conn = open_connection(&db_path).expect("каса БД");
+    let client_uuid = Uuid::new_v4().to_string();
+    let envelope = serde_json::json!({
+        "type": "invoice",
+        "client_uuid": client_uuid,
+        "store_id": store.to_string(),
+        "created_at": chrono::Utc::now().to_rfc3339(),
+        "payload": serde_json::from_str::<serde_json::Value>(payload).expect("payload JSON"),
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO invoices (client_uuid, store_id, data, synced) VALUES (?1, ?2, ?3, 1)",
+        rusqlite::params![client_uuid, store.to_string(), payload],
+    )
+    .expect("агрегат накладної (raw)");
+    conn.execute(
+        "INSERT INTO outbox (type, client_uuid, payload, status) VALUES ('invoice', ?1, ?2, 'pending')",
+        rusqlite::params![client_uuid, envelope],
+    )
+    .expect("outbox-запис (raw)");
+    assert_eq!(pending_count(&conn).expect("pending"), 1, "1 оп в outbox");
+    drop(conn);
+    (db_path, client_uuid)
 }
 
 /// Пакет push через РЕАЛЬНИЙ клієнт каси; повертає підсумок останнього пакета.
@@ -445,7 +514,26 @@ async fn invoice_unknown_catalog_ref_rejected_humanly() {
     // (б) товар = випадковий UUID (немає в products).
     let ghost_product = Uuid::new_v4();
     let p2 = invoice_payload(supplier, ghost_product, "3");
-    let (db2, cu2) = build_cash_db(&dir, "ghost-product", store, &p2);
+    // Локальний шлях каси такий документ НЕ створює (ADR-0007 §5 AT-14):
+    // каталог каси порожній → людська відмова, жодного сліду в SQLite.
+    {
+        let mut conn = open_connection(&dir.path().join("invoice-at14-local.db")).expect("каса");
+        let err = transactions::enqueue_invoice(&mut conn, &p2, &store.to_string())
+            .expect_err("невідомий товар → відмова локально");
+        assert!(
+            err.contains(&ghost_product.to_string()) && err.contains("локальному каталозі"),
+            "людське повідомлення про каталог, маємо: {err}"
+        );
+        for table in ["invoices", "invoice_items", "outbox", "stock"] {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .expect("count");
+            assert_eq!(n, 0, "AT-14: {table} без сліду відмови");
+        }
+    }
+    // Серверний pre-flight перевіряємо на черзі, написаній БЕЗ локальної
+    // валідації (стара версія каси): приймач мусить відхилити сам.
+    let (db2, cu2) = build_cash_db_raw(&dir, "ghost-product", store, &p2);
     let res2 = push_raw(&db2, &base, &token, store, Some(&cu2)).await;
     eprintln!("[invoice e2e] ТЕСТ 2б (невідомий товар): {res2:?}");
     assert_eq!(res2[0]["status"], "error", "статус = error");

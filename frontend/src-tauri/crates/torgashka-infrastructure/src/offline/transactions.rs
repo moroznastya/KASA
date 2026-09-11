@@ -20,7 +20,7 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{cash, debtor, ledger, stock};
+use super::{cash, catalog, debtor, ledger, stock};
 
 /// Тип агрегата «закупка» (дизайн 2.2; майбутній outbox-тип ЕТАП 7).
 pub const TYPE_PURCHASE_ORDER: &str = "purchase_order";
@@ -172,6 +172,25 @@ fn apply_effects(
     Ok(())
 }
 
+/// Документи, чиї позиції МУСЯТЬ бути в локальному каталозі точки:
+/// ПРИЙМАННЯ товару (накладна) і ПОВЕРНЕННЯ ПОСТАЧАЛЬНИКУ (ADR-0007 §5 AT-14).
+///
+/// Свідомо НЕ входять: чеки продажу (неповний каталог не блокує продаж —
+/// §10.3/AT-14), закупівля/переміщення/списання/інвентаризація (AT-14
+/// поіменно вимагає лише накладну та повернення постачальнику).
+fn document_requires_local_catalog(kind: &str) -> bool {
+    matches!(kind, TYPE_INVOICE | TYPE_RETURN_INVOICE)
+}
+
+/// Людська назва документа для повідомлення валідації (без SQL і кодів).
+fn document_label(kind: &str) -> &'static str {
+    match kind {
+        TYPE_INVOICE => "накладна",
+        TYPE_RETURN_INVOICE => "повернення постачальнику",
+        _ => "документ",
+    }
+}
+
 /// Таблиця агрегата за типом (міграція 0006).
 fn table_of(kind: &str) -> Result<&'static str, String> {
     match kind {
@@ -240,6 +259,14 @@ pub fn enqueue_transaction(
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("BEGIN IMMEDIATE ({kind}): {e}"))?;
+
+    // 0. Валідація позицій документів ПРИЙМАННЯ проти локального каталогу
+    //    (ADR-0007 §5 AT-14): сміттєвий `product_id` не потрапляє ні в
+    //    агрегат, ні в outbox, ні в stock. Помилка тут → вихід без INSERT-ів
+    //    (транзакція відкочується) — ЖОДНОГО сліду документа.
+    if document_requires_local_catalog(kind) {
+        catalog::ensure_products_known(&tx, &payload, document_label(kind))?;
+    }
 
     // 1. Агрегат: data = payload як є (фронтовий /v2-формат), synced = 1 —
     //    агрегат передано в outbox (наступний push його забере).
@@ -362,6 +389,11 @@ pub fn enqueue_invoice(
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("BEGIN IMMEDIATE ({TYPE_INVOICE}): {e}"))?;
+
+    // 0. Валідація позицій проти локального каталогу точки (ADR-0007 §5
+    //    AT-14): приймання товару, якого каса не знає, — не створюємо
+    //    (ні агрегата, ні позицій, ні outbox, ні stock-ефекту).
+    catalog::ensure_products_known(&tx, &payload, document_label(TYPE_INVOICE))?;
 
     // 1. Агрегат: data = payload як є (фронтовий /v2-формат), synced = 1.
     tx.execute(
@@ -744,6 +776,19 @@ mod tests {
         stock::get_stock_level(conn, STORE, product).expect("level")
     }
 
+    /// Локальний каталог каси (як після master-pull): без нього документи
+    /// ПРИЙМАННЯ не створюються (ADR-0007 §5 AT-14).
+    fn seed_catalog(conn: &Connection, ids: &[&str]) {
+        for id in ids {
+            conn.execute(
+                "INSERT INTO products_v2 (id, name, is_deleted, server_version) \
+                 VALUES (?1, ?2, 0, 1)",
+                params![id, format!("товар {id}")],
+            )
+            .expect("products_v2");
+        }
+    }
+
     /// Закупка (ЕТАП 7b): агрегат (synced=1) + outbox-запис + stock +qty.
     #[test]
     fn purchase_enqueues_aggregate_outbox_and_adds_stock() {
@@ -923,6 +968,7 @@ mod tests {
     fn invoice_enqueues_aggregate_outbox_and_adds_stock() {
         let conn = migrated_conn();
         let mut c = conn;
+        seed_catalog(&c, &["p1"]);
         let payload = invoice_payload("sup-1", "p1", "3", "300.00");
         let out = enqueue_invoice(&mut c, &payload, STORE).expect("накладна");
 
@@ -987,6 +1033,7 @@ mod tests {
     fn invoice_mid_tx_failure_rolls_back_everything() {
         let conn = migrated_conn();
         let mut c = conn;
+        seed_catalog(&c, &["p1"]);
         stock::apply_stock_delta(&c, STORE, "p1", 500).expect("до: 0.5 шт");
 
         // (а) битий JSON — помилка ДО транзакції.
@@ -1012,6 +1059,80 @@ mod tests {
             "outbox-запису немає (ROLLBACK)"
         );
         assert_eq!(level(&c, "p1"), 500, "stock без змін (ROLLBACK)");
+    }
+
+    /// AT-14 (ADR-0007 §5): товар ПОЗА локальним каталогом у накладній →
+    /// людська помилка + ЖОДНОГО сліду документа (ні агрегата, ні позицій,
+    /// ні outbox-запису, ні stock-ефекту).
+    #[test]
+    fn invoice_with_unknown_product_leaves_no_trace() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        seed_catalog(&c, &["p1"]);
+        stock::apply_stock_delta(&c, STORE, "p1", 500).expect("до: 0.5 шт");
+
+        let payload = json!({
+            "number": "INV-BAD",
+            "supplier_id": "sup-1",
+            "items": [
+                {"product_id": "p1", "quantity": "2", "price": "100.00"},
+                {"product_id": "p-ghost", "quantity": "1", "price": "100.00"},
+            ],
+        })
+        .to_string();
+        let err = enqueue_invoice(&mut c, &payload, STORE).expect_err("невідомий товар");
+        assert!(err.contains("p-ghost"), "людське повідомлення: {err}");
+        assert!(err.contains("накладна"), "назва документа: {err}");
+        assert!(!err.contains("SELECT"), "без сирого SQL: {err}");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM invoices"), 0, "агрегата немає");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM invoice_items"),
+            0,
+            "позицій немає"
+        );
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0, "outbox порожній");
+        assert_eq!(level(&c, "p1"), 500, "stock без змін (жодного ефекту)");
+
+        // Те саме для ПОВЕРНЕННЯ ПОСТАЧАЛЬНИКУ (другий шлях документів).
+        let ret = json!({
+            "number": "RET-BAD",
+            "supplier_id": "sup-1",
+            "items": [{"product_id": "p-ghost", "quantity": "1"}],
+        })
+        .to_string();
+        let err = enqueue_transaction(&mut c, TYPE_RETURN_INVOICE, &ret, STORE)
+            .expect_err("невідомий товар у поверненні");
+        assert!(err.contains("повернення постачальнику"), "назва документа: {err}");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM return_invoices"),
+            0,
+            "агрегата повернення немає"
+        );
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0, "outbox порожній");
+        assert_eq!(level(&c, "p1"), 500, "stock без змін");
+
+        // Видалений у каталозі товар — теж відмова (інший текст, той самий наслідок).
+        c.execute(
+            "INSERT INTO products_v2 (id, name, is_deleted, server_version) \
+             VALUES ('p-del', 'Знятий', 1, 1)",
+            [],
+        )
+        .expect("products_v2 deleted");
+        let payload = json!({
+            "number": "INV-DEL",
+            "supplier_id": "sup-1",
+            "items": [{"product_id": "p-del", "quantity": "1"}],
+        })
+        .to_string();
+        let err = enqueue_invoice(&mut c, &payload, STORE).expect_err("видалений товар");
+        assert!(err.contains("ВИДАЛЕНИМ"), "{err}");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM invoices"), 0);
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 0);
+
+        // Валідний товар після цього — проходить (валідація не «з'їдає» касу).
+        let ok = invoice_payload("sup-1", "p1", "3", "300.00");
+        enqueue_invoice(&mut c, &ok, STORE).expect("валідний документ проходить");
+        assert_eq!(level(&c, "p1"), 3500, "0.5 + 3 шт");
     }
 
     /// ЕТАП 7b: накопичені synced=0 (стара версія) → outbox при першому sync.

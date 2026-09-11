@@ -177,6 +177,17 @@ fn queued_v2_dto(input: &InvoiceCreateV2Input, out: EnqueuedTransaction) -> Invo
 // v1-адаптер
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Помилка локальної черги → клас помилки сервісу: відмова валідації
+/// КАТАЛОГУ (ADR-0007 §5 AT-14) — бізнес-помилка (HTTP 400 з людським
+/// текстом), решта — технічна (HTTP 500 із санацією повідомлення).
+fn invoice_queue_error(e: String) -> InvoicesError {
+    if crate::offline::catalog::is_catalog_rejection(&e) {
+        InvoicesError::BadRequest(e)
+    } else {
+        InvoicesError::Infrastructure(e)
+    }
+}
+
 /// Standby-адаптер v1-накладних: читання → `inner`, створення → черга.
 pub struct OutboxInvoicesV1 {
     inner: Arc<dyn InvoicesV1Service + Send + Sync>,
@@ -210,7 +221,7 @@ impl InvoicesV1Service for OutboxInvoicesV1 {
     ) -> Result<InvoiceV1Dto, InvoicesError> {
         let out = q::enqueue_invoice_payload("створення накладної", v1_payload(input))
             .await
-            .map_err(InvoicesError::Infrastructure)?;
+            .map_err(invoice_queue_error)?;
         Ok(queued_v1_dto(input, out))
     }
 
@@ -292,7 +303,7 @@ impl InvoicesV2Service for OutboxInvoicesV2 {
     async fn create_v2(&self, input: &InvoiceCreateV2Input) -> Result<InvoiceV2Dto, InvoicesError> {
         let out = q::enqueue_invoice_payload("створення накладної", v2_as_v1_payload(input))
             .await
-            .map_err(InvoicesError::Infrastructure)?;
+            .map_err(invoice_queue_error)?;
         Ok(queued_v2_dto(input, out))
     }
 

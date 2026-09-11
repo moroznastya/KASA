@@ -42,7 +42,7 @@ use torgashka_domain::{
 use torgashka_infrastructure::{
     node_config::{self, NodeConfig},
     offline,
-    store_ctx::StorePool,
+    store_ctx::{current_store_ctx, StorePool},
 };
 use uuid::Uuid;
 
@@ -187,6 +187,8 @@ pub enum LocalErr {
     Forbidden(String),
     #[error("конфлікт стану: {0}")]
     Conflict(String),
+    #[error("не знайдено: {0}")]
+    NotFound(String),
 }
 
 impl IntoResponse for LocalErr {
@@ -199,6 +201,7 @@ impl IntoResponse for LocalErr {
             LocalErr::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m.clone()),
             LocalErr::Forbidden(m) => (StatusCode::FORBIDDEN, m.clone()),
             LocalErr::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
+            LocalErr::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
         };
         (code, Json(json!({"detail": msg}))).into_response()
     }
@@ -489,6 +492,150 @@ pub async fn local_sync_now() -> Result<Json<Value>, LocalErr> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Хендлер: ЗВІРКА ЗАЛИШКІВ НАКЛАДНОЇ (ADR-0007 §10.3 п.3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Показує по кожному товару документа ОБИДВА числа й дельту:
+//   * `local_qty`         — локальний (оптимістичний) залишок каси, SQLite;
+//   * `authoritative_qty` — залишок точки з РЕПЛІКИ (PostgreSQL);
+//   * `delta` = local − authoritative.
+//
+// §10.3 (заборона): це ЛИШЕ ПОКАЗ. Вирівнювання робить НАЯВНИЙ механізм —
+// інвентаризація (`TYPE_INVENTORY` → `stock::set_stock_level`). Жодного
+// нового reconcile-движка тут немає й не має бути.
+//
+// `local_qty` — ОЦІНКА, а не істина: каса застосовує stock-ефект документа
+// одразу (offline-first), тож до доставки на primary число може випереджати
+// авторитетне (дельта > 0) або відставати (дельта < 0).
+
+/// Параметри звірки: id документа = `client_uuid` локального агрегата
+/// (той самий id, що повертає створення накладної).
+#[derive(Debug, Deserialize)]
+pub struct StockReconciliationQuery {
+    pub invoice_id: String,
+}
+
+/// GET /api/v1/local/stock-reconciliation?invoice_id=<uuid>
+pub async fn local_stock_reconciliation(
+    State(state): State<AppState>,
+    Query(q): Query<StockReconciliationQuery>,
+) -> Result<Json<Value>, LocalErr> {
+    let ls = local(&state)?;
+    let invoice_id = q.invoice_id.trim().to_string();
+    if invoice_id.is_empty() {
+        return Err(LocalErr::BadRequest(
+            "потрібен invoice_id (client_uuid документа з локальної черги каси)".to_string(),
+        ));
+    }
+
+    // ── Локальна половина: агрегат каси + оптимістичний залишок SQLite ─────
+    let db_path =
+        offline::db::OfflineDatabase::default_db_path().map_err(LocalErr::Queue)?;
+    let view = {
+        let conn =
+            offline::sync_push::open_connection(&db_path).map_err(LocalErr::Queue)?;
+        offline::reconciliation::local_view(&conn, &invoice_id).map_err(LocalErr::Queue)?
+    };
+    let Some(view) = view else {
+        return Err(LocalErr::NotFound(format!(
+            "документ {invoice_id} відсутній у локальній черзі цієї каси —              звірка показує документи, створені/прийняті касою"
+        )));
+    };
+    // Документ мусить належати точці запиту (RLS у SQLite немає — перевіряємо).
+    if let Some(ctx) = current_store_ctx() {
+        if let Some(doc_store) = view.store_id.as_deref() {
+            if doc_store != ctx.store_id.to_string() {
+                return Err(LocalErr::NotFound(format!(
+                    "документ {invoice_id} належить іншій точці"
+                )));
+            }
+        }
+    }
+    let store_id = view.store_id.clone().unwrap_or_default();
+
+    // ── Авторитетна половина: залишок точки з репліки PG ──────────────────
+    let mut items: Vec<Value> = Vec::with_capacity(view.lines.len());
+    let (mut matching, mut mismatching) = (0usize, 0usize);
+    for line in &view.lines {
+        let auth = authoritative_milli(&ls.pool, &store_id, &line.product_id).await?;
+        let (auth_qty, delta, matches) = match auth {
+            Some(auth_milli) => {
+                let delta_milli = line.local_milli - auth_milli;
+                (
+                    Some(offline::stock::milli_to_units(auth_milli)),
+                    Some(offline::stock::milli_to_units(delta_milli)),
+                    delta_milli == 0,
+                )
+            }
+            // Товар не є UUID primary (напр. рядок, написаний legacy-касою):
+            // авторитетного числа для нього не існує — це ПОКАЗУЄМО, не 500.
+            None => (None, None, false),
+        };
+        if matches {
+            matching += 1;
+        } else {
+            mismatching += 1;
+        }
+        items.push(json!({
+            "product_id": line.product_id,
+            "name": line.name,
+            "local_qty": offline::stock::milli_to_units(line.local_milli),
+            "authoritative_qty": auth_qty,
+            "delta": delta,
+            "matches": matches,
+        }));
+    }
+
+    Ok(Json(json!({
+        "invoice_id": view.invoice_id,
+        "kind": view.kind,
+        "number": view.number,
+        "store_id": view.store_id,
+        "local_source": "sqlite_cash_queue",
+        "authoritative_source": "replica_pg",
+        // §10.3: локальне число — ОЦІНКА каси, не істина; вирівнювання —
+        // інвентаризацією (наявний механізм), не цим ендпоінтом.
+        "local_is_estimate": true,
+        "note": "local_qty — оптимістична ОЦІНКА каси (SQLite, ADR-0007 §10.3), \
+                 не істина; авторитет — replica_pg. Вирівнювання — інвентаризацією.",
+        "items": items,
+        "summary": {
+            "total": view.lines.len(),
+            "matching": matching,
+            "mismatching": mismatching,
+        },
+    })))
+}
+
+/// Авторитетний залишок товару в точці з РЕПЛІКИ: міліодиниці (scale 3).
+/// `None` — товар не є UUID primary (авторитетного числа не існує).
+async fn authoritative_milli(
+    pool: &StorePool,
+    store_id: &str,
+    product_id: &str,
+) -> Result<Option<i64>, LocalErr> {
+    let (Ok(store), Ok(product)) = (Uuid::parse_str(store_id), Uuid::parse_str(product_id))
+    else {
+        return Ok(None);
+    };
+    let qty: Option<String> = sqlx::query_scalar(
+        "SELECT quantity::text FROM stock WHERE store_id = $1 AND product_id = $2",
+    )
+    .bind(store)
+    .bind(product)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| LocalErr::Read(format!("репліка (stock {product_id}): {e}")))?;
+    Ok(Some(match qty {
+        // Рядка stock немає = залишок 0 (та сама семантика, що локальна).
+        None => 0,
+        Some(text) => (text.trim().parse::<f64>().unwrap_or(0.0)
+            * offline::stock::UNITS_SCALE as f64)
+            .round() as i64,
+    }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Збірка роутера
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -517,6 +664,12 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(local_inventory_counts),
         )
         .route("/api/v1/local/queue/status", get(local_queue_status))
+        // READ-поверхня: GET не гейтується write-gate (читання репліки — §10
+        // ADR-0007); RLS-контекст точки проставляє StorePool.
+        .route(
+            "/api/v1/local/stock-reconciliation",
+            get(local_stock_reconciliation),
+        )
         .route("/api/v1/local/ops", post(local_enqueue_op))
         .route("/api/v1/local/sync/now", post(local_sync_now))
         // Ті самі шари, що й private-гілка основного API: auth (JWT) → store

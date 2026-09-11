@@ -66,6 +66,20 @@ async fn login(base: &str) -> String {
     panic!("login не вдався");
 }
 
+/// Локальний каталог каси (SQLite `products_v2`) — як після master-pull:
+/// приймання товару валідує позиції проти нього (ADR-0007 §5 AT-14).
+fn seed_local_catalog(db: &std::path::Path, product: Uuid) {
+    let conn = torgashka_infrastructure::offline::sync_push::open_connection(db)
+        .expect("SQLite каси + міграції");
+    conn.execute(
+        "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
+         VALUES (?1, 'E2E каталог (pull)', 100.0, 0, 1) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        [product.to_string()],
+    )
+    .expect("products_v2 (локальний каталог)");
+}
+
 #[tokio::test]
 async fn invoice_push_with_rust_invoices_disabled_is_not_silently_acked() {
     common::force_test_db();
@@ -119,6 +133,7 @@ async fn invoice_push_with_rust_invoices_disabled_is_not_silently_acked() {
     let dir = tempfile::TempDir::new().expect("tmpdir");
     let db = dir.path().join("invoice-off.db");
     let mut conn = open_connection(&db).expect("каса БД");
+    seed_local_catalog(&db, product);
     let payload = json!({
         "number": "INV-E2E-OFF",
         "supplier_id": supplier.to_string(),

@@ -34,13 +34,20 @@ use axum::Router;
 use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::write_gate::{STANDBY_DETAIL, UPSTREAM_DOWN, UPSTREAM_HEADER};
+use torgashka_api::route_local::LocalApiState;
 use torgashka_api::{router_v1, AppState};
-use torgashka_domain::{InvoicesV1Service, InvoicesV2Service};
+use torgashka_domain::{
+    InvoicesV1Service, InvoicesV2Service, PosService, ReadDirectories, WriteDirectories,
+};
 use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
 use torgashka_infrastructure::offline::sync_push::{open_connection, pending_count, PushConfig};
 use torgashka_infrastructure::offline::transactions;
+use torgashka_infrastructure::repositories::directories::SqlxDirectories;
 use torgashka_infrastructure::repositories::invoices::SqlxInvoices;
+use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
+use torgashka_infrastructure::repositories::pos::SqlxPos;
+use torgashka_infrastructure::repositories::write::SqlxWriteDirectories;
 use torgashka_infrastructure::store_ctx::StorePool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -241,6 +248,44 @@ fn standby_state(
     }
 }
 
+/// Звірка залишків накладної через локальну READ-поверхню (§10.3 п.3).
+async fn recon_call(app: &Router, token: &str, store: Uuid, invoice_id: &str) -> Value {
+    let (status, body, raw, _) = call(
+        app,
+        "GET",
+        &format!("/api/v1/local/stock-reconciliation?invoice_id={invoice_id}"),
+        token,
+        store,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "звірка залишків: {status} {raw}");
+    body
+}
+
+/// Окреме з'єднання до SQLite каси (для викликів, що позичають `&mut`).
+fn conn_mut_ret() -> rusqlite::Connection {
+    rusqlite::Connection::open(offline_db_path()).expect("SQLite каси")
+}
+
+/// Той самий standby-стан ПЛЮС локальні маршрути `/api/v1/local/*`
+/// (репліка = той самий тестовий PG; так працює вузол з активною реплікою).
+fn with_local(mut st: AppState, pool: sqlx::PgPool) -> AppState {
+    let sp = StorePool::new(pool);
+    st.local = Some(LocalApiState {
+        cfg: st.node_config.clone(),
+        pool: sp.clone(),
+        upstream_pool: None,
+        readdirs: Arc::new(SqlxDirectories::new(sp.clone()))
+            as Arc<dyn ReadDirectories + Send + Sync>,
+        pos: Arc::new(OutboxPos::new(Arc::new(SqlxPos::new(sp.clone()))))
+            as Arc<dyn PosService + Send + Sync>,
+        write: Arc::new(SqlxWriteDirectories::new(sp))
+            as Arc<dyn WriteDirectories + Send + Sync>,
+    });
+    st
+}
+
 async fn call(
     app: &Router,
     method: &str,
@@ -308,6 +353,25 @@ async fn count(pool: &sqlx::PgPool, table: &str) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap_or_else(|e| panic!("COUNT {table}: {e}"))
+}
+
+/// Локальний каталог каси (SQLite `products_v2`) — як після master-pull.
+/// Документи ПРИЙМАННЯ валідують позиції проти нього (ADR-0007 §5 AT-14).
+fn seed_local_catalog(product: Uuid) {
+    let conn = rusqlite::Connection::open(offline_db_path()).expect("SQLite каси");
+    conn.execute(
+        "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
+         VALUES (?1, 'AT каталог (pull)', 100.0, 0, 1) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        [product.to_string()],
+    )
+    .expect("products_v2 (локальний каталог)");
+}
+
+/// Лічильник рядків SQLite каси (raw доказ «нічого не осіло»).
+fn sqlite_count(conn: &rusqlite::Connection, table: &str) -> i64 {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap_or_else(|e| panic!("COUNT {table} (SQLite): {e}"))
 }
 
 fn local_stock_milli(product: Uuid) -> i64 {
@@ -656,6 +720,7 @@ async fn at_14_standby_invoice_atomic_and_marker() {
     let (store, user_id, supplier, product) = seed_catalog(&admin_pool).await;
     reset_local_queue();
     seed_sqlite_store_id(store);
+    seed_local_catalog(product);
 
     let ro_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
@@ -759,15 +824,84 @@ async fn at_14_standby_invoice_atomic_and_marker() {
         "AT-14: авторитетний stock недоторканий (його рахує primary)"
     );
 
-    // ── 5. ROLLBACK контуру: провал stock-ефекту котить усе ────────────────
+    // ── 5. ВАЛІДАЦІЯ КАТАЛОГУ (AT-14): сміттєвий product_id → 400 + rollback ─
     //
-    // АНОМАЛІЯ (див. звіт): ADR §5 (AT-14) обіцяє rollback на «невалідний
-    // product_id», але локальний контур продукт НЕ валідує (`stock` (0005) і
-    // `invoice_items` (0010) без FK; `transactions.rs::enqueue_invoice`
-    // перевірок product_id не має) — такий payload створив би фантомний
-    // stock-рядок замість rollback. Тому атомарність доводимо РЕАЛЬНИМ
-    // провалом ефекту в тому самому контурі (`enqueue_transaction` →
-    // `apply_effects` → Err), а не підганяємо тест під очікування ADR.
+    // Раніше АНОМАЛІЯ: локальний контур продукт не валідував (фантомний
+    // stock-рядок замість відмови). Тепер `enqueue_invoice` перевіряє КОЖНУ
+    // позицію проти локального каталогу (`offline::catalog::
+    // ensure_products_known`) у ТІЙ САМІЙ транзакції — до першого INSERT-а.
+    let ghost = Uuid::new_v4();
+    let counts_before = (
+        sqlite_count(&conn, "invoices"),
+        sqlite_count(&conn, "outbox"),
+        sqlite_count(&conn, "stock"),
+    );
+    let (st_bad, body_bad, raw_bad, _) = call(
+        &app,
+        "POST",
+        "/api/v1/invoices",
+        &token,
+        store,
+        invoice_body(supplier, ghost, "AT14-GHOST", "1.000", "100.00"),
+    )
+    .await;
+    assert_eq!(
+        st_bad,
+        StatusCode::BAD_REQUEST,
+        "AT-14: невідомий товар — бізнес-відмова 400 (не 500), маємо {st_bad}: {raw_bad}"
+    );
+    let detail = body_bad["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains(&ghost.to_string()) && detail.contains("локальному каталозі"),
+        "AT-14: людський текст відмови з id товару, маємо: {body_bad}"
+    );
+    assert!(
+        !detail.contains("SELECT") && !detail.contains("sqlx"),
+        "AT-14: без сирого SQL у тексті: {detail}"
+    );
+    assert_eq!(
+        (
+            sqlite_count(&conn, "invoices"),
+            sqlite_count(&conn, "outbox"),
+            sqlite_count(&conn, "stock"),
+        ),
+        counts_before,
+        "AT-14: відмова не лишила НІ агрегата, НІ outbox-запису, НІ stock-ефекту"
+    );
+    assert_eq!(
+        pg_invoice_rows(&admin_pool, store).await,
+        0,
+        "AT-14: і на primary нічого не з'явилось"
+    );
+    // Той самий шлях для ПОВЕРНЕННЯ ПОСТАЧАЛЬНИКУ (другий контур документів).
+    let ret_bad = transactions::enqueue_transaction(
+        &mut conn_mut_ret(),
+        transactions::TYPE_RETURN_INVOICE,
+        &json!({
+            "number": "AT14-RET-GHOST",
+            "supplier_id": supplier.to_string(),
+            "items": [{"product_id": ghost.to_string(), "quantity": "1"}]
+        })
+        .to_string(),
+        &store.to_string(),
+    );
+    let err = ret_bad.expect_err("AT-14: повернення постачальнику з невідомим товаром");
+    assert!(
+        err.contains("повернення постачальнику") && err.contains("локальному каталозі"),
+        "AT-14: людський текст відмови повернення: {err}"
+    );
+    assert_eq!(
+        sqlite_count(&conn, "return_invoices"),
+        0,
+        "AT-14: агрегата повернення немає (rollback)"
+    );
+    assert_eq!(
+        sqlite_count(&conn, "outbox"),
+        counts_before.1,
+        "AT-14: outbox без нового запису"
+    );
+
+    // ── 6. ROLLBACK контуру: провал stock-ефекту котить усе ────────────────
     let outbox_before: i64 = conn
         .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
         .expect("outbox до");
@@ -823,6 +957,7 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     let (store, user_id, supplier, product) = seed_catalog(&admin_pool).await;
     reset_local_queue();
     seed_sqlite_store_id(store);
+    seed_local_catalog(product);
 
     let ro_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
@@ -835,7 +970,15 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     let v2: Arc<dyn InvoicesV2Service + Send + Sync> = Arc::new(OutboxInvoicesV2::new(Arc::new(
         SqlxInvoices::new(StorePool::new(ro_pool.clone())),
     )));
-    let app = router_v1::build_router(standby_state(Some(ro_pool.clone()), Some(v1), Some(v2), ro_pool.clone()));
+    let app = router_v1::build_router(with_local(
+        standby_state(
+            Some(ro_pool.clone()),
+            Some(v1),
+            Some(v2),
+            ro_pool.clone(),
+        ),
+        ro_pool.clone(),
+    ));
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
 
     // ── 1. Офлайн-накладна #1 (+3): локальний оптимістичний залишок ────────
@@ -860,6 +1003,54 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     assert_eq!(auth_before_push, 0.0, "AT-15: авторитетний ще не бачив документа");
     let delta_before = local_before_push as f64 / 1000.0 - auth_before_push;
     assert_eq!(delta_before, 3.0, "AT-15: дельта локальний−авторитетний");
+
+    // ── 1б. ПОВЕРХНЯ §10.3: GET /api/v1/local/stock-reconciliation ─────────
+    // Показує ОБИДВА числа й дельту по товарах документа (тільки показ).
+    let invoice_id = dto1["id"].as_str().expect("client_uuid накладної").to_string();
+    let recon = recon_call(&app, &token, store, &invoice_id).await;
+    assert_eq!(recon["invoice_id"], invoice_id, "AT-15: {recon}");
+    assert_eq!(recon["kind"], "invoice", "AT-15: {recon}");
+    assert_eq!(recon["local_source"], "sqlite_cash_queue", "AT-15: {recon}");
+    assert_eq!(recon["authoritative_source"], "replica_pg", "AT-15: {recon}");
+    assert_eq!(
+        recon["local_is_estimate"], true,
+        "AT-15: §10.3 — локальне число ЯВНО позначене оцінкою: {recon}"
+    );
+    assert_eq!(
+        recon["items"][0]["product_id"],
+        product.to_string(),
+        "AT-15: позиція документа: {recon}"
+    );
+    assert_eq!(recon["items"][0]["local_qty"], 3.0, "AT-15: {recon}");
+    assert_eq!(
+        recon["items"][0]["authoritative_qty"], 0.0,
+        "AT-15: авторитетний ще 0: {recon}"
+    );
+    assert_eq!(recon["items"][0]["delta"], 3.0, "AT-15: дельта ≠ 0: {recon}");
+    assert_eq!(recon["items"][0]["matches"], false, "AT-15: {recon}");
+    assert_eq!(recon["summary"]["total"], 1, "AT-15: {recon}");
+    assert_eq!(recon["summary"]["matching"], 0, "AT-15: {recon}");
+    assert_eq!(recon["summary"]["mismatching"], 1, "AT-15: {recon}");
+    eprintln!("[AT-15] ✅ ендпоінт звірки (до push): {recon}");
+
+    // Неіснуючий документ → 404 (ендпоінт не вигадує чисел).
+    let (st404, body404, raw404, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/local/stock-reconciliation?invoice_id={}", Uuid::new_v4()),
+        &token,
+        store,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(st404, StatusCode::NOT_FOUND, "AT-15: 404, маємо {raw404}");
+    assert!(
+        body404["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("локальній черзі"),
+        "AT-15: людський текст 404: {body404}"
+    );
 
     // ── 2. Push на реальний primary → авторитетний залишок +3 ──────────────
     std::env::set_var(torgashka_api::RUST_INVOICES_ENV, "1");
@@ -935,6 +1126,20 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         0.0,
         "AT-15: після синку дельта = 0 (числа зійшлися)"
     );
+    let recon_after_push = recon_call(&app, &token, store, &invoice_id).await;
+    assert_eq!(
+        recon_after_push["items"][0]["authoritative_qty"], 3.0,
+        "AT-15: після push авторитетне число = 3: {recon_after_push}"
+    );
+    assert_eq!(
+        recon_after_push["items"][0]["delta"], 0.0,
+        "AT-15: після push дельта = 0: {recon_after_push}"
+    );
+    assert_eq!(
+        recon_after_push["summary"]["matching"], 1,
+        "AT-15: позиція зійшлася: {recon_after_push}"
+    );
+    eprintln!("[AT-15] ✅ ендпоінт звірки (після push): {recon_after_push}");
 
     // ── 3. Локальна (ще не синхронізована) накладна #2 → дельта ≠ 0 ────────
     let (st2, _dto2, raw2, _) = call(
@@ -951,21 +1156,17 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
     let delta2 = local2 as f64 / 1000.0 - auth_after;
     assert_eq!(local2, 5_000, "AT-15: локальний = 3+2");
     assert_eq!(delta2, 2.0, "AT-15: дельта локальний−авторитетний = 2.000");
+    let recon2 = recon_call(&app, &token, store, &invoice_id).await;
+    assert_eq!(
+        recon2["items"][0]["delta"], 2.0,
+        "AT-15: невивантажена накладна дає дельту 2 у звірці першої: {recon2}"
+    );
 
     // Локальний каталог (products_v2) — як після master-pull: `stock_with_catalog`
     // показує лише товари каталогу точки, тому без рядка каталогу локальний
     // залишок у переліку не видно (це не «зникнення» залишку, а межа вибірки
     // LEFT JOIN products_v2 — фіксуємо в коментарі, бо для звірки це важливо).
-    {
-        let conn = rusqlite::Connection::open(&db_path).expect("SQLite каси");
-        conn.execute(
-            "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
-             VALUES (?1, 'AT15 Товар (pull)', 100.0, 0, 1) \
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
-            [product.to_string()],
-        )
-        .expect("products_v2 (локальний каталог)");
-    }
+    seed_local_catalog(product);
 
     // ── 4. Вирівнювання НАЯВНИМ механізмом: інвентаризація (set_stock_level) ─
     let mut conn = rusqlite::Connection::open(&db_path).expect("SQLite каси");
@@ -991,12 +1192,23 @@ async fn at_15_local_vs_authoritative_stock_delta_and_alignment() {
         "AT-15: дельта після вирівнювання = 0"
     );
 
-    // ── 5. АНОМАЛІЯ: окремої поверхні «обидва числа + дельта» в коді НЕМА ──
-    // ADR §10.3 п.3 обіцяє ПОКАЗ обох чисел із дельтою; у коді існують лише
-    // примітиви (`stock::stock_with_catalog` / `get_stock_levels` — локальний,
-    // PG-читання — авторитетний) і `set_stock_level`. Тест звіряє саме
-    // ПРИМІТИВИ (числа + дельта), поверхні не вигадує — розходження ADR↔код
-    // зафіксовано як АНОМАЛІЯ у звіті.
+    let recon_aligned = recon_call(&app, &token, store, &invoice_id).await;
+    assert_eq!(
+        recon_aligned["items"][0]["delta"], 0.0,
+        "AT-15: після інвентаризації дельта = 0 (вирівнювання НАЯВНИМ механізмом): {recon_aligned}"
+    );
+    assert_eq!(
+        recon_aligned["summary"]["mismatching"], 0,
+        "AT-15: {recon_aligned}"
+    );
+    eprintln!("[AT-15] ✅ ендпоінт звірки (після інвентаризації): {recon_aligned}");
+
+    // ── 5. ПОВЕРХНЯ «обидва числа + дельта» — реалізована (§10.3 п.3) ──────
+    // Реалізовано як READ-ендпоінт `GET /api/v1/local/stock-reconciliation`
+    // (`route_local.rs::local_stock_reconciliation`) над примітивами
+    // `offline::reconciliation::local_view` (SQLite) + `stock` репліки (PG).
+    // Вирівнювання лишається за інвентаризацією (`set_stock_level`) — нового
+    // reconcile-движка немає (§10.3).
     let local_catalog = {
         let rows = torgashka_infrastructure::offline::stock::stock_with_catalog(
             &conn,

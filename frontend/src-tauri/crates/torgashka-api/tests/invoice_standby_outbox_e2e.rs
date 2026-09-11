@@ -71,6 +71,25 @@ fn offline_db_path() -> PathBuf {
     torgashka_infrastructure::offline::db::OfflineDatabase::default_db_path().expect("шлях SQLite")
 }
 
+/// Локальний каталог каси (SQLite `products_v2`) — як після master-pull.
+/// Шляхи ПРИЙМАННЯ валідують позиції проти нього (ADR-0007 §5 AT-14):
+/// без каталогу каса не має права приймати товар, якого не знає.
+fn seed_local_catalog(product: Uuid) {
+    let path = offline_db_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("каталог даних каси");
+    }
+    let conn = torgashka_infrastructure::offline::sync_push::open_connection(&path)
+        .expect("SQLite каси + міграції");
+    conn.execute(
+        "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
+         VALUES (?1, 'E2E каталог (pull)', 100.0, 0, 1) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        [product.to_string()],
+    )
+    .expect("products_v2 (локальний каталог)");
+}
+
 fn seed_sqlite_store_id(store: Uuid) {
     let path = offline_db_path();
     if let Some(parent) = path.parent() {
@@ -406,6 +425,7 @@ async fn standby_invoice_queues_locally_and_never_writes_replica() {
     let token = create_access_token(&user_id.to_string(), "admin", &[], SECRET).expect("JWT");
     let product = Uuid::new_v4();
     let supplier = Uuid::new_v4();
+    seed_local_catalog(product);
 
     // ── 3. v1-накладна: 3 шт × 100 = 300 → 201/queued ──────────────────────
     let (status, dto, raw) = call(
@@ -647,6 +667,7 @@ async fn standby_invoice_payload_accepted_by_primary_receiver() {
     // ── Каса (standby): накладна створюється ЧЕРЕЗ HTTP-роут із адаптером ──
     reset_local_queue();
     seed_sqlite_store_id(store);
+    seed_local_catalog(product);
     let ro_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
         .connect(&swap_credentials(&db_url, RO_ROLE, RO_PASS))

@@ -93,6 +93,24 @@ fn seed_sqlite_store_id(store: Uuid) {
     .expect("settings.store_id");
 }
 
+/// Локальний каталог каси (SQLite `products_v2`) — як після master-pull:
+/// повернення ПОСТАЧАЛЬНИКУ валідує позиції проти нього (ADR-0007 §5 AT-14).
+fn seed_local_catalog(product: Uuid) {
+    let path = offline_db_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("каталог даних каси");
+    }
+    let conn = torgashka_infrastructure::offline::sync_push::open_connection(&path)
+        .expect("SQLite каси + міграції");
+    conn.execute(
+        "INSERT INTO products_v2 (id, name, price, is_deleted, server_version) \
+         VALUES (?1, 'E2E каталог (pull)', 100.0, 0, 1) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        [product.to_string()],
+    )
+    .expect("products_v2 (локальний каталог)");
+}
+
 fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
     let after = &url[scheme_end..];
@@ -415,6 +433,7 @@ async fn standby_return_invoice_queues_locally_and_never_writes_replica() {
     let supplier = Uuid::new_v4();
     // Каса має 10 одиниць товару — повернення постачальнику спише 3.
     seed_local_stock(product, 10_000);
+    seed_local_catalog(product);
 
     // ── 3. Повернення постачальнику: 3 × 100 = 300 → 201/queued ────────────
     let (status, dto, raw) = call(
@@ -613,6 +632,7 @@ async fn standby_return_invoice_payload_accepted_by_primary_receiver() {
     reset_local_queue();
     seed_sqlite_store_id(store);
     seed_local_stock(product, 10_000);
+    seed_local_catalog(product);
     let ro_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
         .connect(&swap_credentials(&db_url, RO_ROLE, RO_PASS))

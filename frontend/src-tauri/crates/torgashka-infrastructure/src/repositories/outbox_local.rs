@@ -31,6 +31,20 @@ pub(crate) fn queue_err(op: &str, tech: impl std::fmt::Display) -> String {
     format!("{op}: не вдалося зберегти документ у локальній черзі, спробуйте ще раз")
 }
 
+/// Помилка локальної черги для користувача: відмова БІЗНЕС-валідації
+/// (каталог товарів, ADR-0007 §5 AT-14) вже людська — віддаємо її як є
+/// (у лог — WARN), щоб каса бачила ПРИЧИНУ («товар … відсутній у каталозі»),
+/// а не «спробуйте ще раз». Технічний текст — санація §D (`queue_err`).
+pub(crate) fn queue_err_or_business(op: &str, tech: impl std::fmt::Display) -> String {
+    let tech = tech.to_string();
+    if crate::offline::catalog::is_catalog_rejection(&tech) {
+        crate::embedded_pg::pg_log("WARN", &format!("[outbox_local] {op}: {tech}"));
+        tech
+    } else {
+        queue_err(op, tech)
+    }
+}
+
 /// Операція, для якої в локальній черзі НЕМАЄ представлення (і приймач
 /// `/api/v1/sync/push` її не знає) → явна відмова людським текстом.
 /// Прецедент — `outbox_pos.rs::unavailable`.
@@ -173,7 +187,7 @@ pub(crate) async fn enqueue(
     with_conn(op, move |conn| {
         let store_id = resolve_store_id(conn)?;
         transactions::enqueue_transaction(conn, kind, &payload_json, &store_id)
-            .map_err(|e| queue_err(op, e))
+            .map_err(|e| queue_err_or_business(op, e))
     })
     .await
 }
@@ -188,7 +202,7 @@ pub(crate) async fn enqueue_invoice_payload(
     with_conn(op, move |conn| {
         let store_id = resolve_store_id(conn)?;
         transactions::enqueue_invoice(conn, &payload_json, &store_id)
-            .map_err(|e| queue_err(op, e))
+            .map_err(|e| queue_err_or_business(op, e))
     })
     .await
 }
