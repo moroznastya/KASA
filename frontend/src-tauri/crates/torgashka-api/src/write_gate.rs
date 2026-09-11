@@ -88,7 +88,109 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("sync_log", WritePolicy::DisabledOnStandby),
     ("replication_ddl_role", WritePolicy::DisabledOnStandby),
     ("network_nodes_offline_job", WritePolicy::DisabledOnStandby),
+    // ── §11.7: таблиці PG-шару (DML-точки в `repositories/**`, `prro/**`,
+    // `provision.rs`, `store_context.rs`) — реєстр і обґрунтування: ADR §11.7.
+    // Назви таблиць у множині (`receipts`) — це ФАКТИЧНІ таблиці PG, а рядки
+    // вище (`receipt`) — сутності HTTP-поверхні гейта (§11.1). Обидві площини
+    // живуть в одній таблиці, бо `policy_for` обслуговує і гейт, і guard.
+    // POS-документи каси (LocalOutbox).
+    ("receipts", WritePolicy::LocalOutbox),
+    ("write_offs", WritePolicy::LocalOutbox),
+    ("transfers", WritePolicy::LocalOutbox),
+    ("invoices", WritePolicy::LocalOutbox),
+    ("purchase_orders", WritePolicy::LocalOutbox),
+    ("return_invoices", WritePolicy::LocalOutbox),
+    ("inventories", WritePolicy::LocalOutbox),
+    ("cash_operations", WritePolicy::LocalOutbox),
+    ("prro_queue_items", WritePolicy::LocalOutbox),
+    // Супутні дані документів каси: `stock` (залишки) і `supplier_ledger`
+    // (розрахунки з постачальниками) пишуться ЛИШЕ в транзакції документа
+    // (receipt/write_off/transfer/inventory/invoice/return_invoice), тому
+    // успадковують політику документа — LocalOutbox.
+    ("stock", WritePolicy::LocalOutbox),
+    ("supplier_ledger", WritePolicy::LocalOutbox),
+    // Борги (§11.6.4, рішення NIKO — варіант 1: LocalOutbox).
+    ("debtors", WritePolicy::LocalOutbox),
+    ("debtor_payments", WritePolicy::LocalOutbox),
+    // Сесії/логін вузла (§11.1 рядок 2): логін/логаут локальні.
+    ("work_sessions", WritePolicy::LocalOutbox),
+    ("users", WritePolicy::LocalOutbox),
+    // Довідники/референси (§11.7 п.3): джерело істини — primary (ціна/товар
+    // однакові для всієї мережі; локальна копія їде master-pull'ом у SQLite).
+    ("products", WritePolicy::ProxyToPrimary),
+    ("categories", WritePolicy::ProxyToPrimary),
+    ("product_images", WritePolicy::ProxyToPrimary),
+    ("barcodes", WritePolicy::ProxyToPrimary),
+    ("suppliers", WritePolicy::ProxyToPrimary),
+    ("owners_db", WritePolicy::ProxyToPrimary),
+    ("print_templates", WritePolicy::ProxyToPrimary),
+    ("system_settings", WritePolicy::ProxyToPrimary),
+    // PRRO: зміни/черга фіскалізації — частина документа каси (LocalOutbox
+    // вище: `prro_queue_items`), а ЗМІНИ (шапки змін) — глобальний стан
+    // фіскального сервісу точки → primary.
+    ("prro_shifts", WritePolicy::ProxyToPrimary),
+    // Агрегатор-only (§11.1 рядок 5).
+    ("sync_log", WritePolicy::DisabledOnStandby),
+    // §11.6.3: довідник причин списання (таблиця PG-шару).
+    ("write_off_reasons", WritePolicy::ProxyToPrimary),
+    // §11.7.9 (Фаза 3.2): ПОВЕРХНЕВІ сутності (не таблиці), які гейт мусить
+    // класифікувати, бо відповідні хендлери пишуть PG через mode-agnostic
+    // сервіс, а таблиці-цілі належать різним класам:
+    //   * `catalog_directories` — поверхня довідників каталогу (§11.7.9.5);
+    //     з Фази 3.3a `crud::require_admin` бере пул через `read_pool`, тож
+    //     рядок лишається описом поверхні (guard `SURFACE_ENTITIES`):
+    //     без рядка `admin_pool` повертав локальну РЕПЛІКУ (Pass) → 500;
+    //   * `documents_batch` — batch-confirm/copy/delete наявних документів
+    //     складу (`documents.rs`): пише і `products` (ProxyToPrimary), і
+    //     `stock`/`supplier_ledger` → клас вирішує найбезпечніший член;
+    //   * `setup` — первинна ініціалізація власника/точки (глобальні таблиці
+    //     `stores`/`users`/`user_stores`/`owners_db`).
+    ("catalog_directories", WritePolicy::ProxyToPrimary),
+    ("documents_batch", WritePolicy::ProxyToPrimary),
+    ("setup", WritePolicy::ProxyToPrimary),
 ];
+
+/// Супутні таблиці документів (`satellite`): пишуться ЛИШЕ всередині
+/// транзакції документа-батька, тому УСПАДКОВУЮТЬ його політику (§11.7 п.2).
+///
+/// Значення — сутність-батько з `POLICY_TABLE` (гейт-сутність §11.1, не назва
+/// таблиці): `receipt_items` → `receipt`, а не `receipts`.
+pub const SATELLITE_TABLE: &[(&str, &str)] = &[
+    ("receipt_items", "receipt"),
+    ("write_off_items", "write_off"),
+    ("transfer_items", "transfer"),
+    ("invoice_items", "invoice"),
+    ("purchase_order_items", "purchase_order"),
+    ("return_invoice_items", "return_receipt"),
+    ("inventory_items", "inventory"),
+];
+
+/// Батько супутньої таблиці, якщо вона класифікована як `satellite` (§11.7 п.2).
+pub fn satellite_parent(table: &str) -> Option<&'static str> {
+    SATELLITE_TABLE
+        .iter()
+        .find(|(name, _)| *name == table)
+        .map(|(_, parent)| *parent)
+}
+
+/// Політика для ТАБЛИЦІ з DML-точки: власний рядок §11.1/§11.7, інакше —
+/// успадкована від батька-документа (satellite, §11.7 п.2).
+pub fn policy_for_dml_table(table: &str) -> Option<WritePolicy> {
+    policy_for(table).or_else(|| satellite_parent(table).and_then(policy_for))
+}
+
+/// Чи шлях належить шару ЛОКАЛЬНОЇ SQLite-копії вузла (`offline/**`,
+/// `standby_heartbeat.rs`).
+///
+/// DML у цьому шарі — не запис у локальну PG-репліку, а наповнення/читання
+/// локальної БД вузла (той самий канал, що й `LocalOutbox` на SQLite), тому
+/// guard не вимагає для нього політики PG. Файли шару перелічені явно (список
+/// замикається предикатом, а не «будь-де в offline»): новий файл поза цим
+/// предикатом → guard валить (§11.7 п.4).
+pub fn is_local_sqlite_layer(path: &str) -> bool {
+    let p = path.replace('\\', "/");
+    p.contains("/offline/") || p.ends_with("standby_heartbeat.rs")
+}
 
 /// Політика для сутності. `None` — сутність не класифікована (§11.1).
 pub fn policy_for(entity: &str) -> Option<WritePolicy> {
@@ -295,6 +397,93 @@ pub fn classify_request(method: &Method, path: &str) -> Option<&'static str> {
     }
     if p.starts_with("/api/v1/invoices") || p.starts_with("/api/v2/invoices") {
         return Some("invoice");
+    }
+
+    // ── Довідники каталогу (ProxyToPrimary) — §11.7.9 (Фаза 3.2) ─────────────
+    // Специфічніші під-шляхи — ПЕРЕД загальним `products`: `barcodes` і
+    // `product_images` мають власні таблиці (не satellite) у реєстрі §11.7.3.
+    if (p.starts_with("/api/v1/products/") || p.starts_with("/api/v2/products/"))
+        && p.ends_with("/barcodes")
+    {
+        return Some("barcodes");
+    }
+    if (p.starts_with("/api/v1/products/") || p.starts_with("/api/v2/products/"))
+        && p.contains("/barcodes/")
+    {
+        return Some("barcodes");
+    }
+    if (p.starts_with("/api/v1/products/") || p.starts_with("/api/v2/products/"))
+        && (p.ends_with("/images") || p.contains("/images/"))
+    {
+        return Some("product_images");
+    }
+    if p == "/api/v1/products"
+        || p.starts_with("/api/v1/products/")
+        || p == "/api/v2/products"
+        || p.starts_with("/api/v2/products/")
+    {
+        return Some("products");
+    }
+    if p == "/api/v1/categories"
+        || p.starts_with("/api/v1/categories/")
+        || p == "/api/v2/categories"
+        || p.starts_with("/api/v2/categories/")
+    {
+        return Some("categories");
+    }
+    if p == "/api/v1/suppliers" || p.starts_with("/api/v1/suppliers/") {
+        return Some("suppliers");
+    }
+
+    // ── Шаблони друку (ProxyToPrimary) ───────────────────────────────────────
+    // `/api/v1/print/*` (рендер цінників/етикеток, пробний друк) сюди НЕ
+    // входить — це СВІДОМО Pass: DML у них немає (§11.7.9).
+    // `…/render` — ЧИТАННЯ шаблону + файл: сюди не входить (СВІДОМО Pass),
+    // інакше рендер на standby вимагав би primary без потреби (Фаза 3.2).
+    if (p == "/api/v1/print-templates" || p.starts_with("/api/v1/print-templates/"))
+        && !p.ends_with("/render")
+    {
+        return Some("print_templates");
+    }
+
+    // ── Налаштування системи (ProxyToPrimary, таблиця `system_settings`) ─────
+    if p == "/api/v1/settings" || p.starts_with("/api/v1/settings/") {
+        return Some("system_settings");
+    }
+
+    // ── ПРРО: зміни та черга фіскалізації ────────────────────────────────────
+    if p.starts_with("/api/v2/prro/shift/") || p.starts_with("/api/v2/prro/fiscal/shift/") {
+        return Some("prro_shifts");
+    }
+    if p.starts_with("/api/v2/prro/receipts/") {
+        // ЗМІШАНА поверхня: `fiscalize` пише і `prro_queue_items` (LocalOutbox),
+        // і `prro_shifts` (ProxyToPrimary — лічильник чека зміни,
+        // `prro/repository.rs:293`). Клас — ProxyToPrimary: єдиний, що гарантує
+        // F5 для ProxyToPrimary-таблиці в тій самій операції.
+        return Some("prro_shifts");
+    }
+    if p == "/api/v2/prro/sync" || p == "/api/v2/prro/fiscal/sync" {
+        return Some("prro_queue_items");
+    }
+
+    // ── Документи складу: batch-операції (ProxyToPrimary) ────────────────────
+    if p.starts_with("/api/v1/documents") {
+        return Some("documents_batch");
+    }
+
+    // ── Борги (LocalOutbox за рішенням §11.6.4) ─────────────────────────────
+    if p == "/api/v1/debtors" || p.starts_with("/api/v1/debtors/") {
+        return Some("debtors");
+    }
+
+    // ── Журнал розрахунків із постачальниками (LocalOutbox, §11.7.2) ─────────
+    if p == "/api/v1/ledger" || p == "/api/v2/ledger/entries" {
+        return Some("supplier_ledger");
+    }
+
+    // ── Первинна ініціалізація точки (ProxyToPrimary) ────────────────────────
+    if p == "/api/v1/setup" {
+        return Some("setup");
     }
 
     // ── Сесії вузла (LocalOutbox) ─────────────────────────────────────────────

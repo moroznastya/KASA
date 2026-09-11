@@ -63,6 +63,11 @@ use torgashka_domain::{
 };
 use torgashka_infrastructure::node_config::NodeMode;
 use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
+use torgashka_infrastructure::repositories::outbox_invoices::{
+    OutboxInvoicesV1, OutboxInvoicesV2,
+};
+use torgashka_infrastructure::repositories::outbox_purchase_orders::OutboxPurchaseOrders;
+use torgashka_infrastructure::repositories::outbox_write::OutboxWrite;
 use torgashka_infrastructure::store_ctx::StorePool;
 
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
@@ -195,6 +200,13 @@ pub fn echo_payload(args: &serde_json::Value) -> serde_json::Value {
     args.clone()
 }
 
+/// Режим вузла мережі (ADR-0007 F6): читається локально з `node_config`,
+/// дешеве читання файлу. Викликається ЛИШЕ на старті фасаду (вибір адаптерів
+/// `pos`/`write`/`invoices`/`purchase_orders`) — жодних per-request розгалужень.
+fn node_cfg_mode() -> NodeMode {
+    torgashka_infrastructure::node_config::NodeConfig::load().mode
+}
+
 /// Читання bool-флага з env (1/true/yes → true).
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
@@ -236,11 +248,22 @@ async fn init_readdirs() -> Result<
                     store_pool.clone(),
                 ),
             ) as Arc<dyn ReadDirectories + Send + Sync>;
-            let write = Arc::new(
-                torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
-                    store_pool.clone(),
-                ),
-            ) as Arc<dyn WriteDirectories + Send + Sync>;
+            // ADR-0007 §11.7.9.7 (Фаза 3.3a): вибір write-АДАПТЕРА за режимом
+            // вузла — рівно як `pos`. standby: `OutboxWrite` (інвентаризація →
+            // SQLite-черга, довідники → відмова «потрібен головний сервер»;
+            // їх виконує primary через гейт `ProxyToPrimary`).
+            let write = match node_cfg_mode() {
+                NodeMode::Primary => Arc::new(
+                    torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
+                        store_pool.clone(),
+                    ),
+                ) as Arc<dyn WriteDirectories + Send + Sync>,
+                NodeMode::Standby => Arc::new(OutboxWrite::new(Arc::new(
+                    torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
+                        store_pool.clone(),
+                    ),
+                ))) as Arc<dyn WriteDirectories + Send + Sync>,
+            };
             let ledger = Arc::new(
                 torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
             ) as Arc<dyn LedgerService + Send + Sync>;
@@ -478,7 +501,11 @@ async fn init_purchase_orders() -> (
                 torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
                     StorePool::new(pool.clone()),
                 );
-            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = Arc::new(repo);
+            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> =
+                match node_cfg_mode() {
+                    NodeMode::Primary => Arc::new(repo),
+                    NodeMode::Standby => Arc::new(OutboxPurchaseOrders::new(Arc::new(repo))),
+                };
             (Some(svc), Some(pool))
         }
         Err(e) => {
@@ -506,11 +533,19 @@ async fn init_invoices() -> (
             let repo = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(
                 StorePool::new(pool.clone()),
             );
-            let v1: Arc<dyn InvoicesV1Service + Send + Sync> = Arc::new(repo);
             let repo2 = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(
                 StorePool::new(pool.clone()),
             );
-            let v2: Arc<dyn InvoicesV2Service + Send + Sync> = Arc::new(repo2);
+            let (v1, v2): (
+                Arc<dyn InvoicesV1Service + Send + Sync>,
+                Arc<dyn InvoicesV2Service + Send + Sync>,
+            ) = match node_cfg_mode() {
+                NodeMode::Primary => (Arc::new(repo), Arc::new(repo2)),
+                NodeMode::Standby => (
+                    Arc::new(OutboxInvoicesV1::new(Arc::new(repo))),
+                    Arc::new(OutboxInvoicesV2::new(Arc::new(repo2))),
+                ),
+            };
             (Some(v1), Some(v2), Some(pool))
         }
         Err(e) => {

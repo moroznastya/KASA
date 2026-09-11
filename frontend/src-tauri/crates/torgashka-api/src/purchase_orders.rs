@@ -57,11 +57,19 @@ impl IntoResponse for PoErr {
             PoErr::Service(PurchaseOrdersError::BadRequest(msg)) => {
                 (StatusCode::BAD_REQUEST, Json(json!({"detail": msg}))).into_response()
             }
-            PoErr::Service(PurchaseOrdersError::Infrastructure(msg)) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"detail": msg})),
-            )
-                .into_response(),
+            PoErr::Service(PurchaseOrdersError::Infrastructure(msg)) => {
+                // Санація (ADR-0007, контракт §D): технічний текст → лог,
+                // користувачу — стабільне повідомлення (як `pos.rs:115`).
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("[purchase_orders] PurchaseOrdersError::Infrastructure: {msg}"),
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"detail": "Не вдалося зберегти зміну, спробуйте ще раз"})),
+                )
+                    .into_response()
+            }
             PoErr::Auth(e) => e.into_response(),
             PoErr::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({"detail": msg}))).into_response()

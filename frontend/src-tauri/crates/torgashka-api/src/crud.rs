@@ -103,11 +103,23 @@ impl IntoResponse for CrudError {
                     Json(serde_json::json!({"detail": msg})),
                 )
                     .into_response(),
-                ServiceError::Write(torgashka_domain::WriteError::Infrastructure(msg)) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-                )
-                    .into_response(),
+                ServiceError::Write(torgashka_domain::WriteError::Infrastructure(msg)) => {
+                    // Санація (ADR-0007, контракт §D): сирий технічний текст
+                    // (імена таблиць/колонок, SQL, драйвер PG) іде у
+                    // torgashka.log; користувачу — стабільне повідомлення.
+                    // Той самий контур, що `pos.rs:115` (PosError::Infrastructure).
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[crud] WriteError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "detail": "Не вдалося зберегти зміну, спробуйте ще раз"
+                        })),
+                    )
+                        .into_response()
+                }
                 ServiceError::Directory(torgashka_domain::DirectoryError::NotFound(msg)) => (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({"detail": msg})),
@@ -158,12 +170,14 @@ fn write_repo(
 /// require_admin: перевіряє роль користувача в БД (як Python
 /// `AuthService.require_admin` → `user.role != ADMIN` → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), CrudError> {
-    // ADR-0007 §11.1 НЕ має рядка для довідників (products/categories/
-    // suppliers/settings) — вони пишуться сервісами, а не літералами DML,
-    // тому їх не бачить скан §3 → політики немає → `Pass` (АНОМАЛІЯ №1 звіту).
-    // Поведінка на standby лишається колишньою; тут — доступ до пулу гейта.
-    let pool = crate::write_gate::admin_pool(state, "catalog_directories")
-        .map_err(CrudError::Forbidden)?;
+    // Роль-чек — це ЧИТАННЯ (`SELECT ... FROM users`), а не запис: F5 забороняє
+    // лише запис у репліку, читання з неї дозволене (§10). Тому пул беремо
+    // через `read_pool`, а НЕ `admin_pool`: останній на standby для
+    // ProxyToPrimary-сутності повертає 403, і це блокувало LocalOutbox-операції
+    // (інвентаризація §11.1), які мусять виконуватись локально (Фаза 3.3a).
+    // Запис у репліку неможливий і без цього: у LocalOutbox-хендлерів немає
+    // прямого SQL-запису, а ProxyToPrimary-поверхні перехоплює гейт (§11.2).
+    let pool = crate::write_gate::read_pool(state).map_err(CrudError::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         CrudError::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

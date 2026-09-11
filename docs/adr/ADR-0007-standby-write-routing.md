@@ -716,6 +716,638 @@ primary, де цього документа немає → 404 або, гірш�
 
 ---
 
+### 11.7 Повний реєстр DML усіх крейтів (guard §11.4, версія 2)
+
+#### 11.7.1 Що змінилося і чому
+
+Guard `crates/torgashka-api/tests/write_gate_guard.rs` до цієї фази сканував ЛИШЕ
+`crates/torgashka-api/src/**` (39 файлів, 38 DML-рядків). Основна маса DML живе в
+`crates/torgashka-infrastructure/src/**` — саме тому з аудиту вислизнули
+`cash_operations` (§11.6) і боргові сутності (§11.6.4). Тепер скан охоплює
+`crates/{api,application,domain,infrastructure,ocr,prro}/src/**`: **141 файл,
+335 DML-рядків, які guard класифікує за 5 правилами**.
+
+| # | Правило | Механізм у коді |
+|---|---------|-----------------|
+| 1 | Файл-приймач (§11.4 п.1) | `RECEIVER_FILES` = `sync.rs`, `sync_receivers.rs` |
+| 2 | Шар локальної SQLite-копії вузла | `write_gate::is_local_sqlite_layer` (`offline/**`, `standby_heartbeat.rs`) |
+| 3 | Політика таблиці | `write_gate::POLICY_TABLE` (§11.1 + §11.6 + §11.7) |
+| 4 | Політика БАТЬКА-документа (`satellite`) | `write_gate::satellite_parent` + `policy_for_dml_table` (§11.7.5) |
+| 5 | Динамічна назва таблиці (`DELETE FROM {table}`) | явний whitelist `DYNAMIC_TABLE_POINTS` у guard (§11.7.7) |
+
+Обидва шари перевірені НЕГАТИВНИМИ КОНТРОЛЯМИ (реальний синтетичний текст, не
+«зламай і відкоти»): DML без класу в `torgashka-infrastructure` ловиться; DML
+шару локальної SQLite не ловиться (виняток привʼязаний до ШЛЯХУ, той самий текст
+у `repositories/**` — ловиться); `satellite` без батька ловиться; динамічна назва
+без декларації ловиться.
+
+#### 11.7.2 `LocalOutbox` — 22 таблиці, 169 точок
+
+| таблиця | точок | точки DML (`crate/файл:рядок`) | куди перенаправлено | примітка |
+|---|---|---|---|---|
+| `stock` | 24 | `api/sync_receivers.rs:192`, `api/sync_receivers.rs:219`, `infrastructure/repositories/documents.rs:1614`, `infrastructure/repositories/documents.rs:1769`, `infrastructure/repositories/documents.rs:2004`, `infrastructure/repositories/documents.rs:2052`, `infrastructure/repositories/invoices.rs:269`, `infrastructure/repositories/invoices.rs:1349`, `infrastructure/repositories/invoices.rs:1542`, `infrastructure/repositories/pos.rs:542`, `infrastructure/repositories/pos.rs:580`, `infrastructure/repositories/pos.rs:2074`, `infrastructure/repositories/pos.rs:2116`, `infrastructure/repositories/pos.rs:2129`, `infrastructure/repositories/pos.rs:3144`, `infrastructure/repositories/pos.rs:3456`, `infrastructure/repositories/pos.rs:3485`, `infrastructure/repositories/products_v2.rs:276`, `infrastructure/repositories/products_v2.rs:420`, `infrastructure/repositories/return_invoices.rs:302`, `infrastructure/repositories/return_invoices.rs:339`, `infrastructure/repositories/write.rs:210`, `infrastructure/repositories/write.rs:422`, `infrastructure/repositories/write.rs:1402` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | Спільний супутній стан документів (receipt/write_off/transfer/inventory/invoice): усі батьки — LocalOutbox, тому власний рядок, не satellite |
+| `invoices` | 18 | `infrastructure/repositories/documents.rs:1089`, `infrastructure/repositories/documents.rs:1692`, `infrastructure/repositories/documents.rs:1913`, `infrastructure/repositories/invoices.rs:514`, `infrastructure/repositories/invoices.rs:620`, `infrastructure/repositories/invoices.rs:644`, `infrastructure/repositories/invoices.rs:705`, `infrastructure/repositories/invoices.rs:1012`, `infrastructure/repositories/invoices.rs:1117`, `infrastructure/repositories/invoices.rs:1178`, `infrastructure/repositories/invoices.rs:1215`, `infrastructure/repositories/invoices.rs:1245`, `infrastructure/repositories/invoices.rs:1377`, `infrastructure/repositories/invoices.rs:1492`, `infrastructure/repositories/invoices.rs:1588`, `infrastructure/repositories/purchase_orders.rs:511`, `infrastructure/repositories/return_invoices.rs:833`, `infrastructure/repositories/return_invoices.rs:933` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | Прибуткова накладна (§3.6: клас умовний — вмикається лише після зеленого приймача; приймач `accept_invoice_kind` є) |
+| `purchase_orders` | 14 | `api/sync_receivers.rs:269`, `infrastructure/repositories/documents.rs:1279`, `infrastructure/repositories/documents.rs:1956`, `infrastructure/repositories/purchase_orders.rs:290`, `infrastructure/repositories/purchase_orders.rs:351`, `infrastructure/repositories/purchase_orders.rs:360`, `infrastructure/repositories/purchase_orders.rs:370`, `infrastructure/repositories/purchase_orders.rs:380`, `infrastructure/repositories/purchase_orders.rs:390`, `infrastructure/repositories/purchase_orders.rs:399`, `infrastructure/repositories/purchase_orders.rs:408`, `infrastructure/repositories/purchase_orders.rs:464`, `infrastructure/repositories/purchase_orders.rs:546`, `infrastructure/repositories/purchase_orders.rs:557` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (правило C) |
+| `transfers` | 12 | `api/sync_receivers.rs:437`, `infrastructure/repositories/documents.rs:1142`, `infrastructure/repositories/documents.rs:2014`, `infrastructure/repositories/pos.rs:3266`, `infrastructure/repositories/pos.rs:3349`, `infrastructure/repositories/pos.rs:3353`, `infrastructure/repositories/pos.rs:3357`, `infrastructure/repositories/pos.rs:3361`, `infrastructure/repositories/pos.rs:3365`, `infrastructure/repositories/pos.rs:3412`, `infrastructure/repositories/pos.rs:3466`, `infrastructure/repositories/pos.rs:3495` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (правило C) |
+| `debtors` | 11 | `infrastructure/repositories/debtors.rs:121`, `infrastructure/repositories/debtors.rs:167`, `infrastructure/repositories/debtors.rs:176`, `infrastructure/repositories/debtors.rs:185`, `infrastructure/repositories/debtors.rs:263`, `infrastructure/repositories/debtors.rs:272`, `infrastructure/repositories/debtors.rs:284`, `infrastructure/repositories/pos.rs:2169`, `infrastructure/repositories/pos.rs:2175`, `infrastructure/repositories/pos.rs:2191`, `infrastructure/repositories/pos.rs:2197` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | РІШЕННЯ NIKO §11.6.4 варіант 1 (борговий чек → LocalOutbox) |
+| `invoice_items` | 11 | `infrastructure/repositories/documents.rs:1111`, `infrastructure/repositories/documents.rs:1673`, `infrastructure/repositories/documents.rs:1941`, `infrastructure/repositories/invoices.rs:197`, `infrastructure/repositories/invoices.rs:634`, `infrastructure/repositories/invoices.rs:1029`, `infrastructure/repositories/invoices.rs:1192`, `infrastructure/repositories/invoices.rs:1200`, `infrastructure/repositories/invoices.rs:1459`, `infrastructure/repositories/purchase_orders.rs:532`, `infrastructure/repositories/return_invoices.rs:854` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `invoice` |
+| `write_offs` | 10 | `api/sync_receivers.rs:514`, `infrastructure/repositories/documents.rs:1184`, `infrastructure/repositories/pos.rs:2949`, `infrastructure/repositories/pos.rs:3034`, `infrastructure/repositories/pos.rs:3038`, `infrastructure/repositories/pos.rs:3042`, `infrastructure/repositories/pos.rs:3046`, `infrastructure/repositories/pos.rs:3080`, `infrastructure/repositories/pos.rs:3104`, `infrastructure/repositories/pos.rs:3154` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (правило C) |
+| `return_invoices` | 8 | `infrastructure/repositories/documents.rs:1228`, `infrastructure/repositories/documents.rs:1870`, `infrastructure/repositories/return_invoices.rs:569`, `infrastructure/repositories/return_invoices.rs:661`, `infrastructure/repositories/return_invoices.rs:713`, `infrastructure/repositories/return_invoices.rs:870`, `infrastructure/repositories/return_invoices.rs:891`, `infrastructure/repositories/return_invoices.rs:951` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (повернення; гейт-сутність `return_receipt`) |
+| `inventories` | 6 | `api/sync_receivers.rs:338`, `infrastructure/repositories/write.rs:1003`, `infrastructure/repositories/write.rs:1129`, `infrastructure/repositories/write.rs:1251`, `infrastructure/repositories/write.rs:1266`, `infrastructure/repositories/write.rs:1284` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (правило C) |
+| `prro_queue_items` | 6 | `infrastructure/prro/repository.rs:346`, `infrastructure/prro/repository.rs:433`, `infrastructure/prro/repository.rs:453`, `infrastructure/prro/repository.rs:472`, `infrastructure/prro/repository.rs:499`, `infrastructure/prro/schema.rs:133` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | Правило C: черга фіскалізації — частина документа каси |
+| `users` | 6 | `infrastructure/repositories/auth.rs:538`, `infrastructure/repositories/auth.rs:631`, `infrastructure/repositories/auth.rs:676`, `infrastructure/repositories/auth.rs:705`, `infrastructure/repositories/auth.rs:744`, `infrastructure/repositories/setup.rs:230` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | Правило C (сесії/логін). PG-точки — `auth.rs`/`setup.rs`; HTTP-поверхня `/api/v1/users/*` гейтиться як `user_stores` → ProxyToPrimary (§3.1 #7), тому на standby недосяжна |
+| `receipt_items` | 5 | `infrastructure/prro/repository.rs:655`, `infrastructure/prro/repository.rs:671`, `infrastructure/prro/repository.rs:726`, `infrastructure/repositories/pos.rs:636`, `infrastructure/repositories/pos.rs:2047` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `receipt` |
+| `receipts` | 5 | `infrastructure/prro/repository.rs:622`, `infrastructure/prro/repository.rs:644`, `infrastructure/prro/repository.rs:699`, `infrastructure/repositories/pos.rs:304`, `infrastructure/repositories/pos.rs:1981` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | POS-документ каси (правило C, §11.1 рядок 1) |
+| `supplier_ledger` | 5 | `infrastructure/repositories/documents.rs:2116`, `infrastructure/repositories/invoices.rs:241`, `infrastructure/repositories/ledger.rs:105`, `infrastructure/repositories/ledger.rs:365`, `infrastructure/repositories/return_invoices.rs:414` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | Журнал розрахунків із постачальником: пишеться лише з транзакції invoice/return_invoice/документа |
+| `transfer_items` | 5 | `api/sync_receivers.rs:459`, `infrastructure/repositories/documents.rs:1162`, `infrastructure/repositories/pos.rs:3296`, `infrastructure/repositories/pos.rs:3369`, `infrastructure/repositories/pos.rs:3379` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `transfer` |
+| `write_off_items` | 5 | `api/sync_receivers.rs:537`, `infrastructure/repositories/documents.rs:1204`, `infrastructure/repositories/pos.rs:2980`, `infrastructure/repositories/pos.rs:3050`, `infrastructure/repositories/pos.rs:3063` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `write_off` |
+| `inventory_items` | 4 | `api/sync_receivers.rs:364`, `infrastructure/repositories/write.rs:1026`, `infrastructure/repositories/write.rs:1143`, `infrastructure/repositories/write.rs:1150` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `inventory` (у ping-списку NIKO стоїть серед довідників — тут `satellite`, бо точки живуть лише в транзакції документа) |
+| `purchase_order_items` | 4 | `api/sync_receivers.rs:293`, `infrastructure/repositories/documents.rs:1301`, `infrastructure/repositories/purchase_orders.rs:166`, `infrastructure/repositories/purchase_orders.rs:418` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `purchase_order` |
+| `return_invoice_items` | 3 | `infrastructure/repositories/documents.rs:1252`, `infrastructure/repositories/return_invoices.rs:141`, `infrastructure/repositories/return_invoices.rs:675` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | satellite §11.7.5 → `return_receipt` |
+| `work_sessions` | 3 | `infrastructure/repositories/auth.rs:190`, `infrastructure/repositories/auth.rs:225`, `infrastructure/repositories/auth.rs:406` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | §11.1 рядок 2 (сесії/логін вузла — локальні) |
+| `cash_operations` | 2 | `api/sync_receivers.rs:608`, `infrastructure/repositories/pos.rs:3603` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | §11.6.1 (касовий агрегат `cash_ledger` + черга `cash_operation`) |
+| `debtor_payments` | 2 | `infrastructure/repositories/debtors.rs:294`, `infrastructure/repositories/pos.rs:2150` | SQLite-черга/локальна БД вузла (гейт `Pass`; §10) → push черги на primary | РІШЕННЯ NIKO §11.6.4 варіант 1 |
+| **Разом** | **169** | — | — | **22 таблиць** |
+
+#### 11.7.3 `ProxyToPrimary` — 18 таблиць, 89 точок
+
+| таблиця | точок | точки DML (`crate/файл:рядок`) | куди перенаправлено | примітка |
+|---|---|---|---|---|
+| `products` | 27 | `infrastructure/prro/repository.rs:749`, `infrastructure/repositories/documents.rs:1629`, `infrastructure/repositories/documents.rs:1640`, `infrastructure/repositories/documents.rs:1655`, `infrastructure/repositories/documents.rs:1682`, `infrastructure/repositories/documents.rs:1780`, `infrastructure/repositories/documents.rs:1790`, `infrastructure/repositories/documents.rs:2063`, `infrastructure/repositories/invoices.rs:281`, `infrastructure/repositories/invoices.rs:302`, `infrastructure/repositories/invoices.rs:312`, `infrastructure/repositories/invoices.rs:1105`, `infrastructure/repositories/invoices.rs:1361`, `infrastructure/repositories/invoices.rs:1468`, `infrastructure/repositories/invoices.rs:1553`, `infrastructure/repositories/pos.rs:569`, `infrastructure/repositories/pos.rs:593`, `infrastructure/repositories/products_v2.rs:246`, `infrastructure/repositories/products_v2.rs:354`, `infrastructure/repositories/products_v2.rs:471`, `infrastructure/repositories/return_invoices.rs:329`, `infrastructure/repositories/return_invoices.rs:351`, `infrastructure/repositories/return_invoices.rs:372`, `infrastructure/repositories/return_invoices.rs:382`, `infrastructure/repositories/write.rs:170`, `infrastructure/repositories/write.rs:366`, `infrastructure/repositories/write.rs:528` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Довідник (правило C): ціна/товар спільні для мережі, джерело істини primary; локальна копія їде master-pull |
+| `print_templates` | 8 | `infrastructure/repositories/print_templates.rs:339`, `infrastructure/repositories/print_templates.rs:350`, `infrastructure/repositories/print_templates.rs:376`, `infrastructure/repositories/print_templates.rs:386`, `infrastructure/repositories/print_templates.rs:414`, `infrastructure/repositories/print_templates.rs:429`, `infrastructure/repositories/print_templates.rs:437`, `infrastructure/repositories/stores.rs:152` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Шаблони друку точки — глобальний стан (правило C) |
+| `stores` | 7 | `api/admin.rs:315`, `api/admin.rs:379`, `api/admin.rs:435`, `api/admin.rs:578`, `api/admin_migrate.rs:156`, `infrastructure/repositories/setup.rs:247`, `infrastructure/repositories/stores.rs:104` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `devices` | 6 | `api/admin.rs:450`, `api/admin_migrate.rs:230`, `api/network.rs:389`, `api/network.rs:593`, `api/network.rs:659`, `api/store_context.rs:108` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C). ВИНЯТОК: `store_context.rs:108` — heartbeat (§11.1 рядок 3 → LocalOutbox), див. §11.7.8 |
+| `network_nodes` | 6 | `api/lib.rs:1323`, `api/network_nodes.rs:306`, `api/network_nodes.rs:477`, `api/network_nodes.rs:702`, `api/network_nodes.rs:887`, `api/promote.rs:172` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `prro_shifts` | 6 | `infrastructure/prro/repository.rs:162`, `infrastructure/prro/repository.rs:266`, `infrastructure/prro/repository.rs:293`, `infrastructure/prro/repository.rs:315`, `infrastructure/prro/repository.rs:332`, `infrastructure/prro/schema.rs:128` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Правило C (адмін/мережа): зміни ПРРО — фіскальний стан точки, джерело істини primary |
+| `user_stores` | 5 | `api/admin.rs:333`, `api/admin.rs:705`, `infrastructure/repositories/setup.rs:261`, `infrastructure/repositories/stores.rs:123`, `infrastructure/repositories/stores.rs:191` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `system_settings` | 4 | `infrastructure/repositories/auth.rs:784`, `infrastructure/repositories/auth.rs:813`, `infrastructure/repositories/auth.rs:825`, `infrastructure/repositories/stores.rs:139` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Системні налаштування — глобальний стан (правило C) |
+| `barcodes` | 3 | `infrastructure/repositories/products_v2.rs:610`, `infrastructure/repositories/products_v2.rs:619`, `infrastructure/repositories/products_v2.rs:655` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Довідник (правило C) |
+| `categories` | 3 | `infrastructure/repositories/write.rs:558`, `infrastructure/repositories/write.rs:639`, `infrastructure/repositories/write.rs:679` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Довідник (правило C) |
+| `product_images` | 3 | `infrastructure/repositories/products_v2.rs:509`, `infrastructure/repositories/products_v2.rs:526`, `infrastructure/repositories/products_v2.rs:565` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Довідник (правило C) |
+| `prro_settings` | 3 | `api/admin_prro.rs:347`, `infrastructure/prro/repository.rs:523`, `infrastructure/prro/schema.rs:123` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `suppliers` | 3 | `infrastructure/repositories/write.rs:715`, `infrastructure/repositories/write.rs:796`, `infrastructure/repositories/write.rs:853` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Довідник (правило C) |
+| `audit_log` | 1 | `api/network.rs:273` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `network_events` | 1 | `api/network.rs:304` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `owners_db` | 1 | `infrastructure/repositories/setup.rs:276` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Реєстр БД власників — primary-only (правило C, довідники) |
+| `store_activation_codes` | 1 | `api/network.rs:458` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | Адмін/мережа (правило C) |
+| `write_off_reasons` | 1 | `infrastructure/repositories/pos.rs:3200` | HTTP pass-through §11.2 (JWT користувача; primary недосяжний → 503 §4) | §11.6.3 (довідник) → ProxyToPrimary через наявний проксі гейта |
+| **Разом** | **89** | — | — | **18 таблиць** |
+
+#### 11.7.4 `DisabledOnStandby` — 3 таблиці, 6 точок
+
+| таблиця | точок | точки DML (`crate/файл:рядок`) | куди перенаправлено | примітка |
+|---|---|---|---|---|
+| `replication_ddl_role` | 4 | `api/network_nodes.rs:513`, `api/network_nodes.rs:521`, `infrastructure/provision.rs:284`, `infrastructure/provision.rs:290` | 503 §4 (вниз не пускається) | Агрегатор-only DDL (§3.2 #34–#35) |
+| `store_sync_state` | 1 | `api/sync.rs:179` | 503 §4 (вниз не пускається) | Агрегатор-only (правило C) |
+| `sync_log` | 1 | `api/sync.rs:987` | 503 §4 (вниз не пускається) | Агрегатор-only (правило C) |
+| **Разом** | **6** | — | — | **3 таблиць** |
+
+#### 11.7.5 Супутні таблиці документів (`satellite`) — 7
+
+Пишуться ЛИШЕ всередині транзакції документа-батька, власного рядка в
+`POLICY_TABLE` не мають — політику успадковують через мапінг
+`write_gate::SATELLITE_TABLE` (явний, не хардкод у тесті):
+
+| супутня таблиця | батько (сутність гейта) | політика |
+|---|---|---|
+| `receipt_items` | `receipt` | LocalOutbox |
+| `write_off_items` | `write_off` | LocalOutbox |
+| `transfer_items` | `transfer` | LocalOutbox |
+| `invoice_items` | `invoice` | LocalOutbox |
+| `purchase_order_items` | `purchase_order` | LocalOutbox |
+| `return_invoice_items` | `return_receipt` (§3.6: таблиця `return_invoices`) | LocalOutbox |
+| `inventory_items` | `inventory` | LocalOutbox |
+
+`stock` (24 точки) і `supplier_ledger` (5) — спільні супутні дані КІЛЬКОХ
+документів (receipt/write_off/transfer/inventory/invoice/return_invoice), тому
+мають власний рядок `LocalOutbox`, а не мапінг на одного батька.
+
+#### 11.7.6 Шар локальної SQLite-копії — виняток з обґрунтуванням
+
+DML у `crates/torgashka-infrastructure/src/offline/**` і
+`standby_heartbeat.rs` — **70 точок у 21 таблицях** — це запис
+у ЛОКАЛЬНУ БД вузла (той самий канал, що `LocalOutbox`), а не в PG-репліку.
+Політики PG цей шар не має; виняток замикається предикатом на шлях, тому новий
+файл поза `offline/**` → guard валить.
+
+Таблиці, що існують **лише** в цьому шарі: `outbox` (21), `settings` (7),
+`products_v2` (5), `employees` (2), `stock_norms` (2), `sync_meta` (2),
+`cash_balance` (1), `t_user` (1) — разом 8 (`NIKO`-правило C: сесії/логін →
+`LOCAL_SQLITE`; довідники → локальна копія master-pull). Перекриті назви
+(`products`, `receipts`, `stock`, `categories`, `suppliers`, `invoices`,
+`purchase_orders`, `write_offs`, `work_sessions`, `sync_log`, `receipt_items`,
+`invoice_items`) класифікуються за правилами 1–5 окремо для PG-шару.
+
+#### 11.7.7 Динамічні назви таблиць — 1 точка
+
+| файл:рядок | SQL | whitelist (перевіряється guard'ом) | клас |
+|---|---|---|---|
+| `{dyn}` | `DELETE FROM {table} WHERE id = $1` | `invoices`, `transfers`, `write_offs`, `return_invoices`, `purchase_orders` | `LocalOutbox` (усі таблиці whitelist'у) |
+
+`documents.rs:1013 delete_document(id, document_type)` — generic-видалення
+чернетки документа: `match document_type` (закритий перелік, `other` →
+`BadRequest`) визначає таблицю. Guard вимагає ЯВНОЇ декларації точки + whitelist
+у `DYNAMIC_TABLE_POINTS`: нова динамічна точка або нове значення в `match` без
+політики → падіння тесту.
+
+#### 11.7.8 ВІДКРИТО (Фаза 3): 21 таблиць, 117 точок
+
+Політика таблиці — `LocalOutbox` (на standby гейт каже `Pass`), але клієнтський
+адаптер черги існує ЛИШЕ для POS-документів каси
+(`OutboxPos`: `create_sale_receipt`, `create_return_receipt`, `create_receipt_v1`,
+`create_write_off`, `create_transfer`, `create_cash_operation`). Решта точок на
+standby дійде до локальної **read-only** репліки → сирий `500`
+`cannot execute INSERT in a read-only transaction`. За контрактом Фази 2.1 НЕ
+виправляється: це карта для Фази 3.
+
+| таблиця | точок Фази 3 | точки (`crate/файл:рядок`) |
+|---|---|---|
+| `invoices` | 18 | `infrastructure/repositories/documents.rs:1089`, `infrastructure/repositories/documents.rs:1692`, `infrastructure/repositories/documents.rs:1913`, `infrastructure/repositories/invoices.rs:514`, `infrastructure/repositories/invoices.rs:620`, `infrastructure/repositories/invoices.rs:644`, `infrastructure/repositories/invoices.rs:705`, `infrastructure/repositories/invoices.rs:1012`, `infrastructure/repositories/invoices.rs:1117`, `infrastructure/repositories/invoices.rs:1178`, `infrastructure/repositories/invoices.rs:1215`, `infrastructure/repositories/invoices.rs:1245`, `infrastructure/repositories/invoices.rs:1377`, `infrastructure/repositories/invoices.rs:1492`, `infrastructure/repositories/invoices.rs:1588`, `infrastructure/repositories/purchase_orders.rs:511`, `infrastructure/repositories/return_invoices.rs:833`, `infrastructure/repositories/return_invoices.rs:933` |
+| `stock` | 14 | `infrastructure/repositories/documents.rs:1614`, `infrastructure/repositories/documents.rs:1769`, `infrastructure/repositories/documents.rs:2004`, `infrastructure/repositories/documents.rs:2052`, `infrastructure/repositories/invoices.rs:269`, `infrastructure/repositories/invoices.rs:1349`, `infrastructure/repositories/invoices.rs:1542`, `infrastructure/repositories/products_v2.rs:276`, `infrastructure/repositories/products_v2.rs:420`, `infrastructure/repositories/return_invoices.rs:302`, `infrastructure/repositories/return_invoices.rs:339`, `infrastructure/repositories/write.rs:210`, `infrastructure/repositories/write.rs:422`, `infrastructure/repositories/write.rs:1402` |
+| `purchase_orders` | 13 | `infrastructure/repositories/documents.rs:1279`, `infrastructure/repositories/documents.rs:1956`, `infrastructure/repositories/purchase_orders.rs:290`, `infrastructure/repositories/purchase_orders.rs:351`, `infrastructure/repositories/purchase_orders.rs:360`, `infrastructure/repositories/purchase_orders.rs:370`, `infrastructure/repositories/purchase_orders.rs:380`, `infrastructure/repositories/purchase_orders.rs:390`, `infrastructure/repositories/purchase_orders.rs:399`, `infrastructure/repositories/purchase_orders.rs:408`, `infrastructure/repositories/purchase_orders.rs:464`, `infrastructure/repositories/purchase_orders.rs:546`, `infrastructure/repositories/purchase_orders.rs:557` |
+| `invoice_items` | 11 | `infrastructure/repositories/documents.rs:1111`, `infrastructure/repositories/documents.rs:1673`, `infrastructure/repositories/documents.rs:1941`, `infrastructure/repositories/invoices.rs:197`, `infrastructure/repositories/invoices.rs:634`, `infrastructure/repositories/invoices.rs:1029`, `infrastructure/repositories/invoices.rs:1192`, `infrastructure/repositories/invoices.rs:1200`, `infrastructure/repositories/invoices.rs:1459`, `infrastructure/repositories/purchase_orders.rs:532`, `infrastructure/repositories/return_invoices.rs:854` |
+| `return_invoices` | 8 | `infrastructure/repositories/documents.rs:1228`, `infrastructure/repositories/documents.rs:1870`, `infrastructure/repositories/return_invoices.rs:569`, `infrastructure/repositories/return_invoices.rs:661`, `infrastructure/repositories/return_invoices.rs:713`, `infrastructure/repositories/return_invoices.rs:870`, `infrastructure/repositories/return_invoices.rs:891`, `infrastructure/repositories/return_invoices.rs:951` |
+| `debtors` | 7 | `infrastructure/repositories/debtors.rs:121`, `infrastructure/repositories/debtors.rs:167`, `infrastructure/repositories/debtors.rs:176`, `infrastructure/repositories/debtors.rs:185`, `infrastructure/repositories/debtors.rs:263`, `infrastructure/repositories/debtors.rs:272`, `infrastructure/repositories/debtors.rs:284` |
+| `prro_queue_items` | 6 | `infrastructure/prro/repository.rs:346`, `infrastructure/prro/repository.rs:433`, `infrastructure/prro/repository.rs:453`, `infrastructure/prro/repository.rs:472`, `infrastructure/prro/repository.rs:499`, `infrastructure/prro/schema.rs:133` |
+| `users` | 6 | `infrastructure/repositories/auth.rs:538`, `infrastructure/repositories/auth.rs:631`, `infrastructure/repositories/auth.rs:676`, `infrastructure/repositories/auth.rs:705`, `infrastructure/repositories/auth.rs:744`, `infrastructure/repositories/setup.rs:230` |
+| `inventories` | 5 | `infrastructure/repositories/write.rs:1003`, `infrastructure/repositories/write.rs:1129`, `infrastructure/repositories/write.rs:1251`, `infrastructure/repositories/write.rs:1266`, `infrastructure/repositories/write.rs:1284` |
+| `supplier_ledger` | 5 | `infrastructure/repositories/documents.rs:2116`, `infrastructure/repositories/invoices.rs:241`, `infrastructure/repositories/ledger.rs:105`, `infrastructure/repositories/ledger.rs:365`, `infrastructure/repositories/return_invoices.rs:414` |
+| `receipts` | 3 | `infrastructure/prro/repository.rs:622`, `infrastructure/prro/repository.rs:644`, `infrastructure/prro/repository.rs:699` |
+| `receipt_items` | 3 | `infrastructure/prro/repository.rs:655`, `infrastructure/prro/repository.rs:671`, `infrastructure/prro/repository.rs:726` |
+| `purchase_order_items` | 3 | `infrastructure/repositories/documents.rs:1301`, `infrastructure/repositories/purchase_orders.rs:166`, `infrastructure/repositories/purchase_orders.rs:418` |
+| `return_invoice_items` | 3 | `infrastructure/repositories/documents.rs:1252`, `infrastructure/repositories/return_invoices.rs:141`, `infrastructure/repositories/return_invoices.rs:675` |
+| `inventory_items` | 3 | `infrastructure/repositories/write.rs:1026`, `infrastructure/repositories/write.rs:1143`, `infrastructure/repositories/write.rs:1150` |
+| `work_sessions` | 3 | `infrastructure/repositories/auth.rs:190`, `infrastructure/repositories/auth.rs:225`, `infrastructure/repositories/auth.rs:406` |
+| `transfers` | 2 | `infrastructure/repositories/documents.rs:1142`, `infrastructure/repositories/documents.rs:2014` |
+| `write_offs` | 1 | `infrastructure/repositories/documents.rs:1184` |
+| `write_off_items` | 1 | `infrastructure/repositories/documents.rs:1204` |
+| `transfer_items` | 1 | `infrastructure/repositories/documents.rs:1162` |
+| `debtor_payments` | 1 | `infrastructure/repositories/debtors.rs:294` |
+| **Разом** | **117** | — |
+
+Винятки в межах таблиці `devices` (ProxyToPrimary): точка
+`api/store_context.rs:108` — це **heartbeat** пристрою (§11.1 рядок 3 →
+`LocalOutbox`), у реєстрі §11.7.3 вона позначена як Фаза 3 (на standby має йти
+SQLite-каналом, а не PG).
+
+#### 11.7.9 Класифікація HTTP-поверхонь — МАШИННИЙ аудит (Фаза 3.2)
+
+**Замінює ручний перелік Фази 2.1.** Ручний список давав 19 поверхонь і був
+неповний: парсер + реальний `classify_request` знайшли **137** write-поверхонь,
+з них **47** із `classify_request → None` (→ `Pass` → сирий `500` у read-only
+репліку). Після Фази 3.2 `None` = **0**.
+
+Метод (без здогадок і без копії мапи)
+
+1. Парсер `.route("…", post(..).put(..))` по ВСІХ файлах, де реєструються
+   маршрути фасаду: `api/router_v1.rs`, `api/return_invoices.rs` (власний
+   `router()`), `api/route_local.rs`, `api/promote.rs` → 137 write-поверхонь
+   (`POST`/`PUT`/`PATCH`/`DELETE`); динамічні сегменти (`:id`, `:barcode`)
+   підставляються конкретними значеннями.
+2. Для кожної — справжній `classify_request(method, path)` + `policy_for(entity)`
+   (не копія мапи: тест викликає код гейта).
+3. Guard на регресію: `tests/write_gate_guard.rs::
+   every_write_route_has_explicit_class` — кожна поверхня мусить мати або клас,
+   або обґрунтований запис у `CONSCIOUS_PASS`; інакше падіння з переліком.
+   Другий guard: `every_admin_pool_entity_has_policy` (§11.7.9.6).
+4. Поведінкова верифікація pass-through (§11.2, критерій E контракту):
+   `tests/write_gate_behavior.rs::standby_proxy_routes_return_503_contract`
+   розширено з 25 до **63** шляхів — кожен `ProxyToPrimary`-маршрут мусить дати
+   `503 §4` + маркери `X-Torgashka-*` і **жодного** `500`.
+
+| Клас | Поверхонь |
+|---|---|
+| `ProxyToPrimary` | 69 |
+| `LocalOutbox` | 49 |
+| `DisabledOnStandby` | 1 (`POST /api/v1/sync/push`) |
+| Свідомо `Pass` (жодного DML у PG) | 18 |
+| **Усього** | **137** |
+| `None` ДО Фази 3.2 → ПІСЛЯ | **47 → 0** |
+
+Реєстрація класів: `write_gate.rs` (`classify_request`, нові правила — каталог,
+друк, налаштування, ПРРО, документи складу, борги, журнал, setup);
+`POLICY_TABLE` = **54** рядки (25 гейт-сутностей §11.1/§11.6 + 26 таблиць PG-шару
+§11.7 + 3 поверхневих §11.7.9.5).
+
+#### 11.7.9.1 `ProxyToPrimary` — 69 поверхонь (усі на standby → HTTP pass-through §11.2)
+
+**`barcodes`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/products/:product_id/barcodes` | `products_v2.rs:312` `products_v2::add_barcode` |
+| `DELETE /api/v1/products/:product_id/barcodes/:barcode_id` | `products_v2.rs:336` `products_v2::delete_barcode` |
+| `POST /api/v2/products/:product_id/barcodes` | `products_v2.rs:312` `products_v2::add_barcode` |
+| `DELETE /api/v2/products/:product_id/barcodes/:barcode_id` | `products_v2.rs:336` `products_v2::delete_barcode` |
+
+**`categories`** — 6 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/categories` | `crud.rs:685` `crud::create_category` |
+| `DELETE /api/v1/categories/:id` | `crud.rs:716` `crud::delete_category` |
+| `PUT /api/v1/categories/:id` | `crud.rs:701` `crud::update_category` |
+| `POST /api/v2/categories` | `categories_v2.rs:306` `categories_v2::create` |
+| `DELETE /api/v2/categories/:category_id` | `categories_v2.rs:354` `categories_v2::delete` |
+| `PUT /api/v2/categories/:category_id` | `categories_v2.rs:325` `categories_v2::update` |
+
+**`devices`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `DELETE /api/v1/admin/devices/:device_id` | `network.rs:635` `network::delete_device` |
+| `POST /api/v1/admin/devices/:device_id/block` | `network.rs:617` `network::block_device` |
+| `POST /api/v1/admin/devices/:device_id/unblock` | `network.rs:625` `network::unblock_device` |
+| `POST /api/v1/devices/activate` | `network.rs:337` `network::activate_device` |
+
+**`documents_batch`** — 3 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `DELETE /api/v1/documents/:document_id` | `documents.rs:388` `documents::delete` |
+| `POST /api/v1/documents/:document_id/copy` | `documents.rs:412` `documents::copy` |
+| `POST /api/v1/documents/batch-confirm` | `documents.rs:359` `documents::batch_confirm` |
+
+**`migrate_legacy`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/admin/migrate/legacy` | `admin_migrate.rs:129` `admin_migrate::migrate_legacy` |
+
+**`network_nodes`** — 5 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/admin/network-nodes` | `network_nodes.rs:273` `network_nodes::create_node` |
+| `POST /api/v1/admin/network-nodes/:node_id/archive` | `network_nodes.rs:929` `network_nodes::archive_node` |
+| `POST /api/v1/admin/network-nodes/:node_id/force-resync` | `network_nodes.rs:939` `network_nodes::force_resync_node` |
+| `PUT /api/v1/network-nodes/:id/heartbeat` | `network_nodes.rs:596` `network_nodes::heartbeat_node` |
+| `POST /api/v1/network-nodes/join` | `network_nodes.rs:388` `network_nodes::join_node` |
+
+**`print_templates`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/print-templates` | `print_templates.rs:443` `print_templates::create_template` |
+| `DELETE /api/v1/print-templates/:template_id` | `print_templates.rs:511` `print_templates::delete_template` |
+| `PUT /api/v1/print-templates/:template_id` | `print_templates.rs:477` `print_templates::update_template` |
+| `POST /api/v1/print-templates/:template_id/set-default` | `print_templates.rs:523` `print_templates::set_default` |
+
+**`product_images`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/products/:product_id/images` | `products_v2.rs:221` `products_v2::upload_image` |
+| `DELETE /api/v1/products/:product_id/images/:image_id` | `products_v2.rs:299` `products_v2::delete_image` |
+| `POST /api/v2/products/:product_id/images` | `products_v2.rs:221` `products_v2::upload_image` |
+| `DELETE /api/v2/products/:product_id/images/:image_id` | `products_v2.rs:299` `products_v2::delete_image` |
+
+**`products`** — 6 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/products` | `crud.rs:630` `crud::create_product` |
+| `DELETE /api/v1/products/:id` | `crud.rs:658` `crud::delete_product` |
+| `PUT /api/v1/products/:id` | `crud.rs:643` `crud::update_product` |
+| `POST /api/v2/products` | `products_v2.rs:362` `products_v2::create_product` |
+| `DELETE /api/v2/products/:product_id` | `products_v2.rs:478` `products_v2::delete_product` |
+| `PUT /api/v2/products/:product_id` | `products_v2.rs:425` `products_v2::update_product` |
+
+**`prro_settings`** — 2 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `PUT /api/v1/admin/stores/:store_id/prro-settings` | `admin_prro.rs:503` `admin_prro::prro_settings_put` |
+| `PUT /api/v2/prro/settings` | `prro.rs:667` `prro::settings_put` |
+
+**`prro_shifts`** — 5 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v2/prro/fiscal/shift/close` | `prro.rs:252` `prro::close_shift` |
+| `POST /api/v2/prro/fiscal/shift/open` | `prro.rs:223` `prro::open_shift` |
+| `POST /api/v2/prro/receipts/:receipt_id/fiscalize` | `prro.rs:762` `prro::fiscalize_receipt` |
+| `POST /api/v2/prro/shift/close` | `pos.rs:1390` `pos::close_shift` |
+| `POST /api/v2/prro/shift/open` | `pos.rs:1354` `pos::open_shift` |
+
+**`setup`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/setup` | `setup.rs:133` `setup::setup` |
+
+**`store_activation_codes`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/admin/stores/:store_id/activation-code` | `network.rs:411` `network::generate_activation_code` |
+
+**`stores`** — 6 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/admin/network-config/import` | `admin_network_config.rs:386` `admin_network_config::import_config` |
+| `POST /api/v1/admin/stores` | `admin.rs:297` `admin::create_store` |
+| `DELETE /api/v1/admin/stores/:store_id` | `admin.rs:421` `admin::archive_store` |
+| `PUT /api/v1/admin/stores/:store_id` | `admin.rs:353` `admin::update_store` |
+| `POST /api/v1/admin/stores/:store_id/delete` | `admin.rs:502` `admin::delete_empty_store` |
+| `POST /api/v1/stores` | `stores.rs:90` `stores::create_store` |
+
+**`suppliers`** — 3 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/suppliers` | `crud.rs:752` `crud::create_supplier` |
+| `DELETE /api/v1/suppliers/:id` | `crud.rs:783` `crud::delete_supplier` |
+| `PUT /api/v1/suppliers/:id` | `crud.rs:768` `crud::update_supplier` |
+
+**`system_settings`** — 2 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `PUT /api/v1/settings` | `auth_routes.rs:993` `auth_routes::settings_batch_update` |
+| `PUT /api/v1/settings/:name` | `auth_routes.rs:1014` `auth_routes::settings_update_key` |
+
+**`user_stores`** — 11 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/admin/stores/:store_id/workers` | `admin.rs:661` `admin::create_worker` |
+| `POST /api/v1/admin/users/:user_id/activate` | `admin.rs:756` `admin::activate_user` |
+| `POST /api/v1/admin/users/:user_id/deactivate` | `admin.rs:748` `admin::deactivate_user` |
+| `POST /api/v1/admin/users/:user_id/reset-password` | `admin.rs:803` `admin::reset_password` |
+| `POST /api/v1/admin/users/:user_id/reset-pin` | `admin.rs:832` `admin::reset_pin` |
+| `POST /api/v1/user-stores` | `stores.rs:99` `stores::assign_user_store` |
+| `POST /api/v1/users` | `auth_routes.rs:854` `auth_routes::create_user` |
+| `DELETE /api/v1/users/:user_id` | `auth_routes.rs:923` `auth_routes::delete_user` |
+| `PUT /api/v1/users/:user_id` | `auth_routes.rs:867` `auth_routes::update_user` |
+| `PUT /api/v1/users/:user_id/hourly-rate` | `auth_routes.rs:908` `auth_routes::update_hourly_rate` |
+| `PUT /api/v1/users/:user_id/permissions` | `auth_routes.rs:882` `auth_routes::update_permissions` |
+
+**`write_off_reason`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/write-off-reasons` | `pos.rs:1193` `pos::create_write_off_reason` |
+
+#### 11.7.9.2 `LocalOutbox` — 49 поверхонь (на standby → локальний шлях; ⚠ = хендлер пише PG напряму, адаптера ще немає — АНОМАЛІЯ 3)
+
+**`cash_operation`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/cash-operations` | `pos.rs:1443` `pos::create_cash_operation` |
+
+**`debtors`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/debtors` ⚠ PG-only | `debtors.rs:188` `debtors::create` |
+| `POST /api/v1/debtors/:debtor_id` ⚠ PG-only | `debtors.rs:223` `debtors::pay` |
+| `PUT /api/v1/debtors/:debtor_id` ⚠ PG-only | `debtors.rs:210` `debtors::update` |
+| `POST /api/v1/debtors/:debtor_id/pay` ⚠ PG-only | `debtors.rs:223` `debtors::pay` |
+
+**`inventory`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/inventory` ✅ адаптер 3.3a | `crud.rs:832` `crud::create_inventory` |
+| `DELETE /api/v1/inventory/:id` ✅ адаптер 3.3a | `crud.rs:866` `crud::delete_inventory` |
+| `PUT /api/v1/inventory/:id` ✅ адаптер 3.3a | `crud.rs:851` `crud::update_inventory` |
+| `POST /api/v1/inventory/:id/confirm` ✅ адаптер 3.3a | `crud.rs:880` `crud::confirm_inventory` |
+
+**`invoice`** — 11 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/invoices` ✅ адаптер 3.3a | `invoices.rs:195` `invoices::v1_create` |
+| `DELETE /api/v1/invoices/:invoice_id` ✅ адаптер 3.3a | `invoices.rs:236` `invoices::v1_delete` |
+| `PUT /api/v1/invoices/:invoice_id` ✅ адаптер 3.3a | `invoices.rs:219` `invoices::v1_update` |
+| `POST /api/v1/invoices/:invoice_id/confirm` ✅ адаптер 3.3a | `invoices.rs:266` `invoices::v1_confirm` |
+| `POST /api/v1/invoices/:invoice_id/print-items` ✅ адаптер 3.3a | `invoices.rs:298` `invoices::v1_print_items` |
+| `POST /api/v2/invoices` ✅ адаптер 3.3a | `invoices.rs:374` `invoices::v2_create` |
+| `DELETE /api/v2/invoices/:invoice_id` ✅ адаптер 3.3a | `invoices.rs:422` `invoices::v2_delete` |
+| `PUT /api/v2/invoices/:invoice_id` ✅ адаптер 3.3a | `invoices.rs:406` `invoices::v2_update` |
+| `POST /api/v2/invoices/:invoice_id/cancel` ✅ адаптер 3.3a | `invoices.rs:487` `invoices::v2_cancel` |
+| `POST /api/v2/invoices/:invoice_id/print-items` ✅ адаптер 3.3a | `invoices.rs:471` `invoices::v2_print_items` |
+| `POST /api/v2/invoices/confirm` ✅ адаптер 3.3a | `invoices.rs:391` `invoices::v2_confirm` |
+
+**`prro_queue_items`** — 2 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v2/prro/fiscal/sync` ⚠ PG-only | `prro.rs:621` `prro::sync_queue` |
+| `POST /api/v2/prro/sync` ⚠ PG-only | `prro.rs:621` `prro::sync_queue` |
+
+**`purchase_order`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/purchase-orders` ✅ адаптер 3.3a | `purchase_orders.rs:180` `purchase_orders::create` |
+| `DELETE /api/v1/purchase-orders/:order_id` ✅ адаптер 3.3a | `purchase_orders.rs:215` `purchase_orders::delete` |
+| `PUT /api/v1/purchase-orders/:order_id` ✅ адаптер 3.3a | `purchase_orders.rs:197` `purchase_orders::update` |
+| `POST /api/v1/purchase-orders/:order_id/confirm` ✅ адаптер 3.3a | `purchase_orders.rs:236` `purchase_orders::confirm` |
+
+**`receipt`** — 5 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/local/ops` | `route_local.rs:431` `local_enqueue_op` |
+| `POST /api/v1/local/sync/now` | `route_local.rs:484` `local_sync_now` |
+| `POST /api/v1/receipts` | `pos.rs:822` `pos::create_receipt_v1` |
+| `POST /api/v2/receipts/return` | `pos.rs:808` `pos::create_return` |
+| `POST /api/v2/receipts/sale` | `pos.rs:794` `pos::create_sale` |
+
+**`return_receipt`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/return-invoices` ⚠ PG-only | `return_invoices.rs:184` `create_return` |
+| `DELETE /api/v1/return-invoices/:return_id` ⚠ PG-only | `return_invoices.rs:219` `delete_return` |
+| `PUT /api/v1/return-invoices/:return_id` ⚠ PG-only | `return_invoices.rs:202` `update_return` |
+| `POST /api/v1/return-invoices/:return_id/confirm` ⚠ PG-only | `return_invoices.rs:234` `confirm_return` |
+
+**`supplier_ledger`** — 2 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/ledger` ⚠ PG-only | `ledger.rs:376` `ledger::create_entry_v1` |
+| `POST /api/v2/ledger/entries` ⚠ PG-only | `ledger.rs:438` `ledger::create_entry_v2` |
+
+**`transfer`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/transfers` | `pos.rs:1270` `pos::create_transfer` |
+| `DELETE /api/v1/transfers/:id` | `pos.rs:1300` `pos::delete_transfer` |
+| `PUT /api/v1/transfers/:id` | `pos.rs:1285` `pos::update_transfer` |
+| `POST /api/v1/transfers/:id/confirm` | `pos.rs:1314` `pos::confirm_transfer` |
+
+**`work_session`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/auth/login` | `auth_routes.rs:670` `auth_routes::login` |
+| `POST /api/v1/auth/login-pin` | `auth_routes.rs:685` `auth_routes::login_pin` |
+| `POST /api/v1/auth/logout` | `auth_routes.rs:725` `auth_routes::logout` |
+| `POST /api/v1/auth/refresh` | `auth_routes.rs:700` `auth_routes::refresh` |
+
+**`write_off`** — 4 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/write-offs` | `pos.rs:1125` `pos::create_write_off` |
+| `DELETE /api/v1/write-offs/:id` | `pos.rs:1155` `pos::delete_write_off` |
+| `PUT /api/v1/write-offs/:id` | `pos.rs:1140` `pos::update_write_off` |
+| `POST /api/v1/write-offs/:id/confirm` | `pos.rs:1169` `pos::confirm_write_off` |
+
+#### 11.7.9.3 `DisabledOnStandby` — 1 поверхня
+
+**`sync_push`** — 1 поверхонь
+
+| метод + шлях | хендлер (визначення) |
+|---|---|
+| `POST /api/v1/sync/push` | `sync.rs:501` `sync::push` |
+
+#### 11.7.9.4 Свідомо `Pass` — 18 поверхонь (жодного DML у PostgreSQL)
+
+| метод + шлях | хендлер | причина |
+|---|---|---|
+| `POST /api/v1/admin/db-sources` | `admin_db_sources.rs:459` `admin_db_sources::create_source` | СВІДОМО Pass (немає DML у PG; |
+| `DELETE /api/v1/admin/db-sources/:id` | `admin_db_sources.rs:583` `admin_db_sources::delete_source` | СВІДОМО Pass (немає DML у PG; |
+| `PUT /api/v1/admin/db-sources/:id` | `admin_db_sources.rs:522` `admin_db_sources::update_source` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/db-sources/:id/activate` | `admin_db_sources.rs:647` `admin_db_sources::activate_source` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/db-sources/:id/test` | `admin_db_sources.rs:617` `admin_db_sources::test_source` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/db-sources/export-dump` | `admin_db_sources.rs:681` `admin_db_sources::export_dump` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/db-sources/import-dump` | `admin_db_sources.rs:793` `admin_db_sources::import_dump` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/db-sources/provision` | `admin_db_sources.rs:969` `admin_db_sources::provision_source` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/admin/network-config/export` | `admin_network_config.rs:286` `admin_network_config::export_config` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/invoice-ocr/analyze` | `ocr.rs:107` `ocr::analyze_with_matching` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/local/promote` | `promote.rs:90` `promote_handler` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/local/repoint-primary` | `promote.rs:338` `repoint_primary_handler` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/ocr/invoice` | `ocr.rs:76` `ocr::analyze_invoice` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/print-templates/:template_id/render` | `print_templates.rs:536` `print_templates::render_template` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/print/labels/render` | `print_templates.rs:239` `print_templates::labels_render` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/print/price-tags/render` | `print_templates.rs:186` `print_templates::price_tags_render` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v1/print/test` | `print_templates.rs:304` `print_templates::test_print` | СВІДОМО Pass (немає DML у PG; |
+| `POST /api/v2/prro/test-connection` | `prro.rs:435` `prro::test_connection` | СВІДОМО Pass (немає DML у PG; |
+
+#### 11.7.9.5 Нові поверхневі сутності (не таблиці) — 3
+
+Поверхня не завжди дорівнює таблиці: три хендлери пишуть PG через
+mode-agnostic сервіс, а таблиці-цілі належать РІЗНИМ класам. Клас — найбезпечніший
+член набору (ProxyToPrimary: на standby їде на primary, у репліку не пише).
+
+| Сутність | Політика | Чому поверхнева | Поверхні |
+|---|---|---|---|
+| `catalog_directories` | `ProxyToPrimary` | друга лінія `crud.rs` (`require_admin`): довідники каталогу | `POST/PUT/DELETE /api/v1/products`,`/categories`,`/suppliers`, `/api/v2/*` |
+| `documents_batch` | `ProxyToPrimary` | batch-операції над наявними документами складу пишуть і `products` (ProxyToPrimary), і `stock`/`supplier_ledger` | `POST /api/v1/documents/batch-confirm`, `POST /api/v1/documents/:id/copy`, `DELETE /api/v1/documents/:id` |
+| `setup` | `ProxyToPrimary` | первинна ініціалізація власника/точки — глобальні таблиці (`stores`, `users`, `user_stores`, `owners_db`) | `POST /api/v1/setup` |
+
+`setup` — свідоме рішення: хендлер іде в PG лише коли в БД **немає жодного
+користувача** (`repositories/setup.rs:196-204` → інакше `409 Conflict` без DML).
+На standby репліка вже містить `users` → відповідь та сама (`409` з primary),
+але F5 гарантований: запис ніколи не піде в репліку.
+
+#### 11.7.9.6 АНОМАЛІЯ 1 (ВИПРАВЛЕНО): друга лінія `admin_pool` без політики
+
+`api/crud.rs:165` передавав `admin_pool(state, "catalog_directories")`, але рядка
+`catalog_directories` у `POLICY_TABLE` **не існувало** → `decide(Standby,
+Some("catalog_directories"))` → `policy_for` → `None` → `Pass` → друга лінія
+віддавала **локальну репліку**. Тут це давало лише `SELECT` ролі (500 не
+виникав), але інваріант «друга лінія теж під гейтом» був зламаний: будь-який
+наступний запис у цій функції пішов би в репліку. Виправлено: рядок додано
+(`ProxyToPrimary`), додано guard `every_admin_pool_entity_has_policy` — сканує
+`api/src/**` і вимагає політику для КОЖНОГО літерала, переданого в `admin_pool`
+(9 викликів).
+
+#### 11.7.9.7 АНОМАЛІЯ 2: клас `LocalOutbox`, але хендлер пише PG → сирий `500` на standby (Фаза 3.3a: 19 із 31 закрито)
+
+Клас цих таблиць у §11.7.2 **оголошений** (черга/локальна БД), однак
+HTTP-хендлер ішов у PG через mode-agnostic сервіс. Наслідок на standby:
+`LocalOutbox` → `Pass` → `INSERT/UPDATE` у **read-only** репліку → сирий `500`.
+
+**Фаза 3.3a** додала клієнтські адаптери (контур §10, зразок `OutboxPos`) і
+підключила їх в `api/lib.rs` ОДИН раз на старті за `node_cfg.mode`.
+
+| Сутність | Поверхонь | Стан | Адаптер / межа |
+|---|---|---|---|
+| `invoice` | 11 | ✅ закрито | `repositories/outbox_invoices.rs` (`OutboxInvoicesV1`/`V2`), `lib.rs::init_invoices` |
+| `purchase_order` | 4 | ✅ закрито | `repositories/outbox_purchase_orders.rs`, `lib.rs::init_purchase_orders` |
+| `inventory` | 4 | ✅ закрито | `repositories/outbox_write.rs` (`OutboxWrite`), `lib.rs::init_readdirs` |
+| `return_receipt` | 4 | ⛔ АНОМАЛІЯ (нижче) | `state.return_invoices` — черги/приймача НЕ існує |
+| `debtors` | 4 | 🕐 Фаза 3.3b | `debtors.rs:188/210/223` |
+| `supplier_ledger` | 2 | 🕐 Фаза 3.3b | `ledger.rs:147` |
+| `prro_queue_items` | 2 | 🕐 Фаза 3.3b | `prro.rs::sync_queue` |
+| **Разом** | **31** | **19 ✅ / 4 ⛔ / 8 🕐** | |
+
+Спільна обв'язка адаптерів — `repositories/outbox_local.rs` (відкриття SQLite
+каси, `store_id`, санація помилок); сам запис НЕ дубльовано: він іде через
+`offline::transactions::{enqueue_transaction, enqueue_invoice}` (агрегат +
+outbox + stock в одній SQLite-транзакції). Для операцій, яких черга не вміє
+(update/delete/confirm/cancel документа) — явна людська відмова
+(`outbox_local::unavailable`), а не сирий SQL-текст.
+
+**`return_receipt` — АНОМАЛІЯ (СТОП по сутності).** Тип `TYPE_RETURN_RECEIPT`
+(`sync_push.rs:50`) — це **чек повернення ПОКУПЦЯ**: `receiver_table`
+(`sync.rs:642`) веде його в `receipts`, а диспетчер `sync.rs:627` — у
+`accept_receipt_kind` → `svc.create_return_receipt` (POS-чек). Повернення
+**ПОСТАЧАЛЬНИКУ** (`state.return_invoices`, таблиця `return_invoices`) не має
+ні типу черги в `offline/transactions.rs`, ні локальної таблиці, ні приймача в
+`sync.rs`/`sync_receivers.rs`. Адаптер фізично неможливий без нового типу й
+приймача — потрібне окреме рішення (не Фаза 3.3a).
+
+Для `invoice` суперечність із §12 (Крок 2) знята: адаптер+приймач доведені
+e2e-тестом (payload адаптера → push → 1 рядок `invoices`, `confirmed`,
+stock +3.000, повторний push → `already_exists`).
+
+#### 11.7.9.8 АНОМАЛІЯ 3: внутрішня (не-HTTP) write-точка heartbeat
+
+`api/store_context.rs:108`: `UPDATE devices SET last_seen_at = now()` на КОЖЕН
+запит пристрою (store-middleware), пул — `state.store_pool` = на standby це
+локальна **репліка**. Помилка лише логується (`store_context.rs:113`), тому
+`500` не виникає, але серцебиття в PG на standby не пишеться і кожен запит дає
+рядок помилки в лог. Клас §11.1 — `LocalOutbox` (`standby_heartbeat.rs`, SQLite).
+Потрібен mode-guard на цю точку (окремий етап, поза Фазою 3.2). Поверхня не є
+маршрутом, тому в 137 не входить.
+
+#### 11.7.9.9 Критерій прийняття Фази 3.2
+
+* 137/137 write-поверхонь мають явний клас; `classify_request → None` = 0 → ✅
+  (guard `every_write_route_has_explicit_class`, 9 тестів guard'а, 0 failed);
+* кожен `ProxyToPrimary`-маршрут реально проходить pass-through: 63 шляхи → `503
+  §4` + маркери, жодного `500` (`write_gate_behavior`, 5 passed) → ✅;
+* друга лінія `admin_pool` під гейтом: 9/9 літералів мають політику → ✅;
+* жодного нового механізму, жодного адаптера, `SqlxPos`/`OutboxPos` не змінені → ✅.
+
+#### 11.7.10 Контрольні підсумки
+
+| Клас | Таблиць | Точок |
+|------|---------|-------|
+| `LocalOutbox` (§11.1 рядки 1–3 + §11.6) | 22 | 169 |
+| `ProxyToPrimary` (§11.1 рядок 4) | 18 | 89 |
+| `DisabledOnStandby` (§11.1 рядки 5–7) | 3 | 6 |
+| `satellite` (успадковують батька) | 7 | 37 |
+| динамічна таблиця (§11.7.7) | 1 | 1 |
+| **Разом PG-шар** | **43** | **265** |
+| шар локальної SQLite (виняток) | 21 | 70 |
+| приймачі `sync.rs`/`sync_receivers.rs` (виняток §11.4 п.1) | — | 13 |
+| `price_tags` (рядок реєстру без DML) | 1 | 0 |
+| з них **ВІДКРИТО (Фаза 3)** | 21 | 117 |
+
+Критерії прийняття:
+
+* guard бачить УСІ 6 крейтів: 141 файл, 335 DML-рядків → ✅;
+* 100 % таблиць PG-шару мають політику або батька: 43/43 → ✅;
+* `POLICY_TABLE` = **54** рядки (25 гейт-сутностей §11.1/§11.6 + 26 таблиць §11.7 + 3 поверхневих §11.7.9.5) → ✅;
+* два нові негативні контролі (infrastructure-файл без класу; `satellite`/динамічна/шар SQLite) → ✅ (7 тестів, 0 failed);
+* **Фаза 3.2 (§11.7.9)**: 137/137 write-поверхонь мають явний клас, `classify_request → None` = 0 (було 47); guard 9 тестів, 0 failed; pass-through верифіковано на 63 шляхах (`write_gate_behavior`, 5 passed) → ✅;
+* жодного виправлення коду Фази 3 (адаптерів) — лише карта + запобіжник → ✅.
+* **Фаза 3.3a (§11.7.9.7)**: 19 із 31 поверхні закрито адаптерами (`outbox_invoices.rs`, `outbox_purchase_orders.rs`, `outbox_write.rs` + спільна обв'язка `outbox_local.rs`), `lib.rs` вибирає адаптер раз на старті за `node_cfg.mode`; e2e: `invoice_standby_outbox_e2e` (2, включно з push на primary) + `purchase_order_standby_outbox_e2e` + `inventory_standby_outbox_e2e` → ✅
+* свідомо НЕ виправлено (борг, §11.7.9.7): 8 поверхонь Фази 3.3b (`debtors` 4, `supplier_ledger` 2, `prro_queue_items` 2) + 4 поверхні `return_invoices` (АНОМАЛІЯ: ні типу черги, ні приймача) + внутрішній heartbeat `store_context.rs:108` (§11.7.9.8) → ⚠
+
+---
+
 ## 12. Порядок викатки (обов'язковий, не переставляти)
 
 | Крок | Зміст | Критерій «можна далі» |
