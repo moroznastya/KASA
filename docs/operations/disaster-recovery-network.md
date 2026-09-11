@@ -222,6 +222,148 @@ primary, і жоден старий primary не підключається са
 
 ---
 
+## 6. Несинхронізована черга каси при promote (ФАКТИЧНА поведінка коду)
+
+На вузлі-standby документи каси пишуться в **локальну SQLite-чергу** (`outbox`), звідки
+доїжджають на primary приймачами (`sync.rs`, `sync_receivers.rs`) — ADR-0007 §9, §10, §11.6.
+Несинхронізована черга = невивантажені продажі (чеки, борги, залишки).
+
+### 6.1 Код: promote чергу НЕ торкається
+
+- `promote.rs` не містить роботи з чергою: grep `outbox|sqlite|offline` по
+  `frontend/src-tauri/crates/torgashka-api/src/promote.rs` → єдине згадування — **коментар**
+  `promote.rs:87-89`. Файл `offline.db` (шлях: `offline/db.rs:78-88`) promote не читає,
+  не чистить і не перекладає в PG.
+- Що promote робить фактично (`promote.rs:75-90` doc, реалізація `:90-235`):
+  1. `pg_is_in_recovery()` на локальному PG (`:91-110`);
+  2. `pg_promote(true, 60)` + poll виходу з recovery (`:131-165`);
+  3. `network_nodes`: self-вузол → `role='primary', status='active'`, replication-creds = NULL
+     (`:170-186`);
+  4. видалення `standby.signal` / `primary_conninfo` (split-brain guard, `:249-300`);
+  5. `node_config` → `mode=primary`: `into_promoted_primary()` очищає `primary_db_url` **і**
+     `upstream_write_url` (`crates/torgashka-infrastructure/src/node_config.rs:214-221`) —
+     фасад пише вже лише локально;
+  6. подія `promoted` у `network_events` (`:219-227`, `network.rs:304`).
+
+### 6.2 Код: після promote поверхня `/api/v1/local/*` зникає
+
+- `route_local::router` монтується лише за `is_standby() && local.is_some()`
+  (`route_local.rs:649`); адмін-маршрути DR — так само (`promote.rs:432-437`).
+- Наслідок: `GET /api/v1/local/status` і `GET /api/v1/local/stock-reconciliation` після promote
+  → **404**. Тобто звірка §10.3 доступна **лише поки вузол standby** (до promote).
+
+### 6.3 Код: push-цикл promote НЕ зупиняє → АНОМАЛІЯ
+
+- Фоновий push стартує за наявності `server_url`+токена в SQLite-налаштуваннях
+  (`src-tauri/src/lib.rs:347`, `offline/commands.rs:123-140`, `read_sync_auth` — `:74-120`) і
+  **не перевіряє `mode` вузла** — коду, який вимикає push після promote, немає. Коментар
+  `promote.rs:89` («push-черги/деградація вимкнені») **суперечить коду**.
+- Наслідок на практиці: залишок черги продовжує слатися на **старий** `server_url`; після 10
+  невдач (5xx/немає мережі) агрегати стають `failed` («потребує уваги», тихого ack немає) —
+  `sync_push.rs:38`, `:630-660`.
+
+### 6.4 НЕ РЕАЛІЗОВАНО (підтверджено grep)
+
+- **Шляху застосування залишку SQLite-черги до ВЛАСНОГО PostgreSQL після promote немає**:
+  grep `replay|drain|flush_outbox|apply_outbox` по `frontend/src-tauri/**/*.rs` → лише ПРРО
+  (`torgashka-prro/src/prro/sync.rs:37`, інша черга — фіскальна) та не пов'язані `drain` у
+  буферах. Drain/relay SQLite-`outbox` у PG після promote — **НЕ РЕАЛІЗОВАНО**.
+- Бекапу черги в скриптах немає (`scripts/backup.sh` — лише PG) — **НЕ РЕАЛІЗОВАНО**.
+
+**Правило для оператора:** promote з непорожньою чергою залишає ці продажі в SQLite каси.
+Перед promote — вивантажити чергу (`pending` = 0) і зробити бекап `offline.db`
+(`docs/infrastructure/backup-restore.md` §9).
+
+### 6.5 Порядок дій, коли черга накопичилась за час офлайну
+
+1. **Не робити promote з непорожньою чергою, якщо старий primary живий хоч частково:**
+   спершу підняти канал і дати черзі поїхати (фоновий цикл або ручний `sync_now` —
+   `offline/commands.rs:489-556`).
+2. Якщо primary втрачено назавжди і promote неминучий:
+   1. бекап `offline.db` (`docs/infrastructure/backup-restore.md` §9);
+   2. зафіксувати борг: `sqlite3 <db_path> "SELECT status, COUNT(*) FROM outbox GROUP BY status;"`
+      (`db_path` — з `get_offline_stats`, `offline/commands.rs:559-578`);
+   3. promote;
+   4. пам'ятати: «автоматичного доїзду» в коді немає (§6.4). Варіанти: (i) підняти колишній
+      primary як standby, повернути канал і вивантажити чергу на нього; (ii) зафіксувати борг
+      і перевести документи вручну.
+3. Не видаляти й не перезаписувати `offline.db` до звірки — це єдина копія невивантажених
+   продажів цього вузла.
+
+---
+
+## 7. Звірка залишків після відновлення (§10.3)
+
+Локальний залишок каси і авторитетний на primary можуть різнитися: каса застосовує
+stock-ефект документа **відразу** (offline-first), primary — після push.
+
+**Ендпоінт (READ, працює лише на standby):**
+`GET /api/v1/local/stock-reconciliation?invoice_id=<uuid>` — `route_local.rs:518-608`
+(маршрут — `:670-671`).
+
+- Локальна половина (SQLite каси): `offline/reconciliation.rs::local_view`
+  (`reconciliation.rs:58-90`) — агрегат черги за `client_uuid` + `stock::get_stock_level`.
+- Авторитетна половина (репліка PG): `authoritative_milli` (`route_local.rs:612-630`).
+- Відповідь: `local_qty` з прапорцем `local_is_estimate: true` (`route_local.rs:596-600`),
+  `authoritative_qty`, `delta = local − authoritative`, `matches`,
+  `summary {total, matching, mismatching}` (`route_local.rs:601-608`).
+- Документа немає в черзі цієї каси → **404** (`route_local.rs:539-543`); документ іншої точки →
+  **404** (`route_local.rs:544-551`).
+
+**Ключове:** локальне число — **ОЦІНКА**, не істина (ADR-0007 §10.3;
+`reconciliation.rs:5-11`; прапорець `local_is_estimate: true`). Ендпоінт **лише показує** —
+жодних записів і жодного reconcile-движка (`reconciliation.rs:16`). Вирівнювання —
+**інвентаризацією**: `stock::set_stock_level` (`offline/stock.rs:116`) через тип `inventory`
+(`offline/transactions.rs:28`, `:152`).
+
+Порядок звірки:
+
+1. `queue_pending` = 0 або стабільно не зменшується → черга доїхала
+   (`/api/v1/local/status`, `route_local.rs:332-347`).
+2. Для кожного документа з підозрою на розбіжність — запит до
+   `GET /api/v1/local/stock-reconciliation?invoice_id=<client_uuid>`
+   (id документа = `client_uuid` локального агрегата, `route_local.rs:511-514`).
+3. `delta != 0` → перелічити фактично й провести **інвентаризацію** (наявний механізм), а не
+   правити число в PG вручну.
+
+---
+
+## 8. Операційні події та індикатор режиму вузла
+
+### 8.1 `network_events` (primary)
+
+- Схема й перелік значень: `crates/torgashka-infrastructure/src/db.rs:451-474`; запис —
+  `torgashka-api/src/network.rs:304`; читання —
+  `network_nodes.rs:813-850` (`GET /api/v1/network/nodes/events`, `router_v1.rs:800`).
+- `degraded_local` (level `warn`) — primary став недоступним;
+  `primary_restored` (level `info`) — зв'язок повернувся.
+- Запис — **лише на ПЕРЕХОДІ** стану (анти-спам, edge-детектор `LAST_PRIMARY_UP`):
+  `route_local.rs:96, :103-140` (`note_connectivity_transition`). Перше спостереження сесії
+  одразу в деградації теж логується раз (`:118-125`). На read-only репліці (до promote) INSERT
+  неможливий — помилка глушиться в stderr (`:139-140`, `network.rs:315`).
+- Інші значення того ж журналу: `promoted`, `repoint_requested`, `archived`,
+  `resync_requested`, `sync_error`, `reject_stale` (`db.rs:451-452`, `network_nodes.rs:791-792`).
+
+### 8.2 Індикатор режиму вузла в UI
+
+- Джерело істини — `GET /api/v1/local/status` (`route_local.rs:332-347`):
+  `{mode:"standby", primary_reachable, effective, queue_pending, …}`; `effective` =
+  `effective_status(primary_up, pending)` (`route_local.rs:237-245`):
+  - `active` — primary доступний, черга 0;
+  - `lagging` — primary доступний, черга > 0 (**норма**, синк іде — не тривога);
+  - `offline` — primary недоступний (деградація, черга росте).
+- UI: `frontend/src/hooks/useNodeStatus.tsx` (полінг 20 с — `:22`; тости лише на переходах —
+  `:78-100`; рендер трьох станів — `:130-170`), сервіс `frontend/src/services/nodeStatusService.ts:10-18`.
+  На primary-вузлі маршруту `/api/v1/local/*` немає → індикатор не рендериться (404,
+  `route_local.rs:649`).
+- **Окремий (грубіший) контур heartbeat:** `standby_heartbeat.rs:248-258` шле
+  `status="active"` + `app_version`; допустимі значення —
+  `["provisioning","syncing","active","lagging","offline"]` (`network_nodes.rs:549`); lag > 50 МБ
+  примусово дає `lagging` (`network_nodes.rs:551-552`, `:686-688`). Це не те саме, що
+  `effective` з `/local/status`.
+
+---
+
 ## Часті помилки
 
 | Симптом | Причина | Рішення |

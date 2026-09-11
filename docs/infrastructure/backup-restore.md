@@ -219,3 +219,131 @@ scripts/backup-restore.sh pos_system backups/pos_system_20260901_1400.dump --yes
 - Бекапи на LAN-сервері: рекомендується окремий диск/розділ або мережевий mount
   (для фіскального POS — зовнішній носій із періодичним копіюванням офлайн).
 - Відновлення — лише під адміністративним користувачем (`postgres`), з явним `--yes`.
+
+---
+
+## 9. Локальна SQLite-черга вузла (каса/standby) — ADR-0007
+
+> Фаза 3.6. На вузлі-standby POS-документи каси (чеки, повернення, накладні, списання,
+> переміщення, касові операції, оплати боргів, повернення постачальнику) пишуться НЕ в
+> PostgreSQL, а в **локальну SQLite-чергу вузла**, звідки доїжджають на primary приймачами
+> (`torgashka-api/src/sync.rs`, `torgashka-api/src/sync_receivers.rs`). Адмін/мережеві операції
+> йдуть HTTP pass-through на primary (ADR-0007 §11.2); фіскальна черга ПРРО — свідома межа
+> (`ProxyToPrimary`, ADR-0007 §11.7.9.7, `docs/adr/ADR-0007-standby-write-routing.md:1291`).
+>
+> **Критично:** несинхронізована черга містить РЕАЛЬНІ бізнес-дані (чеки, борги, залишки).
+> Її втрата = втрата продажів. PG-бекапи (розділи 1–5) цю чергу **не покривають**.
+
+### 9.1 Що саме бекапити (шлях узятий з коду)
+
+- **Файл:** `offline.db` **разом із** `offline.db-wal` і `offline.db-shm`.
+  - Дефініція шляху: `OfflineDatabase::default_db_path()` →
+    `frontend/src-tauri/crates/torgashka-infrastructure/src/offline/db.rs:78-88`:
+    `dirs_next::data_dir()/torgashka/offline.db` (`dirs-next = "2"` —
+    `crates/torgashka-infrastructure/Cargo.toml:20`).
+    На Linux `dirs_next::data_dir()` = `$XDG_DATA_HOME` або `~/.local/share`, тобто типово
+    **`~/.local/share/torgashka/offline.db`**.
+  - Точний шлях у рантаймі повертає `get_offline_stats()` → поле `db_path`
+    (`offline/commands.rs:559-578`), внутрішній геттер — `offline/db.rs:67`.
+  - **WAL увімкнено при кожному відкритті:** `offline/sync_push.rs:731-735`
+    (`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`). Тому копія лише `offline.db`
+    без `-wal` **небезпечна**: закомічені, але ще не перенесені з WAL транзакції = втрачений
+    хвіст черги.
+- **Що всередині (бізнес-цінність):** таблиця `outbox` (черга агрегатів) + локальні агрегати
+  й залишок `stock`. Міграції: `offline/migrations/offline/0002_sync_meta.sql` (outbox),
+  `0005_local_stock.sql` (stock), `0006_transaction_tables.sql`, `0010_local_invoices.sql`,
+  `0011_local_cash.sql`, `0012_local_return_debtor_ledger.sql`
+  (включення — `offline/migrations.rs:62-63`).
+
+### 9.2 Чому це критично (ADR-0007 §9, §10)
+
+- Агрегат доставлено **лише після ack** сервера. `pending`/`failed` в `outbox` = невивантажені
+  продажі: `outbox.status` — `0002_sync_meta.sql:16-22`; `in_flight` у CHECK **резервований і
+  кодом не використовується** (`0002_sync_meta.sql:19-22`).
+- Лічильники: `sync_status.pending_count` (`offline/commands.rs:441-455`),
+  `get_unsynced_count()` (тільки `pending`, `offline/commands.rs:211-216`),
+  `outbox_stats` (`offline/sync_push.rs:311-350`).
+- Переходи статусів: `created`/`already_exists` → `done` (`sync_push.rs:560-567`),
+  бізнес-помилка 400/422 → `failed` без retry (`:532-539`), 5xx/429 → backoff на весь пакет
+  (`:524-530`), після `MAX_ATTEMPTS = 10` → `failed` (`:38`, `:630-660`).
+- Алерт: `sync_health.degraded = failed > 0 АБО stale pending > BACKOFF_CAP_SECS (3600 с)`
+  (`sync_push.rs:375-425`).
+
+### 9.3 Коли бекапити
+
+- **перед оновленням** застосунку (новий бінарник застосовує міграції черги —
+  `offline/migrations.rs`, `sync_push.rs:736`);
+- **після оновлення** — до повернення каси в роботу;
+- **періодично** — окремим завданням поряд із PG-бекапами (розділ 4): PG-бекапи чергу не покривають;
+- **обов'язково перед DR-операціями** (`promote`, `repoint-primary`, ручний `pg_basebackup`) —
+  доки черга непорожня (чому — див. `docs/operations/disaster-recovery-network.md` §6).
+
+### 9.4 Команди бекапу
+
+**Код-підтверджено:** скрипта бекапу черги в репозиторії **немає** — `scripts/backup.sh` і
+`scripts/backup-restore.sh` працюють виключно з PostgreSQL (див. 9.5).
+
+**Рекомендація оператора (у коді відсутня; стандартний інструмент SQLite):**
+
+```bash
+# шлях беремо з get_offline_stats → db_path (не вигадуємо):
+DB="$HOME/.local/share/torgashka/offline.db"
+OUT="$HOME/torgashka-backups/offline_$(date +%Y%m%d_%H%M).db"
+mkdir -p "$(dirname "$OUT")"
+
+sqlite3 "$DB" ".backup '$OUT'"     # консистентна копія при WAL; застосунок може працювати
+```
+
+Альтернативи (також не в коді): `VACUUM INTO`; або зупинити застосунок і скопіювати одним
+набором `offline.db` + `offline.db-wal` + `offline.db-shm`.
+
+### 9.5 Що НЕ покрито (НЕ РЕАЛІЗОВАНО в коді)
+
+- `scripts/backup.sh` / `scripts/backup-restore.sh` бекаплять лише `pg_dump`-ом `pos_system` і
+  `torgashka_owner_*` (розділи 1–5); згадок `offline.db`/SQLite в них немає → **НЕ РЕАЛІЗОВАНО**.
+- Перевірки цілісності та авто-бекапу черги в коді немає: grep `integrity_check|VACUUM` по
+  `frontend/src-tauri/**/*.rs` → 0 збігів → **НЕ РЕАЛІЗОВАНО**.
+- `get_db_size()` (`offline/db.rs:487-493`) дає лише розмір файлу — діагностика, не цілісність.
+- Окремих systemd-юнітів для черги немає (`scripts/systemd/` — лише PG-бекапи).
+
+### 9.6 Перевірка цілісності та `pending` після відновлення
+
+1. Перевірка знімка (рекомендація, не в коді):
+
+```bash
+sqlite3 "$OUT" "PRAGMA integrity_check;"                                  # очікувано: ok
+sqlite3 "$OUT" "SELECT status, COUNT(*) FROM outbox GROUP BY status;"      # pending/done/failed
+sqlite3 "$OUT" "SELECT COUNT(*) FROM outbox WHERE status IN ('pending','failed');"
+```
+
+2. Відновлення: покласти `offline.db` на місце (після `.backup` файли `-wal`/`-shm` не потрібні).
+   Застосунок відкриє його через `sync_push::open_connection` (`sync_push.rs:728-737`) і
+   застосує міграції — вручну нічого робити не треба.
+3. `pending` після відновлення: фоновий push (`src-tauri/src/lib.rs:347`,
+   `offline/commands.rs:123-140`) або ручний `sync_now` (`offline/commands.rs:489-556`) вибере
+   чергу FIFO (`sync_push.rs:252-280`) і надішле батчами ≤ 50 (`sync_push.rs:252`,
+   `torgashka-api/src/sync.rs:441`).
+4. **Повторний push ідемпотентний за `client_uuid`** (`outbox.client_uuid UNIQUE` —
+   `0002_sync_meta.sql:14`): сервер відповідає `already_exists`
+   (`sync.rs:428, :613, :725, :845, :971, :1104`; partial UNIQUE на primary: `receipts` —
+   Alembic 0013, `invoices` — 0016, ADR-0007 §9), клієнт переводить агрегат у `done`
+   **без другого stock-ефекту** (`sync_push.rs:564-567`).
+5. Легасі-рядки `synced=0` (створені старішою версією без outbox) після відновлення
+   підмітаються в чергу при першому ж циклі: `transactions.rs:467` `sweep_legacy_unsynced`,
+   виклик — `sync_push.rs:483`; ідемпотентно (`INSERT OR IGNORE` за `client_uuid`).
+
+### 9.7 Чого НЕ робити
+
+- **Не відновлювати чергу «поверх» уже синхронізованих агрегатів без перевірки `synced`-стану.**
+  - `synced=1` на локальному агрегаті **НЕ означає «доставлено на primary»**: черговий чек
+    пишеться як `INSERT INTO receipts (data, store_id, synced, client_uuid) VALUES (…, 1, …)`
+    **в одній транзакції** з `INSERT INTO outbox (…, 'pending')` (`sync_push.rs:110-130`) —
+    тобто `synced=1` = «вже в черзі», а стан доставки живе в `outbox.status`.
+  - Отже знімок, зроблений «після ack», але відновлений «пізніше», може повернути в роботу
+    документи, чиї `outbox`-записи вже `done`, і затерти новіші локальні дані каси.
+  - Правильний порядок: спершу — скільки `pending`/`failed` у **поточному** файлі
+    (`sqlite3 … GROUP BY status`), потім рішення; за сумніву — не підміняти файл цілком.
+  - Повторний push такого агрегата **не** створить дубля залишку/боргу (ідемпотентність
+    `client_uuid`, 9.6.4) — але локальний `stock`/агрегати будуть зі старого знімка.
+- Не робити `DROP`/перезапис `offline.db` при живому застосунку.
+- Не виконувати DR-операції (`promote`) з непорожньою чергою без бекапу (див. 9.3).
