@@ -1431,7 +1431,15 @@ fn current_store_id() -> Result<Uuid, PosErr> {
     })
 }
 
-/// POST /api/v1/cash-operations → 201 (внесення/інкасація; admin|owner).
+/// POST /api/v1/cash-operations → 201 Created (primary) / 202 Accepted (standby).
+///
+/// ADR-0007 §11.6: касова операція — клас `LocalOutbox`; на standby вона не
+/// створюється на primary, а лягає в локальну чергу (`OutboxPos`) → **202**,
+/// той самий контракт статусу, що в POS-документів (`created_or_queued`).
+/// DTO касової операції не має поля-маркера (`fiscal_status`/`status`), тому
+/// ознака «в черзі» тут — сам код 202 + заголовок `X-Torgashka-Node-Mode`
+/// (§4) + `/api/v1/local/status`; на primary — 201, байт-в-байт стара
+/// поведінка (F2).
 pub async fn create_cash_operation(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -1444,7 +1452,7 @@ pub async fn create_cash_operation(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok((
-        StatusCode::CREATED,
+        created_or_queued(state.node_config.is_standby()),
         Json(svc.create_cash_operation(store_id, user_id, &input).await?),
     ))
 }

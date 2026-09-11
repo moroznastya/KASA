@@ -518,6 +518,10 @@ async fn standby_pos_documents_go_to_local_outbox_not_to_replica() {
 }
 
 /// Операції без представлення в черзі → людська помилка (не паніка, не PG).
+///
+/// Залишкові відмови (ADR-0007 §11.6): довідник причин списання (гейт:
+/// `ProxyToPrimary`, адаптер — друга лінія), update/delete/confirm документів
+/// (у черзі немає типу дії над наявним документом), v1-чек із боргом.
 #[tokio::test]
 async fn unavailable_ops_refuse_with_human_message() {
     common::force_test_db();
@@ -549,24 +553,13 @@ async fn unavailable_ops_refuse_with_human_message() {
         "{err}"
     );
 
-    let err = pos
-        .create_cash_operation(
-            Uuid::new_v4(),
-            user,
-            &torgashka_domain::CashOperationCreateInput {
-                operation_type: torgashka_domain::CashOperationType::Deposit,
-                cash_type: torgashka_domain::CashType::Cash,
-                amount: bigdecimal::BigDecimal::from(100),
-                comment: None,
-            },
-        )
-        .await
-        .expect_err("cash_operations без §11.1 → відмова");
-    assert!(
-        err.to_string()
-            .contains("операція недоступна на цьому вузлі"),
-        "{err}"
-    );
+    // КАСОВА ОПЕРАЦІЯ тут БІЛЬШЕ НЕ ЗАПЕРЕЧУЄТЬСЯ: з 2026-09-11 вона має
+    // власний рядок §11.6 (`cash_operation` → LocalOutbox) і власний касовий
+    // ефект (`offline/cash.rs`), тому йде в локальну чергу — покриття
+    // позитивного шляху: `tests/cash_operation_standby_e2e.rs`.
+    // (У цьому тесті `settings.store_id` у SQLite НЕ засіяний, тож прямий
+    // виклик адаптера впав би на відсутній точці, а не на «недоступно» —
+    // тому тут касовий шлях не перевіряємо.)
 
     // Оновлення/проведення наявних документів: у черзі немає типу update/confirm.
     let err = pos

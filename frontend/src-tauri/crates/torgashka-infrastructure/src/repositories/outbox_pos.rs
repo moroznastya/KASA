@@ -684,15 +684,42 @@ impl PosService for OutboxPos {
 
     // ─── Готівкові операції ─────────────────────────────────────────────────
 
-    /// Сутність `cash_operations` відсутня в §11.1 (АНОМАЛІЯ) → відмова
-    /// замість сирої PG-помилки `read-only transaction`.
+    /// Касова операція (внесення/інкасація) — клас `LocalOutbox`
+    /// (ADR-0007 §11.1, §11.6): агрегат `cash_ledger` (0006) + outbox-запис
+    /// (`cash_operation`) + локальний баланс каси (`cash::apply_cash_delta`)
+    /// в ОДНІЙ SQLite-транзакції. Порожній `user_name`: таблиці `users` на
+    /// вузлі немає (імʼя резолвить primary у своїй відповіді / пулі).
     async fn create_cash_operation(
         &self,
-        _store_id: Uuid,
-        _user_id: Uuid,
-        _input: &CashOperationCreateInput,
+        store_id: Uuid,
+        user_id: Uuid,
+        input: &CashOperationCreateInput,
     ) -> Result<CashOperationDto, PosError> {
-        Err(unavailable("готівкова операція (внесення/інкасація)"))
+        let payload = json!({
+            "store_id": store_id.to_string(),
+            "user_id": user_id.to_string(),
+            "operation_type": input.operation_type.as_str(),
+            "cash_type": input.cash_type.as_str(),
+            "amount": input.amount.to_string(),
+            "comment": input.comment,
+        });
+        let out = enqueue_doc(
+            "касова операція",
+            transactions::TYPE_CASH_OPERATION,
+            payload,
+        )
+        .await?;
+        Ok(CashOperationDto {
+            id: uuid_of(&out.client_uuid),
+            store_id,
+            user_id,
+            user_name: String::new(),
+            operation_type: input.operation_type,
+            cash_type: input.cash_type,
+            amount: input.amount.clone(),
+            comment: input.comment.clone(),
+            created_at: Utc::now().naive_utc(),
+        })
     }
 
     async fn list_cash_operations(

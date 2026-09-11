@@ -428,6 +428,18 @@ const ADR_REGISTRY: &[(&str, &str, AdrClass)] = &[
         "invoice",
         AdrClass::LocalOutboxInvoice,
     ),
+    // §11.6 — касова операція каси (Queue → LocalOutbox, 1)
+    (
+        "repositories/pos.rs:3603",
+        "cash_operation",
+        AdrClass::Queue,
+    ),
+    // §11.6 — довідник причин списання (UPSTREAM_NOW → ProxyToPrimary, 1)
+    (
+        "repositories/pos.rs:3200",
+        "write_off_reason",
+        AdrClass::UpstreamNow,
+    ),
 ];
 
 /// Позначка «механізм без HTTP-поверхні» (§3.2 #36: після `pg_promote`).
@@ -446,11 +458,11 @@ const DOCUMENT_CHANNEL: &[&str] = &[
 ];
 
 #[test]
-fn adr_registry_has_41_points_and_matching_policies() {
+fn adr_registry_has_all_points_and_matching_policies() {
     assert_eq!(
         ADR_REGISTRY.len(),
-        41,
-        "реєстр §3 мусить містити 41 write-точку (§3.5)"
+        43,
+        "реєстр §3/§11.6 мусить містити 43 write-точки (41 §3.5 + 2 §11.6)"
     );
     let mut counts = [0usize; 4];
     let mut exemptions = 0usize;
@@ -478,13 +490,13 @@ fn adr_registry_has_41_points_and_matching_policies() {
         );
     }
     // §3.5: UPSTREAM_NOW 20, DISABLED 16, QUEUE+LOCAL_SQLITE 4, LocalOutbox(накладна) 1
-    assert_eq!(counts[0], 20, "UPSTREAM_NOW (§3.5)");
+    assert_eq!(counts[0], 21, "UPSTREAM_NOW (§3.1–§3.2 20 + write_off_reason §11.6)");
     assert_eq!(counts[1], 16, "DISABLED_ON_STANDBY (§3.5)");
-    assert_eq!(counts[2], 4, "QUEUE 1 + LOCAL_SQLITE 3 (§3.5)");
+    assert_eq!(counts[2], 5, "QUEUE 1 + LOCAL_SQLITE 3 (§3.5) + cash_operation §11.6");
     assert_eq!(counts[3], 1, "LocalOutbox-накладна (§3.6)");
     assert_eq!(exemptions, 1, "єдиний виняток — promote.rs:172 (§3.2 #36)");
     eprintln!(
-        "[guard] реєстр §3: 41 точка — UPSTREAM_NOW={}, DISABLED={}, QUEUE+LOCAL_SQLITE={}, invoice={}, винятків={}",
+        "[guard] реєстр §3/§11.6: 43 точки — UPSTREAM_NOW={}, DISABLED={}, QUEUE+LOCAL_SQLITE={}, invoice={}, винятків={}",
         counts[0], counts[1], counts[2], counts[3], exemptions
     );
 }
@@ -507,7 +519,11 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
         missing.is_empty(),
         "сутності POLICY_TABLE без write-точки в §3/§11.1: {missing:?}"
     );
-    assert_eq!(POLICY_TABLE.len(), 23, "таблиця політик §11.1 = 23 рядки");
+    assert_eq!(
+        POLICY_TABLE.len(),
+        25,
+        "таблиця політик §11.1 = 23 рядки + 2 рядки §11.6 (cash_operation, write_off_reason)"
+    );
     eprintln!(
         "[guard] POLICY_TABLE: {} рядків, усі покриті реєстром §3 або каналом документів",
         POLICY_TABLE.len()

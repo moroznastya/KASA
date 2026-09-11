@@ -473,9 +473,11 @@ SQLite-залишок у тій самій транзакції, що й outbox-
 | Сутність / поверхня | Політика | Механізм і доказ |
 |---|---|---|
 | POS-документи каси: `receipt`, `return_receipt`, `purchase_order`, `inventory`, `transfer`, `write_off`, **`invoice`** | **`LocalOutbox`** | SQLite агрегат + outbox + stock в одній транзакції: `sync_push.rs:112-219`, `transactions.rs:153-204` |
+| **`cash_operation`** (касова операція: внесення/інкасація; §11.6) | **`LocalOutbox`** | SQLite агрегат `cash_ledger` (0006) + outbox-запис `cash_operation` + касовий ефект (`offline/cash.rs`), offline-міграція 0011; приймач `cash_operations` (Alembic 0017) |
 | `work_session` (логін/логаут) | **`LocalOutbox`** | SQLite 0009 + outbox-op `work_session` (`transactions.rs:37`, `auth.rs:76-92`) |
 | heartbeat пристрою (`devices.last_seen_at`, `store_context.rs:108`) | **`LocalOutbox`** | некритичний side-effect, не блокує запит (§3.3) |
 | Адмін/мережа: `stores`, `user_stores`, `devices` (activate/status/delete), `store_activation_codes`, `network_nodes` (create/join/heartbeat/archive), `prro_settings`, `migrate_legacy`, `audit_log`, `network_events` | **`ProxyToPrimary`** | HTTP pass-through (§3.1 #1–#20) |
+| **`write_off_reason`** (довідник причин списання; §11.6) | **`ProxyToPrimary`** | §11.2 HTTP pass-through; у черзі довідник став би «документом каси», якого primary як документ не знає |
 | Агрегатор-only приймачі: `/api/v1/sync/push`, `store_sync_state`, `sync_log` | **`DISABLED_ON_STANDBY`** | §3.2 #22–#33: 503, чужі deltas не приймаються |
 | DDL провіжну реплікації (`CREATE/ALTER ROLE`) | **`DISABLED_ON_STANDBY`** | §3.2 #34–#35 |
 | фоновий `network_nodes offline-job` | **`DISABLED_ON_STANDBY`** | §3.2 #21 |
@@ -538,6 +540,181 @@ backend` → лише власний тест гейта. НЕ-чекові ти
 `/api/v1/local/ops` — вони ходять у ту саму примітивну функцію
 `transactions::enqueue_transaction`, що й `OutboxPos` (одна реалізація, два
 входи не створює другої логіки).
+
+### 11.6 Реєстр write-точок `repositories/pos.rs` (ПОВНА класифікація)
+
+**Навіщо розділ.** §3 класифікував лише write-точки `crates/torgashka-api/src/**`
+(40 + накладна). Репозиторій POS-сервісу
+`crates/torgashka-infrastructure/src/repositories/pos.rs` (3713 рядків) у жодному
+розділі ADR не реєструвався — саме тому `cash_operations` (`pos.rs:3603`) вислизнула
+з класифікації: каса на standby отримувала або сирий `500 cannot execute INSERT in a
+read-only transaction` (до Фази 1), або відмову адаптера без обґрунтованого класу.
+
+**Метод.** Перелічено всі SQL-літерали `INSERT INTO` / `UPDATE <таблиця>` /
+`DELETE FROM` у файлі (виключено `SELECT … FOR UPDATE`, коментарі та
+`ON CONFLICT … DO UPDATE` як частину одного statement'а). Результат —
+**44 statement-рядки у 13 функціях**. Оцінка «22 мутації» з контракту Фази 1.2
+вужча за факт: строгий `grep -nE '"\(INSERT|UPDATE|DELETE'` бачить лише 32 рядки
+(не ловить SQL у багаторядкових літералах, як-от `INSERT INTO receipts (`), а
+«22» — це, ймовірно, кількість *методів* з мутаціями (їх 13) після об'єднання.
+Тут — вичерпний перелік за фактом коду; кожен рядок має клас §11.1 і ціль.
+
+| # | рядок | SQL (statement) | клас §11.1 | куди йде на standby (`OutboxPos`) |
+|---|-------|-----------------|-----------|----------------------------------|
+| 1 | `pos.rs:304` | `INSERT receipts` | POS-документ `receipt` | → черга (`sync_push::enqueue_receipt_with_uuid`) |
+| 2 | `pos.rs:542` | `UPDATE stock` | `receipt` | → черга (локальний stock-ефект) |
+| 3 | `pos.rs:569` | `UPDATE products` | `receipt` | → черга (`products.stock` — прерогатива primary, локально не чіпається) |
+| 4 | `pos.rs:580` | `INSERT stock` (+`ON CONFLICT DO UPDATE`) | `receipt` | → черга |
+| 5 | `pos.rs:593` | `UPDATE products` | `receipt` (повернення) | → черга |
+| 6 | `pos.rs:636` | `INSERT receipt_items` | `receipt` | → черга |
+| 7 | `pos.rs:1981` | `INSERT receipts` (v1) | `receipt` | → черга (борговий чек — відмова, рядки 13–16) |
+| 8 | `pos.rs:2047` | `INSERT receipt_items` (v1) | `receipt` | → черга |
+| 9 | `pos.rs:2074` | `UPDATE stock` (v1) | `receipt` | → черга |
+| 10 | `pos.rs:2116` | `UPDATE stock` (v1) | `receipt` | → черга |
+| 11 | `pos.rs:2129` | `INSERT stock` (v1, `ON CONFLICT DO UPDATE`) | `receipt` | → черга |
+| 12 | `pos.rs:2150` | `INSERT debtor_payments` | **немає рядка §11.1** | ✖ відмова (АНОМАЛІЯ §11.6.4) |
+| 13 | `pos.rs:2169` | `DELETE debtors` | **немає рядка §11.1** | ✖ відмова (АНОМАЛІЯ §11.6.4) |
+| 14 | `pos.rs:2175` | `UPDATE debtors` | **немає рядка §11.1** | ✖ відмова (АНОМАЛІЯ §11.6.4) |
+| 15 | `pos.rs:2191` | `DELETE debtors` | **немає рядка §11.1** | ✖ відмова (АНОМАЛІЯ §11.6.4) |
+| 16 | `pos.rs:2197` | `UPDATE debtors` | **немає рядка §11.1** | ✖ відмова (АНОМАЛІЯ §11.6.4) |
+| 17 | `pos.rs:2949` | `INSERT write_offs` | `write_off` | → черга (`enqueue_transaction`) |
+| 18 | `pos.rs:2980` | `INSERT write_off_items` | `write_off` | → черга |
+| 19 | `pos.rs:3034` | `UPDATE write_offs` (number) | `write_off` | ✖ відмова (§11.6.2: у черзі немає типу update) |
+| 20 | `pos.rs:3038` | `UPDATE write_offs` (reason) | `write_off` | ✖ відмова (§11.6.2) |
+| 21 | `pos.rs:3042` | `UPDATE write_offs` (write_off_date) | `write_off` | ✖ відмова (§11.6.2) |
+| 22 | `pos.rs:3046` | `UPDATE write_offs` (notes) | `write_off` | ✖ відмова (§11.6.2) |
+| 23 | `pos.rs:3050` | `DELETE write_off_items` | `write_off` | ✖ відмова (§11.6.2) |
+| 24 | `pos.rs:3063` | `INSERT write_off_items` (перепис) | `write_off` | ✖ відмова (§11.6.2) |
+| 25 | `pos.rs:3080` | `UPDATE write_offs` (total_amount) | `write_off` | ✖ відмова (§11.6.2) |
+| 26 | `pos.rs:3104` | `DELETE write_offs` | `write_off` | ✖ відмова (§11.6.2) |
+| 27 | `pos.rs:3144` | `UPDATE stock` (confirm) | `write_off` | ✖ відмова (§11.6.2) |
+| 28 | `pos.rs:3154` | `UPDATE write_offs SET status='confirmed'` | `write_off` | ✖ відмова (§11.6.2) |
+| 29 | `pos.rs:3200` | `INSERT write_off_reasons` | **`write_off_reason` = `ProxyToPrimary`** (§11.1) | ✖ адаптер відмовляє; гейт проксіює ДО хендлера (§11.6.3) |
+| 30 | `pos.rs:3266` | `INSERT transfers` | `transfer` | → черга (`enqueue_transaction`) |
+| 31 | `pos.rs:3296` | `INSERT transfer_items` | `transfer` | → черга |
+| 32 | `pos.rs:3349` | `UPDATE transfers` (number) | `transfer` | ✖ відмова (§11.6.2) |
+| 33 | `pos.rs:3353` | `UPDATE transfers` (from_location) | `transfer` | ✖ відмова (§11.6.2) |
+| 34 | `pos.rs:3357` | `UPDATE transfers` (to_location) | `transfer` | ✖ відмова (§11.6.2) |
+| 35 | `pos.rs:3361` | `UPDATE transfers` (transfer_date) | `transfer` | ✖ відмова (§11.6.2) |
+| 36 | `pos.rs:3365` | `UPDATE transfers` (notes) | `transfer` | ✖ відмова (§11.6.2) |
+| 37 | `pos.rs:3369` | `DELETE transfer_items` | `transfer` | ✖ відмова (§11.6.2) |
+| 38 | `pos.rs:3379` | `INSERT transfer_items` (перепис) | `transfer` | ✖ відмова (§11.6.2) |
+| 39 | `pos.rs:3412` | `DELETE transfers` | `transfer` | ✖ відмова (§11.6.2) |
+| 40 | `pos.rs:3456` | `UPDATE stock` (confirm, −) | `transfer` | ✖ відмова (§11.6.2) |
+| 41 | `pos.rs:3466` | `UPDATE transfers SET status='confirmed'` | `transfer` | ✖ відмова (§11.6.2) |
+| 42 | `pos.rs:3485` | `UPDATE stock` (cancel, +) | `transfer` | ✖ відмова (§11.6.2) |
+| 43 | `pos.rs:3495` | `UPDATE transfers SET status='cancelled'` | `transfer` | ✖ відмова (§11.6.2) |
+| 44 | `pos.rs:3603` | `INSERT cash_operations` | **`cash_operation` = `LocalOutbox`** (§11.1) | ✅ черга `cash_ledger` + `cash_operation` (Фаза 1.2) |
+
+### 11.6.1 Касова операція (внесення/інкасація) — клас `LocalOutbox` (остаточно)
+
+**Рішення прийняте за рекомендацією NIKO:** касова операція — це така сама дія
+каси, як чек: вона змінює грошовий ящик вузла тут і зараз, а primary лише
+фіксує факт. Альтернативи відкинуто:
+
+* `ProxyToPrimary` (проксі на primary) — інкасація/внесення стають неможливими
+  при недосяжному primary (503), тобто офлайн-каса втрачає ключову операцію;
+* `DISABLED_ON_STANDBY` — те саме, ще жорсткіше (немає навіть спроби проксі).
+
+Стек (Фаза 1.2, файл:рядок):
+
+| # | Елемент | Де |
+|---|---------|-----|
+| 1 | `TYPE_CASH_OPERATION = "cash_operation"` | `offline/transactions.rs:47` |
+| 2 | `table_of("cash_operation") → "cash_ledger"` — окремої таблиці агрегата НЕ заводимо, вона вже є (offline-міграція 0006: `client_uuid` + `data` + `store_id` + `synced`) | `offline/transactions.rs:153` |
+| 3 | Касовий ефект у тій самій SQLite-транзакції: `deposit` → `+amount`, `collection` → `−amount`; окремі ящики `cash`/`card`; копійки (scale 2, без f64) | `offline/transactions.rs:93` → `offline/cash.rs` (`cash_delta`, `apply_cash_delta`) |
+| 4 | Таблиця похідного стану `cash_balance` (`store_id`, `cash_type`, `balance_cents`, `UNIQUE`) | offline-міграція `0011_local_cash.sql`; `SCHEMA_VERSION` 10 → 11 |
+| 5 | `enqueue_cash_operation` — тонкий wrapper над `enqueue_transaction` (одна примітивна функція запису, другої не заводимо — §11.5) | `offline/transactions.rs:386` |
+| 6 | `OutboxPos::create_cash_operation` — замість `unavailable` пише в чергу; `user_name` порожній (таблиці `users` на вузлі немає — імʼя резолвить primary) | `repositories/outbox_pos.rs:689` |
+| 7 | Гейт: `/api/v1/cash-operations` → `cash_operation` → `LocalOutbox` | `write_gate.rs:70`, `:293` |
+| 8 | HTTP-статус: 201 на primary / **202** на standby (той самий `created_or_queued`, що в POS-документів). У DTO касової операції поля-маркера немає, тож ознака «в черзі» — код 202 + `X-Torgashka-Node-Mode` + `/api/v1/local/status` | `pos.rs:1434` |
+| 9 | Приймач на primary: `receiver_table("cash_operation") → "cash_operations"` + `accept_cash_operation` (валідація людськими текстами, один `INSERT`, `created_at` каси, `user_id` = JWT sub) | `sync.rs:648`, `:908`; `sync_receivers.rs:565` |
+| 10 | Ідемпотентність: `cash_operations.client_uuid` + partial UNIQUE `uq_cash_operations_client_uuid` | Alembic `0017_cash_operation_idempotency.py` (ім'я ревізії — 31 символ: `alembic_version.version_num` це `varchar(32)`, довше валило `upgrade head` ПІСЛЯ DDL) |
+| 11 | Дзеркало 0017 для тестової БД (`schema.sql` її не має) | `tests/common/sync_schema.rs` |
+
+Свідомо прийняте обмеження: локальний `cash_balance` — **оцінка** вузла (той
+самий статус, що локальний `stock`, §10.3). Авторитетний баланс primary рахує
+запитом до `cash_operations`; після ack локальний баланс не «доганяє» репліку
+автоматично (master-pull не віддає `cash_operations`) — розбіжність
+вирівнюється наступною інкасацією/внесенням.
+
+### 11.6.2 Залишкові відмови `update/delete/confirm` документів — свідомий клас
+
+Клас сутності — `LocalOutbox` (`write_off`, `transfer`), але **клас дії** —
+«у черзі немає представлення дії над наявним документом»:
+
+* `transactions.rs` не має типу «update» (лише агрегат-створення);
+* приймач `sync.rs` уміє тільки `accept_*` (INSERT агрегата, рядки #17–#18,
+  #30–#31), тобто «update через новий INSERT» дав би **другий документ** на
+  primary і подвійний stock-ефект (`confirm_*` рухає `stock`) — тиха втрата
+  даних, найгірший з можливих наслідків;
+* тому кожна така дія повертає `PosError::BadRequest` з людським текстом
+  «операція недоступна на цьому вузлі (потрібен головний сервер)» → HTTP
+  **400**, не 500 і без сирого тексту PG (`outbox_pos.rs:81`).
+
+**Чому НЕ `ProxyToPrimary`** (хоча спокусливо: «перенаправити на primary»):
+документ, який редагують, фізично існує **лише в черзі вузла** — на primary
+його ще немає (він там з'явиться після синку). Проксі перенаправив би запит на
+primary, де цього документа немає → 404 або, гірше, редагування чужого
+документа. Єдина коректна семантика до синку — явна відмова; після синку
+документ редагується на primary через звичайний UI.
+
+### 11.6.3 Довідник причин списання — `ProxyToPrimary`
+
+`write_off_reasons` (#29) — не документ каси, а **довідник точки** (спільний
+для всіх списань). У черзі він поїхав би як агрегат `write_off`, і приймач
+створив би хибний документ списання зі stock-ефектом або відкинув його як
+невідомий довідник.
+
+Механізм — **наявний** проксі гейта (§11.2), новий не писався:
+`classify_request("/api/v1/write-off-reasons") → "write_off_reason"` →
+`ProxyToPrimary` → HTTP pass-through (method+path+query+body як є, JWT
+користувача, verbatim-відповідь); primary недосяжний → 503 за §4. Друга лінія
+захисту: `OutboxPos::create_write_off_reason` лишається `unavailable` — якщо
+хтось викличе сервіс повз гейт.
+
+Наслідок для класифікації: `/api/v1/write-offs` — і далі `write_off` (документ
+→ черга), `/api/v1/write-off-reasons` — окрема сутність `write_off_reason`.
+
+### 11.6.4 АНОМАЛІЯ: боргові сутності поза §11.1
+
+`debtor_payments`, `debtors` (#12–#16) не мають рядка ні в §3, ні в §11.1.
+Клас не вигадано: чек `v1` із `debt_payment`/`debtor_id` відмовляється
+(`outbox_pos.rs:347` — борг не втрачається тихо).
+
+Потрібне рішення NIKO (одне з двох):
+1. `LocalOutbox` із борговим ефектом на вузлі — нова локальна таблиця боргів
+   (дзеркало `debtors`/`debtor_payments`) + приймач на primary; на standby
+   борг стає можливим;
+2. `ProxyToPrimary` — борговий чек лише онлайн (відмова/503 без мережі).
+
+До рішення поведінка не змінюється: явна відмова з людським текстом (400).
+
+### 11.6.5 Контрольні підсумки
+
+| Клас | Точок | Рядки реєстру |
+|------|-------|---------------|
+| Черга (`LocalOutbox`: `receipt`, `return_receipt`, `write_off`, `transfer`, `cash_operation`) | 16 | #1–#11, #17, #18, #30, #31, #44 |
+| Відмова-як-клас (у черзі немає дії над документом) | 22 | #19–#28, #32–#43 |
+| `ProxyToPrimary` (довідник `write_off_reason`) | 1 | #29 |
+| Поза §11.1 (АНОМАЛІЯ §11.6.4) | 5 | #12–#16 |
+| **Усього** | **44** | 44 statement-рядки у 13 функціях `pos.rs` |
+
+Критерії прийняття (метод §3.5):
+
+* жоден клас не пише в локальну репліку (F5) → ✅ (черга → SQLite;
+  `ProxyToPrimary` → HTTP; відмова → 400 до будь-якого SQL);
+* 100 % точок мають клас і `файл:рядок` → ✅ (44/44);
+* `cash_operation` більше не безкласова → ✅ (§11.6.1; особливо §11.1);
+* CI-guard (*`tests/write_gate_guard.rs`*) оновлено разом з реєстром:
+  реєстр §3 + §11.6 = 43 точки (41 + `cash_operation` + `write_off_reason`),
+  `POLICY_TABLE` = 25 рядків (23 + 2); негативний контроль guard'а збережено;
+* решта 22 відмови — не «просто unavailable», а клас із обґрунтуванням
+  (§11.6.2) і посиланням на рядок реєстру;
+* довідник — через **наявний** проксі гейта, без нового механізму (§11.6.3).
+
+
+---
 
 ## 12. Порядок викатки (обов'язковий, не переставляти)
 

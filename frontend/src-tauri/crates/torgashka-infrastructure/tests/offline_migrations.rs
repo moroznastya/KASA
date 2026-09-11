@@ -296,6 +296,11 @@ fn fresh_db_reaches_latest_with_stock_txn_and_sync_log() {
     ] {
         assert!(table_exists(&db_file, t), "{t} існує (0006)");
     }
+    // 0011: локальний баланс каси (ADR-0007 §11.6) — дзеркало cash_operations.
+    assert!(
+        table_exists(&db_file, "cash_balance"),
+        "cash_balance існує (0011)"
+    );
     // 0008: sync_log (моніторинг ЕТАП 7) — таблиця, CHECK і індекс.
     assert!(table_exists(&db_file, "sync_log"), "sync_log існує (0008)");
     conn.execute(

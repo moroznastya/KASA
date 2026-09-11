@@ -429,12 +429,15 @@ async fn query_settings(
 // Кожен прийом логується в sync_log (direction='push', payload_hash sha256) —
 // дизайн 8.2.
 //
-// ЕТАП 4 підтримує ТИЛЬКИ типи, що реально записуються локально касою:
-//   receipt (продаж)        → POST /v2/receipts/sale    (PG приймач receipts)
-//   return_receipt (повернення) → POST /v2/receipts/return (return_invoices…)
-// Інші типи дизайну 2.2 (purchase/inventory/transfer/write_off/cash_operation/
-// work_session) локально касою не створюються — TODO ЕТАП 6; сервер відповідає
-// per-item error без retry (каса позначить outbox failed — «потребує уваги»).
+// Приймач підтримує типи, що реально записуються локально касою (ЕТАП 6/7b
+// + ADR-0007 §3.6, §11.6):
+//   receipt / return_receipt → POST /v2/receipts/sale|return (через сервіс)
+//   purchase_order, inventory, transfer, write_off → SQL-приймачі
+//     (`sync_receivers.rs`, кожен зі stock-ефектом в одній транзакції);
+//   invoice → сервіс накладних (§9); cash_operation → INSERT у
+//     `cash_operations` (§11.6, Alembic 0017).
+// Невідомий тип → per-item error без retry (каса позначить outbox failed —
+// «потребує уваги»); тихого ack немає.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Максимум агрегатів на один push-запит (дизайн 4.2: до 50).
@@ -571,7 +574,7 @@ async fn process_push_item(
         Some(t) => t,
         None => {
             log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
-                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off; ADR-0007 — invoice)", item.kind
+                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off/cash_operation; ADR-0007 — invoice)", item.kind
             ))).await;
             return PushItemResult::error(
                 item.client_uuid,
@@ -643,6 +646,9 @@ fn receiver_table(kind: &str) -> Option<&'static str> {
         "write_off" => Some("write_offs"),
         // ADR-0007 §3.4: прибуткова накладна каси (partial UNIQUE 0016).
         "invoice" => Some("invoices"),
+        // ADR-0007 §11.6: касова операція (внесення/інкасація; partial
+        // UNIQUE uq_cash_operations_client_uuid, Alembic 0017).
+        "cash_operation" => Some("cash_operations"),
         _ => None,
     }
 }
@@ -893,6 +899,17 @@ async fn accept_non_receipt_kind(
         }
         "write_off" => {
             crate::sync_receivers::accept_write_off(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
+        "cash_operation" => {
+            crate::sync_receivers::accept_cash_operation(
                 pool,
                 ctx_store,
                 cashier,

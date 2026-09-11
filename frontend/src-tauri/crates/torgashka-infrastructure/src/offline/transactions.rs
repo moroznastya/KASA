@@ -20,7 +20,7 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::stock;
+use super::{cash, stock};
 
 /// Тип агрегата «закупка» (дизайн 2.2; майбутній outbox-тип ЕТАП 7).
 pub const TYPE_PURCHASE_ORDER: &str = "purchase_order";
@@ -39,6 +39,12 @@ pub const TYPE_WORK_SESSION: &str = "work_session";
 /// Локальна таблиця — `invoices`/`invoice_items` (міграція 0010), outbox-опу
 /// `invoice`; stock-ефект прибуткової — +qty (як purchase_order).
 pub const TYPE_INVOICE: &str = "invoice";
+/// Тип агрегата «касова операція» (внесення/інкасація) — ADR-0007 §11.6,
+/// клас LocalOutbox (§11.1). Локальна таблиця — НАЯВНА `cash_ledger`
+/// (міграція 0006): окремого агрегата не заводимо (`table_of`), бо
+/// `cash_ledger` уже має контракт client_uuid + data + store_id + synced.
+/// Ефект — НЕ stock, а грошовий ящик вузла (`cash::apply_cash_delta`).
+pub const TYPE_CASH_OPERATION: &str = "cash_operation";
 
 /// Результат локального запису транзакції (агрегат + outbox).
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +88,22 @@ fn apply_effects(
     payload: &Value,
     store_id: &str,
 ) -> Result<(), String> {
+    // Касова операція: ефект — грошовий ящик вузла (cash.rs), не stock.
+    // Гілка стоїть ДО розбору позицій: у касової операції позицій немає.
+    if kind == TYPE_CASH_OPERATION {
+        let op = payload
+            .get("operation_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let cash_type = payload
+            .get("cash_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("cash");
+        let delta = cash::cash_delta(payload).ok_or_else(|| {
+            format!("касова операція: невідомий operation_type '{op}' або некоректна сума")
+        })?;
+        return cash::apply_cash_delta(conn, store_id, cash_type, delta);
+    }
     let items = stock::parse_items(payload);
     if items.is_empty() {
         return Ok(()); // немає позицій з кількістю — ефекту немає
@@ -128,6 +150,7 @@ fn table_of(kind: &str) -> Result<&'static str, String> {
         TYPE_TRANSFER => Ok("transfers"),
         TYPE_WRITE_OFF => Ok("write_offs"),
         TYPE_INVOICE => Ok("invoices"),
+        TYPE_CASH_OPERATION => Ok("cash_ledger"),
         other => Err(format!("тип транзакції без локальної таблиці: {other}")),
     }
 }
@@ -144,6 +167,7 @@ pub fn is_supported_outbox_type(kind: &str) -> bool {
             | TYPE_WRITE_OFF
             | TYPE_WORK_SESSION
             | TYPE_INVOICE
+            | TYPE_CASH_OPERATION
             | super::sync_push::TYPE_RECEIPT
             | super::sync_push::TYPE_RETURN_RECEIPT
     )
@@ -349,6 +373,22 @@ pub fn enqueue_invoice(
         client_uuid,
         outbox_id,
     })
+}
+
+/// Касова операція каси (внесення/інкасація) — ADR-0007 §11.6.
+///
+/// Свідомо ТОНКИЙ wrapper над [`enqueue_transaction`]: агрегат `cash_ledger`
+/// (0006) + outbox-запис (pending) + касовий ефект (`cash::apply_cash_delta`)
+/// в ОДНІЙ SQLite-транзакції — тобто та сама примітивна функція, яку
+/// використовує `/api/v1/local/ops` і `OutboxPos` (одна реалізація запису,
+/// другої не заводимо — §11.5). Окремих колонок (як `invoices.supplier_id`)
+/// не потрібно: реквізити читаються з `data`/payload.
+pub fn enqueue_cash_operation(
+    conn: &mut Connection,
+    payload_json: &str,
+    store_id: &str,
+) -> Result<EnqueuedTransaction, String> {
+    enqueue_transaction(conn, TYPE_CASH_OPERATION, payload_json, store_id)
 }
 
 /// Підмітає в outbox агрегати synced=0, накопичені СТАРОЮ версією коду
@@ -1218,11 +1258,97 @@ mod tests {
             TYPE_TRANSFER,
             TYPE_WRITE_OFF,
             TYPE_WORK_SESSION,
+            TYPE_INVOICE,
+            TYPE_CASH_OPERATION,
             super::super::sync_push::TYPE_RECEIPT,
             super::super::sync_push::TYPE_RETURN_RECEIPT,
         ] {
             assert!(is_supported_outbox_type(kind), "{kind} мусить бути відомий");
         }
         assert!(!is_supported_outbox_type("totally_unknown_kind"));
+    }
+
+    /// Касова операція: агрегат `cash_ledger` (synced=1) + outbox(pending) +
+    /// касовий ефект на баланс — усе в одній транзакції (ADR-0007 §11.6).
+    #[test]
+    fn cash_operation_enqueues_aggregate_outbox_and_moves_balance() {
+        let mut conn = migrated_conn();
+        let deposit = json!({
+            "operation_type": "deposit",
+            "cash_type": "cash",
+            "amount": "150.00",
+            "comment": "внесення (e2e)",
+        })
+        .to_string();
+        let out = enqueue_cash_operation(&mut conn, &deposit, STORE).expect("deposit");
+        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("balance"), 15_000);
+        // Агрегат — у НАЯВНІЙ таблиці 0006 cash_ledger, synced=1 (push-кандидат).
+        let (data, synced, table): (String, i64, String) = conn
+            .query_row(
+                "SELECT l.data, l.synced, 'cash_ledger' FROM cash_ledger l WHERE l.client_uuid = ?1",
+                rusqlite::params![out.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("агрегат cash_ledger");
+        assert_eq!(table, "cash_ledger");
+        assert_eq!(synced, 1, "агрегат каси — push-кандидат");
+        assert!(data.contains("deposit"), "data = payload як є: {data}");
+        // Рівно один outbox-запис із типом cash_operation.
+        let (otype, status): (String, String) = conn
+            .query_row(
+                "SELECT type, status FROM outbox WHERE client_uuid = ?1",
+                rusqlite::params![out.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("outbox");
+        assert_eq!(otype, TYPE_CASH_OPERATION);
+        assert_eq!(status, "pending");
+
+        // Інкасація — мінус; окремий ящик card не змішується.
+        let collection = json!({
+            "operation_type": "collection",
+            "cash_type": "cash",
+            "amount": "50.00",
+        })
+        .to_string();
+        enqueue_cash_operation(&mut conn, &collection, STORE).expect("collection");
+        let card = json!({
+            "operation_type": "deposit",
+            "cash_type": "card",
+            "amount": "10.00",
+        })
+        .to_string();
+        enqueue_cash_operation(&mut conn, &card, STORE).expect("card");
+        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("cash"), 10_000);
+        assert_eq!(cash::get_cash_balance(&conn, STORE, "card").expect("card"), 1_000);
+        // 3 агрегати, 3 op — нічого не загубилось і не подвоїлось.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cash_ledger", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 3);
+    }
+
+    /// Невідомий `operation_type` → відмова й ROLLBACK: ні агрегата, ні
+    /// outbox-запису, ні касового ефекту (межа «ефект і документ — разом»).
+    #[test]
+    fn cash_operation_unknown_type_rolls_back_everything() {
+        let mut conn = migrated_conn();
+        let bad = json!({"operation_type": "withdrawal", "cash_type": "cash", "amount": "10.00"})
+            .to_string();
+        let err = enqueue_cash_operation(&mut conn, &bad, STORE).expect_err("мусить відмовити");
+        assert!(err.contains("невідомий operation_type"), "{err}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cash_ledger", [], |r| r.get(0))
+            .expect("count");
+        let ops: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE type = ?1",
+                rusqlite::params![TYPE_CASH_OPERATION],
+                |r| r.get(0),
+            )
+            .expect("count ops");
+        assert_eq!(n, 0, "агрегата немає");
+        assert_eq!(ops, 0, "outbox-запису немає");
+        assert_eq!(cash::get_cash_balance(&conn, STORE, "cash").expect("balance"), 0);
     }
 }

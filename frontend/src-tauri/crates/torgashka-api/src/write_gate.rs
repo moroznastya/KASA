@@ -65,6 +65,9 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("invoice", WritePolicy::LocalOutbox),
     ("work_session", WritePolicy::LocalOutbox),
     ("device_heartbeat", WritePolicy::LocalOutbox),
+    // §11.6: касова операція каси (внесення/інкасація) — той самий SQLite-
+    // канал, що POS-документи (`cash_ledger` + outbox `cash_operation`).
+    ("cash_operation", WritePolicy::LocalOutbox),
     // Адмін/мережа — єдине джерело істини primary (§11.1, рядок 4).
     ("stores", WritePolicy::ProxyToPrimary),
     ("user_stores", WritePolicy::ProxyToPrimary),
@@ -75,6 +78,10 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("migrate_legacy", WritePolicy::ProxyToPrimary),
     ("audit_log", WritePolicy::ProxyToPrimary),
     ("network_events", WritePolicy::ProxyToPrimary),
+    // §11.6: довідник причин списання — НЕ документ каси, а глобальні дані
+    // точки (`write_off_reasons`, спільні для всіх змін): джерело істини —
+    // primary, на standby гейт проксіює (§11.2), 503 коли primary недосяжний.
+    ("write_off_reason", WritePolicy::ProxyToPrimary),
     // Агрегатор-only приймачі + DDL провіжну + фоновий job (§11.1, рядки 5–7).
     ("sync_push", WritePolicy::DisabledOnStandby),
     ("store_sync_state", WritePolicy::DisabledOnStandby),
@@ -273,8 +280,18 @@ pub fn classify_request(method: &Method, path: &str) -> Option<&'static str> {
     if p.starts_with("/api/v1/transfers") {
         return Some("transfer");
     }
-    if p.starts_with("/api/v1/write-offs") || p == "/api/v1/write-off-reasons" {
+    if p.starts_with("/api/v1/write-offs") {
         return Some("write_off");
+    }
+    if p == "/api/v1/write-off-reasons" {
+        // §11.6: довідник, не документ → ProxyToPrimary (не LocalOutbox:
+        // у черзі він став би «причиною списання», якої на primary немає,
+        // і документ каси відкинув би приймач як невідомий довідник).
+        return Some("write_off_reason");
+    }
+    if p.starts_with("/api/v1/cash-operations") {
+        // §11.6: касова операція (внесення/інкасація) — LocalOutbox.
+        return Some("cash_operation");
     }
     if p.starts_with("/api/v1/invoices") || p.starts_with("/api/v2/invoices") {
         return Some("invoice");

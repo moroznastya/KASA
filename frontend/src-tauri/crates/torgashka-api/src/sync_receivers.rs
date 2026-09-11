@@ -555,6 +555,76 @@ pub async fn accept_write_off(
     Ok(id)
 }
 
+// ─── Касові операції (внесення/інкасація) ───────────────────────────────────
+
+/// Касова операція каси (внесення/інкасація) — ADR-0007 §11.6, клас
+/// `LocalOutbox` (§11.1). Приймач — ОДИН INSERT: ефект касової операції
+/// рівно один (рядок у `cash_operations` точки; баланс каси primary рахує
+/// запитом, окремої таблиці балансу немає — на відміну від `stock`, де
+/// ефект окремий). Тому транзакція-агрегат не потрібна.
+///
+/// Ідемпотентність: `client_uuid` каси → `cash_operations.client_uuid` +
+/// partial UNIQUE `uq_cash_operations_client_uuid` (Alembic 0017) + SELECT-
+/// дублікат у кроці 3 `process_push_item`; гонку двох push ловить UNIQUE.
+///
+/// Валідація payload — ЛЮДСЬКИМИ текстами (без сирого тексту PG-констрейнтів
+/// `cash_operations_operation_type_check`/`cash_type_check`/`amount_check`,
+/// які лишаються другим рубежем).
+pub async fn accept_cash_operation(
+    pool: &PgPool,
+    store_id: Uuid,
+    cashier: Uuid,
+    client_uuid: Uuid,
+    created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let op = s(payload, "operation_type").unwrap_or_default();
+    if !matches!(op.as_str(), "deposit" | "collection") {
+        return Err(format!(
+            "касова операція: operation_type мусить бути deposit/collection, маємо '{op}'"
+        ));
+    }
+    let cash_type = s(payload, "cash_type").unwrap_or_else(|| "cash".to_string());
+    if !matches!(cash_type.as_str(), "cash" | "card") {
+        return Err(format!(
+            "касова операція: cash_type мусить бути cash/card, маємо '{cash_type}'"
+        ));
+    }
+    let amount = dec(payload, "amount")?
+        .ok_or_else(|| "касова операція: сума обов'язкова".to_string())?;
+    match scaled2(&amount) {
+        Some(cents) if cents > 0 => {}
+        _ => {
+            return Err(format!(
+                "касова операція: сума мусить бути > 0, маємо '{amount}'"
+            ))
+        }
+    }
+    let comment = s(payload, "comment");
+    // created_at каси (конверт PushEnvelope), НЕ now() — як у documents/чеках.
+    let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO cash_operations \
+            (id, store_id, user_id, operation_type, cash_type, amount, comment, \
+             created_at, client_uuid) \
+         VALUES ($1,$2,$3,$4,$5,$6::numeric,$7,$8::timestamp,$9)",
+    )
+    .bind(id)
+    .bind(store_id)
+    .bind(cashier)
+    .bind(&op)
+    .bind(&cash_type)
+    .bind(&amount)
+    .bind(comment.as_deref())
+    .bind(ts)
+    .bind(client_uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("INSERT cash_operations: {e}"))?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

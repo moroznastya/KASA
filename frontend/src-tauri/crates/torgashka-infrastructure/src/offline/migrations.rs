@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -86,6 +86,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "local_invoices",
         sql: include_str!("migrations/offline/0010_local_invoices.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "local_cash",
+        sql: include_str!("migrations/offline/0011_local_cash.sql"),
     },
 ];
 
@@ -516,14 +521,18 @@ mod tests {
     }
 
     /// Міграція 0009 (work_sessions): таблиця реально створюється,
-    /// user_version = актуальна (10), таблиця порожня; повторний
+    /// user_version = актуальна (SCHEMA_VERSION), таблиця порожня; повторний
     /// запуск — no-op (ідемпотентність).
     #[test]
     fn work_sessions_table_created() {
         let conn = Connection::open_in_memory().expect("in-memory");
         let v = migrate(&conn).expect("міграція");
         assert_eq!(v, super::SCHEMA_VERSION);
-        assert_eq!(current_version(&conn).unwrap(), 10, "user_version = 10");
+        assert_eq!(
+            current_version(&conn).unwrap(),
+            super::SCHEMA_VERSION,
+            "user_version = актуальна схема"
+        );
 
         assert!(table_exists(&conn, "work_sessions"), "таблиця створена");
         let n: i64 = conn
@@ -554,18 +563,22 @@ mod tests {
         // Повторний запуск — no-op.
         let v2 = migrate(&conn).expect("повторна міграція");
         assert_eq!(v2, super::SCHEMA_VERSION);
-        assert_eq!(current_version(&conn).unwrap(), 10);
+        assert_eq!(current_version(&conn).unwrap(), super::SCHEMA_VERSION);
     }
 
     /// Міграція 0010 (local_invoices): таблиці прибуткової накладної
-    /// створені, user_version = SCHEMA_VERSION (10), повторний запуск —
+    /// створені, user_version = SCHEMA_VERSION, повторний запуск —
     /// no-op (ідемпотентність).
     #[test]
     fn local_invoices_tables_created() {
         let conn = Connection::open_in_memory().expect("in-memory");
         let v = migrate(&conn).expect("міграція");
         assert_eq!(v, super::SCHEMA_VERSION);
-        assert_eq!(current_version(&conn).unwrap(), 10, "user_version = 10");
+        assert_eq!(
+            current_version(&conn).unwrap(),
+            super::SCHEMA_VERSION,
+            "user_version = актуальна схема"
+        );
 
         assert!(table_exists(&conn, "invoices"), "invoices створена");
         assert!(
@@ -609,6 +622,6 @@ mod tests {
         // Повторний запуск — no-op.
         let v2 = migrate(&conn).expect("повторна міграція");
         assert_eq!(v2, super::SCHEMA_VERSION);
-        assert_eq!(current_version(&conn).unwrap(), 10);
+        assert_eq!(current_version(&conn).unwrap(), super::SCHEMA_VERSION);
     }
 }
