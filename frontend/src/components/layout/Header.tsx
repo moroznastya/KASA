@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { LogOut, Moon, Sun, User, Clock, Store, ShieldCheck } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { SyncStatus } from '@/hooks/useOfflineSync';
+import { NodeStatusIndicator } from '@/hooks/useNodeStatus';
 import { useAuthStore } from '@/store/authStore';
 import { useStoreStore } from '@/store/storeStore';
 import { authService } from '@/services/authService';
@@ -94,6 +95,10 @@ export const Header: React.FC = () => {
             containerClassName="w-[200px]"
           />
         )}
+
+        {/* Стан вузла (standby): primary доступний / черга синкається / офлайн.
+            Джерело — GET /local/status, НЕ navigator.onLine (Фаза 3.1а/3.1б). */}
+        <NodeStatusIndicator />
 
         {/* Індикатор офлайн-синхронізації (Tauri SQLite черга; null у браузері) */}
         <SyncStatus />
