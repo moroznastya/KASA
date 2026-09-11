@@ -534,6 +534,7 @@ pub async fn push(
                 &svc,
                 &pool,
                 state.invoices_v1.as_ref(),
+                state.return_invoices.as_ref(),
                 item,
                 cashier,
                 ctx_store,
@@ -564,6 +565,9 @@ async fn process_push_item(
     >,
     pool: &StorePool,
     invoices_v1: Option<&std::sync::Arc<dyn torgashka_domain::InvoicesV1Service + Send + Sync>>,
+    return_invoices: Option<
+        &std::sync::Arc<dyn torgashka_domain::return_invoices::ReturnInvoicesService + Send + Sync>,
+    >,
     item: &PushEnvelope,
     cashier: Option<Uuid>,
     ctx_store: Uuid,
@@ -627,6 +631,13 @@ async fn process_push_item(
         "invoice" => {
             accept_invoice_kind(invoices_v1, pool, item, table, cashier, ctx_store, &hash).await
         }
+        // Повернення постачальнику: приймач теж іде ЧЕРЕЗ СЕРВІС (draft →
+        // confirm: stock −qty, supplier_ledger, борг) — та сама логіка, що
+        // локальний роут, а не друга реалізація SQL-приймача.
+        "return_invoice" => {
+            accept_return_invoice_kind(return_invoices, pool, item, table, cashier, ctx_store, &hash)
+                .await
+        }
         kind => {
             accept_non_receipt_kind(
                 pool, item, table, kind, cashier, ctx_store, created_at, &hash,
@@ -649,6 +660,13 @@ fn receiver_table(kind: &str) -> Option<&'static str> {
         // ADR-0007 §11.6: касова операція (внесення/інкасація; partial
         // UNIQUE uq_cash_operations_client_uuid, Alembic 0017).
         "cash_operation" => Some("cash_operations"),
+        // ADR-0007 §11.7.9.7 (Фаза 3.3b): повернення ПОСТАЧАЛЬНИКУ (partial
+        // UNIQUE 0018), оплата боргу покупця (debtor_payments) і ручний запис
+        // книги постачальника (supplier_ledger). НЕ плутати з "return_receipt"
+        // (чек повернення ПОКУПЦЯ → receipts).
+        "return_invoice" => Some("return_invoices"),
+        "debtor_payment" => Some("debtor_payments"),
+        "supplier_ledger" => Some("supplier_ledger"),
         _ => None,
     }
 }
@@ -833,6 +851,132 @@ async fn accept_invoice_kind(
     }
 }
 
+/// Приймач повернення ПОСТАЧАЛЬНИКУ (`return_invoice`) — Фаза 3.3b.
+///
+/// Дзеркало [`accept_invoice_kind`]: документ приймається ЧЕРЕЗ СЕРВІС
+/// (`ReturnInvoicesService`), а не SQL-приймачем, щоб на primary діяла та сама
+/// бізнес-логіка, що на локальному роуті (draft → confirm: stock −qty,
+/// supplier_ledger, борг постачальнику, price-changes). `client_uuid` конверта
+/// записується в `return_invoices.client_uuid` → partial UNIQUE 0018 =
+/// ідемпотентність (повторний push → `already_exists`).
+async fn accept_return_invoice_kind(
+    return_invoices: Option<
+        &std::sync::Arc<dyn torgashka_domain::return_invoices::ReturnInvoicesService + Send + Sync>,
+    >,
+    pool: &StorePool,
+    item: &PushEnvelope,
+    table: &str,
+    cashier: Option<Uuid>,
+    ctx_store: Uuid,
+    hash: &str,
+) -> PushItemResult {
+    use torgashka_domain::return_invoices::{
+        ReturnInvoiceConfirmInput, ReturnInvoiceCreateInput,
+    };
+
+    // 1. Rust-гілка повернень не змонтована (TORGASHKA_RUST_RETURN_INVOICES≠1)
+    //    — НЕ тихий ack: каса має побачити error і лишити оп у outbox.
+    let Some(svc) = return_invoices else {
+        let msg = format!(
+            "Rust-гілка повернень постачальнику вимкнена ({}≠1) — повернення не прийнято",
+            crate::RUST_RETURN_INVOICES_ENV
+        );
+        log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+        return PushItemResult::error(item.client_uuid, msg);
+    };
+
+    // 2. push вимагає JWT sub (created_by_id документа).
+    let Some(cashier) = cashier else {
+        let msg = "return_invoice: push вимагає автентифікованого користувача (JWT sub)"
+            .to_string();
+        log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+        return PushItemResult::error(item.client_uuid, msg);
+    };
+
+    // 3. Парсинг payload каси → вхідні дані документа (+ ідемпотентний ключ).
+    let mut input: ReturnInvoiceCreateInput = match serde_json::from_value(item.payload.clone()) {
+        Ok(i) => i,
+        Err(e) => {
+            let msg = format!("return_invoice: невалідний payload повернення — {e}");
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            return PushItemResult::error(item.client_uuid, msg);
+        }
+    };
+    input.client_uuid = Some(item.client_uuid);
+
+    // 4. Pre-flight: каталог (постачальник + товари) ПЕРЕД будь-яким INSERT.
+    match exists_in(pool, "suppliers", input.supplier_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let msg = format!(
+                "Постачальника {} не знайдено в каталозі — повернення відхилено",
+                input.supplier_id
+            );
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            return PushItemResult::error(item.client_uuid, msg);
+        }
+        Err(e) => {
+            log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
+            return PushItemResult::error(item.client_uuid, e);
+        }
+    }
+    for it in &input.items {
+        match exists_in(pool, "products", it.product_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                let msg = format!(
+                    "Товар {} не знайдено в каталозі — повернення відхилено",
+                    it.product_id
+                );
+                log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+                return PushItemResult::error(item.client_uuid, msg);
+            }
+            Err(e) => {
+                log_sync(pool, item, ctx_store, "error", hash, Some(e.clone())).await;
+                return PushItemResult::error(item.client_uuid, e);
+            }
+        }
+    }
+
+    // 5. Чернетка + позиції, далі confirm (stock −qty, ledger, борг).
+    match svc.create(&input, cashier).await {
+        Ok(dto) => {
+            let confirm = ReturnInvoiceConfirmInput {
+                status: "confirmed".to_string(),
+                exchange_items: None,
+            };
+            match svc.confirm(dto.id, &confirm, cashier).await {
+                Ok(_) => {
+                    log_sync(pool, item, ctx_store, "ok", hash, None).await;
+                    PushItemResult::created(item.client_uuid, dto.id)
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "повернення {} створено, але confirm не вдався: {e}",
+                        dto.id
+                    );
+                    log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+                    PushItemResult::error(item.client_uuid, msg)
+                }
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            // Гонка: два одночасні push з тим самим client_uuid — partial
+            // UNIQUE uq_return_invoices_client_uuid (0018) зловив другий атомарно.
+            if msg.contains("uq_return_invoices_client_uuid") {
+                if let Some(existing) = find_by_client_uuid_in(pool, table, item.client_uuid).await
+                {
+                    log_sync(pool, item, ctx_store, "already_exists", hash, None).await;
+                    return PushItemResult::already_exists(item.client_uuid, existing);
+                }
+            }
+            log_sync(pool, item, ctx_store, "error", hash, Some(msg.clone())).await;
+            PushItemResult::error(item.client_uuid, msg)
+        }
+    }
+}
+
 /// Чи існує рядок каталогу за id (pre-flight валідація перед INSERT).
 /// Помилка самої БД — окремо від «немає рядка» (щоб не маскувати збій БД
 /// під «немає в каталозі»).
@@ -910,6 +1054,28 @@ async fn accept_non_receipt_kind(
         }
         "cash_operation" => {
             crate::sync_receivers::accept_cash_operation(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
+        "debtor_payment" => {
+            crate::sync_receivers::accept_debtor_payment(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
+        "supplier_ledger" => {
+            crate::sync_receivers::accept_supplier_ledger(
                 pool,
                 ctx_store,
                 cashier,

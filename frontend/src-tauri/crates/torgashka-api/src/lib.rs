@@ -66,7 +66,10 @@ use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
 use torgashka_infrastructure::repositories::outbox_invoices::{
     OutboxInvoicesV1, OutboxInvoicesV2,
 };
+use torgashka_infrastructure::repositories::outbox_debtors::OutboxDebtors;
+use torgashka_infrastructure::repositories::outbox_ledger::OutboxLedger;
 use torgashka_infrastructure::repositories::outbox_purchase_orders::OutboxPurchaseOrders;
+use torgashka_infrastructure::repositories::outbox_return_invoices::OutboxReturnInvoices;
 use torgashka_infrastructure::repositories::outbox_write::OutboxWrite;
 use torgashka_infrastructure::store_ctx::StorePool;
 
@@ -264,9 +267,21 @@ async fn init_readdirs() -> Result<
                     ),
                 ))) as Arc<dyn WriteDirectories + Send + Sync>,
             };
-            let ledger = Arc::new(
-                torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
-            ) as Arc<dyn LedgerService + Send + Sync>;
+            // ADR-0007 §11.7.9.7 (Фаза 3.3b): книга постачальника — той самий
+            // вибір адаптера за режимом. standby: `OutboxLedger` (ручний запис →
+            // SQLite-черга; до цього — сирий 500 у read-only репліку).
+            let ledger = match node_cfg_mode() {
+                NodeMode::Primary => Arc::new(
+                    torgashka_infrastructure::repositories::ledger::SqlxLedger::new(
+                        store_pool.clone(),
+                    ),
+                ) as Arc<dyn LedgerService + Send + Sync>,
+                NodeMode::Standby => Arc::new(OutboxLedger::new(Arc::new(
+                    torgashka_infrastructure::repositories::ledger::SqlxLedger::new(
+                        store_pool.clone(),
+                    ),
+                ))) as Arc<dyn LedgerService + Send + Sync>,
+            };
             // ADR-0007 F6 (режим читається локально, дешеве читання файлу)
             // + §11.1: вибір POS-АДАПТЕРА за режимом вузла.
             //   * primary — PG-репозиторій (F2: поведінка байт-в-байт);
@@ -472,7 +487,12 @@ async fn init_return_invoices() -> (
                 torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
                     StorePool::new(pool.clone()),
                 );
-            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
+            // ADR-0007 §11.7.9.7 (Фаза 3.3b): повернення ПОСТАЧАЛЬНИКУ —
+            // standby пише документ у SQLite-чергу (`TYPE_RETURN_INVOICE`).
+            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = match node_cfg_mode() {
+                NodeMode::Primary => Arc::new(repo),
+                NodeMode::Standby => Arc::new(OutboxReturnInvoices::new(Arc::new(repo))),
+            };
             (Some(svc), Some(pool))
         }
         Err(e) => {
@@ -567,11 +587,20 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
             eprintln!(
                 "[torgashka-api] {RUST_DEBTORS_ENV}=1 — Rust-гілка боржників увімкнена (PostgreSQL)"
             );
-            Some(Arc::new(
+            let repo = Arc::new(
                 torgashka_infrastructure::repositories::debtors::SqlxDebtors::new(StorePool::new(
                     pool,
                 )),
-            ) as Arc<dyn DebtorService + Send + Sync>)
+            );
+            // ADR-0007 §11.6.4 варіант 1 + §11.7.9.7 (Фаза 3.3b): боргові
+            // сутності — `LocalOutbox`. standby: оплата боргу → SQLite-черга
+            // (`TYPE_DEBTOR_PAYMENT`), створення/редагування боржника — відмова.
+            Some(match node_cfg_mode() {
+                NodeMode::Primary => repo as Arc<dyn DebtorService + Send + Sync>,
+                NodeMode::Standby => {
+                    Arc::new(OutboxDebtors::new(repo)) as Arc<dyn DebtorService + Send + Sync>
+                }
+            })
         }
         Err(e) => {
             eprintln!(

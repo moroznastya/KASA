@@ -20,7 +20,7 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::{cash, stock};
+use super::{cash, debtor, ledger, stock};
 
 /// Тип агрегата «закупка» (дизайн 2.2; майбутній outbox-тип ЕТАП 7).
 pub const TYPE_PURCHASE_ORDER: &str = "purchase_order";
@@ -45,6 +45,19 @@ pub const TYPE_INVOICE: &str = "invoice";
 /// `cash_ledger` уже має контракт client_uuid + data + store_id + synced.
 /// Ефект — НЕ stock, а грошовий ящик вузла (`cash::apply_cash_delta`).
 pub const TYPE_CASH_OPERATION: &str = "cash_operation";
+/// Тип агрегата «повернення постачальнику» (ADR-0007 §11.7.9.7, Фаза 3.3b).
+/// Локальна таблиця — `return_invoices` (міграція 0012), stock-ефект — **−qty**
+/// (товар іде назад постачальнику). НЕ плутати з чеком повернення ПОКУПЦЯ
+/// (`sync_push::TYPE_RETURN_RECEIPT` → таблиця `receipts`).
+pub const TYPE_RETURN_INVOICE: &str = "return_invoice";
+/// Тип агрегата «оплата боргу покупця» (§11.6.4 варіант 1, Фаза 3.3b).
+/// Локальна таблиця — НАЯВНА `debtors_ledger` (0006); похідний стан —
+/// `debtor_balances` (скільки оплат каси primary ще не застосував).
+pub const TYPE_DEBTOR_PAYMENT: &str = "debtor_payment";
+/// Тип агрегата «ручний запис у книгу постачальника» (Фаза 3.3b).
+/// Локальна таблиця — `supplier_ledger` (0012); похідний стан —
+/// `supplier_balances`.
+pub const TYPE_SUPPLIER_LEDGER: &str = "supplier_ledger";
 
 /// Результат локального запису транзакції (агрегат + outbox).
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +117,22 @@ fn apply_effects(
         })?;
         return cash::apply_cash_delta(conn, store_id, cash_type, delta);
     }
+    // Оплата боргу: ефект — борг покупця ↓ (локальний похідний стан
+    // `debtor_balances`), а не stock. Гілка стоїть ДО розбору позицій.
+    if kind == TYPE_DEBTOR_PAYMENT {
+        let (debtor_id, amount_cents) = debtor::payment_from_payload(payload).ok_or_else(|| {
+            "оплата боргу: потрібні debtor_id і додатна сума".to_string()
+        })?;
+        return debtor::apply_pending_payment(conn, store_id, &debtor_id, amount_cents);
+    }
+    // Ручний запис книги постачальника: ефект — баланс постачальника
+    // (локальний похідний стан `supplier_balances`), не stock.
+    if kind == TYPE_SUPPLIER_LEDGER {
+        let (supplier_id, amount_cents) = ledger::entry_from_payload(payload).ok_or_else(|| {
+            "запис книги постачальника: потрібні supplier_id і ненульова сума".to_string()
+        })?;
+        return ledger::apply_pending_entry(conn, store_id, &supplier_id, amount_cents);
+    }
     let items = stock::parse_items(payload);
     if items.is_empty() {
         return Ok(()); // немає позицій з кількістю — ефекту немає
@@ -114,7 +143,8 @@ fn apply_effects(
                 stock::apply_stock_delta(conn, store_id, &pid, q)?;
             }
         }
-        TYPE_WRITE_OFF => {
+        // Списання і повернення постачальнику: товар ЗАЛИШАЄ точку → −qty.
+        TYPE_WRITE_OFF | TYPE_RETURN_INVOICE => {
             for (pid, q) in items {
                 stock::apply_stock_delta(conn, store_id, &pid, -q)?;
             }
@@ -151,6 +181,9 @@ fn table_of(kind: &str) -> Result<&'static str, String> {
         TYPE_WRITE_OFF => Ok("write_offs"),
         TYPE_INVOICE => Ok("invoices"),
         TYPE_CASH_OPERATION => Ok("cash_ledger"),
+        TYPE_RETURN_INVOICE => Ok("return_invoices"),
+        TYPE_DEBTOR_PAYMENT => Ok("debtors_ledger"),
+        TYPE_SUPPLIER_LEDGER => Ok("supplier_ledger"),
         other => Err(format!("тип транзакції без локальної таблиці: {other}")),
     }
 }
@@ -168,6 +201,9 @@ pub fn is_supported_outbox_type(kind: &str) -> bool {
             | TYPE_WORK_SESSION
             | TYPE_INVOICE
             | TYPE_CASH_OPERATION
+            | TYPE_RETURN_INVOICE
+            | TYPE_DEBTOR_PAYMENT
+            | TYPE_SUPPLIER_LEDGER
             | super::sync_push::TYPE_RECEIPT
             | super::sync_push::TYPE_RETURN_RECEIPT
     )

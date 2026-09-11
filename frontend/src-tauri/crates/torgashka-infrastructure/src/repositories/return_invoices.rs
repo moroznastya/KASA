@@ -568,8 +568,9 @@ impl ReturnInvoicesService for SqlxReturnInvoices {
         sqlx::query(
             "INSERT INTO return_invoices \
              (id, number, supplier_id, return_date, status, return_action, is_fiscal, notes, \
-              total_amount, source_invoice_id, created_by_id, store_id, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,'draft'::return_invoice_status,$5::return_action_type,$6,$7,$8::numeric,$9,$10,$11, now(), now())",
+              total_amount, source_invoice_id, created_by_id, store_id, created_at, updated_at, \
+              client_uuid) \
+             VALUES ($1,$2,$3,$4,'draft'::return_invoice_status,$5::return_action_type,$6,$7,$8::numeric,$9,$10,$11, now(), now(), $12)",
         )
         .bind(id)
         .bind(&number)
@@ -582,6 +583,8 @@ impl ReturnInvoicesService for SqlxReturnInvoices {
         .bind(input.source_invoice_id)
         .bind(user_id)
         .bind(store_id)
+        // Ідемпотентний ключ каси (push): локальні роути передають None.
+        .bind(input.client_uuid)
         .execute(&self.pool)
         .await
         .map_err(|e| de(e.to_string()))?;

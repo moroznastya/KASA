@@ -105,10 +105,31 @@ pub async fn store_middleware(
             // Живість каси: last_seen_at=now() на кожен запит. devices БЕЗ RLS
             // (політик немає) — оновлення безпечне в будь-якому контексті.
             if let Some(sp) = pool {
-                if let Err(e) = sqlx::query("UPDATE devices SET last_seen_at = now() WHERE id = $1")
-                    .bind(user_id)
-                    .execute(&sp)
-                    .await
+                // ADR-0007 §11.7.9.8 (Фаза 3.3b): на standby `store_pool` —
+                // локальна READ-ONLY репліка, тому UPDATE devices туди НЕ
+                // йде (кожен запит лишав рядок помилки в лозі). Замість
+                // цього — локальний SQLite-журнал каси; авторитетний
+                // `devices.last_seen_at` пише primary.
+                if state.node_config.is_standby() {
+                    let device = user_id.to_string();
+                    let res = tokio::task::spawn_blocking(move || {
+                        torgashka_infrastructure::standby_heartbeat::record_device_seen(&device)
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => eprintln!(
+                            "[torgashka-api] store_middleware: локальне серцебиття каси: {e}"
+                        ),
+                        Err(e) => eprintln!(
+                            "[torgashka-api] store_middleware: локальне серцебиття каси (таск): {e}"
+                        ),
+                    }
+                } else if let Err(e) =
+                    sqlx::query("UPDATE devices SET last_seen_at = now() WHERE id = $1")
+                        .bind(user_id)
+                        .execute(&sp)
+                        .await
                 {
                     eprintln!("[torgashka-api] store_middleware: оновлення last_seen_at: {e}");
                 }

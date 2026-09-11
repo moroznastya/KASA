@@ -1520,6 +1520,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_client_uuid
     WHERE client_uuid IS NOT NULL;
 
 -- ============================================================================
+-- ФАЗА 3.3b: ідемпотентність приймачів повернення постачальнику, оплати боргу
+-- і ручного запису книги постачальника (client_uuid каси + partial UNIQUE).
+-- Дзеркало Alembic 0018_return_debtor_ledger_idem (Python-БД).
+-- ============================================================================
+ALTER TABLE public.return_invoices ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_return_invoices_client_uuid
+    ON public.return_invoices (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+ALTER TABLE public.debtor_payments ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_debtor_payments_client_uuid
+    ON public.debtor_payments (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+ALTER TABLE public.supplier_ledger ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_ledger_client_uuid
+    ON public.supplier_ledger (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+
+-- ============================================================================
 -- Мережеві події (рішення Творця): діагностичний журнал взаємодії вузлів.
 -- Той самий ідемпотентний DDL, що й NETWORK_EVENTS_DDL у db.rs (для fresh БД).
 -- ============================================================================

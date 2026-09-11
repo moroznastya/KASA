@@ -117,6 +117,52 @@ pub(crate) fn uuid_of(s: &str) -> Uuid {
     Uuid::parse_str(s).unwrap_or_else(|_| Uuid::nil())
 }
 
+/// Цілі копійки з Decimal-рядка БД (`"68.00"` → 6800). Число теж приймається.
+pub(crate) fn parse_cents2(raw: &str) -> Option<i64> {
+    let s = raw.trim().replace(',', ".");
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest.to_string()),
+        None => (false, s.clone()),
+    };
+    let (int_part, frac_part) = body.split_once('.').unwrap_or((body.as_str(), ""));
+    let int: i64 = int_part.trim().parse().ok()?;
+    let mut frac = frac_part.to_string();
+    frac.truncate(2);
+    while frac.len() < 2 {
+        frac.push('0');
+    }
+    let frac: i64 = frac.parse().ok()?;
+    let cents = int * 100 + frac;
+    Some(if neg { -cents } else { cents })
+}
+
+/// Цілі копійки → Decimal-рядок scale 2 (`-5025` → `"-50.25"`).
+pub(crate) fn format_cents2(cents: i64) -> String {
+    let sign = if cents < 0 { "-" } else { "" };
+    let abs = cents.abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+/// Сума локальних оплат боржника (копійки) з SQLite каси.
+pub(crate) async fn pending_debtor_cents(debtor_id: &str) -> Result<i64, String> {
+    let debtor_id = debtor_id.to_string();
+    with_conn("оплата боргу", move |conn| {
+        let store_id = resolve_store_id(conn)?;
+        crate::offline::debtor::pending_payment_cents(conn, &store_id, &debtor_id)
+    })
+    .await
+}
+
+/// Сума локальних записів книги постачальника (копійки) з SQLite каси.
+pub(crate) async fn pending_ledger_cents(supplier_id: &str) -> Result<i64, String> {
+    let supplier_id = supplier_id.to_string();
+    with_conn("книга постачальника", move |conn| {
+        let store_id = resolve_store_id(conn)?;
+        crate::offline::ledger::pending_amount_cents(conn, &store_id, &supplier_id)
+    })
+    .await
+}
+
 /// Агрегатні типи черги (`offline::transactions::enqueue_transaction`).
 pub(crate) async fn enqueue(
     op: &'static str,

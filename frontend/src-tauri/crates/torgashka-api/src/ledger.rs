@@ -119,11 +119,21 @@ impl IntoResponse for LedgerErr {
                     })),
                 )
                     .into_response(),
-                LedgerError::Infrastructure(msg) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"detail": format!("Помилка БД: {msg}")})),
-                )
-                    .into_response(),
+                LedgerError::Infrastructure(msg) => {
+                    // Санація (ADR-0007, контракт §D): технічний текст → лог,
+                    // користувачу — стабільне повідомлення (як `pos.rs:115`).
+                    torgashka_infrastructure::embedded_pg::pg_log(
+                        "ERROR",
+                        &format!("[ledger] LedgerError::Infrastructure: {msg}"),
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(
+                            serde_json::json!({"detail": "Не вдалося зберегти зміну, спробуйте ще раз"}),
+                        ),
+                    )
+                        .into_response()
+                }
             },
         }
     }

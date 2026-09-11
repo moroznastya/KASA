@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -91,6 +91,16 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "local_cash",
         sql: include_str!("migrations/offline/0011_local_cash.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "local_return_debtor_ledger",
+        sql: include_str!("migrations/offline/0012_local_return_debtor_ledger.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "local_device_heartbeat",
+        sql: include_str!("migrations/offline/0013_local_device_heartbeat.sql"),
     },
 ];
 
@@ -425,6 +435,24 @@ mod tests {
         // Нові таблиці синку на місці.
         assert!(table_exists(&conn, "sync_meta"));
         assert!(table_exists(&conn, "outbox"));
+    }
+
+    /// 0012 (Фаза 3.3b): локальні агрегати/похідні стани повернення
+    /// постачальнику, оплати боргу й книги постачальника.
+    #[test]
+    fn local_return_debtor_ledger_tables_created() {
+        let conn = Connection::open_in_memory().expect("in-memory");
+        let v = migrate(&conn).expect("міграція");
+        assert_eq!(v, super::SCHEMA_VERSION);
+        for t in [
+            "return_invoices",
+            "supplier_ledger",
+            "debtor_balances",
+            "supplier_balances",
+            "device_heartbeats",
+        ] {
+            assert!(table_exists(&conn, t), "{t} створена (0012)");
+        }
     }
 
     /// Повторний запуск движка — ідемпотентний (no-op), версія не змінюється,

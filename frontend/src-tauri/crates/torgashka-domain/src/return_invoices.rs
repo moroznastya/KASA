@@ -133,7 +133,7 @@ pub struct ReturnInvoiceListDto {
 // ─── Вхідні DTO (Pydantic Create/Update/ConfirmRequest) ────────────────────
 
 /// Позиція створення/оновлення (Python ReturnInvoiceItemCreate).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReturnInvoiceItemCreateInput {
     pub product_id: Uuid,
     #[serde(deserialize_with = "de_num_str")]
@@ -147,7 +147,7 @@ pub struct ReturnInvoiceItemCreateInput {
 }
 
 /// Позиція обміну (Python ExchangeItemCreate).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExchangeItemCreateInput {
     pub product_id: Uuid,
     #[serde(deserialize_with = "de_num_str")]
@@ -159,7 +159,7 @@ pub struct ExchangeItemCreateInput {
 }
 
 /// Створення (Python ReturnInvoiceCreate).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ReturnInvoiceCreateInput {
     pub number: Option<String>,
     pub supplier_id: Uuid,
@@ -175,6 +175,11 @@ pub struct ReturnInvoiceCreateInput {
     pub items: Vec<ReturnInvoiceItemCreateInput>,
     pub exchange_items: Option<Vec<ExchangeItemCreateInput>>,
     pub source_invoice_id: Option<Uuid>,
+    /// Ідемпотентний ключ каси (push `/api/v1/sync/push`, ADR-0007 §11.7.9.7):
+    /// заповнюється ПРИЙМАЧЕМ із конверта (Alembic 0018: partial UNIQUE
+    /// `uq_return_invoices_client_uuid`). Локальний CRUD-роут — `None`.
+    #[serde(default)]
+    pub client_uuid: Option<Uuid>,
 }
 
 fn default_return_action() -> String {

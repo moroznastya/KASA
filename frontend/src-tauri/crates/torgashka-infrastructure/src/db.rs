@@ -561,6 +561,37 @@ ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
 ///   створюються завжди (CREATE TABLE IF NOT EXISTS) — покривають і fresh,
 ///   і вже мігровані БД без них.
 pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
+    // Серіалізація DDL між ПРОЦЕСАМИ (Фаза 3.3b): схема містить
+    // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / `CREATE UNIQUE INDEX
+    // IF NOT EXISTS` (0013/0016/0017/0018-dзеркала). Такі команди беруть
+    // AccessExclusiveLock, навіть коли змін не потрібно — а `ensure_schema`
+    // викликають паралельно кілька процесів (тестові бінарі, старт вузлів),
+    // тому PG ловив `40P01 deadlock detected` (relation A ↔ relation B).
+    // Advisory-lock (сесійний, на окремому з'єднанні) робить цю секцію
+    // послідовною: один процес застосовує схему, решта чекають.
+    let mut lock_conn = pool.acquire().await.map_err(DbError::Sqlx)?;
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(SCHEMA_DDL_LOCK_KEY)
+        .execute(&mut *lock_conn)
+        .await
+        .map_err(DbError::Sqlx)?;
+    let res = ensure_schema_inner(pool).await;
+    // Бест-ефект: знімаємо лок; якщо не вдалося — сесію закриє pool і PG
+    // відпустить лок сам.
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(SCHEMA_DDL_LOCK_KEY)
+        .execute(&mut *lock_conn)
+        .await;
+    drop(lock_conn);
+    res
+}
+
+/// Ключ advisory-лока серіалізації DDL схеми (`ensure_schema`). Довільна
+/// стала: не перетинається з іншими advisory-локами проєкту.
+const SCHEMA_DDL_LOCK_KEY: i64 = 0x54_4F_52_47_41_53_48; // "TORGASH"
+
+/// Тіло `ensure_schema` під advisory-локом (див. вище).
+async fn ensure_schema_inner(pool: &PgPool) -> Result<(), DbError> {
     let has_users: bool = sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
         .fetch_one(pool)
         .await

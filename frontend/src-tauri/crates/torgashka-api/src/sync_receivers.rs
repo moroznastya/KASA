@@ -123,6 +123,13 @@ fn dec2(v: i64) -> String {
     format!("{}.{:02}", v / 100, (v % 100).abs())
 }
 
+/// Цілі копійки → Decimal-рядок scale 2 зі знаком (`-5025` → `"-50.25"`).
+fn format_cents2(cents: i64) -> String {
+    let sign = if cents < 0 { "-" } else { "" };
+    let abs = cents.abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
 /// Розібрана позиція: (product_id, quantity-scaled3, quantity, cost_price?, price?).
 type ParsedItem = (Uuid, i64, String, Option<String>, Option<String>);
 
@@ -622,6 +629,206 @@ pub async fn accept_cash_operation(
     .execute(pool)
     .await
     .map_err(|e| format!("INSERT cash_operations: {e}"))?;
+    Ok(id)
+}
+
+// ─── Оплата боргу покупця (debtor_payment, §11.6.4 варіант 1) ──────────────
+
+/// Оплата боргу покупця касою (клас `LocalOutbox`, рішення NIKO §11.6.4
+/// варіант 1; Фаза 3.3b). Приймач — ОДНА транзакція: `UPDATE debtors.total_debt`
+/// (борг ↓) + `INSERT debtor_payments` (історія оплат точки).
+///
+/// Ідемпотентність: `client_uuid` каси → `debtor_payments.client_uuid` +
+/// partial UNIQUE `uq_debtor_payments_client_uuid` (Alembic 0018) + SELECT-
+/// дублікат у кроці 3 `process_push_item`; гонку двох push ловить UNIQUE.
+///
+/// Свідома ВІДМІНА від Python/`SqlxDebtors::pay`: повне погашення НЕ видаляє
+/// боржника (Python робить `DELETE FROM debtors`, і каскад зносить рядок
+/// оплати) — інакше повторний push не знайшов би `client_uuid` і ідемпотентність
+/// зламалася б. Борг лишається `0.00`, історія оплат ціла.
+///
+/// Валідація payload — ЛЮДСЬКИМИ текстами (сирий текст PG-констрейнтів
+/// `debtor_payments_amount_check` лишається другим рубежем).
+pub async fn accept_debtor_payment(
+    pool: &PgPool,
+    store_id: Uuid,
+    _cashier: Uuid,
+    client_uuid: Uuid,
+    created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let debtor_id =
+        u(payload, "debtor_id")?.ok_or_else(|| "оплата боргу: debtor_id обов'язковий".to_string())?;
+    let amount =
+        dec(payload, "amount")?.ok_or_else(|| "оплата боргу: сума обов'язкова".to_string())?;
+    let amount_cents = match scaled2(&amount) {
+        Some(c) if c > 0 => c,
+        _ => {
+            return Err(format!(
+                "оплата боргу: сума мусить бути > 0, маємо '{amount}'"
+            ))
+        }
+    };
+    let method = s(payload, "payment_method");
+    // Час каси з конверта (не now()) — звіти за датами не зсуваються.
+    let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
+
+    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+
+    // 1. Боржник точки мусить існувати (pre-flight до будь-якого INSERT).
+    let debt_raw: Option<String> = sqlx::query_scalar(
+        "SELECT total_debt::text FROM debtors WHERE id = $1 AND store_id = $2",
+    )
+    .bind(debtor_id)
+    .bind(store_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("SELECT debtors: {e}"))?;
+    let Some(debt_raw) = debt_raw else {
+        return Err(format!(
+            "Боржника {debtor_id} не знайдено в цій точці — оплату відхилено"
+        ));
+    };
+    let debt_cents = scaled2(&debt_raw).unwrap_or(0);
+    if amount_cents > debt_cents {
+        return Err(format!(
+            "Сума оплати ({amount}) перевищує поточний борг ({debt_raw}) — оплату відхилено"
+        ));
+    }
+
+    // 2. Історія оплат точки (ідемпотентний ключ каси).
+    let payment_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO debtor_payments \
+            (id, debtor_id, amount, payment_method, store_id, created_at, client_uuid) \
+         VALUES ($1,$2,$3::numeric,$4,$5,$6::timestamp,$7)",
+    )
+    .bind(payment_id)
+    .bind(debtor_id)
+    .bind(&amount)
+    .bind(method.as_deref())
+    .bind(store_id)
+    .bind(ts)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT debtor_payments: {e}"))?;
+
+    // 3. Борг ↓ (не нижче нуля: борг каси за очима primary).
+    sqlx::query(
+        "UPDATE debtors SET total_debt = GREATEST(total_debt - $2::numeric, 0), \
+                updated_at = now() \
+         WHERE id = $1 AND store_id = $3",
+    )
+    .bind(debtor_id)
+    .bind(&amount)
+    .bind(store_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("debtors.total_debt (UPDATE): {e}"))?;
+
+    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    Ok(payment_id)
+}
+
+// ─── Ручний запис книги постачальника (supplier_ledger) ────────────────────
+
+/// Дозволені типи операцій книги (об'єднання v1/v2 еталонів Python:
+/// `LEDGER_TYPES_V1` 4 + `write_off` v2). Невідомий тип → людська помилка
+/// (PG-enum `ledger_operation_type` лишається другим рубежем).
+const LEDGER_TYPES: [&str; 5] = ["invoice", "payment", "return", "correction", "write_off"];
+
+/// Ручний запис у книгу постачальника (самостійний документ: `POST /api/v1/ledger`,
+/// `POST /api/v2/ledger/entries`; клас `LocalOutbox`, Фаза 3.3b).
+///
+/// Приймач — ОДНА транзакція: `balance_after` = `SUM(amount)` постачальника +
+/// власна сума (та сама арифметика, що в [`crate::ledger`]-сервісі) + `INSERT
+/// supplier_ledger` з `client_uuid` каси (partial UNIQUE
+/// `uq_supplier_ledger_client_uuid`, Alembic 0018).
+pub async fn accept_supplier_ledger(
+    pool: &PgPool,
+    store_id: Uuid,
+    _cashier: Uuid,
+    client_uuid: Uuid,
+    created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let supplier_id = u(payload, "supplier_id")?
+        .ok_or_else(|| "книга постачальника: supplier_id обов'язковий".to_string())?;
+    let operation_type = s(payload, "operation_type").unwrap_or_default();
+    if !LEDGER_TYPES.contains(&operation_type.as_str()) {
+        return Err(format!(
+            "Невідомий тип операції книги: '{operation_type}' (дозволено: {})",
+            LEDGER_TYPES.join(", ")
+        ));
+    }
+    let amount =
+        dec(payload, "amount")?.ok_or_else(|| "книга постачальника: сума обов'язкова".to_string())?;
+    match scaled2(&amount) {
+        Some(0) | None => {
+            return Err(format!(
+                "книга постачальника: сума мусить бути числом ≠ 0, маємо '{amount}'"
+            ))
+        }
+        Some(_) => {}
+    }
+    let document_id = u(payload, "document_id")?;
+    let document_number = s(payload, "document_number");
+    let notes = s(payload, "notes");
+    // v1 передає operation_date; v2 його не має → дата операції = дата каси.
+    let op_date = s(payload, "operation_date")
+        .and_then(|raw| parse_created_at_utc(Some(&raw)))
+        .or(created_at)
+        .unwrap_or_else(|| Utc::now().naive_utc());
+
+    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+
+    // 1. Постачальник мусить існувати (як v1/v2-сервіс → 404).
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM suppliers WHERE id = $1")
+        .bind(supplier_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("SELECT suppliers: {e}"))?;
+    if exists.is_none() {
+        return Err(format!(
+            "Постачальника з ID '{supplier_id}' не знайдено — запис книги відхилено"
+        ));
+    }
+
+    // 2. Баланс ПІСЛЯ запису = SUM(amount) + власна сума (в тій самій транзакції).
+    let current_raw: String = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0)::numeric::text FROM supplier_ledger WHERE supplier_id = $1",
+    )
+    .bind(supplier_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("SELECT SUM(supplier_ledger): {e}"))?;
+    let balance_after = scaled2(&current_raw).unwrap_or(0) + scaled2(&amount).unwrap_or(0);
+    let balance_str = format_cents2(balance_after);
+
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO supplier_ledger \
+            (id, supplier_id, operation_type, document_id, document_number, amount, \
+             balance_after, operation_date, notes, created_at, store_id, client_uuid) \
+         VALUES ($1,$2,$3::ledger_operation_type,$4,$5,$6::numeric,$7::numeric,$8::timestamp,$9,now(),$10,$11)",
+    )
+    .bind(id)
+    .bind(supplier_id)
+    .bind(&operation_type)
+    .bind(document_id)
+    .bind(document_number.as_deref())
+    .bind(&amount)
+    .bind(&balance_str)
+    .bind(op_date)
+    .bind(notes.as_deref())
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("INSERT supplier_ledger: {e}"))?;
+
+    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
     Ok(id)
 }
 

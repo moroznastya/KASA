@@ -5,7 +5,9 @@
 
 pub mod cash;
 pub mod commands;
+pub mod debtor;
 pub mod db;
+pub mod ledger;
 pub mod migrations;
 pub mod snapshots;
 pub mod stock;

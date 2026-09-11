@@ -31,6 +31,32 @@ use crate::offline::sync_push;
 /// `last_seen_at` на primary і навантаженням на інтернет-канал standby.
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
+/// Локальний журнал життєвості device-каси на standby-вузлі (ADR-0007
+/// §11.7.9.8, Фаза 3.3b): `UPDATE devices SET last_seen_at` на standby не
+/// виконується (репліка read-only) — факт звернення пишемо в SQLite каси.
+/// Авторитетне `devices.last_seen_at` пише primary (там же й device-авторизація).
+pub fn record_device_seen(device_id: &str) -> Result<(), String> {
+    let conn = open_offline_conn()?;
+    conn.execute(
+        "INSERT INTO device_heartbeats (device_id, last_seen_at) \
+         VALUES (?1, datetime('now')) \
+         ON CONFLICT (device_id) DO UPDATE SET last_seen_at = datetime('now')",
+        rusqlite::params![device_id],
+    )
+    .map_err(|e| format!("device_heartbeats upsert ({device_id}): {e}"))?;
+    Ok(())
+}
+
+/// Відкрити SQLite каси (створює каталог даних, доганяє міграції).
+fn open_offline_conn() -> Result<Connection, String> {
+    let path = OfflineDatabase::default_db_path().map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("каталог даних каси {}: {e}", parent.display()))?;
+    }
+    sync_push::open_connection(&path).map_err(|e| e.to_string())
+}
+
 /// Один heartbeat-цикл на процес (idempotent-прапорець).
 static STANDBY_HEARTBEAT_STARTED: AtomicBool = AtomicBool::new(false);
 

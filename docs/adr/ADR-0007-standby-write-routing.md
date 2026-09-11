@@ -885,6 +885,16 @@ standby дійде до локальної **read-only** репліки → си
 | `debtor_payments` | 1 | `infrastructure/repositories/debtors.rs:294` |
 | **Разом** | **117** | — |
 
+**Статус після Фаз 3.3a/3.3b (ADR §11.7.9.7).** Ці 117 DML-точок — шлях
+**primary** (F2: поведінка не змінена). Для каси на standby закрито всі
+HTTP-поверхні, що вели до них: `invoice`, `purchase_order`, `inventory`
+(3.3a) та `return_invoice`, `debtor_payment`, `supplier_ledger` + heartbeat
+(3.3b) — документ пишеться в SQLite-чергу й доїжджає приймачем на primary.
+Поза адаптерами лишаються лише точки, які на standby фізично не досяжні або
+класифіковані інакше: довідники й POS-документи каси (`ProxyToPrimary` через
+гейт §11.2), агрегаторні `users`/`auth`/`setup` (DisableOnStandby §11.7.4),
+`prro_queue_items` (межа §11.7.9.7) та внутрішні сервіс-jobs.
+
 Винятки в межах таблиці `devices` (ProxyToPrimary): точка
 `api/store_context.rs:108` — це **heartbeat** пристрою (§11.1 рядок 3 →
 `LocalOutbox`), у реєстрі §11.7.3 вона позначена як Фаза 3 (на standby має йти
@@ -1261,55 +1271,93 @@ Some("catalog_directories"))` → `policy_for` → `None` → `Pass` → дру�
 `api/src/**` і вимагає політику для КОЖНОГО літерала, переданого в `admin_pool`
 (9 викликів).
 
-#### 11.7.9.7 АНОМАЛІЯ 2: клас `LocalOutbox`, але хендлер пише PG → сирий `500` на standby (Фаза 3.3a: 19 із 31 закрито)
+#### 11.7.9.7 АНОМАЛІЯ 2: клас `LocalOutbox`, але хендлер пише PG → сирий `500` на standby (Фази 3.3a+3.3b: 31 з 31 закрито, 2 поверхні → межа)
 
 Клас цих таблиць у §11.7.2 **оголошений** (черга/локальна БД), однак
 HTTP-хендлер ішов у PG через mode-agnostic сервіс. Наслідок на standby:
 `LocalOutbox` → `Pass` → `INSERT/UPDATE` у **read-only** репліку → сирий `500`.
 
-**Фаза 3.3a** додала клієнтські адаптери (контур §10, зразок `OutboxPos`) і
-підключила їх в `api/lib.rs` ОДИН раз на старті за `node_cfg.mode`.
+**Фаза 3.3a** (19 поверхонь) і **Фаза 3.3b** (12 поверхонь + heartbeat) додали
+клієнтські адаптери (контур §10, зразок `OutboxPos`) і підключили їх в
+`api/lib.rs` ОДИН раз на старті за `node_cfg.mode` (`node_cfg_mode()`).
 
 | Сутність | Поверхонь | Стан | Адаптер / межа |
 |---|---|---|---|
-| `invoice` | 11 | ✅ закрито | `repositories/outbox_invoices.rs` (`OutboxInvoicesV1`/`V2`), `lib.rs::init_invoices` |
-| `purchase_order` | 4 | ✅ закрито | `repositories/outbox_purchase_orders.rs`, `lib.rs::init_purchase_orders` |
-| `inventory` | 4 | ✅ закрито | `repositories/outbox_write.rs` (`OutboxWrite`), `lib.rs::init_readdirs` |
-| `return_receipt` | 4 | ⛔ АНОМАЛІЯ (нижче) | `state.return_invoices` — черги/приймача НЕ існує |
-| `debtors` | 4 | 🕐 Фаза 3.3b | `debtors.rs:188/210/223` |
-| `supplier_ledger` | 2 | 🕐 Фаза 3.3b | `ledger.rs:147` |
-| `prro_queue_items` | 2 | 🕐 Фаза 3.3b | `prro.rs::sync_queue` |
-| **Разом** | **31** | **19 ✅ / 4 ⛔ / 8 🕐** | |
+| `invoice` | 11 | ✅ 3.3a | `repositories/outbox_invoices.rs` (`OutboxInvoicesV1`/`V2`), `lib.rs::init_invoices` |
+| `purchase_order` | 4 | ✅ 3.3a | `repositories/outbox_purchase_orders.rs`, `lib.rs::init_purchase_orders` |
+| `inventory` | 4 | ✅ 3.3a | `repositories/outbox_write.rs` (`OutboxWrite`), `lib.rs::init_readdirs` |
+| `return_invoice` | 4 | ✅ 3.3b | `repositories/outbox_return_invoices.rs` + тип `return_invoice` (`transactions.rs`) + локальний агрегат `return_invoices` (offline-0012, stock **−qty**) + приймач-СЕРВІС `sync.rs::accept_return_invoice_kind` + partial UNIQUE `uq_return_invoices_client_uuid` (Alembic 0018) |
+| `debtor_payment` | 4 | ✅ 3.3b | `repositories/outbox_debtors.rs` + тип `debtor_payment`, агрегат `debtors_ledger` (0006), похідний борг `debtor_balances` (0012) + приймач `sync_receivers::accept_debtor_payment` (`debtor_payments` + `UPDATE debtors.total_debt`) + UNIQUE 0018 |
+| `supplier_ledger` | 2 | ✅ 3.3b | `repositories/outbox_ledger.rs` + тип `supplier_ledger`, агрегат `supplier_ledger` (0012), похідний `supplier_balances` + приймач `sync_receivers::accept_supplier_ledger` (`SUM(amount)+amount` в одній транзакції) + UNIQUE 0018 |
+| `prro_queue_items` | 2 | 🚫 межа `ProxyToPrimary` (АНОМАЛІЯ нижче) | фіскалізація — див. пояснення |
+| heartbeat `api/store_context.rs:108` | внутр. (не маршрут) | ✅ 3.3b | `standby_heartbeat::record_device_seen` → SQLite `device_heartbeats` (offline-0013) |
+| **Разом** | **31 + heartbeat** | **29 ✅ / 2 🚫** | |
 
-Спільна обв'язка адаптерів — `repositories/outbox_local.rs` (відкриття SQLite
-каси, `store_id`, санація помилок); сам запис НЕ дубльовано: він іде через
-`offline::transactions::{enqueue_transaction, enqueue_invoice}` (агрегат +
-outbox + stock в одній SQLite-транзакції). Для операцій, яких черга не вміє
-(update/delete/confirm/cancel документа) — явна людська відмова
-(`outbox_local::unavailable`), а не сирий SQL-текст.
+**`return_invoice` — повний стек (була АНОМАЛІЯ §11.7.9.7 фази 3.3a).** Тип
+`TYPE_RETURN_RECEIPT` (`sync_push.rs:50`) — це **чек повернення ПОКУПЦЯ**
+(`sync.rs::receiver_table` → `receipts`, диспетчер `accept_receipt_kind`), тож
+для повернення **ПОСТАЧАЛЬНИКУ** додано ОКРЕМИЙ тип `return_invoice`
+(`transactions.rs::TYPE_RETURN_INVOICE`) з локальною таблицею
+`return_invoices` (offline-0012) і приймачем-сервісом
+(`ReturnInvoicesService`: draft → confirm = stock −qty + `supplier_ledger` +
+борг постачальнику; `client_uuid` у `return_invoices.client_uuid`, ідемпотентність
+при повторному push). Це той самий підхід, що для `invoice`
+(`accept_invoice_kind`): на primary діє ОДНА бізнес-логіка — сервісна, а не
+другий SQL-приймач.
 
-**`return_receipt` — АНОМАЛІЯ (СТОП по сутності).** Тип `TYPE_RETURN_RECEIPT`
-(`sync_push.rs:50`) — це **чек повернення ПОКУПЦЯ**: `receiver_table`
-(`sync.rs:642`) веде його в `receipts`, а диспетчер `sync.rs:627` — у
-`accept_receipt_kind` → `svc.create_return_receipt` (POS-чек). Повернення
-**ПОСТАЧАЛЬНИКУ** (`state.return_invoices`, таблиця `return_invoices`) не має
-ні типу черги в `offline/transactions.rs`, ні локальної таблиці, ні приймача в
-`sync.rs`/`sync_receivers.rs`. Адаптер фізично неможливий без нового типу й
-приймача — потрібне окреме рішення (не Фаза 3.3a).
+**`debtor_payment` — рішення NIKO §11.6.4 ВАРІАНТ 1 (`LocalOutbox`).**
+Боргові сутності мають рядок політики (§11.1), оплата створюється офлайн:
+агрегат → `debtors_ledger` (0006), похідний локальний борг → `debtor_balances`
+(0012), приймач → `INSERT debtor_payments` + `UPDATE debtors.total_debt` в ОДНІЙ
+транзакції. Свідома **відміна від Python** (`SqlxDebtors::pay`): повне погашення
+НЕ видаляє боржника (`DELETE FROM debtors` → каскад зносить рядок оплати, і
+повторний push не знайшов би `client_uuid`); борг лишається `0.00`, історія
+оплат ціла. `create`/`update` боржника — відмова-як-клас (§11.6.2): у черзі
+немає дії над довідником, ключа ідемпотентності в нього немає.
 
-Для `invoice` суперечність із §12 (Крок 2) знята: адаптер+приймач доведені
-e2e-тестом (payload адаптера → push → 1 рядок `invoices`, `confirmed`,
-stock +3.000, повторний push → `already_exists`).
+**`supplier_ledger` — самостійний документ, а не похідна накладної.**
+`POST /api/v1/ledger` і `POST /api/v2/ledger/entries` створюють РУЧНИЙ запис
+книги (`operation_type` + `amount` + `notes`), тож «увійти в ефект документа» не
+можна — потрібен власний тип. `balance_after` локально = баланс репліки +
+сума несинхронізованих записів каси (0.00 → та сама арифметика, що в приймачі
+`SUM(amount) + amount`).
 
-#### 11.7.9.8 АНОМАЛІЯ 3: внутрішня (не-HTTP) write-точка heartbeat
+**`prro_queue_items` → межа `ProxyToPrimary` (АНОМАЛІЯ 4).**
+`POST /api/v2/prro/fiscal/sync` і `POST /api/v2/prro/sync` виконують
+`SyncOfflineQueueUseCase::sync`: дістають чеки з ПГ-черги `prro_queue_items`,
+відправляють їх у **ДПС через gRPC sendChkV2 з КЕП-підписом** і лише потім
+роблять `UPDATE prro_queue_items SET status='sent'` + `INSERT receipts`.
+Це не «локальна черга каси», а **черга фіскальної зміни вузла, який тримає
+КЕП-ключ**: (а) без живого зв'язку з ДПС операція неможлива фізично — саме тому
+вона і є «sync»; (б) фіскальний чек має бути виданий РІВНО ОДИН раз, а
+`KEY_LAST_MAC_NUMBER`/номер чека зміни — глобальний стан (`prro_shifts`,
+політика вже `ProxyToPrimary`, §11.1); дублювання фіскалізації на другому вузлі
+дало б подвійні чеки в ДПС. Тому клас поверхні на standby — прохід на primary
+(§11.2) / відмова користувачу людським текстом, а НЕ SQLite-черга каси: локально
+каса не має ні КЕП-ключа, ні права фіскалізувати чужу зміну. Класифікація
+`write_gate.rs` НЕ змінювалась (вона валідована guard'ом); межу зафіксовано тут
+як свідоме рішення, а не борг.
+
+**`heartbeat` (§11.7.9.8) закрито у Фазі 3.3b**: `store_context.rs` на standby
+більше не робить `UPDATE devices` у репліку → `standby_heartbeat::record_device_seen`
+пише в SQLite `device_heartbeats` (offline-0013), помилки лише логуються;
+авторитетне `devices.last_seen_at` пише primary.
+
+#### 11.7.9.8 ВИПРАВЛЕНО (Фаза 3.3b): внутрішня write-точка heartbeat
 
 `api/store_context.rs:108`: `UPDATE devices SET last_seen_at = now()` на КОЖЕН
 запит пристрою (store-middleware), пул — `state.store_pool` = на standby це
 локальна **репліка**. Помилка лише логується (`store_context.rs:113`), тому
-`500` не виникає, але серцебиття в PG на standby не пишеться і кожен запит дає
-рядок помилки в лог. Клас §11.1 — `LocalOutbox` (`standby_heartbeat.rs`, SQLite).
-Потрібен mode-guard на цю точку (окремий етап, поза Фазою 3.2). Поверхня не є
-маршрутом, тому в 137 не входить.
+`500` не виникав, але серцебиття в PG на standby не писалося і кожен запит давав
+рядок помилки в лог.
+
+**Закрито**: на standby middleware НЕ йде в PG, а пише локальний SQLite-журнал
+`device_heartbeats` (offline-міграція 0013) через
+`standby_heartbeat::record_device_seen` (у `spawn_blocking`, помилки лише
+логуються). Авторитетне `devices.last_seen_at` пише primary — саме туди йде
+device-авторизація. Точка належить шару локальної копії §11.7.4
+(`is_local_sqlite_layer`: `offline/**`, `standby_heartbeat.rs`), тому політики PG
+не потребує. Поверхня не є маршрутом, тому в 137 не входить.
 
 #### 11.7.9.9 Критерій прийняття Фази 3.2
 
@@ -1344,7 +1392,8 @@ stock +3.000, повторний push → `already_exists`).
 * **Фаза 3.2 (§11.7.9)**: 137/137 write-поверхонь мають явний клас, `classify_request → None` = 0 (було 47); guard 9 тестів, 0 failed; pass-through верифіковано на 63 шляхах (`write_gate_behavior`, 5 passed) → ✅;
 * жодного виправлення коду Фази 3 (адаптерів) — лише карта + запобіжник → ✅.
 * **Фаза 3.3a (§11.7.9.7)**: 19 із 31 поверхні закрито адаптерами (`outbox_invoices.rs`, `outbox_purchase_orders.rs`, `outbox_write.rs` + спільна обв'язка `outbox_local.rs`), `lib.rs` вибирає адаптер раз на старті за `node_cfg.mode`; e2e: `invoice_standby_outbox_e2e` (2, включно з push на primary) + `purchase_order_standby_outbox_e2e` + `inventory_standby_outbox_e2e` → ✅
-* свідомо НЕ виправлено (борг, §11.7.9.7): 8 поверхонь Фази 3.3b (`debtors` 4, `supplier_ledger` 2, `prro_queue_items` 2) + 4 поверхні `return_invoices` (АНОМАЛІЯ: ні типу черги, ні приймача) + внутрішній heartbeat `store_context.rs:108` (§11.7.9.8) → ⚠
+* **Фаза 3.3b (§11.7.9.7)**: 12 поверхонь закрито — `return_invoice` (4, ПОВНИЙ стек: тип + локальний агрегат 0012 + stock −qty + приймач-сервіс + UNIQUE 0018), `debtor_payment` (4, §11.6.4 варіант 1: `debtors_ledger` + `debtor_balances` + приймач `debtor_payments`/`UPDATE debtors`), `supplier_ledger` (2, самостійний документ: `supplier_ledger` + `supplier_balances` + приймач з `SUM(amount)+amount`); heartbeat `store_context.rs:108` закрито SQLite-каналом (§11.7.9.8); e2e `return_invoice_standby_outbox_e2e` (2, включно з push на primary) + `debtor_standby_outbox_e2e` (2, включно з ідемпотентним push) → ✅
+* **межа, а не борг (§11.7.9.7)**: `prro_queue_items` (2 поверхні `sync`) — фіскалізація через ДПС із КЕП-ключем вузла: `ProxyToPrimary`/відмова; SQLite-черга каси тут неможлива (подвійна фіскалізація зміни) → 🚫
 
 ---
 
