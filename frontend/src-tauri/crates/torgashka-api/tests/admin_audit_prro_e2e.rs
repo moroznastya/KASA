@@ -31,6 +31,26 @@ use uuid::Uuid;
 
 mod common;
 
+static SCHEMA_ONCE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// Готує схему тестової БД ТИМ САМИМ механізмом, що й прод (`ensure_schema`).
+/// Потрібно, бо CI створює БД зі `scripts/schema.sql`, а частина таблиць
+/// (`devices`, `store_activation_codes`) — це runtime-DDL Rust-ядра: без цього
+/// кроку `TRUNCATE devices` на свіжій CI-БД падає з `42P01`.
+async fn apply_schema() {
+    SCHEMA_ONCE
+        .get_or_init(|| async {
+            let p = torgashka_infrastructure::db::connect_test_pool(5)
+                .await
+                .expect("тестова БД недоступна");
+            torgashka_infrastructure::db::ensure_schema(&p)
+                .await
+                .expect("ensure_schema на тестовій БД");
+            p.close().await;
+        })
+        .await;
+}
+
 async fn free_port() -> u16 {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -195,6 +215,7 @@ async fn prro_put(
 #[tokio::test]
 async fn audit_log_filters_rbac_and_prro_per_store() {
     common::force_test_db();
+    apply_schema().await;
     let pool = api_pool().await;
 
     // Гігієна: чиста БД (детерміновані глобальні фільтри аудиту).
