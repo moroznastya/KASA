@@ -208,7 +208,11 @@ scripts/backup-restore.sh pos_system backups/pos_system_20260901_1400.dump --yes
 | `Список власників порожній` | Нормально для нового сервера: бекапиться тільки `pos_system` (exit 0) |
 | Бекап `torgashka_owner_*` не створюється | `owners_db` порожній або запит недоступний — скрипт робить фолбек на `psql -l \| grep` |
 | `pg_dump: error: connection to server failed` | БД у Docker: перевірте проброс порту (`5434:5432`) і `PGPORT=5434` |
-| Ротація не видаляє старі файли | Перевірте `KEEP_DAYS`; видаляються лише файли за масками `*_*.dump` у `BACKUP_DIR` |
+| Ротація не видаляє старі файли | Перевірте `KEEP_DAYS`; видаляються лише файли за масками `*_*.dump` і `offline_*.db` у `BACKUP_DIR` |
+| Копії черги немає в `backups/` | `offline.db` відсутній на цій машині (норма), або задано `--meta-only`/`--no-queue`/`BACKUP_QUEUE=0` — див. `grep offline.db logs/backup.log` |
+| `sqlite3 не знайдено, а offline.db ІСНУЄ` | На POS-вузлі немає `sqlite3`; `cp` заборонено свідомо → бекап черги не робиться, exit 1 | Встановіть `sqlite3` на касі |
+| `Error: database is locked` при бекапі черги | Каса активно пише в SQLite | Штатно: `.timeout 10000` + 3 спроби (`scripts/backup.sh:211-226`); при систематичному повторі — перевірте диск/лочки |
+| `--queue`: «Схоже, каса ще працює» | Поруч непорожні `offline.db-wal`/`-shm` | Зупиніть застосунок і повторіть; обхід — `--force-live` |
 
 ---
 
@@ -271,40 +275,64 @@ scripts/backup-restore.sh pos_system backups/pos_system_20260901_1400.dump --yes
 
 ### 9.3 Коли бекапити
 
+- **автоматично** — повним циклом `scripts/backup.sh` (без прапорців), разом із PG-бекапами
+  (розділ 4); черга бекапиться тим самим таймером, окремого завдання не потрібно (Фаза 3.9);
 - **перед оновленням** застосунку (новий бінарник застосовує міграції черги —
   `offline/migrations.rs`, `sync_push.rs:736`);
 - **після оновлення** — до повернення каси в роботу;
-- **періодично** — окремим завданням поряд із PG-бекапами (розділ 4): PG-бекапи чергу не покривають;
+- **окремо** — на `--meta-only`-таймері черга НЕ бекапиться свідомо (там лише мета-БД);
+  потрібна черга саме в цей момент → запустіть повний цикл вручну;
 - **обов'язково перед DR-операціями** (`promote`, `repoint-primary`, ручний `pg_basebackup`) —
   доки черга непорожня (чому — див. `docs/operations/disaster-recovery-network.md` §6).
 
-### 9.4 Команди бекапу
+### 9.4 Команди бекапу — РЕАЛІЗОВАНО (Фаза 3.9)
 
-**Код-підтверджено:** скрипта бекапу черги в репозиторії **немає** — `scripts/backup.sh` і
-`scripts/backup-restore.sh` працюють виключно з PostgreSQL (див. 9.5).
+**Код-підтверджено:** чергу бекапить штатний скрипт, консистентно і без `cp`.
 
-**Рекомендація оператора (у коді відсутня; стандартний інструмент SQLite):**
+- `scripts/backup.sh:186-247` — `backup_queue()`; ядро — `sqlite3 "$OFFLINE_DB" ".timeout 10000"
+  ".backup '$out'"` (`scripts/backup.sh:215`). Busy-timeout 10 с + до 3 спроб
+  (`scripts/backup.sh:208-226`): під навантаженням живої каси `.backup` може віддати
+  `database is locked` (перевірено смоук-тестом Фази 3.9).
+- Виклик у повному циклі — `scripts/backup.sh:304`; `--meta-only` чергу не чіпає
+  (`scripts/backup.sh:298-303`); опт-аут — `--no-queue` / `BACKUP_QUEUE=0`
+  (`scripts/backup.sh:98`, `:80-81`).
+- Джерело — `$OFFLINE_DB`; дефолт `${XDG_DATA_HOME:-$HOME/.local/share}/torgashka/offline.db`
+  (`scripts/backup.sh:80`, продубльовано з `offline/db.rs:78-89`).
+- Файл — `offline_YYYYMMDD_HHMM.db` у `$BACKUP_DIR`; ротація — та сама, за `KEEP_DAYS`
+  (`scripts/backup.sh:310`).
+- Перевірка копії перед визнанням успіху: `PRAGMA quick_check` = `ok` **і** наявність таблиці
+  `outbox` (`scripts/backup.sh:229-236`); інакше файл видаляється і пишеться НЕВДАЧА.
+- Лог — той самий `logs/backup.log`; у виводі явне попередження оператору, що копія містить
+  НЕСИНХРОНІЗОВАНІ ПРОДАЖІ: `pending+failed = N` (`scripts/backup.sh:244-245`).
 
 ```bash
-# шлях беремо з get_offline_stats → db_path (не вигадуємо):
-DB="$HOME/.local/share/torgashka/offline.db"
-OUT="$HOME/torgashka-backups/offline_$(date +%Y%m%d_%H%M).db"
-mkdir -p "$(dirname "$OUT")"
+# Повний бекап: PG + черга (те саме, що викликає systemd/cron)
+scripts/backup.sh
 
-sqlite3 "$DB" ".backup '$OUT'"     # консистентна копія при WAL; застосунок може працювати
+# Повний бекап без черги (напр. на центральному сервері, де offline.db немає)
+scripts/backup.sh --no-queue
+
+# Лише черга, вручну — тим самим способом, що і скрипт:
+DB="$HOME/.local/share/torgashka/offline.db"; OUT="./backups/offline_$(date +%Y%m%d_%H%M).db"
+sqlite3 "$DB" ".timeout 10000" ".backup '$OUT'"   # без .timeout можливий 'database is locked'
+sqlite3 "$OUT" "PRAGMA quick_check;"              # очікувано: ok
 ```
 
-Альтернативи (також не в коді): `VACUUM INTO`; або зупинити застосунок і скопіювати одним
-набором `offline.db` + `offline.db-wal` + `offline.db-shm`.
+Якщо `sqlite3` немає, а `offline.db` існує — скрипт **не** робить `cp`: він завершується
+з помилкою й явним повідомленням у лог (`scripts/backup.sh:199-202`).
 
-### 9.5 Що НЕ покрито (НЕ РЕАЛІЗОВАНО в коді)
+### 9.5 Що лишається НЕ покритим
 
-- `scripts/backup.sh` / `scripts/backup-restore.sh` бекаплять лише `pg_dump`-ом `pos_system` і
-  `torgashka_owner_*` (розділи 1–5); згадок `offline.db`/SQLite в них немає → **НЕ РЕАЛІЗОВАНО**.
-- Перевірки цілісності та авто-бекапу черги в коді немає: grep `integrity_check|VACUUM` по
-  `frontend/src-tauri/**/*.rs` → 0 збігів → **НЕ РЕАЛІЗОВАНО**.
+- Бекап черги є, але окремого timer'а/юніта для неї немає: вона їде в тому ж повному циклі,
+  що й PG (`scripts/systemd/torgashka-backup.timer`). Наслідок: `--meta-only`-запуск
+  (`torgashka-meta-backup.timer`, 2х/день) чергу не бекапить — так задумано
+  (`scripts/backup.sh:298-303`).
+- Перевірки цілісності **всередині застосунку** немає: grep `integrity_check|VACUUM` по
+  `frontend/src-tauri/**/*.rs` → 0 збігів. Цілісність перевіряє лише скрипт — `quick_check`
+  на копії (`scripts/backup.sh:229`).
+- Шифрування черги (SQLCipher) і робота з ключем — поза цим контуром
+  (`docs/design/sync-schema-design.md:660`); якщо черга стане шифрованою, `.backup` вимагатиме ключа.
 - `get_db_size()` (`offline/db.rs:487-493`) дає лише розмір файлу — діагностика, не цілісність.
-- Окремих systemd-юнітів для черги немає (`scripts/systemd/` — лише PG-бекапи).
 
 ### 9.6 Перевірка цілісності та `pending` після відновлення
 
@@ -316,9 +344,17 @@ sqlite3 "$OUT" "SELECT status, COUNT(*) FROM outbox GROUP BY status;"      # pen
 sqlite3 "$OUT" "SELECT COUNT(*) FROM outbox WHERE status IN ('pending','failed');"
 ```
 
-2. Відновлення: покласти `offline.db` на місце (після `.backup` файли `-wal`/`-shm` не потрібні).
-   Застосунок відкриє його через `sync_push::open_connection` (`sync_push.rs:728-737`) і
-   застосує міграції — вручну нічого робити не треба.
+2. Відновлення — штатним скриптом (Фаза 3.9):
+   `scripts/backup-restore.sh --queue <бекап> --yes` (`scripts/backup-restore.sh:95-186`):
+   - перевіряє джерело ДО змін: `quick_check` + наявність таблиці `outbox` (`:111-121`);
+   - зберігає ПОТОЧНУ чергу в `<offline.db>.pre-restore_YYYYMMDD_HHMMSS` консистентним
+     `.backup` (секунди в імені — повторний restore тієї ж хвилини не затирає попередню копію);
+   - **відмовляє**, якщо поруч непорожні `offline.db-wal`/`-shm` — каса, схоже, ще працює
+     (`:125-129`); свідомий обхід — `--force-live`;
+   - підміняє файл атомарно і перевіряє `quick_check` (`:158-180`);
+   - без `--yes` питає інтерактивно.
+   Після відновлення застосунок відкриє чергу через `sync_push::open_connection`
+   (`sync_push.rs:728-737`) і застосує міграції — вручну нічого робити не треба.
 3. `pending` після відновлення: фоновий push (`src-tauri/src/lib.rs:347`,
    `offline/commands.rs:123-140`) або ручний `sync_now` (`offline/commands.rs:489-556`) вибере
    чергу FIFO (`sync_push.rs:252-280`) і надішле батчами ≤ 50 (`sync_push.rs:252`,

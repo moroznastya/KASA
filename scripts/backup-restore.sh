@@ -10,14 +10,26 @@
 #
 # Використання:
 #   scripts/backup-restore.sh <DB_NAME> <BACKUP_FILE> [--yes]
+#   scripts/backup-restore.sh --queue <OFFLINE_DB_BACKUP> [--yes] [--force-live]
 #
 #   <DB_NAME>      — ім'я БД, яку відновлюємо (напр. torgashka_owner_abc12345)
 #   <BACKUP_FILE>  — .dump файл (custom format), напр. backups/torgashka_owner_abc12345_20260901_0200.dump
 #   --yes          — підтвердження деструктивної операції (без інтерактивного питання)
 #
-# Приклад:
-#   scripts/backup-restore.sh torgashka_owner_abc12345 \
-#       backups/torgashka_owner_abc12345_20260901_0200.dump --yes
+# Відновлення локальної SQLite-черги каси (--queue, Фаза 3.9; симетрично до
+# `backup.sh` §3b):
+#   scripts/backup-restore.sh --queue backups/offline_20260901_0200.db --yes
+#     • джерело перевіряється (quick_check + наявність таблиці outbox) ДО змін;
+#     • поточна черга зберігається у <offline.db>.pre-restore_YYYYMMDD_HHMM
+#       (консистентний `sqlite3 .backup`, не cp);
+#     • якщо поруч є непорожні offline.db-wal/-shm — скрипт відмовляє:
+#       застосунок, схоже, ще працює (обхід — --force-live, на свій ризик);
+#     • ціль — OFFLINE_DB (дефолт ${XDG_DATA_HOME:-$HOME/.local/share}/torgashka/offline.db).
+#
+# ⚠️  Не відновлюйте чергу «поверх» уже синхронізованих агрегатів не перевіривши
+#     стан: ідемпотентність за client_uuid лишається (повторний push → already_exists),
+#     але `receipts.synced=1` НЕ означає «доставлено» — істина в outbox.status
+#     (docs/infrastructure/backup-restore.md §9.6-§9.7).
 #
 # Безпека:
 #   - відновлення мета-БД pos_system БЕЗ --yes заборонено (втрата маршрутизації);
@@ -71,6 +83,130 @@ if [ -n "$DATABASE_URL" ]; then
         PGPORT="${PGPORT:-5432}"
     fi
     export PGHOST PGPORT PGUSER PGPASSWORD
+fi
+
+# --- Режим відновлення SQLite-черги каси (--queue) ---------------------------
+# Симетрично до backup.sh §3b. PG-гілка нижче в цьому режимі не виконується:
+# відновлення черги не потребує ні psql, ні pg_restore.
+# Шлях продубльовано з коду: `OfflineDatabase::default_db_path()`
+# (crates/torgashka-infrastructure/src/offline/db.rs:78-89).
+OFFLINE_DB="${OFFLINE_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/torgashka/offline.db}"
+
+restore_queue() {
+    local src="$1" confirm="$2" force_live="$3"
+    local chk ts dest_bak cur
+
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        fail "ERROR: sqlite3 не знайдено в PATH — відновлення черги неможливе"
+        return 1
+    fi
+    if [ ! -f "$src" ]; then
+        fail "ERROR: файл бекапу черги не знайдено: $src"
+        return 1
+    fi
+
+    log "══════════════════════════════════════════════════════════"
+    log "▶ restore(queue): src=$src → dest=$OFFLINE_DB"
+
+    # 1. Валідність джерела ДО будь-яких змін
+    chk="$(sqlite3 "$src" 'PRAGMA quick_check;' 2>/dev/null || echo 'quick_check error')"
+    if [ "$chk" != "ok" ]; then
+        fail "Файл не є цілим SQLite-файлом (quick_check: $chk)"
+        return 1
+    fi
+    if ! sqlite3 "$src" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='outbox';" 2>/dev/null | grep -q 1; then
+        fail "У файлі немає таблиці outbox — це не бекап черги каси"
+        return 1
+    fi
+    log "✅ Джерело валідне: outbox записів — $(sqlite3 "$src" 'SELECT count(*) FROM outbox;' 2>/dev/null || echo '?')"
+
+    # 2. Живий застосунок: непорожні -wal/-shm означають відкриту SQLite —
+    #    підміна файлу під живим процесом знищить його транзакції.
+    if { [ -s "$OFFLINE_DB-wal" ] || [ -s "$OFFLINE_DB-shm" ]; } && [ "$force_live" != "1" ]; then
+        fail "Схоже, каса ще працює (є $OFFLINE_DB-wal/-shm). ЗУПИНІТЬ застосунок і повторіть."
+        fail "Свідомий обхід (на свій ризик): --force-live — файли -wal/-shm буде видалено."
+        return 1
+    fi
+
+    # 3. Страхувальна копія поточної черги (що втрачаємо)
+    if [ -f "$OFFLINE_DB" ]; then
+        cur="$(sqlite3 "$OFFLINE_DB" "SELECT count(*) FROM outbox WHERE status IN ('pending','failed');" 2>/dev/null || echo '?')"
+        log "ℹ️  Поточна черга: pending+failed = $cur (буде перезаписано)"
+        # Секунди в імені: повторний restore у ту саму хвилину не має затирати
+        # попередню страхувальну копію (виявлено смоук-тестом Фази 3.9).
+        ts="$(date '+%Y%m%d_%H%M%S')"
+        dest_bak="$OFFLINE_DB.pre-restore_${ts}"
+        if sqlite3 "$OFFLINE_DB" ".backup '$dest_bak'" 2>>"$LOG_FILE"; then
+            log "🛟 Страхувальна копія поточної черги: $dest_bak"
+        else
+            fail "Не вдалося зробити страхувальну копію поточної черги ($dest_bak)"
+        fi
+    else
+        log "ℹ️  Робочого offline.db немає — файл буде створено з бекапу."
+    fi
+
+    # 4. Підтвердження (деструктивно)
+    if [ "$confirm" -ne 1 ]; then
+        echo "⚠️  Поточний $OFFLINE_DB буде ПЕРЕЗАПИСАНО бекапом $src"
+        read -r -p "Продовжити? [y/N]: " ans
+        case "$ans" in
+            y|Y|yes|YES) : ;;
+            *) echo "Скасовано."; return 0 ;;
+        esac
+    fi
+
+    # 5. Атомарна підміна: копія у тому ж каталозі → перейменування
+    mkdir -p "$(dirname "$OFFLINE_DB")"
+    if ! cp "$src" "$OFFLINE_DB.restore_tmp"; then
+        fail "Не вдалося скопіювати бекап у $OFFLINE_DB.restore_tmp"
+        return 1
+    fi
+    if ! mv -f "$OFFLINE_DB.restore_tmp" "$OFFLINE_DB"; then
+        fail "Не вдалося замінити $OFFLINE_DB"
+        return 1
+    fi
+    # Залишкові WAL-файли попереднього життя (застосунок зупинено/--force-live)
+    if [ -f "$OFFLINE_DB-wal" ]; then rm -f "$OFFLINE_DB-wal"; fi
+    if [ -f "$OFFLINE_DB-shm" ]; then rm -f "$OFFLINE_DB-shm"; fi
+
+    # 6. Перевірка результату
+    chk="$(sqlite3 "$OFFLINE_DB" 'PRAGMA quick_check;' 2>/dev/null || echo 'quick_check error')"
+    if [ "$chk" != "ok" ]; then
+        fail "Після відновлення quick_check: $chk (використайте страхувальну копію .pre-restore_*)"
+        return 1
+    fi
+    log "✅ Черга відновлена: pending+failed = $(sqlite3 "$OFFLINE_DB" "SELECT count(*) FROM outbox WHERE status IN ('pending','failed');" 2>/dev/null || echo '?')"
+    log "⚠️  ПЕРЕД синком перевірте, чи знімок не «повертає» вже доставлені агрегати:"
+    log "    • повторний push ідемпотентний за client_uuid (сервер → already_exists) — ADR-0007 §9;"
+    log "    • але receipts.synced=1 НЕ означає «доставлено» — істина в outbox.status;"
+    log "    • знімок, знятий «після ack», може повернути агрегати з outbox.status='done'."
+    log "    Деталі: docs/infrastructure/backup-restore.md §9.6-§9.7"
+    log "✅ restore(queue) завершено"
+    return 0
+}
+
+if [ "${1:-}" = "--queue" ]; then
+    shift
+    if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+        echo "Використання: $0 --queue <OFFLINE_DB_BACKUP> [--yes] [--force-live]" >&2
+        echo "  приклад: $0 --queue backups/offline_20260901_0200.db --yes" >&2
+        exit 2
+    fi
+    QUEUE_SRC="$1"; shift
+    QUEUE_CONFIRM=0
+    QUEUE_FORCE_LIVE=0
+    for a in "$@"; do
+        case "$a" in
+            --yes) QUEUE_CONFIRM=1 ;;
+            --force-live) QUEUE_FORCE_LIVE=1 ;;
+            *) echo "ERROR: невідомий аргумент: $a" >&2; exit 2 ;;
+        esac
+    done
+    if restore_queue "$QUEUE_SRC" "$QUEUE_CONFIRM" "$QUEUE_FORCE_LIVE"; then
+        exit 0
+    else
+        exit 1
+    fi
 fi
 
 # --- Аргументи ----------------------------------------------------------------

@@ -327,9 +327,12 @@ promote не існувало (grep `replay|drain|flush_outbox|apply_outbox` →
 * Е2Е доказ «накладна офлайн → promote → drain → агрегат у власному PG, черга
   порожня»: `tests/promote_drain_e2e.rs:371` (`promote_drains_local_outbox_into_own_pg`).
 
-**Залишається відкритим (не входить у Фазу 3.8):** бекапу самої черги в
-скриптах немає (`scripts/backup.sh` — лише PG) — копію `offline.db` робить
-оператор вручну (`docs/infrastructure/backup-restore.md` §9).
+**Бекап черги — РЕАЛІЗОВАНО (Фаза 3.9):** `scripts/backup.sh` повним циклом
+(без прапорців) знімає `offline.db` консистентно (`sqlite3 .backup`, `scripts/backup.sh:186-247`,
+виклик `:304`, ротація `:310`); відновлення — `scripts/backup-restore.sh --queue <файл> --yes`
+(`scripts/backup-restore.sh:95-186`). Деталі й застереження:
+`docs/infrastructure/backup-restore.md` §9.4, §9.6-§9.7. Перед DR усе одно робіть
+**окремий** бекап черги безпосередньо перед операцією — drain (§6.4) не заміна бекапу.
 
 **Правило для оператора:** promote з непорожньою чергою БІЛЬШЕ НЕ лишає продажі
 в SQLite — вони застосовуються у власний PG (крок 7) або пізніше вручну
