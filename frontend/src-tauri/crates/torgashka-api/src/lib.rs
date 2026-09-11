@@ -244,9 +244,17 @@ async fn init_readdirs() -> Result<
             let ledger = Arc::new(
                 torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
             ) as Arc<dyn LedgerService + Send + Sync>;
-            let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
-                store_pool.clone(),
-            )) as Arc<dyn AuthService + Send + Sync>;
+            // ADR-0007 F6: на standby `work_sessions` НЕ пишуться в PG
+            // (репліка read-only — логін був фізично неможливий). Режим
+            // читається локально: цей блок виконується РАНІШЕ за
+            // завантаження node_config у фасаді (дешеве читання файлу).
+            let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
+            let auth = Arc::new(
+                torgashka_infrastructure::repositories::auth::SqlxAuth::with_standby(
+                    store_pool.clone(),
+                    node_cfg.is_standby(),
+                ),
+            ) as Arc<dyn AuthService + Send + Sync>;
             Ok((pool, read, write, pos, ledger, auth))
         }
         Err(e) => {
@@ -1029,9 +1037,36 @@ async fn init_local_standby(
             cfg.local_port
         ),
     );
+    // ADR-0007 F3/F5: пул ЗАПИСУ в primary. `resolve_upstream_write_url`
+    // НЕ падає на активне джерело — на standby воно вказує на локальну
+    // репліку, а репліка ціллю запису не є ніколи. Немає URL/недосяжний
+    // → None: адмін-записи віддадуть 503 (F4).
+    let upstream_pool = match cfg.resolve_upstream_write_url() {
+        Some(url) => match torgashka_infrastructure::db::connect_upstream_write_pool(&url, 5).await
+        {
+            Ok(p) => Some(p),
+            Err(e) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!(
+                        "standby: upstream_write_url недосяжний ({e}) — адмін-записи → 503 (F4 ADR-0007)"
+                    ),
+                );
+                None
+            }
+        },
+        None => {
+            torgashka_infrastructure::embedded_pg::pg_log(
+                "INFO",
+                "standby: upstream_write_url не задано — адмін-записи → 503 (F4 ADR-0007)",
+            );
+            None
+        }
+    };
     Some(crate::route_local::LocalApiState {
         cfg: cfg.clone(),
         pool: sp.clone(),
+        upstream_pool,
         readdirs: Arc::new(SqlxDirectories::new(sp.clone()))
             as Arc<dyn ReadDirectories + Send + Sync>,
         pos: Arc::new(SqlxPos::new(sp.clone())) as Arc<dyn PosService + Send + Sync>,
@@ -1042,6 +1077,13 @@ async fn init_local_standby(
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_listener(listener).await
+}
+
+/// P3 (ADR-0007 §3.2 #21): фоновий `network_nodes` offline-job має сенс
+/// ЛИШЕ на primary — там сторінка моніторингу мережі. На standby він
+/// вимкнений (DISABLED_ON_STANDBY). Чиста умова — тестується без БД.
+fn offline_job_enabled(cfg: &torgashka_infrastructure::node_config::NodeConfig) -> bool {
+    !cfg.is_standby()
 }
 
 /// Ініціалізація ядра фасаду — виконується у ФОНІ (у власному таску), тому
@@ -1167,11 +1209,14 @@ async fn init_facade_state() -> Result<
                 eprintln!(
                     "[torgashka-api] {RUST_AUTH_ENV}=1 — Rust-гілка auth увімкнена (PostgreSQL)"
                 );
-                Some(
-                    Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
+                // ADR-0007 F6: той самий гейт, що й у readdirs-гілці.
+                let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
+                Some(Arc::new(
+                    torgashka_infrastructure::repositories::auth::SqlxAuth::with_standby(
                         StorePool::new(pool),
-                    )) as Arc<dyn AuthService + Send + Sync>,
-                )
+                        node_cfg.is_standby(),
+                    ),
+                ) as Arc<dyn AuthService + Send + Sync>)
             }
             Err(e) => {
                 torgashka_infrastructure::embedded_pg::pg_log(
@@ -1248,7 +1293,12 @@ async fn init_facade_state() -> Result<
     // Фоновий job мережі магазинів (ЕТАП 15, план §5.4): кожні 60 с вузли
     // active/lagging без heartbeat > 5 хв → offline (той самий поріг, що й
     // isDeviceOnline кас). Вузли archived не чіпаємо (термінальний стан).
-    if let Some(pool) = state.write_pool.clone() {
+    // ADR-0007 §3.2 #21 = DISABLED_ON_STANDBY: це housekeeping реєстру
+    // вузлів (роль primary); на standby job крутився б проти read-only
+    // репліки → спам `read-only transaction` у postgres.log.
+    if !offline_job_enabled(&state.node_config) {
+        eprintln!("[torgashka-api] network_nodes offline-job вимкнено (режим standby)");
+    } else if let Some(pool) = state.write_pool.clone() {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
@@ -2002,5 +2052,24 @@ mod tests {
         assert!(is_readiness_path("/api/v1/setup/status"));
         assert!(!is_readiness_path("/api/v1/auth/login"));
         assert!(!is_readiness_path("/api/v1/setup"));
+    }
+    // ── P3 (ADR-0007 #21): offline-job мережі вузлів — primary-only ──
+
+    #[test]
+    fn offline_job_disabled_on_standby_enabled_on_primary() {
+        use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
+        let standby = NodeConfig::load_from_str("[node]\nmode = \"standby\"\n");
+        assert!(!offline_job_enabled(&standby), "standby → job вимкнено");
+        let primary = NodeConfig::load_from_str("[node]\nmode = \"primary\"\n");
+        assert!(offline_job_enabled(&primary), "primary → job працює (F2)");
+        assert!(
+            offline_job_enabled(&NodeConfig::default()),
+            "без [node] → Primary → поведінка незмінна (F2)"
+        );
+        let standby = NodeConfig {
+            mode: NodeMode::Standby,
+            ..Default::default()
+        };
+        assert!(!offline_job_enabled(&standby));
     }
 }

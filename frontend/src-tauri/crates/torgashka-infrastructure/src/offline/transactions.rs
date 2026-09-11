@@ -30,6 +30,11 @@ pub const TYPE_INVENTORY: &str = "inventory";
 pub const TYPE_TRANSFER: &str = "transfer";
 /// Тип агрегата «списання».
 pub const TYPE_WRITE_OFF: &str = "write_off";
+/// Тип outbox «робоча сесія користувача» (ADR-0007 §3.4 #38–#40, клас
+/// LOCAL_SQLITE). Сесія вузла живе в SQLite (`work_sessions`, міграція 0009)
+/// та в outbox-опу; це ОКРЕМИЙ шлях, а не агрегат каси: [`table_of`] його не
+/// знає, `apply_effects` не викликається — **stock-ефекту немає**.
+pub const TYPE_WORK_SESSION: &str = "work_session";
 
 /// Результат локального запису транзакції (агрегат + outbox).
 #[derive(Debug, Clone, PartialEq)]
@@ -120,6 +125,22 @@ fn table_of(kind: &str) -> Result<&'static str, String> {
         TYPE_WRITE_OFF => Ok("write_offs"),
         other => Err(format!("тип транзакції без локальної таблиці: {other}")),
     }
+}
+
+/// Чи є тип «своїм» для outbox: 4 локальні агрегати каси + робочі сесії
+/// (ADR-0007 §3.4 #38–#40) + чеки продажу/повернення (шлях sync_push).
+/// Використовується як білий список (тести + майбутня валідація приймача).
+pub fn is_supported_outbox_type(kind: &str) -> bool {
+    matches!(
+        kind,
+        TYPE_PURCHASE_ORDER
+            | TYPE_INVENTORY
+            | TYPE_TRANSFER
+            | TYPE_WRITE_OFF
+            | TYPE_WORK_SESSION
+            | super::sync_push::TYPE_RECEIPT
+            | super::sync_push::TYPE_RETURN_RECEIPT
+    )
 }
 
 /// Атомарний запис локальної транзакції (ЕТАП 7b): агрегат (таблиця 0006,
@@ -276,6 +297,211 @@ pub fn unsynced_count(conn: &Connection, kind: &str) -> Result<i64, String> {
         |r| r.get(0),
     )
     .map_err(|e| format!("COUNT {table} (unsynced): {e}"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Робочі сесії користувача (ADR-0007 §3.4 #38–#40, клас LOCAL_SQLITE)
+// ─────────────────────────────────────────────────────────────────────────────
+// Standby-вузол не може писати `work_sessions` у PG (локальна репліка
+// read-only), тому сесія фіксується ЛОКАЛЬНО в SQLite вузла (міграція 0009;
+// таблиця дзеркалить PG public.work_sessions) + outbox-опу `work_session` —
+// доставити на primary має ОКРЕМИЙ приймач (інший контракт).
+// Формат payload — конверт дизайну 2.2, ідентичний агрегатам і чекам.
+
+/// Результат локального відкриття сесії (SQLite + outbox).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalWorkSession {
+    /// UUIDv4 сесії — той самий у `work_sessions` і outbox
+    /// (ідемпотентний ключ push, як у чеків/агрегатів).
+    pub client_uuid: String,
+    /// Час входу (RFC 3339, UTC) — дзеркало PG `work_sessions.login_time`.
+    pub login_time: String,
+    /// rowid outbox-запису (pending): сесія одразу push-кандидат.
+    pub outbox_id: i64,
+}
+
+/// Payload сесії — те, що лежить у `work_sessions.data` і в `payload` конверта.
+fn work_session_payload(
+    user_id: &str,
+    store_id: Option<&str>,
+    login_time: &str,
+    logout_time: Option<&str>,
+    duration_hours: Option<f64>,
+) -> Value {
+    serde_json::json!({
+        "user_id": user_id,
+        "store_id": store_id,
+        "login_time": login_time,
+        "logout_time": logout_time,
+        "duration_hours": duration_hours,
+    })
+}
+
+/// Конверт push (дизайн 2.2) — той самий формат, що в агрегатів і чеків.
+fn work_session_envelope(
+    client_uuid: &str,
+    store_id: Option<&str>,
+    created_at: &str,
+    payload: &Value,
+) -> Value {
+    serde_json::json!({
+        "type": TYPE_WORK_SESSION,
+        "client_uuid": client_uuid,
+        "store_id": store_id,
+        "created_at": created_at,
+        "payload": payload,
+    })
+}
+
+/// Тривалість сесії в годинах — ТА САМА формула, що в PG-гілці
+/// (`repositories/auth.rs`): мілісекунди / 3_600_000, округлення до 2 знаків.
+fn session_duration_hours(login_time: &str, logout_time: &str) -> Result<f64, String> {
+    let start = chrono::DateTime::parse_from_rfc3339(login_time)
+        .map_err(|e| format!("work_session login_time «{login_time}» не RFC 3339: {e}"))?;
+    let end = chrono::DateTime::parse_from_rfc3339(logout_time)
+        .map_err(|e| format!("work_session logout_time «{logout_time}» не RFC 3339: {e}"))?;
+    let hours = (end - start).num_milliseconds() as f64 / 3_600_000.0;
+    Ok((hours * 100.0).round() / 100.0)
+}
+
+/// Локальний вхід: INSERT сесії (synced=1) + outbox-оп — ОДНА SQLite-
+/// транзакція (BEGIN IMMEDIATE → INSERT work_sessions → INSERT outbox →
+/// COMMIT); помилка будь-де → ROLLBACK (жодної сесії без outbox-запису).
+///
+/// Stock не чіпається (сесія — не операція каси).
+pub fn open_work_session(
+    conn: &mut Connection,
+    user_id: &str,
+    store_id: Option<&str>,
+) -> Result<LocalWorkSession, String> {
+    let client_uuid = Uuid::new_v4().to_string();
+    let login_time = chrono::Utc::now().to_rfc3339();
+    let payload = work_session_payload(user_id, store_id, &login_time, None, None);
+    let data = payload.to_string();
+    let envelope = work_session_envelope(&client_uuid, store_id, &login_time, &payload).to_string();
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN IMMEDIATE (work_session open): {e}"))?;
+
+    tx.execute(
+        "INSERT INTO work_sessions \
+         (client_uuid, user_id, store_id, login_time, logout_time, duration_hours, data, synced) \
+         VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, 1)",
+        params![client_uuid, user_id, store_id, login_time, data],
+    )
+    .map_err(|e| format!("INSERT work_sessions (client_uuid={client_uuid}): {e}"))?;
+
+    tx.execute(
+        "INSERT INTO outbox (type, client_uuid, payload, status) \
+         VALUES (?1, ?2, ?3, 'pending')",
+        params![TYPE_WORK_SESSION, client_uuid, envelope],
+    )
+    .map_err(|e| format!("INSERT outbox ({TYPE_WORK_SESSION}, client_uuid={client_uuid}): {e}"))?;
+    let outbox_id = tx.last_insert_rowid();
+
+    tx.commit()
+        .map_err(|e| format!("COMMIT (work_session open, client_uuid={client_uuid}): {e}"))?;
+
+    Ok(LocalWorkSession {
+        client_uuid,
+        login_time,
+        outbox_id,
+    })
+}
+
+/// Локальний вихід: заповнює `logout_time`/`duration_hours` відкритим сесіям
+/// користувача і UPSERT-ить фінальний конверт у ТОЙ САМИЙ outbox-запис
+/// (за client_uuid) — усе в одній SQLite-транзакції.
+///
+/// `latest_only = true` — лише найновіша відкрита сесія (як `logout` у PG:
+/// `ORDER BY login_time DESC LIMIT 1`); `false` — усі відкриті (як
+/// `close_active_work_sessions`).
+///
+/// Повертає тривалості закритих сесій (години, 2 знаки). Порожній вектор —
+/// відкритих сесій не було (не помилка).
+pub fn close_work_session(
+    conn: &mut Connection,
+    user_id: &str,
+    latest_only: bool,
+) -> Result<Vec<f64>, String> {
+    let logout_time = chrono::Utc::now().to_rfc3339();
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("BEGIN IMMEDIATE (work_session close): {e}"))?;
+
+    // 1. Відкриті сесії користувача (найновіша першою). Statement живе лише
+    //    в блоці, щоб далі позичати `tx` на execute.
+    let open: Vec<(String, String, Option<String>, String)> = {
+        let sql = if latest_only {
+            "SELECT client_uuid, login_time, store_id, data FROM work_sessions \
+             WHERE user_id = ?1 AND logout_time IS NULL ORDER BY login_time DESC LIMIT 1"
+        } else {
+            "SELECT client_uuid, login_time, store_id, data FROM work_sessions \
+             WHERE user_id = ?1 AND logout_time IS NULL ORDER BY login_time DESC"
+        };
+        let mut stmt = tx
+            .prepare(sql)
+            .map_err(|e| format!("prepare SELECT work_sessions: {e}"))?;
+        let it = stmt
+            .query_map(params![user_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .map_err(|e| format!("SELECT work_sessions (user_id={user_id}): {e}"))?;
+        let mut v = Vec::new();
+        for row in it {
+            v.push(row.map_err(|e| format!("рядок work_sessions: {e}"))?);
+        }
+        v
+    };
+
+    let mut durations = Vec::with_capacity(open.len());
+    for (client_uuid, login_time, store_id, data) in &open {
+        let duration = session_duration_hours(login_time, &logout_time)?;
+
+        // payload: оновлюємо наявний data (невалідний/не-об'єкт → будуємо заново).
+        let mut payload = match serde_json::from_str::<Value>(data) {
+            Ok(v) if v.is_object() => v,
+            _ => work_session_payload(user_id, store_id.as_deref(), login_time, None, None),
+        };
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("logout_time".to_string(), serde_json::json!(logout_time));
+            obj.insert("duration_hours".to_string(), serde_json::json!(duration));
+        }
+        let data_updated = payload.to_string();
+        let envelope =
+            work_session_envelope(client_uuid, store_id.as_deref(), login_time, &payload)
+                .to_string();
+
+        // 2. Той самий outbox-оп (client_uuid) → фінальний конверт, знову
+        //    pending (сесію закрито — дані для push змінились).
+        tx.execute(
+            "INSERT INTO outbox (type, client_uuid, payload, status) \
+             VALUES (?1, ?2, ?3, 'pending') \
+             ON CONFLICT(client_uuid) DO UPDATE SET \
+                payload = excluded.payload, status = 'pending', attempts = 0, \
+                next_attempt_at = datetime('now'), last_error = NULL",
+            params![TYPE_WORK_SESSION, client_uuid, envelope],
+        )
+        .map_err(|e| {
+            format!("UPSERT outbox ({TYPE_WORK_SESSION}, client_uuid={client_uuid}): {e}")
+        })?;
+
+        // 3. Локальні колонки сесії (дзеркало PG: logout_time + duration_hours).
+        tx.execute(
+            "UPDATE work_sessions SET logout_time = ?1, duration_hours = ?2, data = ?3, synced = 1 \
+             WHERE client_uuid = ?4",
+            params![logout_time, duration, data_updated, client_uuid],
+        )
+        .map_err(|e| format!("UPDATE work_sessions (client_uuid={client_uuid}): {e}"))?;
+
+        durations.push(duration);
+    }
+
+    tx.commit()
+        .map_err(|e| format!("COMMIT (work_session close, user_id={user_id}): {e}"))?;
+
+    Ok(durations)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,8 +669,12 @@ mod tests {
         assert_eq!(ob, 0, "outbox-запису немає (ROLLBACK)");
         assert_eq!(level(&c, "p1"), 500, "stock без змін (ROLLBACK)");
 
-        // Невідомий тип — помилка ДО транзакції.
-        assert!(enqueue_transaction(&mut c, "work_session", "{}", STORE).is_err());
+        // work_session — тепер підтримуваний outbox-тип (окремий шлях сесій,
+        // ADR-0007 #38–40); через enqueue_transaction він НЕ йде (немає
+        // таблиці агрегата каси), але для outbox є «своїм».
+        assert!(is_supported_outbox_type(TYPE_WORK_SESSION));
+        // реально невідомий тип — як і раніше помилка ДО транзакції.
+        assert!(enqueue_transaction(&mut c, "totally_unknown_kind", "{}", STORE).is_err());
     }
 
     /// ЕТАП 7b: накопичені synced=0 (стара версія) → outbox при першому sync.
@@ -523,5 +753,215 @@ mod tests {
             let (data, _, _) = get_transaction(&c, kind, &out.client_uuid).expect("читання");
             assert!(data.contains(kind), "{table}: data повертається");
         }
+    }
+
+    // ── ADR-0007 §3.4 #38–#40 (LOCAL_SQLITE): сесії на standby ─────────────
+
+    /// Файлова SQLite (критерій 6) — production-шлях відкриття (sync_push).
+    fn file_db(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("offline.db");
+        super::super::sync_push::open_connection(&path).expect("open_connection");
+        path
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).expect("COUNT")
+    }
+
+    /// Критерій 3: вхід пише рядок сесії + рівно один outbox-оп (pending, той
+    /// самий uuid), synced=1 — сесія одразу push-кандидат.
+    #[test]
+    fn work_session_login_writes_sqlite_row_and_outbox_op() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        let s = open_work_session(&mut c, "user-1", Some(STORE)).expect("login");
+
+        let login_time: String = c
+            .query_row(
+                "SELECT login_time FROM work_sessions WHERE client_uuid = ?1",
+                params![s.client_uuid],
+                |r| r.get(0),
+            )
+            .expect("рядок work_sessions");
+        assert!(!login_time.is_empty(), "login_time записано локально");
+        assert_eq!(login_time, s.login_time);
+
+        let (typ, status, cu, ob_id): (String, String, String, i64) = c
+            .query_row(
+                "SELECT type, status, client_uuid, id FROM outbox WHERE client_uuid = ?1",
+                params![s.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("outbox-оп");
+        assert_eq!(typ, TYPE_WORK_SESSION);
+        assert_eq!(status, "pending");
+        assert_eq!(cu, s.client_uuid, "той самий uuid в агрегаті й outbox");
+        assert_eq!(ob_id, s.outbox_id, "outbox_id = rowid outbox-запису");
+
+        let synced: i64 = c
+            .query_row(
+                "SELECT synced FROM work_sessions WHERE client_uuid = ?1",
+                params![s.client_uuid],
+                |r| r.get(0),
+            )
+            .expect("synced");
+        assert_eq!(synced, 1, "сесію передано в outbox (не «в нікуди»)");
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 1, "рівно один оп");
+    }
+
+    /// Критерій 4: вихід локально заповнює logout_time + duration_hours і
+    /// оновлює ТОЙ САМИЙ outbox-оп (UPSERT за client_uuid) фінальним конвертом.
+    #[test]
+    fn work_session_logout_fills_logout_time_and_duration_locally() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        let s = open_work_session(&mut c, "user-1", Some(STORE)).expect("login");
+
+        let durations = close_work_session(&mut c, "user-1", false).expect("logout");
+        assert_eq!(durations.len(), 1, "закрито одну відкриту сесію");
+        assert!(durations[0] >= 0.0, "тривалість невід'ємна");
+
+        let (lo, dur): (Option<String>, Option<f64>) = c
+            .query_row(
+                "SELECT logout_time, duration_hours FROM work_sessions WHERE client_uuid = ?1",
+                params![s.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("рядок сесії");
+        assert!(lo.is_some(), "logout_time заповнено локально");
+        let dur = dur.expect("duration_hours заповнено локально");
+        assert!(dur >= 0.0);
+        assert_eq!(
+            (dur * 100.0).round() / 100.0,
+            dur,
+            "округлення до 2 знаків (та сама формула, що в PG-гілці)"
+        );
+        assert_eq!(durations[0], dur);
+
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM outbox"),
+            1,
+            "оп не дубльовано (UPSERT)"
+        );
+        let (status, payload): (String, String) = c
+            .query_row(
+                "SELECT status, payload FROM outbox WHERE client_uuid = ?1",
+                params![s.client_uuid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("outbox-оп");
+        assert_eq!(status, "pending", "фінальний конверт знову чекає push");
+        let v: Value = serde_json::from_str(&payload).expect("конверт JSON");
+        assert_eq!(v["type"], TYPE_WORK_SESSION);
+        assert!(
+            v["payload"]["logout_time"].is_string(),
+            "logout_time у payload"
+        );
+        assert!(
+            v["payload"]["duration_hours"].is_number(),
+            "duration_hours у payload"
+        );
+    }
+
+    /// Критерій 6: сесія НЕ втрачається — COMMIT на диску переживає reopen.
+    #[test]
+    fn work_session_survives_reopen_not_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file_db(&dir);
+        {
+            let mut c = super::super::sync_push::open_connection(&path).expect("conn1");
+            open_work_session(&mut c, "user-1", Some(STORE)).expect("login");
+        } // drop → закриття з'єднання (дані мусять бути закомічені)
+
+        let c2 = super::super::sync_push::open_connection(&path).expect("reopen");
+        assert_eq!(
+            count(&c2, "SELECT COUNT(*) FROM work_sessions"),
+            1,
+            "сесія на диску після reopen"
+        );
+        assert_eq!(
+            count(
+                &c2,
+                "SELECT COUNT(*) FROM outbox WHERE type = 'work_session'"
+            ),
+            1,
+            "outbox-оп на диску після reopen"
+        );
+        assert_eq!(
+            count(
+                &c2,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NULL"
+            ),
+            1,
+            "сесія лишається відкритою (не «закрита» drop'ом)"
+        );
+    }
+
+    /// `latest_only`: закривається рівно одна (найновіша) сесія; повторний
+    /// виклик з `false` закриває решту.
+    #[test]
+    fn close_work_session_latest_only_closes_one() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        open_work_session(&mut c, "user-1", Some(STORE)).expect("login 1");
+        open_work_session(&mut c, "user-1", Some(STORE)).expect("login 2");
+
+        let one = close_work_session(&mut c, "user-1", true).expect("logout latest");
+        assert_eq!(one.len(), 1, "latest_only закриває рівно одну");
+        assert_eq!(
+            count(
+                &c,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NULL"
+            ),
+            1,
+            "одна сесія лишилась відкритою"
+        );
+        assert_eq!(count(&c, "SELECT COUNT(*) FROM outbox"), 2, "два опи сесій");
+
+        let rest = close_work_session(&mut c, "user-1", false).expect("close all");
+        assert_eq!(rest.len(), 1, "закрито решту");
+        assert_eq!(
+            count(
+                &c,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NULL"
+            ),
+            0,
+            "відкритих сесій немає"
+        );
+    }
+
+    /// Сесія — не операція каси: stock не змінюється ні на вході, ні на виході.
+    #[test]
+    fn work_session_has_no_stock_effect() {
+        let conn = migrated_conn();
+        let mut c = conn;
+        stock::apply_stock_delta(&c, STORE, "p1", 10_000).expect("до: 10 шт");
+
+        open_work_session(&mut c, "user-1", Some(STORE)).expect("login");
+        close_work_session(&mut c, "user-1", false).expect("logout");
+
+        assert_eq!(level(&c, "p1"), 10_000, "сесія не має stock-ефекту");
+        assert_eq!(
+            count(&c, "SELECT COUNT(*) FROM stock"),
+            1,
+            "stock-таблиця не торкнута (лише передвстановлений рядок)"
+        );
+    }
+
+    /// Білий список outbox-типів: підтримувані — 4 агрегати + сесії + чеки.
+    #[test]
+    fn supported_outbox_types_are_whitelisted() {
+        for kind in [
+            TYPE_PURCHASE_ORDER,
+            TYPE_INVENTORY,
+            TYPE_TRANSFER,
+            TYPE_WRITE_OFF,
+            TYPE_WORK_SESSION,
+            super::super::sync_push::TYPE_RECEIPT,
+            super::super::sync_push::TYPE_RETURN_RECEIPT,
+        ] {
+            assert!(is_supported_outbox_type(kind), "{kind} мусить бути відомий");
+        }
+        assert!(!is_supported_outbox_type("totally_unknown_kind"));
     }
 }

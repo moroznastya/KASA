@@ -110,6 +110,32 @@ pub async fn connect_readonly_pool(max_connections: u32) -> Result<PgPool, DbErr
     Ok(pool)
 }
 
+/// Створює пул ЗАПИСУ в апстрім (primary) для standby-вузла (ADR-0007 F3).
+///
+/// URL передається ЯВНО (`NodeConfig::resolve_upstream_write_url`) і НЕ
+/// резолвиться через [`resolve_database_url`]: на standby той вказує на
+/// локальну репліку, а репліка НІКОЛИ не є ціллю запису (F5).
+///
+/// Порожній/пробільний URL → [`DbError::BadUrl`]; `acquire_timeout` 5 с
+/// (як у [`connect_readonly_pool`]), щоб адмін-запит швидко віддав 503 (F4).
+pub async fn connect_upstream_write_pool(
+    url: &str,
+    max_connections: u32,
+) -> Result<PgPool, DbError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(DbError::BadUrl(
+            "upstream_write_url порожній — апстрім-запис недоступний".to_string(),
+        ));
+    }
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(url)
+        .await?;
+    Ok(pool)
+}
+
 /// Ім'я БД з postgresql:// DSN (частина після останнього '/').
 fn dbname_from_url(url: &str) -> Result<String, DbError> {
     let before = url.split('?').next().unwrap_or(url);
@@ -650,4 +676,20 @@ pub async fn database_exists(pool: &PgPool, db_name: &str) -> Result<bool, sqlx:
             .fetch_one(pool)
             .await?;
     Ok(exists)
+}
+
+#[cfg(test)]
+mod upstream_write_pool_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn empty_url_is_bad_url_and_never_connects() {
+        let res = connect_upstream_write_pool("", 5).await;
+        assert!(
+            matches!(res, Err(DbError::BadUrl(_))),
+            "порожній URL → BadUrl (жодних спроб з'єднання): {res:?}"
+        );
+        let res = connect_upstream_write_pool("   ", 5).await;
+        assert!(matches!(res, Err(DbError::BadUrl(_))), "пробіли = порожній");
+    }
 }

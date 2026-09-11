@@ -12,6 +12,8 @@
 //! JWT-генерація — НЕ тут: API-шар (torgashka-api/auth_routes.rs) має секрет і
 //! створює токени тим самим форматом/секретом, що Python.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use chrono::{DateTime, NaiveDateTime, Utc};
 
 use crate::store_ctx::StorePool;
@@ -26,11 +28,74 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct SqlxAuth {
     pool: StorePool,
+    /// Standby-вузол (ADR-0007 F6): `work_sessions` — операційні дані вузла,
+    /// у read-only репліку НЕ пишуться взагалі (ADR-0007 §3.4 #38–#40, клас
+    /// LOCAL_SQLITE: SQLite вузла + outbox).
+    standby: bool,
+    /// Шлях до SQLite-файлу вузла. `None` ⇒ primary (PG-гілки без змін).
+    /// `None` при `standby = true` = деградація: сесія не зафіксується ніде
+    /// (одноразовий лог, див. [`log_standby_sqlite_unavailable_once`]).
+    standby_db: Option<std::path::PathBuf>,
+}
+
+/// Одноразовий лог деградації standby (анти-спам: після першого
+/// спрацювання — тиша).
+static STANDBY_SQLITE_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn log_standby_sqlite_unavailable_once() {
+    if !STANDBY_SQLITE_UNAVAILABLE_LOGGED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[torgashka-infrastructure] standby: SQLite-шлях недоступний — сесія НЕ зафіксована (ні в PG, ні локально); див. ADR-0007 §3.4 #38–#40"
+        );
+    }
+}
+
+/// Відкриває SQLite вузла (проганяє міграції 0001..0009) — спільний
+/// ЛОКАЛЬНИЙ шлях login/logout на standby (ADR-0007 §3.4 #38–#40).
+fn open_standby_conn(path: &std::path::Path) -> Result<rusqlite::Connection, AuthError> {
+    crate::offline::sync_push::open_connection(path).map_err(AuthError::Infrastructure)
 }
 
 impl SqlxAuth {
+    /// Звичайний (primary) варіант: 100 % зворотна сумісність (F2).
     pub fn new(pool: StorePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            standby: false,
+            standby_db: None,
+        }
+    }
+
+    /// Варіант для standby-вузла (F6): сесії пишуться ЛОКАЛЬНО в SQLite
+    /// вузла (LOCAL_SQLITE). Шлях — стандартний шлях вузла; якщо його не
+    /// визначити — `standby_db = None` (деградація + одноразовий лог).
+    pub fn with_standby(pool: StorePool, standby: bool) -> Self {
+        let standby_db = if standby {
+            crate::offline::db::OfflineDatabase::default_db_path().ok()
+        } else {
+            None
+        };
+        Self {
+            pool,
+            standby,
+            standby_db,
+        }
+    }
+
+    /// Standby із ЯВНИМ шляхом SQLite (сейм для тестів/просунутого
+    /// налаштування: temp-файл замість XDG-каталогу вузла; `None` — сценарій
+    /// деградації без локального сховища).
+    pub fn with_standby_at(pool: StorePool, db: Option<std::path::PathBuf>) -> Self {
+        Self {
+            pool,
+            standby: true,
+            standby_db: db,
+        }
+    }
+
+    /// Чи працює репозиторій у standby-режимі (F6).
+    pub fn is_standby(&self) -> bool {
+        self.standby
     }
 }
 
@@ -95,7 +160,21 @@ async fn fetch_user(pool: &StorePool, user_id: Uuid) -> Result<Option<UserRow>, 
 }
 
 /// Закриває всі активні сесії користувача (Python _close_active_work_sessions).
-async fn close_active_work_sessions(pool: &StorePool, user_id: Uuid) -> Result<(), AuthError> {
+///
+/// `standby_db = Some(path)` (F6, ADR-0007 §3.4 #38–#40) → усі відкриті сесії
+/// закриваються ЛОКАЛЬНО в SQLite вузла + фінальний конверт у outbox. Пул PG
+/// не чіпається (локальна репліка read-only, `work_sessions` — дані вузла).
+async fn close_active_work_sessions(
+    pool: &StorePool,
+    user_id: Uuid,
+    standby_db: Option<&std::path::Path>,
+) -> Result<(), AuthError> {
+    if let Some(path) = standby_db {
+        let mut conn = open_standby_conn(path)?;
+        crate::offline::transactions::close_work_session(&mut conn, &user_id.to_string(), false)
+            .map_err(AuthError::Infrastructure)?;
+        return Ok(());
+    }
     let now = Utc::now().naive_utc();
     let rows: Vec<(NaiveDateTime,)> = sqlx::query_as(
         "SELECT login_time FROM work_sessions WHERE user_id = $1 AND logout_time IS NULL",
@@ -121,7 +200,27 @@ async fn close_active_work_sessions(pool: &StorePool, user_id: Uuid) -> Result<(
 }
 
 /// Створює нову робочу сесію (Python WorkSession(login_time=utcnow())).
-async fn create_work_session(pool: &StorePool, user_id: Uuid) -> Result<(), AuthError> {
+///
+/// `standby_db = Some(path)` (F6, ADR-0007 §3.4 #38–#40) → INSERT ЛОКАЛЬНО в
+/// SQLite вузла + outbox-оп (`work_session`) — без звернення до PG (саме цей
+/// INSERT давав `cannot execute INSERT in a read-only transaction` на репліці,
+/// тож логін був фізично неможливий).
+async fn create_work_session(
+    pool: &StorePool,
+    user_id: Uuid,
+    standby_db: Option<&std::path::Path>,
+) -> Result<(), AuthError> {
+    if let Some(path) = standby_db {
+        let store_id = crate::store_ctx::current_store_ctx().map(|c| c.store_id.to_string());
+        let mut conn = open_standby_conn(path)?;
+        crate::offline::transactions::open_work_session(
+            &mut conn,
+            &user_id.to_string(),
+            store_id.as_deref(),
+        )
+        .map_err(AuthError::Infrastructure)?;
+        return Ok(());
+    }
     sqlx::query(
         "INSERT INTO work_sessions (id, user_id, login_time, store_id, created_at)
          VALUES (uuid_generate_v4(), $1, $2,
@@ -142,6 +241,7 @@ async fn login_common(
     login: &str,
     password: &str,
     pin: bool,
+    standby_db: Option<&std::path::Path>,
 ) -> Result<LoginResult, AuthError> {
     let row = sqlx::query_as::<_, (Uuid, String, String, String, bool, bool, Option<serde_json::Value>, Option<String>, NaiveDateTime, NaiveDateTime)>(
         "SELECT id, name, login, role::text, is_active, onboarding_completed, permissions, password_hash, created_at, updated_at FROM users WHERE login = $1",
@@ -220,8 +320,10 @@ async fn login_common(
     }
 
     // Робоча сесія: закриваємо попередні активні, створюємо нову.
-    close_active_work_sessions(pool, id).await?;
-    create_work_session(pool, id).await?;
+    // На standby (F6) обидва виклики пишуть ЛОКАЛЬНО в SQLite вузла (жодного
+    // звернення до PG): логін мусить працювати при недоступному primary.
+    close_active_work_sessions(pool, id, standby_db).await?;
+    create_work_session(pool, id, standby_db).await?;
 
     Ok(LoginResult {
         access_token: String::new(), // заповнює API-шар (має секрет)
@@ -234,11 +336,25 @@ async fn login_common(
 #[async_trait::async_trait]
 impl AuthService for SqlxAuth {
     async fn login(&self, input: &LoginRequest) -> Result<LoginResult, AuthError> {
-        login_common(&self.pool, &input.login, &input.password, false).await
+        login_common(
+            &self.pool,
+            &input.login,
+            &input.password,
+            false,
+            self.standby_db.as_deref(),
+        )
+        .await
     }
 
     async fn login_pin(&self, input: &LoginPinRequest) -> Result<LoginResult, AuthError> {
-        login_common(&self.pool, &input.login, &input.pin_code, true).await
+        login_common(
+            &self.pool,
+            &input.login,
+            &input.pin_code,
+            true,
+            self.standby_db.as_deref(),
+        )
+        .await
     }
 
     async fn refresh(&self, user_id: Uuid) -> Result<LoginResult, AuthError> {
@@ -258,6 +374,22 @@ impl AuthService for SqlxAuth {
     }
 
     async fn logout(&self, user_id: Uuid) -> Result<(), AuthError> {
+        // F6 ADR-0007 §3.4 #38–#40 (LOCAL_SQLITE): на standby сесія
+        // закривається ЛОКАЛЬНО в SQLite вузла (найновіша — як PG-гілка
+        // нижче) + фінальний конверт в outbox. Жодного SELECT/UPDATE у PG
+        // (репліка read-only).
+        if let Some(path) = self.standby_db.as_deref() {
+            let mut conn = open_standby_conn(path)?;
+            crate::offline::transactions::close_work_session(&mut conn, &user_id.to_string(), true)
+                .map_err(AuthError::Infrastructure)?;
+            return Ok(());
+        }
+        // Standby без відомого SQLite-шляху → деградація: краще втратити
+        // запис сесії (одноразовий лог), ніж заблокувати вихід користувача.
+        if self.standby {
+            log_standby_sqlite_unavailable_once();
+            return Ok(());
+        }
         // Остання активна сесія (ORDER BY login_time DESC LIMIT 1).
         let now = Utc::now().naive_utc();
         let row = sqlx::query_as::<_, (NaiveDateTime,)>(
@@ -812,4 +944,191 @@ fn build_modules(rows: Vec<SettingDto>) -> SettingsModulesDto {
         }
     }
     SettingsModulesDto { modules }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Тести (P2): гейт standby реально вимикає звернення до PG.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    /// Пул на НЕДОСЯЖНИЙ URL: будь-яке реальне звернення → помилка. Якщо
+    /// функція повертає `Ok(())`, значить пул справді не чіпався (без PG).
+    fn unreachable_pool() -> StorePool {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(500))
+            .connect_lazy("postgresql://x:y@127.0.0.1:1/none")
+            .expect("lazy-пул на 127.0.0.1:1 не вимагає з'єднання");
+        StorePool::new(pool)
+    }
+
+    /// Файл SQLite у tempdir — герметично (НЕ XDG-каталог вузла).
+    fn temp_db() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("offline.db");
+        (dir, path)
+    }
+
+    fn sqlite_i64(path: &std::path::Path, sql: &str) -> i64 {
+        let conn = crate::offline::sync_push::open_connection(path).expect("open sqlite");
+        conn.query_row(sql, [], |r| r.get(0)).expect("COUNT")
+    }
+
+    /// ADR-0007 §3.4 #38–#40: на standby сесія пишеться в SQLite вузла
+    /// (+ outbox-оп), PG не чіпається (пул недосяжний — Ok неможливий із PG).
+    #[tokio::test]
+    async fn standby_writes_work_session_to_sqlite_and_never_touches_pg() {
+        let (_dir, path) = temp_db();
+        let auth = SqlxAuth::with_standby_at(unreachable_pool(), Some(path.clone()));
+        assert!(auth.is_standby());
+        assert_eq!(
+            auth.standby_db.as_deref(),
+            Some(path.as_path()),
+            "явний шлях SQLite збережено"
+        );
+
+        let res = create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref()).await;
+        assert!(res.is_ok(), "standby: запис локальний → Ok: {res:?}");
+        assert_eq!(
+            sqlite_i64(&path, "SELECT COUNT(*) FROM work_sessions"),
+            1,
+            "рядок сесії в SQLite вузла"
+        );
+        assert_eq!(
+            sqlite_i64(
+                &path,
+                "SELECT COUNT(*) FROM outbox WHERE type = 'work_session'"
+            ),
+            1,
+            "outbox-оп сесії в SQLite вузла"
+        );
+    }
+
+    /// Закриття активних сесій на standby — локально (усі відкриті).
+    #[tokio::test]
+    async fn standby_close_active_work_sessions_writes_sqlite_and_never_touches_pg() {
+        let (_dir, path) = temp_db();
+        let auth = SqlxAuth::with_standby_at(unreachable_pool(), Some(path.clone()));
+        create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref())
+            .await
+            .expect("login локально");
+        create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref())
+            .await
+            .expect("друга сесія");
+
+        let res =
+            close_active_work_sessions(&auth.pool, Uuid::nil(), auth.standby_db.as_deref()).await;
+        assert!(res.is_ok(), "standby: закриття локальне → Ok: {res:?}");
+        assert_eq!(
+            sqlite_i64(
+                &path,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NULL"
+            ),
+            0,
+            "усі відкриті сесії закрито локально"
+        );
+        assert_eq!(
+            sqlite_i64(
+                &path,
+                "SELECT COUNT(*) FROM work_sessions WHERE duration_hours IS NOT NULL"
+            ),
+            2,
+            "duration_hours заповнено локально"
+        );
+    }
+
+    /// `logout` на standby: закриває ЛИШЕ найновішу сесію локально
+    /// (як PG-гілка: ORDER BY login_time DESC LIMIT 1).
+    #[tokio::test]
+    async fn standby_logout_closes_latest_session_locally_without_pg() {
+        let (_dir, path) = temp_db();
+        let auth = SqlxAuth::with_standby_at(unreachable_pool(), Some(path.clone()));
+        create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref())
+            .await
+            .expect("login 1");
+        create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref())
+            .await
+            .expect("login 2");
+
+        let res = auth.logout(Uuid::nil()).await;
+        assert!(res.is_ok(), "logout на standby — локальний: {res:?}");
+        assert_eq!(
+            sqlite_i64(
+                &path,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NOT NULL"
+            ),
+            1,
+            "закрито рівно найновішу сесію"
+        );
+        assert_eq!(
+            sqlite_i64(
+                &path,
+                "SELECT COUNT(*) FROM work_sessions WHERE logout_time IS NULL"
+            ),
+            1,
+            "решта лишається відкритою"
+        );
+    }
+
+    /// Деградація: standby без відомого SQLite-шляху — `logout` не падає
+    /// (Ok + одноразовий лог).
+    #[tokio::test]
+    async fn standby_without_sqlite_path_degrades_to_ok_and_logs() {
+        let auth = SqlxAuth::with_standby_at(unreachable_pool(), None);
+        assert!(auth.is_standby());
+        assert!(auth.standby_db.is_none(), "шляху немає");
+
+        let out = auth.logout(Uuid::nil()).await;
+        assert!(out.is_ok(), "logout не блокується деградацією: {out:?}");
+
+        // АНОМАЛІЯ КОНТРАКТУ (зафіксована свідомо, див. звіт): `None` = PG-гілка,
+        // тому login на standby без SQLite-шляху знову пішов би в read-only
+        // репліку. Тест-детектор: коли з'явиться guard — інвертувати assert.
+        assert!(
+            matches!(
+                create_work_session(&auth.pool, Uuid::nil(), auth.standby_db.as_deref()).await,
+                Err(AuthError::Infrastructure(_))
+            ),
+            "standby без SQLite-шляху: login іде в PG (недосяжний пул) — очікувана аномалія"
+        );
+    }
+
+    /// Критерій 5: primary-регресія — жодних змін (PG-гілка як і раніше).
+    #[tokio::test]
+    async fn primary_still_hits_pg_and_fails_on_unreachable_pool() {
+        let pool = unreachable_pool();
+        let res = create_work_session(&pool, Uuid::nil(), None).await;
+        assert!(
+            matches!(res, Err(AuthError::Infrastructure(_))),
+            "primary-шлях мусить реально звертатись до PG (тут — недосяжний пул): {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn constructor_defaults_to_primary_and_gate_flag_is_exposed() {
+        let new_auth = SqlxAuth::new(unreachable_pool());
+        assert!(
+            !new_auth.is_standby(),
+            "new() ⇒ standby=false (F2, 100 % сумісність)"
+        );
+        assert!(
+            new_auth.standby_db.is_none(),
+            "primary ⇒ SQLite-шляху немає (PG-гілки незмінні)"
+        );
+
+        let sb = SqlxAuth::with_standby(unreachable_pool(), true);
+        assert!(sb.is_standby());
+        assert!(
+            sb.standby_db.is_some(),
+            "with_standby(true) резолвить шлях SQLite вузла"
+        );
+
+        let primary_flagged = SqlxAuth::with_standby(unreachable_pool(), false);
+        assert!(!primary_flagged.is_standby());
+        assert!(primary_flagged.standby_db.is_none());
+    }
 }

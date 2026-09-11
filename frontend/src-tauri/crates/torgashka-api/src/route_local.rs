@@ -33,6 +33,7 @@ use axum::{
 use chrono::Timelike;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::PgPool;
 use torgashka_domain::{
     CategoryDto, InventoryCountsDto, Page, PosError, PosService, ProductDto, ProductFilters,
     ReadDirectories, ReceiptSearchDto, ReceiptSearchQuery, ReceiptStatsDto, WriteDirectories,
@@ -62,6 +63,10 @@ pub struct LocalApiState {
     pub cfg: NodeConfig,
     /// Пул локальної репліки (RLS-контекст проставляється тим самим StorePool).
     pub pool: StorePool,
+    /// Пул ЗАПИСУ в primary (`[node] upstream_write_url`, ADR-0007 F3).
+    /// `None` — апстріму немає/недосяжний: запис у нього неможливий
+    /// (F5: локальна репліка ціллю запису не є ніколи → подію пропускаємо).
+    pub upstream_pool: Option<PgPool>,
     /// Читання довідників з репліки (категорії/продукти/постачальники).
     pub readdirs: Arc<dyn ReadDirectories + Send + Sync>,
     /// POS-читання з репліки (чеки: stats/search).
@@ -75,6 +80,12 @@ impl LocalApiState {
     /// → активне джерело db_sources.toml.
     pub fn primary_url(&self) -> Option<String> {
         self.cfg.resolve_primary_db_url()
+    }
+
+    /// Пул апстрім-запису (ADR-0007 F3/F5): `Some` лише коли primary
+    /// сконфігурований і був доступний при старті фасаду.
+    pub fn upstream_write_pool(&self) -> Option<&PgPool> {
+        self.upstream_pool.as_ref()
     }
 
     /// Жива перевірка: чи primary приймає TCP-з'єднання (таймаут 2 с).
@@ -96,7 +107,7 @@ static LAST_PRIMARY_UP: Mutex<Option<bool>> = Mutex::new(None);
 /// у сталому стані записів немає взагалі). Перше спостереження сесії вже в
 /// деградації — теж логується (раз). Запис м'який: на read-only репліці
 /// (до promote) INSERT неможливий — log_node_event глушить помилку в stderr.
-async fn note_connectivity_transition(pool: &StorePool, primary_up: bool) {
+async fn note_connectivity_transition(up: Option<&PgPool>, primary_up: bool) {
     // Lock — ЛИШЕ в межах блоку: guard мусить знятись ДО .await (інакше
     // future не Send і axum Handler не реалізується). Повертає подію, яку
     // треба записати (None — стан не змінився, без запису).
@@ -127,8 +138,22 @@ async fn note_connectivity_transition(pool: &StorePool, primary_up: bool) {
         }
     };
     if let Some((event, level)) = to_log {
-        crate::network::log_node_event(&pool.0, None, event, level, json!({})).await;
+        match event_log_pool(up) {
+            Some(pool) => {
+                crate::network::log_node_event(pool, None, event, level, json!({})).await
+            }
+            None => eprintln!(
+                "[torgashka-api] network: подію {event} не записано — апстрім-пул недоступний (standby; F5 ADR-0007: локальна репліка не ціль запису)"
+            ),
+        }
     }
+}
+
+/// Ціль запису діагностичної події (ADR-0007 F5): ТІЛЬКИ апстрім-пул.
+/// `None` → подію НЕ пишемо (подія некритична; краще втратити рядок
+/// діагностики, ніж робити INSERT у read-only репліку).
+fn event_log_pool(up: Option<&PgPool>) -> Option<&PgPool> {
+    up
 }
 
 /// Доступ до локального стану з хендлера (503, якщо репліка не підключена).
@@ -304,7 +329,7 @@ impl LocalReceiptSearchQuery {
 pub async fn local_status(State(state): State<AppState>) -> Result<Json<Value>, LocalErr> {
     let ls = local(&state)?;
     let primary_up = ls.primary_is_up().await;
-    note_connectivity_transition(&ls.pool, primary_up).await;
+    note_connectivity_transition(ls.upstream_write_pool(), primary_up).await;
     let cfg = &ls.cfg;
     let pending = offline::commands::get_unsynced_count().unwrap_or(0);
     let status = effective_status(primary_up, pending);
@@ -540,6 +565,16 @@ pub fn router(state: AppState) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P4 (ADR-0007 F5): журнал подій — тільки апстрім, ніколи репліка ──
+
+    #[test]
+    fn event_log_target_is_never_local_replica() {
+        assert!(
+            event_log_pool(None).is_none(),
+            "без апстрім-пулу подія не пишеться нікуди (репліка — не ціль, F5)"
+        );
+    }
 
     #[test]
     fn effective_status_mapping() {

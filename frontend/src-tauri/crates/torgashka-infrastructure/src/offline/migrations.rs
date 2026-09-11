@@ -21,7 +21,7 @@
 use rusqlite::Connection;
 
 /// Актуальна версія схеми offline.db.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Опис однієї міграції.
 pub struct Migration {
@@ -76,6 +76,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 8,
         name: "sync_log",
         sql: include_str!("migrations/offline/0008_sync_log.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "work_sessions",
+        sql: include_str!("migrations/offline/0009_work_sessions.sql"),
     },
 ];
 
@@ -503,5 +508,47 @@ mod tests {
             .query_row("SELECT id FROM t_user WHERE id=1", [], |row| row.get(0))
             .expect("дані користувача");
         assert_eq!(uid, 1);
+    }
+
+    /// Міграція 0009 (work_sessions): таблиця реально створюється,
+    /// user_version = SCHEMA_VERSION (9), таблиця порожня; повторний
+    /// запуск — no-op (ідемпотентність).
+    #[test]
+    fn work_sessions_table_created() {
+        let conn = Connection::open_in_memory().expect("in-memory");
+        let v = migrate(&conn).expect("міграція");
+        assert_eq!(v, super::SCHEMA_VERSION);
+        assert_eq!(current_version(&conn).unwrap(), 9, "user_version = 9");
+
+        assert!(table_exists(&conn, "work_sessions"), "таблиця створена");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM work_sessions", [], |row| row.get(0))
+            .expect("count work_sessions");
+        assert_eq!(n, 0, "нова таблиця порожня");
+
+        for col in [
+            "id",
+            "client_uuid",
+            "user_id",
+            "store_id",
+            "login_time",
+            "logout_time",
+            "duration_hours",
+            "data",
+            "created_at",
+            "synced",
+        ] {
+            assert!(
+                has_column(&conn, "work_sessions", col),
+                "work_sessions.{col}"
+            );
+        }
+        assert!(index_exists(&conn, "idx_work_sessions_open"));
+        assert!(index_exists(&conn, "idx_work_sessions_synced"));
+
+        // Повторний запуск — no-op.
+        let v2 = migrate(&conn).expect("повторна міграція");
+        assert_eq!(v2, super::SCHEMA_VERSION);
+        assert_eq!(current_version(&conn).unwrap(), 9);
     }
 }

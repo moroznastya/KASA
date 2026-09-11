@@ -71,6 +71,23 @@ impl IntoResponse for AuthRouteError {
                     AuthError::Validation(_) => unreachable!("validation handled above"),
                     AuthError::Infrastructure(m) => {
                         eprintln!("[torgashka-api] auth infrastructure error: {m}");
+                        // F4 ADR-0007 §4: на standby локальна репліка
+                        // read-only, тому спроба адмін-запису дає саме цю
+                        // PG-помилку. Контракт: 503 + фіксований `detail`;
+                        // сирий текст PG у тіло відповіді НЕ потрапляє і 500
+                        // замість 503 не віддається.
+                        if m.contains("read-only transaction") {
+                            eprintln!(
+                                "[torgashka-api] upstream-write rejected (standby): auth-route"
+                            );
+                            return (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                Json(json!({
+                                    "detail": "primary недоступний (standby-вузол): адміністративна операція не може бути виконана локально — повторіть, коли мережа відновиться"
+                                })),
+                            )
+                                .into_response();
+                        }
                         (StatusCode::INTERNAL_SERVER_ERROR, "Помилка БД".to_string())
                     }
                 };
@@ -1022,4 +1039,53 @@ pub async fn settings_update_key(
 #[allow(dead_code)]
 fn _sqlx_auth(pool: sqlx::PgPool) -> SqlxAuth {
     SqlxAuth::new(torgashka_infrastructure::store_ctx::StorePool::new(pool))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5 (ADR-0007 §4, F4): контракт 503 для read-only primary на standby.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod upstream_error_contract_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    async fn body_json(resp: Response) -> Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// `read-only transaction` → 503 з контрактним `detail` (§4 ADR-0007).
+    #[tokio::test]
+    async fn read_only_transaction_error_maps_to_503_with_adr_detail() {
+        let err = AuthRouteError::from(AuthError::Infrastructure(
+            "error returned from database: cannot execute INSERT in a read-only transaction"
+                .to_string(),
+        ));
+        let resp = err.into_response();
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "standby: апстрім-запис недоступний → 503, а не 500"
+        );
+        assert_eq!(
+            body_json(resp).await["detail"],
+            "primary недоступний (standby-вузол): адміністративна операція не може бути виконана локально — повторіть, коли мережа відновиться"
+        );
+    }
+
+    /// Будь-яка інша Infrastructure-помилка → 500 «Помилка БД» без тексту PG.
+    #[tokio::test]
+    async fn other_infrastructure_error_stays_500_and_hides_pg_text() {
+        let err = AuthRouteError::from(AuthError::Infrastructure(
+            "error returned from database: SELECT unknown_column".to_string(),
+        ));
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body_json(resp).await["detail"],
+            "Помилка БД",
+            "сирий текст PG у тілі відповіді заборонений"
+        );
+    }
 }

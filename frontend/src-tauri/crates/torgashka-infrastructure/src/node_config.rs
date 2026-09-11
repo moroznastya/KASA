@@ -18,6 +18,9 @@
 //! mode = "standby"            # "primary" (default) | "standby"
 //! local_port = 5433           # порт локальної репліки (default 5433)
 //! primary_db_url = "postgresql://..."  # опційно; default — активне джерело
+//! upstream_write_url = "postgresql://..."  # опційно; standby: єдина ціль
+//!                             # адмін-запису (primary). НЕ резолвиться
+//!                             # у локальну репліку (F5 ADR-0007).
 //! degrade_to_local = true     # дозволити локальний режим (default true)
 //! ```
 //!
@@ -76,6 +79,12 @@ pub struct NodeConfig {
     /// db_sources.toml ([`crate::db_sources::active_source_url`]).
     #[serde(default)]
     pub primary_db_url: Option<String>,
+    /// URL апстрім-запису (primary) для standby-вузла (F1/F3 ADR-0007):
+    /// єдина ціль адмін-записів класу `UPSTREAM_NOW`. `None`/порожньо →
+    /// апстріму немає (адмін-записи → 503, F4). `mode=primary` ігнорує
+    /// поле (F2). Локальна репліка не є ціллю запису ніколи (F5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_write_url: Option<String>,
     /// Дозволити деградацію в локальний режим, коли primary недоступний.
     #[serde(default = "default_degrade")]
     pub degrade_to_local: bool,
@@ -98,6 +107,7 @@ impl Default for NodeConfig {
             mode: NodeMode::Primary,
             local_port: DEFAULT_LOCAL_PG_PORT,
             primary_db_url: None,
+            upstream_write_url: None,
             degrade_to_local: true,
             repoint_pending: None,
         }
@@ -180,6 +190,17 @@ impl NodeConfig {
         crate::db_sources::active_source_url().ok().flatten()
     }
 
+    /// URL апстрім-запису (primary) для standby. Явне поле `upstream_write_url`;
+    /// порожньо/відсутнє → None. НЕ падає на активне джерело (на standby воно
+    /// вказує на локальну репліку — F5 ADR-0007). mode=primary ігнорує (F2).
+    pub fn resolve_upstream_write_url(&self) -> Option<String> {
+        self.upstream_write_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
     /// Копія зі зміненим режимом.
     pub fn with_mode(mut self, mode: NodeMode) -> Self {
         self.mode = mode;
@@ -193,6 +214,9 @@ impl NodeConfig {
     pub fn into_promoted_primary(mut self) -> Self {
         self.mode = NodeMode::Primary;
         self.primary_db_url = None;
+        // promoted primary: апстріму немає (консистентно з primary_db_url) —
+        // інакше фасад лишив би пул запису на колишній primary (F2/F5).
+        self.upstream_write_url = None;
         self
     }
 
@@ -667,6 +691,7 @@ degrade_to_local = false
             mode: NodeMode::Standby,
             local_port: 5433,
             primary_db_url: Some("postgresql://u@10.0.0.5:5432/pos".into()),
+            upstream_write_url: Some("postgresql://u@10.0.0.5:5432/pos".into()),
             degrade_to_local: true,
             repoint_pending: Some(RepointPending {
                 new_primary_host: "10.0.0.9".into(),
@@ -677,6 +702,10 @@ degrade_to_local = false
         let promoted = cfg.clone().into_promoted_primary();
         assert_eq!(promoted.mode, NodeMode::Primary);
         assert_eq!(promoted.primary_db_url, None, "primary-посилання очищено");
+        assert_eq!(
+            promoted.upstream_write_url, None,
+            "apstrium-запис очищено: на promoted primary апстріму немає (F2/F5)"
+        );
         assert!(promoted.repoint_pending.is_some(), "позначка зберігається");
         assert_eq!(cfg.mode, NodeMode::Standby, "оригінал не мутується");
     }
@@ -978,5 +1007,44 @@ degrade_to_local = false
     #[test]
     fn local_readonly_url_is_none_for_non_postgres_scheme() {
         assert!(local_readonly_url("mysql://u:p@h/db", 5433).is_none());
+    }
+
+    // ── P6/F1: upstream_write_url резолвиться ЛИШЕ з власного поля ──
+
+    #[test]
+    fn upstream_write_url_absent_is_none_and_never_falls_back() {
+        let cfg = NodeConfig::load_from_str("[node]\nmode = \"standby\"\n");
+        assert_eq!(
+            cfg.resolve_upstream_write_url(),
+            None,
+            "без поля → None (НЕ падає на активне джерело: на standby воно = репліка, F5)"
+        );
+    }
+
+    #[test]
+    fn upstream_write_url_explicit_value_is_trimmed_and_empty_is_none() {
+        let cfg = NodeConfig::load_from_str(
+            "[node]\nmode = \"standby\"\nupstream_write_url = \"  postgresql://u@10.0.0.5:5432/pos  \"\n",
+        );
+        assert_eq!(
+            cfg.resolve_upstream_write_url().as_deref(),
+            Some("postgresql://u@10.0.0.5:5432/pos")
+        );
+        let cfg =
+            NodeConfig::load_from_str("[node]\nmode = \"standby\"\nupstream_write_url = \"   \"\n");
+        assert_eq!(cfg.resolve_upstream_write_url(), None, "пробіли = порожньо");
+    }
+
+    #[test]
+    fn upstream_write_url_field_does_not_affect_primary_resolution() {
+        // F2: mode=primary ігнорує поле — нові поля не змінюють резолв пулів.
+        let cfg = NodeConfig::load_from_str(
+            "[node]\nmode = \"primary\"\nprimary_db_url = \"postgresql://u@h:5432/db\"\n",
+        );
+        assert_eq!(
+            cfg.resolve_primary_db_url().as_deref(),
+            Some("postgresql://u@h:5432/db")
+        );
+        assert_eq!(cfg.resolve_upstream_write_url(), None);
     }
 }
