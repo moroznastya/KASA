@@ -27,9 +27,10 @@ class TestProductBarcodeLookup:
     async def test_get_by_barcode_found(self):
         """Пошук товару за штрих-кодом: знайдено."""
         use_cases, repo = _build_use_cases()
+        from decimal import Decimal
+
         from app.domain.entities.product import Product
         from app.domain.value_objects.money import Money
-        from decimal import Decimal
 
         product = Product(name="Товар", price=Money(Decimal("100")))
         repo.find_by_barcode.return_value = product

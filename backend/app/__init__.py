@@ -1,1 +1,1 @@
-"""Kasa POS — Backend."""
+"""Torgashka POS — Backend."""

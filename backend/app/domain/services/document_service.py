@@ -12,31 +12,34 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Union
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
-from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
-from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
-from app.infrastructure.persistence.models.purchase_order import PurchaseOrder
-from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus
-from app.infrastructure.persistence.models.product import Product
-from app.domain.services.product_service import ProductService
 from app.domain.services.ledger_service import LedgerService
+from app.domain.services.product_service import ProductService
+from app.infrastructure.persistence.models.inventory import Inventory, InventoryStatus
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus, PaymentMethod
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.purchase_order import PurchaseOrder
+from app.infrastructure.persistence.models.return_invoice import (
+    ReturnActionType,
+    ReturnInvoice,
+    ReturnInvoiceItem,
+    ReturnInvoiceStatus,
+)
 from app.infrastructure.persistence.models.supplier_ledger import (
     LedgerOperationType,
     SupplierLedger,
 )
-
+from app.infrastructure.persistence.models.transfer import Transfer, TransferStatus
+from app.infrastructure.persistence.models.write_off import WriteOff
 
 # Тип документа для узагальненої роботи
-DocumentType = Union[Invoice, Transfer, WriteOff, ReturnInvoice, PurchaseOrder, Inventory]
+DocumentType = Invoice | Transfer | WriteOff | ReturnInvoice | PurchaseOrder | Inventory
 
 
 # Мапа для відображення способу оплати в текст
@@ -386,12 +389,21 @@ class DocumentService:
                 detail=f"Списання з ID '{write_off_id}' не знайдено",
             )
 
+        # Ідемпотентність: якщо документ вже проведено — не зменшуємо
+        # залишки повторно. Це захищає від подвійного списання, коли
+        # create_write_off вже підтвердив документ, а фронтенд/користувач
+        # викликає POST /write-offs/{id}/confirm ще раз (кнопка
+        # "Створити та підтвердити", batch-confirm тощо).
+        if write_off.status == "confirmed":
+            return write_off
+
         for item in write_off.items:
             await self.product_service.update_stock(
                 product_id=item.product_id,
                 quantity_change=-item.quantity,
             )
 
+        write_off.status = "confirmed"
         await self.session.flush()
         return write_off
 

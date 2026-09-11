@@ -8,14 +8,15 @@ CSV-файли шукаються автоматично в папці <корі
 за маскою "Список товарів*.csv".
 """
 
+import asyncio
 import csv
 import uuid
-import asyncio
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 # Конфігурація БД
 DB_URL = "postgresql+asyncpg://postgres:VgxWd7MBJ10X@localhost:5434/pos_system"
@@ -58,7 +59,7 @@ async def import_products():
                 continue
 
             print(f"📂 Обробка: {path.name}")
-            with open(path, "r", encoding="utf-8-sig") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     try:
@@ -79,7 +80,7 @@ async def import_products():
 
                         await session.execute(
                             text("""
-                                INSERT INTO products (id, barcode, sku, title, description, 
+                                INSERT INTO products (id, barcode, sku, title, description,
                                     price, cost_price, markup, stock, unit,
                                     is_weight, scan_excise, tax_rate, tax_group,
                                     category_id, supplier_id, created_at, updated_at)
@@ -122,7 +123,7 @@ async def import_products():
                         print(f"  ⚠️ Помилка: {row.get('Найменування', '?')} - {e}")
 
         await session.commit()
-        print(f"\n✅ Імпорт завершено!")
+        print("\n✅ Імпорт завершено!")
         print(f"   Додано/оновлено: {total}")
         print(f"   Помилок: {errors}")
 

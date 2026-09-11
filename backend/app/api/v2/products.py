@@ -9,21 +9,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from uuid import UUID
-
 import os
 import shutil
 import uuid as uuid_module
+from datetime import datetime
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import ProductUseCases
-from app.domain.services.cache_service import ICacheService
 from app.config import settings
-from .deps import get_product_use_cases, get_cache_service
+from app.domain.services.cache_service import ICacheService
+
 from .cache_utils import cached, invalidate_product_cache
+from .deps import get_cache_service, get_product_use_cases
 
 router = APIRouter(prefix="/products", tags=["products_v2"])
 

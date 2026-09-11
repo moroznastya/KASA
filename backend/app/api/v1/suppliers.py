@@ -16,23 +16,23 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
+from app.domain.services.supplier_product_service import SupplierProductService
 from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger
 from app.schemas.supplier import (
     SupplierCreate,
-    SupplierUpdate,
     SupplierResponse,
+    SupplierUpdate,
 )
 from app.schemas.supplier_products import (
-    SupplierProductsResponse,
     SupplierProductMovementsResponse,
+    SupplierProductsResponse,
 )
-from app.domain.services.auth_service import AuthService
-from app.domain.services.supplier_product_service import SupplierProductService
 
 router = APIRouter(
     prefix="/suppliers",

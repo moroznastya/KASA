@@ -80,9 +80,28 @@ export interface TransferCreate extends DocumentCreate {
   to_location: string;
 }
 
+/** Елемент товару в накладній списання */
+export interface WriteOffItemInput {
+  product_id: string;
+  quantity: number;
+  /** Собівартість одиниці */
+  cost_price?: number;
+  /** Ціна продажу одиниці */
+  price?: number;
+}
+
 export interface WriteOffCreate extends DocumentCreate {
   document_type: 'write_off';
+  /** Номер документа (якщо не вказано, генерується автоматично) */
+  number?: string;
+  /** Причина списання — назва рядком з персистентного довідника write_off_reasons */
+  reason: string;
+  /** Дата списання (ISO) */
+  write_off_date: string;
+  /** Додаткові нотатки */
   notes?: string;
+  /** Позиції списання (з собівартістю та ціною продажу) */
+  items: WriteOffItemInput[];
 }
 
 export interface ReturnInvoiceCreate {

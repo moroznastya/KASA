@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { formatCurrency, formatDateTime } from '@/utils/format';
-import { SupplierLedgerEntry, Payment, PaymentMethod, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
+import {SupplierLedgerEntry, PaymentMethod, InvoicePaymentInfo} from '@/types/ledger';
 import toast from 'react-hot-toast';
 
 const OPERATION_TYPE_LABELS: Record<string, string> = {
@@ -46,7 +46,7 @@ const LedgerPage: React.FC = () => {
     notes: '',
   });
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
-  const [invoicePaymentInfo, setInvoicePaymentInfo] = useState<InvoicePaymentInfo | null>(null);
+  const [, setInvoicePaymentInfo] = useState<InvoicePaymentInfo | null>(null);
 
   const { data: balance } = useQuery({
     queryKey: ['supplier-balance', selectedSupplierId],
@@ -300,6 +300,101 @@ const LedgerPage: React.FC = () => {
         )}
       </div>
 
+      {/* Накладні постачальника зі станом оплати */}
+      {selectedSupplierId && (
+        <div className="card">
+          <div className="px-5 py-4 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Накладні постачальника
+              </h3>
+              <p className="text-xs text-gray-400 mt-1">
+                Стан оплати по кожній накладній
+              </p>
+            </div>
+            <Button
+              onClick={() => setShowPaymentModal(true)}
+              size="sm"
+              icon={<DollarSign className="w-4 h-4" />}
+            >
+              Створити платіж
+            </Button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-slate-800/50 border-b border-gray-200 dark:border-slate-700">
+                  <th className="table-header">№</th>
+                  <th className="table-header">Дата</th>
+                  <th className="table-header text-right">Сума</th>
+                  <th className="table-header text-right">Сплачено</th>
+                  <th className="table-header text-right">Залишок</th>
+                  <th className="table-header">Статус</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                {(supplierInvoices || []).map((inv) => {
+                  const total = parseFloat(inv.total_amount || '0');
+                  const paid = parseFloat(inv.paid_amount || '0');
+                  const remaining = parseFloat(inv.remaining ?? String(Math.max(0, total - paid)));
+                  const progress = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+                  const isPaid = remaining <= 0.001;
+                  return (
+                    <tr
+                      key={inv.id}
+                      className="hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer"
+                      onClick={() => {
+                        setSelectedInvoiceId(inv.id);
+                        setInvoicePaymentInfo(null);
+                        setShowPaymentModal(true);
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          amount: remaining > 0 ? String(remaining) : prev.amount,
+                        }));
+                      }}
+                    >
+                      <td className="table-cell font-medium text-primary-600 dark:text-primary-400">
+                        {inv.number}
+                      </td>
+                      <td className="table-cell text-gray-500 text-sm">
+                        {formatDateTime(inv.invoice_date)}
+                      </td>
+                      <td className="table-cell text-right font-medium">{formatCurrency(total)}</td>
+                      <td className="table-cell text-right text-green-600 dark:text-green-400 font-medium">
+                        {formatCurrency(paid)}
+                      </td>
+                      <td className={`table-cell text-right font-semibold ${isPaid ? 'text-green-600' : 'text-red-600'}`}>
+                        {formatCurrency(remaining)}
+                      </td>
+                      <td className="table-cell">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 max-w-[100px] h-1.5 bg-gray-200 dark:bg-slate-600 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${isPaid ? 'bg-green-500' : 'bg-amber-500'}`}
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
+                          <Badge variant={isPaid ? 'success' : progress > 0 ? 'warning' : 'default'}>
+                            {isPaid ? 'Оплачено' : progress > 0 ? `Частково (${progress}%)` : 'Не оплачено'}
+                          </Badge>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(!supplierInvoices || supplierInvoices.length === 0) && (
+                  <tr>
+                    <td colSpan={6} className="table-cell text-center text-gray-400 py-6">
+                      Немає підтверджених накладних
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Ledger table */}
       {selectedSupplierId && (
         <div className="card">
@@ -333,7 +428,7 @@ const LedgerPage: React.FC = () => {
           setInvoicePaymentInfo(null);
         }}
         title="Створити платіж"
-        size="sm"
+        size="md"
       >
         <div className="space-y-4">
           <Input
@@ -400,6 +495,17 @@ const LedgerPage: React.FC = () => {
                   {formatCurrency(paymentInfo.remaining)}
                 </span>
               </div>
+              {parseFloat(paymentInfo.remaining) > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPaymentForm((prev) => ({ ...prev, amount: paymentInfo.remaining }))
+                  }
+                  className="w-full mt-2 text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300 underline underline-offset-2"
+                >
+                  Сплатити залишок повністю
+                </button>
+              )}
             </div>
           )}
 

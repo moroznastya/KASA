@@ -11,7 +11,7 @@ Domain Value Object: Rounding — логіка заокруглення цін/�
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 
 def round_amount(amount: Decimal, rounding_code: int = 1) -> Decimal:

@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.infrastructure.services.prro import prro_pb2
 from app.application.use_cases.prro.prro_settings_use_case import (
     PrroSettingsUseCase,
 )
+from app.infrastructure.services.prro import prro_pb2
 from app.infrastructure.services.prro.crypto_signer import PrroCryptoError
 from app.infrastructure.services.prro.xml_builder import SERVICE_PING
 
@@ -55,10 +55,13 @@ class TestBuildPingCheckSign:
         assert context.build_xml_builder.return_value.build_service_check_xml.call_args.kwargs[
             "service_type"
         ] == SERVICE_PING
-        # build_message без MAC (документація: «MAC не заповнюється»)
-        assert context.build_xml_builder.return_value.build_message.call_args.kwargs[
-            "include_mac"
-        ] is False
+        # T=111: MAC не заповнюється — build_message викликається БЕЗ include_mac=False;
+        # тег <MAC></MAC> формує сам білдер за зразком ДПС.
+        assert "include_mac" not in context.build_xml_builder.return_value.build_message.call_args.kwargs
+        # C: підписуються cp1251-байти повного RQ
+        crypto.sign.assert_called_once()
+        signed_arg = crypto.sign.call_args.args[0]
+        assert isinstance(signed_arg, bytes)
         assert check_sign == b"<signed-xml/>"
         assert error is None
 

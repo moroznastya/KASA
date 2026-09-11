@@ -7,8 +7,7 @@ Domain Entity: Supplier (Постачальник).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from ..value_objects.money import Money
@@ -34,7 +33,7 @@ class Supplier:
     address: str = ""
     edrpou: str = ""
     is_active: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     notes: str = ""
 
     def update_balance(self, amount: Money) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -68,7 +68,7 @@ class TestSearchReceipts:
         receipt.receipt_number = "RCPT-001"
         receipt.receipt_type = MagicMock(value="sale")
         receipt.total_amount = 100.0
-        receipt.created_at = datetime.now(timezone.utc)
+        receipt.created_at = datetime.now(UTC)
         from types import SimpleNamespace
         receipt.cashier = SimpleNamespace(name="Касир")
         receipt.items = [MagicMock(), MagicMock()]
@@ -137,7 +137,6 @@ class TestReturnableQuantity:
     async def test_returnable_product_not_found(self):
         """Товар не знайдено → ValueError."""
         from app.application.use_cases.receipt_use_cases import ReceiptUseCases
-        from app.infrastructure.persistence.unit_of_work import SQLAlchemyUnitOfWork
 
         receipt_repo = AsyncMock()
         product_repo = AsyncMock()

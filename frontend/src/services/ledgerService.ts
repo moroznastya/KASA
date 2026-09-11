@@ -1,5 +1,5 @@
 import api from './api';
-import { SupplierLedgerEntry, BalanceResponse, PaymentCreate, Payment, InvoiceInfo, InvoicePaymentInfo } from '@/types/ledger';
+import {SupplierLedgerEntry, BalanceResponse, PaymentCreate, InvoiceInfo, InvoicePaymentInfo} from '@/types/ledger';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -17,9 +17,9 @@ import { PaginatedResponse, SearchParams } from '@/types/api';
 // ═════════════════════════════════════════════════════════════════════════════
 
 // API_ROOT: у DEV лишається відносний шлях (dev-проксі Vite),
-// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://localhost:8000,
+// у production (Tauri/desktop) — АБСОЛЮТНИЙ http://127.0.0.1:8000,
 // щоб запити не йшли на tauri://localhost (SPA-fallback → HTML-рядок).
-const API_ROOT = import.meta.env.DEV ? '' : 'http://localhost:8000';
+const API_ROOT = import.meta.env.DEV ? '' : 'http://127.0.0.1:8000';
 // Ключ об'єкта API_ROOT НЕ мініфікується esbuild — літерал лишається
 // в бандлі, щоб перевірка grep -c 'API_ROOT' по бінарнику давала > 0.
 const V2 = { baseURL: `${API_ROOT}/api/v2`, API_ROOT } as const;
@@ -141,25 +141,28 @@ export const ledgerService = {
   },
 
   async getSupplierInvoices(supplierId: string): Promise<InvoiceInfo[]> {
-    // v2 InvoiceResponse: {id, number, total, status, created_at, ...}
+    // v1 InvoiceResponse: {items: [{id, number, total_amount, paid_amount, remaining, ...}]}
     const response = await api.get<{
       items: Array<{
         id: string;
         number: string;
-        total?: number | null;
+        total_amount?: string | null;
+        paid_amount?: string | null;
+        remaining?: string | null;
         status: string;
         created_at?: string | null;
         supplier_id?: string | null;
       }>;
     }>('/invoices', {
-      params: { supplier_id: supplierId, status: 'confirmed' },
-      ...V2,
+      params: { supplier_id: supplierId, page: 1, size: 200 },
     });
     return (response.data.items || []).map((inv) => ({
       id: inv.id,
       number: inv.number,
       invoice_date: inv.created_at ?? '',
-      total_amount: String(inv.total ?? 0),
+      total_amount: inv.total_amount ?? '0',
+      paid_amount: inv.paid_amount,
+      remaining: inv.remaining,
       supplier_id: inv.supplier_id ?? supplierId,
       status: inv.status,
     }));

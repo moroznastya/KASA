@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.application.use_cases import InvoiceUseCases
-from app.schemas.print import InvoicePrintRequest, InvoicePrintResponse
-from .deps import get_invoice_print_use_cases, get_invoice_use_cases, get_cache_service
-from app.domain.services.cache_service import ICacheService
 from app.config import settings
-from .cache_utils import cached, invalidate_invoice_cache, invalidate_product_cache, invalidate_ledger_cache
+from app.domain.services.cache_service import ICacheService
+from app.schemas.print import InvoicePrintRequest, InvoicePrintResponse
+
+from .cache_utils import cached, invalidate_invoice_cache, invalidate_ledger_cache, invalidate_product_cache
+from .deps import get_cache_service, get_invoice_print_use_cases, get_invoice_use_cases
+
+if TYPE_CHECKING:
+    from app.application.use_cases.invoice_print_use_cases import InvoicePrintUseCases
 
 router = APIRouter(prefix="/invoices", tags=["invoices_v2"])
 
@@ -228,7 +233,7 @@ async def update_invoice(
 ):
     """Оновити прибуткову накладну (тільки чернетку, інвалідує invoice-кеш)."""
     try:
-        from app.application.dto.invoice_dto import InvoiceUpdateDTO, InvoiceItemDTO
+        from app.application.dto.invoice_dto import InvoiceItemDTO, InvoiceUpdateDTO
         items = None
         if data.items is not None:
             items = [

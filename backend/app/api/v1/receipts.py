@@ -14,34 +14,35 @@ API роутер для роботи з чеками продажу (Receipts).
 ⚠️ DEPRECATED: цей v1-роутер залишено для зворотної сумісності — використовуйте /api/v2/receipts/*.
 """
 
-from uuid import UUID
-from datetime import datetime, date, timezone, timedelta
+import contextlib
+from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func, or_
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.application.services.settings_service import SettingsService
 from app.database import get_session
-from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptType, ReceiptPaymentMethod
-from app.infrastructure.persistence.models.product import Product
-from app.infrastructure.persistence.models.debtor import Debtor, DebtorPayment
-from app.schemas.receipt import (
-    ReceiptCreate,
-    ReceiptResponse,
-    ReceiptItemResponse,
-    ReceiptItemCreate,
-    ReceiptSearchResult,
-    RecentSaleInfo,
-    ProductRecentSalesResponse,
-    ProductRecentSalesListResponse,
-    ProductBriefInfo,
-)
 from app.domain.services.auth_service import AuthService
 from app.domain.services.product_service import ProductService
-from app.application.services.settings_service import SettingsService
 from app.domain.value_objects.rounding import round_amount
+from app.infrastructure.persistence.models.debtor import Debtor, DebtorPayment
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem, ReceiptPaymentMethod, ReceiptType
+from app.schemas.receipt import (
+    ProductBriefInfo,
+    ProductRecentSalesListResponse,
+    ProductRecentSalesResponse,
+    ReceiptCreate,
+    ReceiptItemCreate,
+    ReceiptItemResponse,
+    ReceiptResponse,
+    ReceiptSearchResult,
+    RecentSaleInfo,
+)
 
 router = APIRouter(
     prefix="/receipts",
@@ -178,7 +179,7 @@ async def get_today_stats(
     - items_sold: кількість проданих товарів
     """
     # Використовуємо UTC datetime без timezone (naive)
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     today_start = datetime(now_utc.year, now_utc.month, now_utc.day)
     today_end = datetime(now_utc.year, now_utc.month, now_utc.day, 23, 59, 59, 999999)
 
@@ -647,7 +648,7 @@ async def list_receipts(
         r_dict["cashier_name"] = r.cashier.name if r.cashier else "Невідомо"
         r_dict["payment_method"] = r.payment_method.value if r.payment_method else None
         # Додаємо vat_amount до кожного item
-        for item_dict, item_obj in zip(r_dict.get("items", []), r.items):
+        for item_dict, item_obj in zip(r_dict.get("items", []), r.items, strict=False):
             item_dict["vat_amount"] = getattr(item_obj, "_vat_amount", 0)
         items_response.append(r_dict)
 
@@ -741,10 +742,8 @@ async def create_receipt(
         last = last_receipt.scalar_one_or_none()
         last_num = 0
         if last and last.receipt_number:
-            try:
+            with contextlib.suppress(ValueError, IndexError):
                 last_num = int(last.receipt_number.split("-")[-1])
-            except (ValueError, IndexError):
-                pass
         data.receipt_number = f"RCPT-{datetime.now().strftime('%Y%m%d')}-{last_num + 1:04d}"
 
     cashier_id = data.cashier_id or current_user.id

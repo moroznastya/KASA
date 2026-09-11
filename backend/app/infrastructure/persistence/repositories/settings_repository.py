@@ -5,8 +5,10 @@ Infrastructure Layer: SettingsRepository — читання налаштуван
 from __future__ import annotations
 
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.infrastructure.persistence.models.system_setting import SystemSetting
 
 
@@ -25,7 +27,7 @@ class SettingsRepository:
         }
         """
         result = await self._session.execute(
-            select(SystemSetting).where(SystemSetting.is_active == True)
+            select(SystemSetting).where(SystemSetting.is_active)
         )
         settings = result.scalars().all()
 
@@ -42,7 +44,7 @@ class SettingsRepository:
         result = await self._session.execute(
             select(SystemSetting).where(
                 SystemSetting.module == module,
-                SystemSetting.is_active == True,
+                SystemSetting.is_active,
             )
         )
         settings = result.scalars().all()
@@ -53,7 +55,7 @@ class SettingsRepository:
         result = await self._session.execute(
             select(SystemSetting).where(
                 SystemSetting.key == key,
-                SystemSetting.is_active == True,
+                SystemSetting.is_active,
             )
         )
         setting = result.scalar_one_or_none()

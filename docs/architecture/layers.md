@@ -1,4 +1,4 @@
-# 🏗️ Архітектура Kasa POS — Шари (Layered Architecture)
+# 🏗️ Архітектура Torgashka — Шари (Layered Architecture)
 
 > **Версія:** 2.0.0  
 > **Стиль:** Clean Architecture / DDD (Domain-Driven Design)  

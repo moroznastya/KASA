@@ -34,6 +34,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <App />
       <Toaster
         position="top-right"
+        containerStyle={{ top: 'calc(var(--update-banner-h, 0px) + 16px)' }}
         toastOptions={{
           duration: 3000,
           style: {

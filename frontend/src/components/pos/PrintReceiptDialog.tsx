@@ -1,24 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  Printer,
-  X,
-  Loader2,
-  FileText,
-  Banknote,
-  CreditCard,
-  ShoppingCart,
-  CheckCircle2,
-  AlertTriangle,
-  RotateCcw,
-} from 'lucide-react';
+import {Printer, X, Loader2, FileText, Banknote, CreditCard, CheckCircle2, AlertTriangle, RotateCcw, } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Spinner } from '@/components/ui/Spinner';
-import { useReceiptPrinter, receiptToRenderData } from '@/hooks/useReceiptPrinter';
+import {useReceiptPrinter} from '@/hooks/useReceiptPrinter';
 import type { Receipt } from '@/types/receipt';
 import { formatCurrency } from '@/utils/format';
-import { printTemplateService } from '@/services/printTemplateService';
 import { toast } from 'react-hot-toast';
 import { isTauri } from '@/hooks/useTauri';
 

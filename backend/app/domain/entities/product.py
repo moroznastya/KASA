@@ -11,8 +11,8 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
-from ..value_objects.money import Money
 from ..value_objects.barcode import Barcode
+from ..value_objects.money import Money
 from ..value_objects.quantity import Quantity
 from ..value_objects.tax_rate import TaxRate
 

@@ -4,14 +4,13 @@
 Використовує factory_boy для генерації даних.
 """
 
-from uuid import uuid4
 from datetime import datetime
+from uuid import uuid4
 
 import factory
-from factory import fuzzy
 
-from app.infrastructure.persistence.models.user import User, UserRole
 from app.domain.services.auth_service import AuthService
+from app.infrastructure.persistence.models.user import User, UserRole
 
 
 class UserFactory(factory.Factory):

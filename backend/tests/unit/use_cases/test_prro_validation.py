@@ -24,10 +24,10 @@ from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     FiscalizeReceiptUseCase,
     PrroFiscalizeError,
 )
-from app.infrastructure.persistence.models.prro import PrroShift
-from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.prro import PrroShift
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,

@@ -5,21 +5,24 @@
 з постачальниками.
 """
 
-from typing import Protocol, Optional, List, Tuple
-from decimal import Decimal
-from uuid import UUID
 from datetime import datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Optional, Protocol
+from uuid import UUID
+
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger
 
 
 class LedgerModuleInterface(Protocol):
     """
     Інтерфейс модуля взаєморозрахунків.
-    
+
     Відповідає за:
     - Створення записів у журналі при операціях
     - Розрахунок поточного балансу постачальника
     - Історію операцій з пагінацією
-    
+
     Модуль отримує запити через Event Bus (підписка на події
     invoice.confirmed, return.confirmed) або через прямий виклик
     для операцій оплати.
@@ -49,10 +52,10 @@ class LedgerModuleInterface(Protocol):
     ) -> "SupplierLedger":
         """
         Створює новий запис у журналі взаєморозрахунків.
-        
+
         Після створення публікує подію "ledger.entry_created".
         Автоматично розраховує баланс після операції.
-        
+
         Args:
             supplier_id: ID постачальника.
             operation_type: Тип операції (invoice, payment, return, correction).
@@ -61,10 +64,10 @@ class LedgerModuleInterface(Protocol):
             document_id: ID документа (опціонально).
             document_number: Номер документа (опціонально).
             notes: Нотатки (опціонально).
-            
+
         Returns:
             Створений об'єкт SupplierLedger.
-            
+
         Raises:
             SupplierNotFound: Якщо постачальника не знайдено.
             InvalidOperationType: Якщо тип операції недійсний.
@@ -76,13 +79,13 @@ class LedgerModuleInterface(Protocol):
     async def get_supplier_balance(self, supplier_id: UUID) -> Decimal:
         """
         Отримує поточний баланс постачальника.
-        
+
         Баланс розраховується як сума всіх операцій.
         Додатне значення — борг перед постачальником.
-        
+
         Args:
             supplier_id: ID постачальника.
-            
+
         Returns:
             Поточний баланс (Decimal).
         """
@@ -91,22 +94,22 @@ class LedgerModuleInterface(Protocol):
     async def get_supplier_balance_with_name(
         self,
         supplier_id: UUID,
-    ) -> Tuple[Decimal, str, Optional[datetime]]:
+    ) -> tuple[Decimal, str, Optional[datetime]]:
         """
         Отримує баланс постачальника разом з назвою та датою останньої операції.
-        
+
         Args:
             supplier_id: ID постачальника.
-            
+
         Returns:
             Кортеж (баланс, назва постачальника, дата останньої операції).
         """
         ...
 
-    async def get_all_supplier_balances(self) -> List[dict]:
+    async def get_all_supplier_balances(self) -> list[dict]:
         """
         Отримує баланси всіх постачальників.
-        
+
         Returns:
             Список словників з інформацією про баланс кожного постачальника.
         """
@@ -122,10 +125,10 @@ class LedgerModuleInterface(Protocol):
         operation_type: Optional[str] = None,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
-    ) -> Tuple[List["SupplierLedger"], int]:
+    ) -> tuple[list["SupplierLedger"], int]:
         """
         Отримує історію операцій для постачальника з фільтрацією та пагінацією.
-        
+
         Args:
             supplier_id: ID постачальника.
             page: Номер сторінки.
@@ -133,7 +136,7 @@ class LedgerModuleInterface(Protocol):
             operation_type: Фільтр за типом операції (опціонально).
             date_from: Фільтр від дати (опціонально).
             date_to: Фільтр до дати (опціонально).
-            
+
         Returns:
             Кортеж (список записів, загальна кількість).
         """
@@ -151,16 +154,16 @@ class LedgerModuleInterface(Protocol):
     ) -> "SupplierLedger":
         """
         Реєструє оплату постачальнику.
-        
+
         Створює запис з від'ємною сумою (зменшення боргу).
-        
+
         Args:
             supplier_id: ID постачальника.
             amount: Сума оплати (додатна).
             payment_date: Дата оплати.
             payment_method: Спосіб оплати (cash, bank, card).
             notes: Нотатки (опціонально).
-            
+
         Returns:
             Створений об'єкт SupplierLedger.
         """

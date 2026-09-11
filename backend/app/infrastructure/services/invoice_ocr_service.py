@@ -11,17 +11,14 @@
 4. Повертаємо фінальний список товарів з product_id (якщо знайдено) та markup_percent
 """
 
-import asyncio
-import json
 import logging
 from typing import Optional
-from uuid import UUID
 
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.persistence.models.barcode import Barcode
+from app.infrastructure.persistence.models.product import Product
 from app.infrastructure.services.ocr_service import OCRService
 
 logger = logging.getLogger(__name__)

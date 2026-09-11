@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Package, Loader2, Star, StarOff, ArrowLeft, ChevronRight, Grid3X3, Heart, Sparkles, ShoppingBag, Tag, Layers } from 'lucide-react';
+import {Package, Loader2, Star, StarOff, ArrowLeft, ChevronRight, Grid3X3, Heart, Tag, Layers} from 'lucide-react';
 import { categoryService } from '@/services/categoryService';
 import { productService } from '@/services/productService';
 import { Product } from '@/types/product';

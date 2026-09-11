@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Search, X, Loader2, Calendar, ChevronLeft, ChevronRight, RotateCcw, ShoppingCart } from 'lucide-react';
+import {Search, Loader2, Calendar, ChevronLeft, ChevronRight, RotateCcw, ShoppingCart} from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';

@@ -7,25 +7,37 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime, Boolean,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.supplier import Supplier
+    from app.infrastructure.persistence.models.user import User
 
-class InvoiceStatus(str, PyEnum):
+
+class InvoiceStatus(StrEnum):
     """Статус прибуткової накладної."""
     DRAFT = "draft"           # Чернетка
     CONFIRMED = "confirmed"   # Підтверджено (товар оприбутковано)
     CANCELLED = "cancelled"   # Скасовано
 
 
-class PaymentMethod(str, PyEnum):
+class PaymentMethod(StrEnum):
     """Спосіб оплати постачальнику."""
     CREDIT = "credit"               # В борг постачальнику
     BANK_TRANSFER = "bank_transfer" # По перерахунку

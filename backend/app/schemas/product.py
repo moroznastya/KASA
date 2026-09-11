@@ -5,13 +5,12 @@ Pydantic схеми для моделі Product (Товар).
 Всі фінансові поля використовують Decimal для уникнення помилок округлення.
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
-
+from pydantic import BaseModel, ConfigDict, Field
 
 # ─── Супутні схеми ───────────────────────────────────────────────────────────
 

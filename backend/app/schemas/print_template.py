@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PrintTemplateCreate(BaseModel):
@@ -47,7 +47,7 @@ class PrintTemplateResponse(BaseModel):
 
 class TemplateRenderRequest(BaseModel):
     """Запит на рендер шаблону: словник змінних для підстановки."""
-    data: dict[str, str] = Field(..., description="Змінні для підстановки: {\"shop_name\": \"Kasa\", \"total\": \"100.00\", ...}")
+    data: dict[str, str] = Field(..., description="Змінні для підстановки: {\"shop_name\": \"Torgashka\", \"total\": \"100.00\", ...}")
 
 
 class TemplateRenderResponse(BaseModel):

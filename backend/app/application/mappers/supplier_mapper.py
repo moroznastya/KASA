@@ -6,9 +6,9 @@ Mapper для Supplier entity.
 
 from decimal import Decimal
 
+from app.application.dto.supplier_dto import SupplierCreateDTO, SupplierDTO
 from app.domain.entities.supplier import Supplier
 from app.domain.value_objects.money import Money
-from app.application.dto.supplier_dto import SupplierDTO, SupplierCreateDTO
 
 
 class SupplierMapper:

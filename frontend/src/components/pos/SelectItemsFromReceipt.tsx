@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { X, Loader2, ShoppingCart, CheckSquare, Square, ImageOff, Minus, Plus } from 'lucide-react';
+import {Loader2, ShoppingCart, CheckSquare, Square, Minus, Plus} from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -42,7 +42,7 @@ const SelectItemsFromReceipt: React.FC<SelectItemsFromReceiptProps> = ({
   receipt,
   onProcessReturn,
 }) => {
-  const [items, setItems] = useState<ReceiptItem[]>([]);
+  const [, setItems] = useState<ReceiptItem[]>([]);
   const [selectableItems, setSelectableItems] = useState<SelectableItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.infrastructure.services.prro import prro_pb2
 from app.infrastructure.services.prro.grpc_client import (
     PrroGrpcClient,

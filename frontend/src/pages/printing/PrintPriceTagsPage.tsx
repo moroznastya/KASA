@@ -2,7 +2,6 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Printer, ArrowLeft, Eye, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { Spinner } from '@/components/ui/Spinner';
 import { printService } from '@/services/printService';
 import { isTauri } from '@/hooks/useTauri';
 import PrintProductSelector from '@/components/printing/PrintProductSelector';
@@ -146,7 +145,7 @@ const PrintPriceTagsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк цінників — Kasa POS</title>
+              <title>Друк цінників — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: A4; }
@@ -175,7 +174,7 @@ const PrintPriceTagsPage: React.FC = () => {
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк цінників — Kasa POS</title>
+              <title>Друк цінників — Torgashka</title>
               <style>
                 @media print {
                   @page { margin: 0; size: A4; }
@@ -204,7 +203,7 @@ const PrintPriceTagsPage: React.FC = () => {
   }, [previewHtml]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)]">
+    <div className="flex flex-col" style={{ height: 'calc(100vh - 7rem - var(--update-banner-h, 0px))' }}>
       {/* Заголовок */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">

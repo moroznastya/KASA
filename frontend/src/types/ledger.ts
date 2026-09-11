@@ -23,6 +23,8 @@ export interface InvoiceInfo {
   number: string;
   invoice_date: string;
   total_amount: string;
+  paid_amount?: string | null;
+  remaining?: string | null;
   supplier_id: string;
   status: string;
 }

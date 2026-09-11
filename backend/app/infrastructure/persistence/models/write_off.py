@@ -2,29 +2,31 @@
 Моделі WriteOff та WriteOffItem (Списання товару).
 
 Фіксує списання товару зі складу (псування, термін придатності, крадіжка тощо).
+Причина списання (reason) — РЯДОК: назва з персистентного довідника
+write_off_reasons (див. models/reasons.py). Користувач може додати нову
+причину, яка зберігається в довіднику і доступна в наступних накладних.
 """
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
-
-class WriteOffReason(str, PyEnum):
-    """Причина списання товару."""
-    EXPIRED = "expired"           # Закінчився термін придатності
-    DAMAGED = "damaged"           # Пошкодження / бій
-    DEFECT = "defect"             # Брак / дефект
-    THEFT = "theft"               # Крадіжка
-    INVENTORY = "inventory"       # Інвентаризація (нестача)
-    OTHER = "other"               # Інше
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.user import User
 
 
 class WriteOff(Base):
@@ -39,16 +41,40 @@ class WriteOff(Base):
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор списання",
     )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_write_offs_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
+    )
     number: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
         index=True,
         comment="Номер документа списання",
     )
-    reason: Mapped[WriteOffReason] = mapped_column(
-        Enum(WriteOffReason, name="write_off_reason", create_constraint=True, values_callable=lambda x: [e.value for e in x]),
+    reason: Mapped[str] = mapped_column(
+        String(100),
         nullable=False,
-        comment="Причина списання",
+        comment="Причина списання (назва з довідника write_off_reasons)",
+    )
+    # Deprecated: раніше використовувалось для довільної причини (reason='other').
+    # Тепер причина — завжди назва рядком з персистентного списку.
+    # Колонку залишено для зворотної сумісності зі старими даними.
+    custom_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Deprecated: довільна причина списання (більше не використовується)",
     )
     write_off_date: Mapped[datetime] = mapped_column(
         DateTime,
@@ -103,7 +129,7 @@ class WriteOff(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<WriteOff {self.number} ({self.reason.value})>"
+        return f"<WriteOff {self.number} ({self.reason})>"
 
 
 class WriteOffItem(Base):

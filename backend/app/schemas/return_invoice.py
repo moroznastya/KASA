@@ -2,14 +2,14 @@
 Pydantic схеми для моделей ReturnInvoice та ReturnInvoiceItem (Повернення постачальнику).
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.infrastructure.persistence.models.return_invoice import ReturnInvoiceStatus, ReturnActionType
+from app.infrastructure.persistence.models.return_invoice import ReturnActionType, ReturnInvoiceStatus
 
 
 class ProductBrief(BaseModel):

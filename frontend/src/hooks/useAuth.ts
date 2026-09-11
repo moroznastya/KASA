@@ -13,7 +13,6 @@ export function useAuth() {
     login,
     logout,
     setUser,
-    setLoading,
     initialize,
   } = useAuthStore();
 

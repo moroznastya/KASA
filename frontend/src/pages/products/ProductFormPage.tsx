@@ -348,7 +348,7 @@ const ProductFormPage: React.FC = () => {
                           try {
                             await productService.deleteImage(id!, mainImage.id);
                             window.location.reload();
-                          } catch {}
+                          } catch { /* ігноруємо: операція не критична */ }
                         }
                       }}
                       className="absolute -top-2 -right-2 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
@@ -370,7 +370,7 @@ const ProductFormPage: React.FC = () => {
                           try {
                             await productService.uploadImage(id, file, true);
                             window.location.reload();
-                          } catch {}
+                          } catch { /* ігноруємо: операція не критична */ }
                         }
                       }}
                     />
@@ -390,7 +390,7 @@ const ProductFormPage: React.FC = () => {
                           try {
                             await productService.uploadImage(id, file);
                             window.location.reload();
-                          } catch {}
+                          } catch { /* ігноруємо: операція не критична */ }
                         }
                       }}
                     />
@@ -518,8 +518,8 @@ const ProductFormPage: React.FC = () => {
               type="number"
               min="0"
               value={form.stock}
-              onChange={(e) => handleChange('stock', parseInt(e.target.value) || 0)}
-              error={errors.stock}
+              disabled
+              helperText="Облікова кількість. Змінюється через накладні, списання та інвентаризацію"
             />
             <Input
               label="Рекомендований залишок"
@@ -635,7 +635,7 @@ const ProductFormPage: React.FC = () => {
                           try {
                             await productService.deleteBarcode(id!, bc.id);
                             window.location.reload();
-                          } catch {}
+                          } catch { /* ігноруємо: операція не критична */ }
                         }
                       }}
                       className="p-1 text-gray-400 hover:text-red-500 transition-colors"

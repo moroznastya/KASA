@@ -13,12 +13,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from cryptography import x509  # noqa: E402
-from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
-from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
-from cryptography.x509.oid import NameOID  # noqa: E402
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
-from app.infrastructure.services.prro.iit_sdk import IitSdk, IitSdkError  # noqa: E402
+from app.infrastructure.services.prro.iit_sdk import IitSdk, IitSdkError
 
 
 def _make_cert(cn: str, is_ca: bool, self_signed: bool = False) -> bytes:
@@ -33,8 +33,8 @@ def _make_cert(cn: str, is_ca: bool, self_signed: bool = False) -> bytes:
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
+        .not_valid_before(datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365))
         .add_extension(
             x509.BasicConstraints(ca=is_ca, path_length=None),
             critical=True,
@@ -84,8 +84,8 @@ class TestFindSignerCert:
             .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ЦСК")]))
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
-            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30))
+            .not_valid_before(datetime.datetime.now(datetime.UTC))
+            .not_valid_after(datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30))
             .sign(key, hashes.SHA256())
         )
         found = IitSdk._find_signer_cert(

@@ -13,18 +13,18 @@ API роутер для роботи з категоріями (Categories).
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.category import Category
 from app.schemas.category import (
     CategoryCreate,
-    CategoryUpdate,
     CategoryResponse,
     CategoryTreeResponse,
+    CategoryUpdate,
 )
-from app.domain.services.auth_service import AuthService
 
 router = APIRouter(
     prefix="/categories",

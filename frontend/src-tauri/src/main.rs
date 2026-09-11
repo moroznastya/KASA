@@ -1,10 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Kasa POS — Tauri Desktop Entry Point
+// Torgashka — Tauri Desktop Entry Point
 // ─────────────────────────────────────────────────────────────────────────────
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// Записує діагностичну інформацію про середовище у /tmp/kasa-debug.log.
+/// Записує діагностичну інформацію про середовище у /tmp/torgashka-debug.log.
 /// Викликається ДО і ПІСЛЯ встановлення змінних рендерингу — щоб можна було
 /// порівняти, які змінні були задані ззовні, а які встановив сам застосунок.
 fn write_debug_log(stage: &str) {
@@ -36,10 +36,19 @@ fn write_debug_log(stage: &str) {
     content.push_str(&format!("WEBKIT_VERSION={}\n", webkit_version));
 
     // Перезаписуємо файл — останній виклик (AFTER) містить повну картину
-    let _ = std::fs::write("/tmp/kasa-debug.log", content);
+    let _ = std::fs::write("/tmp/torgashka-debug.log", content);
 }
 
 fn main() {
+    // ── Режим SDK-хелпера ПРРО (ізоляція FFI EUSignCP у субпроцесі) ──────
+    // IitSigner::sign/verify запускає current_exe з TORGASHKA_PRRO_SDK_HELPER=1;
+    // хелпер робить SDK-роботу (load_jks_key/sign) і виходить. Крах багнутого
+    // cspb.so (#GP/SIGSEGV) вбиває лише цей субпроцес — Torgashka виживає.
+    // Перевірка ОБОВ'ЯЗКОВО до ініціалізації Tauri/GTK (хелпер без GUI).
+    if std::env::var_os(torgashka_prro::crypto::iit::SDK_HELPER_ENV).is_some() {
+        std::process::exit(torgashka_prro::crypto::iit::sdk_helper_main());
+    }
+
     // ── Діагностика: стан середовища ДО встановлення змінних ──
     write_debug_log("BEFORE");
 
@@ -52,7 +61,7 @@ fn main() {
     // всього 3 кольори на histogram).
     //
     // ПЕРЕВІРЕНО ТЕСТОМ (python3-gi + WebKit2GTK 4.1, ті самі змінні):
-    // на НАТИВНОМУ Wayland WebKit рендерить сторінку Kasa повністю —
+    // на НАТИВНОМУ Wayland WebKit рендерить сторінку Torgashka повністю —
     // 2004 унікальні кольори + текст (histogram), EGL-варнінги зникають.
     // Тому GDK_BACKEND НЕ форсуємо — GDK сам обирає wayland за наявності
     // WAYLAND_DISPLAY, WebKit малює через wl_shm у software-режимі:
@@ -66,5 +75,5 @@ fn main() {
     // ── Діагностика: стан середовища ПІСЛЯ встановлення змінних ──
     write_debug_log("AFTER");
 
-    kasa_pos_lib::run()
+    torgashka_lib::run()
 }

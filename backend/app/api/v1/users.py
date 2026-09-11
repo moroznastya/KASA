@@ -18,31 +18,31 @@ API роутер для роботи з користувачами (Users) та 
   - GET    /users/permissions/list — отримати список всіх доступних прав
 """
 
-from datetime import timedelta, datetime
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.rate_limit import limiter
 from app.database import get_session
-from app.infrastructure.persistence.models.user import User
+from app.domain.entities.user import User as UserEntity
+from app.domain.services.auth_service import AuthService
+from app.infrastructure.persistence.models.permission import PERMISSION_GROUPS, PERMISSION_LABELS, Permission
 from app.infrastructure.persistence.models.receipt import Receipt
-from app.infrastructure.persistence.models.permission import Permission, PERMISSION_GROUPS, PERMISSION_LABELS
+from app.infrastructure.persistence.models.user import User
 from app.infrastructure.persistence.models.work_session import WorkSession
 from app.schemas.user import (
     UserCreate,
-    UserUpdate,
-    UserResponse,
-    UserPermissionsUpdate,
     UserLoginRequest,
+    UserPermissionsUpdate,
     UserPinLoginRequest,
+    UserResponse,
     UserTokenResponse,
+    UserUpdate,
 )
-from app.domain.services.auth_service import AuthService
-from app.domain.entities.user import User as UserEntity
 
 # Роутер для авторизації (публічний)
 auth_router = APIRouter(
@@ -304,7 +304,7 @@ async def get_users_list(
     Повертає тільки id, name, login — жодних конфіденційних даних.
     """
     result = await session.execute(
-        select(User.id, User.name, User.login).where(User.is_active == True).order_by(User.name)
+        select(User.id, User.name, User.login).where(User.is_active).order_by(User.name)
     )
     users = [
         {"id": str(row.id), "name": row.name, "login": row.login}
@@ -468,7 +468,7 @@ async def update_user(
     update_data = data.model_dump(exclude_unset=True)
 
     # Хешуємо пароль, якщо переданий
-    if "password" in update_data and update_data["password"]:
+    if update_data.get("password"):
         update_data["password_hash"] = AuthService.hash_password(
             update_data.pop("password")
         )
@@ -476,7 +476,7 @@ async def update_user(
         update_data.pop("password", None)
 
     # Хешуємо PIN-код, якщо переданий
-    if "pin_code" in update_data and update_data["pin_code"]:
+    if update_data.get("pin_code"):
         update_data["pin_code"] = AuthService.hash_password(
             update_data["pin_code"]
         )

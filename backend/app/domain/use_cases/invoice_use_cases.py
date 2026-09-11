@@ -11,16 +11,15 @@ Use Cases: Invoice (Прибуткові накладні).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 from app.domain.entities.invoice import Invoice, InvoiceItem, InvoiceStatus
 from app.domain.repositories import IInvoiceRepository, IProductRepository, IUnitOfWork
-from app.domain.services.stock_service import StockService
 from app.domain.services.document_service import DocumentService
 from app.domain.services.ledger_service import LedgerService
+from app.domain.services.stock_service import StockService
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate

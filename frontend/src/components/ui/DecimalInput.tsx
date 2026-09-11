@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { DECIMAL_INPUT_REGEX } from '@/utils/decimal';
+import { markSelectOnMouseDown, preventSelectionClearOnMouseUp } from '@/utils/selectOnFocus';
 
 interface DecimalInputProps {
   /** Числове значення з батьківського стану */
@@ -71,9 +72,11 @@ export const DecimalInput: React.FC<DecimalInputProps> = ({
           setLocal(normalized);
         }
       }}
+      onMouseDown={markSelectOnMouseDown}
+      onMouseUp={preventSelectionClearOnMouseUp}
       onFocus={(e) => {
         setFocused(true);
-        e.target.select();
+        e.currentTarget.select();
       }}
       onBlur={commit}
       onKeyDown={(e) => {

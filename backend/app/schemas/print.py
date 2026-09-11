@@ -10,8 +10,7 @@ Pydantic схеми для рендеру цінників та етикеток
 
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import Optional, Literal
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field

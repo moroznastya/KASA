@@ -14,7 +14,6 @@
 import pytest
 from httpx import AsyncClient
 
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.auth,
@@ -115,9 +114,10 @@ class TestLoginByPin:
 
     async def test_login_pin_user_without_pin(self, client: AsyncClient, session):
         """Логін користувача без PIN-коду."""
-        from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
+
         from app.domain.services.auth_service import AuthService
+        from app.infrastructure.persistence.models.user import User, UserRole
 
         user = User(
             id=uuid4(),
@@ -260,9 +260,10 @@ class TestInactiveUser:
 
     async def test_inactive_user_cannot_login(self, client: AsyncClient, session):
         """Неактивний користувач не може увійти."""
-        from app.infrastructure.persistence.models.user import User, UserRole
         from uuid import uuid4
+
         from app.domain.services.auth_service import AuthService
+        from app.infrastructure.persistence.models.user import User, UserRole
 
         user = User(
             id=uuid4(),

@@ -9,7 +9,7 @@ Repository Implementation: SQLAlchemyReceiptRepository.
   - receipt → cashier / debtor (to-one) → joinedload
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
@@ -249,7 +249,7 @@ class SQLAlchemyReceiptRepository(IReceiptRepository):
             dict: {total_sales, total_returns, total_profit, total_vat,
                    receipts_count, items_sold, date}
         """
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         today_start = datetime(now_utc.year, now_utc.month, now_utc.day)
         today_end = datetime(now_utc.year, now_utc.month, now_utc.day, 23, 59, 59, 999999)
 

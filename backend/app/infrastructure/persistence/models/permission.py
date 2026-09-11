@@ -5,12 +5,12 @@
 Права зберігаються в полі `permissions` моделі User у вигляді JSONB списку.
 """
 
-from enum import Enum as PyEnum
+from enum import StrEnum
 
 
-class Permission(str, PyEnum):
+class Permission(StrEnum):
     """
-    Перелік прав доступу в системі Kasa.
+    Перелік прав доступу в системі Torgashka.
 
     Кожне право дозволяє виконувати певні дії в системі.
     Права можна комбінувати — користувач може мати будь-який набір прав.

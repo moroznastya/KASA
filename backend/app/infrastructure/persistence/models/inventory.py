@@ -7,19 +7,29 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
-from typing import Optional
+from enum import StrEnum
+from typing import TYPE_CHECKING, Optional
 
+import sqlalchemy as sa
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.user import User
 
-class InventoryStatus(str, PyEnum):
+
+class InventoryStatus(StrEnum):
     """Статус інвентаризації."""
     DRAFT = "draft"
     CONFIRMED = "confirmed"   # Інвентаризацію проведено
@@ -37,6 +47,22 @@ class Inventory(Base):
         primary_key=True,
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор інвентаризації",
+    )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_inventories_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
     )
     number: Mapped[str] = mapped_column(
         String(50),

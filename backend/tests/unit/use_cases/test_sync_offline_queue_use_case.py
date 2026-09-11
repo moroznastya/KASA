@@ -27,12 +27,20 @@ def _make_queue_item(
     local_number: int = 1,
     check_type: str = "CHK",
     xml_body: str = "<DAT>...</DAT>",
+    check_sign: str | None = None,
+    id_offline: str | None = None,
+    mac: str | None = None,
+    shift_id=None,
 ):
     return SimpleNamespace(
         id=uuid4(),
         local_number=str(local_number),
         check_type=check_type,
         xml_body=xml_body,
+        check_sign=check_sign,
+        id_offline=id_offline,
+        mac=mac,
+        shift_id=shift_id,
     )
 
 
@@ -68,6 +76,36 @@ def _build_use_case(
 
 class TestSync:
     """Тести синхронізації офлайн-черги."""
+
+    @pytest.mark.asyncio
+    async def test_sync_passes_id_offline_to_check(self):
+        """G: sync передає id_offline офлайн-чека в Check (не губиться)."""
+        items = [_make_queue_item(local_number=1, id_offline="1000042")]
+        offline_queue = AsyncMock()
+        offline_queue.get_pending.return_value = items
+
+        xml_builder = MagicMock()
+        xml_builder.build_message.return_value = "<m/>"
+        crypto = MagicMock()
+        crypto.sign.return_value = b"<s/>"
+        grpc_client = MagicMock()
+        grpc_client.send_chk = AsyncMock(return_value=_make_check_response(status=1))
+
+        context = _make_context()
+        context.build_xml_builder.return_value = xml_builder
+        context.build_crypto_signer.return_value = crypto
+        context.grpc_client.return_value = grpc_client
+
+        session = AsyncMock(spec=AsyncSession)
+        uc = _build_use_case(
+            offline_queue=offline_queue, context=context, session=session
+        )
+        result = await uc.sync()
+        assert result["synced"] == 1
+        # id_offline дійшов до build_check (і далі — у Check)
+        call_kwargs = context.build_check.await_args.kwargs
+        assert call_kwargs["id_offline"] == "1000042"
+        assert call_kwargs["check_sign"] == b"<s/>"
 
     @pytest.mark.asyncio
     async def test_sync_empty_queue(self):
@@ -224,3 +262,141 @@ class TestSync:
         assert statuses[2] == "failed"
         assert offline_queue.mark_sent.await_count == 1
         assert offline_queue.mark_failed.await_count == 1
+
+
+class TestSyncIdempotentB2:
+    """B2: ідемпотентність sync — повний підписаний check_sign відправляється as-is.
+
+    Критерій: build_message викликається рівно 1 раз на документ; повторні
+    sync не змінюють NT/MAC/підпис (check_sign ідентичний між спробами).
+    """
+
+    def _make_item_with_sign(self):
+        return SimpleNamespace(
+            id=uuid4(),
+            local_number="1",
+            check_type="CHK",
+            xml_body="<DAT>...</DAT>",
+            check_sign="<full-signed-check/>",
+        )
+
+    def _make_legacy_item(self):
+        return SimpleNamespace(
+            id=uuid4(),
+            local_number="1",
+            check_type="CHK",
+            xml_body="<DAT>...</DAT>",
+            check_sign=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_sends_stored_check_sign_as_is(self):
+        """Документ із check_sign → відправляється as-is, build_message/sign — 0 викликів."""
+        items = [self._make_item_with_sign()]
+        offline_queue = AsyncMock()
+        offline_queue.get_pending.return_value = items
+
+        xml_builder = MagicMock()
+        crypto = MagicMock()
+        grpc_client = MagicMock()
+        grpc_client.send_chk = AsyncMock(return_value=_make_check_response(status=1))
+
+        context = _make_context()
+        context.build_xml_builder.return_value = xml_builder
+        context.build_crypto_signer.return_value = crypto
+        context.grpc_client.return_value = grpc_client
+
+        uc = _build_use_case(
+            offline_queue=offline_queue,
+            context=context,
+            session=AsyncMock(spec=AsyncSession),
+        )
+        result = await uc.sync()
+
+        assert result["synced"] == 1
+        sent = context.build_check.await_args.kwargs["check_sign"]
+        assert sent == b"<full-signed-check/>", "check_sign as-is"
+        xml_builder.build_message.assert_not_called()
+        crypto.sign.assert_not_called()
+        offline_queue.update_check_sign.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_two_attempts_identical_check_sign(self):
+        """2 спроби sync (документ повертається у чергу) → ІДЕНТИЧНИЙ check_sign."""
+        items = [self._make_item_with_sign()]
+        offline_queue = AsyncMock()
+        offline_queue.get_pending.side_effect = [items, items]
+
+        xml_builder = MagicMock()
+        crypto = MagicMock()
+        grpc_client = MagicMock()
+        grpc_client.send_chk = AsyncMock(return_value=_make_check_response(status=1))
+
+        context = _make_context()
+        context.build_xml_builder.return_value = xml_builder
+        context.build_crypto_signer.return_value = crypto
+        context.grpc_client.return_value = grpc_client
+
+        uc = _build_use_case(
+            offline_queue=offline_queue,
+            context=context,
+            session=AsyncMock(spec=AsyncSession),
+        )
+        r1 = await uc.sync()
+        r2 = await uc.sync()
+
+        assert r1["synced"] == 1 and r2["synced"] == 1
+        sent1 = context.build_check.await_args.kwargs["check_sign"]
+        assert sent1 == b"<full-signed-check/>"
+        # build_message викликається рівно 0 разів за 2 спроби (check_sign є)
+        xml_builder.build_message.assert_not_called()
+        crypto.sign.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_legacy_item_formats_once_and_persists(self):
+        """Legacy-документ (check_sign=None): формується рівно 1 раз і фіксується.
+
+        Друга спроба — as-is, crypto.sign викликається рівно 1 раз загалом.
+        """
+        items = [self._make_legacy_item()]
+
+        def _persist_check_sign(item_id, check_sign):
+            # update_check_sign у реальній БД оновлює рядок → list_pending
+            # наступного разу повертає item із check_sign
+            items[0].check_sign = check_sign
+            return SimpleNamespace(id=item_id, check_sign=check_sign)
+
+        offline_queue = AsyncMock()
+        offline_queue.get_pending.side_effect = [items, items]
+        offline_queue.update_check_sign = AsyncMock(side_effect=_persist_check_sign)
+
+        xml_builder = MagicMock()
+        xml_builder.build_message.return_value = "<msg/>"
+        crypto = MagicMock()
+        crypto.sign.return_value = b"<legacy-signed/>"
+
+        grpc_client = MagicMock()
+        grpc_client.send_chk = AsyncMock(return_value=_make_check_response(status=1))
+
+        context = _make_context()
+        context.build_xml_builder.return_value = xml_builder
+        context.build_crypto_signer.return_value = crypto
+        context.grpc_client.return_value = grpc_client
+
+        uc = _build_use_case(
+            offline_queue=offline_queue,
+            context=context,
+            session=AsyncMock(spec=AsyncSession),
+        )
+        r1 = await uc.sync()
+        assert r1["synced"] == 1
+        # сформовано 1 раз і збережено
+        offline_queue.update_check_sign.assert_awaited_once()
+        assert crypto.sign.call_count == 1
+        assert xml_builder.build_message.call_count == 1
+
+        r2 = await uc.sync()
+        assert r2["synced"] == 1
+        # друга спроба — as-is, sign більше не викликається
+        assert crypto.sign.call_count == 1, "build_message рівно 1 раз на документ"
+        assert xml_builder.build_message.call_count == 1

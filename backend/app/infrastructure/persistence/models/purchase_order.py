@@ -13,18 +13,32 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
+import sqlalchemy as sa
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Enum, DateTime, Boolean,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.invoice import Invoice
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.supplier import Supplier
+    from app.infrastructure.persistence.models.user import User
 
-class PurchaseOrderStatus(str, PyEnum):
+
+class PurchaseOrderStatus(StrEnum):
     """Статус замовлення постачальнику."""
     DRAFT = "draft"           # Чернетка
     CONFIRMED = "confirmed"   # Підтверджено (створено прибуткову накладну)
@@ -42,6 +56,22 @@ class PurchaseOrder(Base):
         primary_key=True,
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор замовлення",
+    )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_purchase_orders_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
     )
     number: Mapped[str] = mapped_column(
         String(50),

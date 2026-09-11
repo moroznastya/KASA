@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Plus, Trash2, Search, ArrowLeft, Save, CheckCircle, Banknote, RefreshCw, BookOpen, Package, FileText } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import {Trash2, Search, ArrowLeft, Save, CheckCircle, Banknote, RefreshCw, BookOpen, Package} from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCreateDocument, useConfirmDocument } from '@/hooks/useDocuments';
 import { useAllSuppliers } from '@/hooks/useSuppliers';
 import { useSearchProducts } from '@/hooks/useProducts';
@@ -63,6 +63,7 @@ const RETURN_ACTION_OPTIONS: { value: ReturnActionType; label: string; descripti
 
 const ReturnInvoiceFormPage: React.FC = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { id: editId } = useParams<{ id: string }>();
   const isEdit = !!editId;
   const { goBack } = useBackNavigation();
@@ -385,7 +386,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
         notes: notes || undefined,
         source_invoice_id: sourceInvoiceId || undefined,
         total_amount: totalAmount,
-        items: cart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+        items: cart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
@@ -396,7 +397,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
 
       // Якщо обмін — додаємо exchange_items
       if (returnAction === 'exchange' && exchangeCart.length > 0) {
-        basePayload.exchange_items = exchangeCart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+        basePayload.exchange_items = exchangeCart.map(({...item}) => ({
           product_id: item.product_id,
           quantity: item.quantity,
           price: item.price,
@@ -408,6 +409,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
         // Редагування — PUT
         await api.put(`/return-invoices/${editId}`, basePayload);
         toast.success('Повернення оновлено');
+        queryClient.invalidateQueries({ queryKey: ['documents'] });
         navigate('/documents');
         return;
       }
@@ -420,7 +422,7 @@ const ReturnInvoiceFormPage: React.FC = () => {
         // Для exchange передаємо exchange_items прямо в API
         const confirmBody: any = { status: 'confirmed' };
         if (returnAction === 'exchange' && exchangeCart.length > 0) {
-          confirmBody.exchange_items = exchangeCart.map(({ product_title, product_barcode, markup_percent, ...item }) => ({
+          confirmBody.exchange_items = exchangeCart.map(({...item}) => ({
             product_id: item.product_id,
             quantity: item.quantity,
             price: item.price,
@@ -445,7 +447,6 @@ const ReturnInvoiceFormPage: React.FC = () => {
     })) || []),
   ];
 
-  const showColumns = ['product', 'quantity', 'cost_price', 'price', 'markup', 'cost_total', 'total', 'actions'] as const;
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">

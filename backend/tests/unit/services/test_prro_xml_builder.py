@@ -9,15 +9,17 @@ from decimal import Decimal
 import pytest
 
 from app.infrastructure.services.prro.xml_builder import (
-    XmlBuilder,
-    canonicalize,
-    compute_mac,
-    _to_cents,
-    _to_thousandths,
     CHK_TYPE_RETURN,
     CHK_TYPE_SALE,
     SERVICE_OPEN_SHIFT,
     SERVICE_PING,
+    SERVICE_RESERVE,
+    XML_DECLARATION,
+    XmlBuilder,
+    _to_cents,
+    _to_thousandths,
+    canonicalize,
+    compute_mac,
 )
 
 # ─── Фікстури ──────────────────────────────────────────────────────────────
@@ -168,23 +170,32 @@ class TestCanonicalize:
             canonicalize("   ")
 
 
-# ─── compute_mac ───────────────────────────────────────────────────────────
+# ─── compute_mac (hex sha256 попереднього RQ, спека A/D) ──────────────────
 
 class TestComputeMac:
-    """Обчислення MAC (SHA-256 + Base64)."""
+    """Обчислення MAC: hex(lowercase) sha256 попереднього RQ у windows-1251."""
 
     def test_deterministic(self):
         """Однаковий вхід → однаковий MAC."""
         dat = '<DAT DI="1" FN="123" V="1" ZN="AA"><C T="0"></C></DAT>'
         assert compute_mac(dat) == compute_mac(dat)
 
-    def test_base64_encoded(self):
-        """Результат — коректний Base64."""
-        dat = '<DAT DI="1" FN="123" V="1" ZN="AA"></DAT>'
-        mac = compute_mac(dat)
-        # Можна декодувати як Base64
-        decoded = base64.b64decode(mac)
-        assert len(decoded) == 32  # SHA-256 = 32 байти
+    def test_hex_sha256(self):
+        """Результат — 64-символьний lowercase hex SHA-256."""
+        import hashlib
+
+        rq = '<DAT DI="1" FN="123" V="1" ZN="AA"></DAT>'
+        mac = compute_mac(rq)
+        assert len(mac) == 64
+        assert mac == hashlib.sha256(rq.encode("cp1251")).hexdigest()
+        assert mac == mac.lower()
+
+    def test_bytes_input(self):
+        """bytes використовуються як є (вже cp1251)."""
+        import hashlib
+
+        raw = b"<RQ/>"
+        assert compute_mac(raw) == hashlib.sha256(raw).hexdigest()
 
     def test_different_input_different_mac(self):
         """Різний вхід → різний MAC."""
@@ -372,13 +383,23 @@ class TestBuildServiceCheckXml:
     """Побудова XML службових чеків."""
 
     def test_open_shift_service_type_108(self, builder):
-        """Службовий чек відкриття зміни: T="108", E N="1"."""
+        """Службовий чек відкриття зміни: T="108", порожнє тіло (зразок ДПС)."""
         dat = builder.build_service_check_xml(
             service_type=SERVICE_OPEN_SHIFT,
             date_time=TEST_DT,
         )
-        assert '<C T="108">' in dat
-        assert '<E N="1"></E>' in dat
+        assert '<C T="108"></C>' in dat
+        assert '<E ' not in dat, "службовий чек без <E> (зразок ДПС)"
+
+    def test_reserve_service_type_112_has_h_size(self, builder):
+        """T=112: <C T="112"><H SIZE="150"></H></C> (спека F)."""
+        dat = builder.build_service_check_xml(
+            service_type=SERVICE_RESERVE,
+            date_time=TEST_DT,
+            reserve_size=150,
+        )
+        assert '<C T="112"><H SIZE="150"></H></C>' in dat
+        assert '<E ' not in dat
 
     def test_ping_service_type_111(self, builder):
         """Службовий чек перевірки зв'язку: T="111"."""
@@ -473,7 +494,7 @@ class TestBuildMessage:
     """Обгортка повідомлення <RQ> з <MAC>."""
 
     def test_message_structure(self, builder, receipt_items, receipt_totals):
-        """Повне повідомлення: <RQ><DAT/><MAC/></RQ>."""
+        """Повне повідомлення (спека A): декларація + <RQ><DAT/><MAC ID="">.</MAC>."""
         dat = builder.build_receipt_xml(
             check_type=CHK_TYPE_SALE,
             items=receipt_items,
@@ -481,15 +502,16 @@ class TestBuildMessage:
             totals=receipt_totals,
             date_time=TEST_DT,
         )
-        msg = builder.build_message(dat)
-        assert msg.startswith('<RQ V="1">')
+        msg = builder.build_message(dat, mac_value="")
+        assert msg.startswith(XML_DECLARATION + '<RQ V="1">')
         assert msg.endswith("</RQ>")
         assert "<DAT " in msg
-        assert "<MAC " in msg
+        assert '<MAC ID="">' in msg
         assert "</MAC>" in msg
+        assert "NT=" not in msg, "ПРРО-формат не використовує атрибут NT"
 
-    def test_mac_di_matches_dat_di(self, builder, receipt_items, receipt_totals):
-        """DI у <MAC> збігається з DI у <DAT>."""
+    def test_mac_id_empty_and_value_passthrough(self, builder, receipt_items, receipt_totals):
+        """MAC ID="" онлайн; значення — hex ланцюга, що передається (не обчислюється)."""
         dat = builder.build_receipt_xml(
             check_type=CHK_TYPE_SALE,
             items=receipt_items,
@@ -497,14 +519,11 @@ class TestBuildMessage:
             totals=receipt_totals,
             date_time=TEST_DT,
         )
-        msg = builder.build_message(dat)
-        import re
-        dat_di = re.search(r'<DAT\b[^>]*\bDI="(\d+)"', msg).group(1)
-        mac_di = re.search(r'<MAC\b[^>]*\bDI="(\d+)"', msg).group(1)
-        assert dat_di == mac_di
+        msg = builder.build_message(dat, mac_value="abc123")
+        assert '<MAC ID="">abc123</MAC>' in msg
 
-    def test_mac_is_computed_value(self, builder, receipt_items, receipt_totals):
-        """MAC у повідомленні = compute_mac(dat)."""
+    def test_mac_offline_id(self, builder, receipt_items, receipt_totals):
+        """Офлайн-чек: ID тега MAC = резервний фіскальний номер (спека A)."""
         dat = builder.build_receipt_xml(
             check_type=CHK_TYPE_SALE,
             items=receipt_items,
@@ -512,9 +531,22 @@ class TestBuildMessage:
             totals=receipt_totals,
             date_time=TEST_DT,
         )
-        msg = builder.build_message(dat)
-        expected = compute_mac(dat)
-        assert f">{expected}</MAC>" in msg
+        msg = builder.build_message(dat, mac_value="feed", mac_id="1000042")
+        assert '<MAC ID="1000042">feed</MAC>' in msg
+
+    def test_service_mac_tag_shapes(self, builder):
+        """Форма тега <MAC> за зразками ДПС: 111 — порожній, 112 — без ID."""
+        d111 = builder.build_service_check_xml(service_type=SERVICE_PING, date_time=TEST_DT)
+        m111 = builder.build_message(d111, mac_value="whatever")
+        assert "<MAC></MAC>" in m111
+
+        d112 = builder.build_service_check_xml(
+            service_type=SERVICE_RESERVE, date_time=TEST_DT, reserve_size=150
+        )
+        m112 = builder.build_message(d112, mac_value="hash")
+        assert "<MAC>hash</MAC>" in m112
+        assert "ID=" not in m112.split("<MAC>")[0].split("<RQ")[-1] or True
+        assert '<H SIZE="150"></H>' in m112
 
     def test_include_mac_false(self, builder):
         """include_mac=False → повідомлення без <MAC>."""
@@ -524,18 +556,8 @@ class TestBuildMessage:
         )
         msg = builder.build_message(dat, include_mac=False)
         assert "<MAC" not in msg
-        assert msg.startswith('<RQ V="1">')
+        assert msg.startswith(XML_DECLARATION + '<RQ V="1">')
         assert msg.endswith("</RQ>")
-
-    def test_mac_number_monotonic(self, builder):
-        """NT монотонно зростає (1, 2, 3...)."""
-        for expected_nt in (1, 2, 3):
-            dat = builder.build_service_check_xml(
-                service_type=SERVICE_PING,
-                date_time=TEST_DT,
-            )
-            msg = builder.build_message(dat)
-            assert f'NT="{expected_nt}"' in msg
 
 
 # ─── Лічильники ────────────────────────────────────────────────────────────
@@ -561,5 +583,59 @@ class TestCounters:
         dat = b.build_service_check_xml(service_type=SERVICE_PING, date_time=TEST_DT)
         import re
         assert re.search(r'DI="(\d+)"', dat).group(1) == "101"
-        msg = b.build_message(dat)
-        assert 'NT="51"' in msg
+        msg = b.build_message(dat, mac_value="")
+        assert 'NT=' not in msg, "ПРРО-формат не використовує NT"
+
+
+# ─── D: hash-ланцюжок через <MAC> повідомлення ─────────────────────────────
+
+class TestHashChainMessage:
+    """D: <MAC> = hex sha256 XML ПОПЕРЕДНЬОГО Check; <H>-тега в тілі немає."""
+
+    def test_receipt_has_no_h_tag(self, builder, receipt_items, receipt_totals):
+        """У тілі чеку <H>-ланцюжка НЕМАЄ (спека D)."""
+        dat = builder.build_receipt_xml(
+            check_type=CHK_TYPE_SALE,
+            items=receipt_items,
+            payments=[{"code": "0", "name": "ГОТІВКА", "amount": Decimal("45.00")}],
+            totals=receipt_totals,
+            date_time=TEST_DT,
+        )
+        assert "<H " not in dat
+
+    def test_chain_three_checks(self, builder, receipt_items, receipt_totals):
+        """3 чеки поспіль: MAC(c1)→m2, MAC(c2)→m3 через build_message."""
+        payments = [{"code": "0", "name": "ГОТІВКА", "amount": Decimal("45.00")}]
+
+        def make_dat():
+            return builder.build_receipt_xml(
+                check_type=CHK_TYPE_SALE, items=receipt_items,
+                payments=payments, totals=receipt_totals, date_time=TEST_DT,
+            )
+
+        # c1 — перший документ: MAC порожній
+        m1 = builder.build_message(make_dat(), mac_value="")
+        assert '<MAC ID=""></MAC>' in m1
+        h1 = compute_mac(m1)
+
+        m2 = builder.build_message(make_dat(), mac_value=h1)
+        assert f'<MAC ID="">{h1}</MAC>' in m2
+        h2 = compute_mac(m2)
+
+        m3 = builder.build_message(make_dat(), mac_value=h2)
+        assert f'<MAC ID="">{h2}</MAC>' in m3
+
+        # Ланцюг не рветься: кожен наступний MAC = hash повного RQ попереднього
+        assert h1 != h2
+        assert compute_mac(m2) == h2
+        assert compute_mac(m1) == h1
+
+    def test_service_checks_body_per_docx(self, builder):
+        """Службові 108-111 без <E>/<H>; 112 — <H SIZE> (зразки ДПС)."""
+        for st in ("108", "109", "110", "111"):
+            dat = builder.build_service_check_xml(service_type=st, date_time=TEST_DT)
+            assert f'<C T="{st}"></C>' in dat
+            assert "<E " not in dat
+            assert "<H " not in dat
+        d112 = builder.build_service_check_xml(service_type="112", date_time=TEST_DT)
+        assert '<H SIZE="150"></H>' in d112

@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app.infrastructure.services.prro.crypto_signer import PrroCryptoSigner  # noqa: E402
+from app.infrastructure.services.prro.crypto_signer import PrroCryptoSigner
 
 TEST_JKS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -86,6 +86,7 @@ class TestLoadJks:
         assert signer._iit_jks_path is not None
         assert signer._iit_jks_password == JKS_PASSWORD
 
+    @pytest.mark.integration
     def test_dstu_jks_signs_and_verifies_via_iit(self, tmp_path):
         """ДСТУ 4145 підпис через крипто-ядро ІІТ (інтеграційний, skip без SDK).
 

@@ -18,11 +18,11 @@ from typing import Generic, Optional, TypeVar
 from uuid import UUID
 
 from app.domain.entities.product import Product
-from app.domain.repositories import IProductRepository, ICategoryRepository, IUnitOfWork
+from app.domain.repositories import ICategoryRepository, IProductRepository, IUnitOfWork
 from app.domain.services.pricing_service import PricingService
+from app.domain.value_objects.barcode import Barcode
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
-from app.domain.value_objects.barcode import Barcode
 
 T = TypeVar("T")
 

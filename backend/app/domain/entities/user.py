@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 from uuid import UUID, uuid4
@@ -45,7 +45,7 @@ class User:
     is_active: bool = True
     email: str = ""
     phone: str = ""
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_login_at: Optional[datetime] = None
 
     @staticmethod
@@ -104,7 +104,7 @@ class User:
 
     def record_login(self) -> None:
         """Фіксує час останнього входу."""
-        self.last_login_at = datetime.now(timezone.utc)
+        self.last_login_at = datetime.now(UTC)
 
     @property
     def is_admin(self) -> bool:

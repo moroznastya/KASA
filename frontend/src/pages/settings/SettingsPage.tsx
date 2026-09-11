@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { Select, SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { toast } from 'react-hot-toast';
-import { PRICE_TAG_FIELD_OPTIONS, PRICE_TAG_LABEL_MAP } from '@/types/printTemplate';
+import {PRICE_TAG_FIELD_OPTIONS} from '@/types/printTemplate';
 import {
   Building2,
   ShoppingCart,
@@ -26,10 +25,12 @@ import {
   Eye,
   Loader2,
   Monitor,
+  Store,
   Rocket,
   RefreshCw,
   Download,
   Plug,
+  Radio,
 } from 'lucide-react';
 import { isTauri } from '@/hooks/useTauri';
 import { getPrinters } from '@/services/tauri/print';
@@ -477,7 +478,6 @@ const ModuleSection: React.FC<{
   onNavigate: (path: string) => void;
 }> = ({ moduleKey, settings, values, onFieldChange, onNavigate }) => {
   const config = MODULE_CONFIG[moduleKey];
-  if (!config) return null;
 
   // Розділяємо налаштування на звичайні та специфічні для цінників/етикеток
   const regularSettings = settings.filter(s =>
@@ -612,6 +612,8 @@ const ModuleSection: React.FC<{
   }
   printerOptionsArr.push({ value: 'custom', label: '🔧 Інший (ввести вручну)...' });
 
+  if (!config) return null;
+
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-slate-700 overflow-hidden">
       {/* Заголовок модуля */}
@@ -638,6 +640,19 @@ const ModuleSection: React.FC<{
           >
             <FileText className="w-4 h-4" />
             Шаблони
+          </button>
+        )}
+        {moduleKey === 'general' && (
+          <button
+            type="button"
+            onClick={() => onNavigate('/settings/stores')}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+              bg-primary-50 text-primary-700 hover:bg-primary-100
+              dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/30
+              transition-colors"
+          >
+            <Store className="w-4 h-4" />
+            Торгові точки
           </button>
         )}
       </div>
@@ -1079,7 +1094,7 @@ const SettingsPage: React.FC = () => {
             Налаштування
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Керування конфігурацією системи Kasa POS
+            Керування конфігурацією системи Torgashka
           </p>
         </div>
         <Button
@@ -1141,6 +1156,19 @@ const SettingsPage: React.FC = () => {
         >
           <Plug className="w-4 h-4" />
           Підключені пристрої
+        </button>
+
+        {/* Окрема вкладка: Мережева каса (device-режим синхронізації, Етап 3) */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={false}
+          onClick={() => navigate('/settings/device-sync')}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+            bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700"
+        >
+          <Radio className="w-4 h-4" />
+          Мережева каса
         </button>
       </div>
 

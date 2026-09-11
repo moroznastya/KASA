@@ -7,7 +7,7 @@ Domain Entity: Receipt (Чек продажу).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
@@ -86,7 +86,7 @@ class Receipt:
     """Тип чеку: 'sale' (продаж) або 'return' (повернення)."""
     cashier_id: Optional[UUID] = None
     """ID касира, який створив чек."""
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     cash_amount: Optional[Money] = None
     card_amount: Optional[Money] = None
     change_amount: Optional[Money] = None
@@ -225,7 +225,7 @@ class Receipt:
         self.fiscal_status = FiscalStatus.SENT
         self.fiscal_number = fiscal_number
         self.fiscal_serial = fiscal_serial
-        self.fiscal_sent_at = datetime.now(timezone.utc)
+        self.fiscal_sent_at = datetime.now(UTC)
         self.fiscal_error = None
 
     def mark_fiscal_failed(self, error: str) -> None:

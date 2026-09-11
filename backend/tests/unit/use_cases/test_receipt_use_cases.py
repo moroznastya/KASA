@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
+from app.domain.entities.product import Product
+from app.domain.entities.receipt import PaymentMethod, Receipt
 from app.domain.use_cases.receipt_use_cases import (
     CreateReceiptUseCase,
-    ReturnReceiptUseCase,
     ReceiptItemCreate,
     ReturnItemCreate,
+    ReturnReceiptUseCase,
 )
-from app.domain.entities.receipt import Receipt, ReceiptItem, PaymentMethod
-from app.domain.entities.product import Product
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
-from app.domain.value_objects.tax_rate import TaxRate
 
 
 class TestCreateReceiptUseCase:

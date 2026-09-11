@@ -13,7 +13,6 @@ OCR сервіс для розпізнавання накладних через
 import asyncio
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
@@ -34,7 +33,7 @@ RETRY_AFTER_503_DELAY_SECONDS = 15
 # Промпт для Gemini (українською)
 # Пріоритет: стовідсоткові збіги по штрих-коду.
 # Нас цікавить ТІЛЬКИ ціна з ПДВ (cost_price).
-INVOICE_PROMPT = """Ти — асистент для розпізнавання прибуткових накладних. 
+INVOICE_PROMPT = """Ти — асистент для розпізнавання прибуткових накладних.
 Проаналізуй зображення накладної та поверни ТІЛЬКИ JSON без додаткового тексту.
 
 Формат JSON:
@@ -88,7 +87,7 @@ class OCRService:
             return
 
         try:
-            with open(KEYS_FILE_PATH, "r", encoding="utf-8") as f:
+            with open(KEYS_FILE_PATH, encoding="utf-8") as f:
                 keys = []
                 for line in f:
                     stripped = line.strip()
@@ -271,7 +270,7 @@ class OCRService:
                         exhausted_keys.add(api_key)
                         # Затримка перед переходом до наступного ключа
                         await self._delay_before_next_request(
-                            f" (ротація ключа після 429)"
+                            " (ротація ключа після 429)"
                         )
                         self._rotate_key()
                         break  # Виходимо з циклу спроб, переходимо до наступного ключа
@@ -303,7 +302,7 @@ class OCRService:
                             )
                             # Затримка перед переходом до наступного ключа
                             await self._delay_before_next_request(
-                                f" (ротація ключа після вичерпання спроб через 503)"
+                                " (ротація ключа після вичерпання спроб через 503)"
                             )
                             self._rotate_key()
                             break
@@ -314,7 +313,7 @@ class OCRService:
                             f"Затримка {REQUEST_DELAY_SECONDS}с перед повторною спробою..."
                         )
                         await self._delay_before_next_request(
-                            f" (повторна спроба після тимчасової помилки)"
+                            " (повторна спроба після тимчасової помилки)"
                         )
                         continue  # Повторюємо спробу з тим самим ключем
                     elif is_retryable and attempt >= self.max_retries:
@@ -323,7 +322,7 @@ class OCRService:
                         )
                         # Затримка перед переходом до наступного ключа
                         await self._delay_before_next_request(
-                            f" (ротація ключа після вичерпання спроб)"
+                            " (ротація ключа після вичерпання спроб)"
                         )
                         self._rotate_key()
                         break
@@ -334,7 +333,7 @@ class OCRService:
                         )
                         # Затримка перед переходом до наступного ключа
                         await self._delay_before_next_request(
-                            f" (ротація ключа після помилки)"
+                            " (ротація ключа після помилки)"
                         )
                         self._rotate_key()
                         break

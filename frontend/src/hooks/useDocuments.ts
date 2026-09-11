@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { documentService } from '@/services/documentService';
-import { DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate } from '@/types/document';
+import { DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, WriteOffCreate } from '@/types/document';
 import { SearchParams } from '@/types/api';
 import toast from 'react-hot-toast';
 
-type DocumentCreateInput = DocumentCreate | InvoiceCreate | ReturnInvoiceCreate;
+type DocumentCreateInput = DocumentCreate | InvoiceCreate | ReturnInvoiceCreate | WriteOffCreate;
 
 /** Отримує текст помилки з response, підтримує Pydantic validation errors */
 function getErrorMessage(error: any): string {

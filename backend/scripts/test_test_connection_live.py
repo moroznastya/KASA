@@ -11,17 +11,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.application.use_cases.prro.context import PrroContextFactory
+from app.application.use_cases.prro.prro_settings_use_case import PrroSettingsUseCase
 from app.config import settings as app_settings
+from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
-from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
-from app.infrastructure.services.prro.key_store import PrroKeyStore
 from app.infrastructure.services.prro.factory import PrroServiceFactory
-from app.application.use_cases.prro.context import PrroContextFactory
-from app.application.use_cases.prro.prro_settings_use_case import PrroSettingsUseCase
+from app.infrastructure.services.prro.key_store import PrroKeyStore
 
 
 async def main() -> None:

@@ -253,4 +253,4 @@ class PrroKeyStore:
         return PASSWORD_MASK
 
 
-__all__ = ["PrroKeyStore", "PrroKeyStoreError", "PASSWORD_MASK"]
+__all__ = ["PASSWORD_MASK", "PrroKeyStore", "PrroKeyStoreError"]

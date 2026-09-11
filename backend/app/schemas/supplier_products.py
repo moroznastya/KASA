@@ -4,12 +4,12 @@ Pydantic схеми для перегляду товарів постачаль�
 Ендпоінт: GET /suppliers/{supplier_id}/products
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SupplierProductItem(BaseModel):

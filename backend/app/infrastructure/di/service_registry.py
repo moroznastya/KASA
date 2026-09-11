@@ -10,59 +10,60 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-# ─── Event Bus ───────────────────────────────────────────────────────────────
-from app.infrastructure.event_bus import LocalEventBus
-
-# ─── Cache ───────────────────────────────────────────────────────────────────
-from app.infrastructure.cache import RedisCacheService
-from app.infrastructure.cache.redis_cache import REDIS_AVAILABLE
-from app.infrastructure.cache.memory_cache import MemoryCacheService
-
-# ─── Repository Implementations & Unit of Work ──────────────────────────────
-from app.infrastructure.persistence.repositories import (
-    SQLAlchemyProductRepository,
-    SQLAlchemyInvoiceRepository,
-    SQLAlchemyReceiptRepository,
-    SQLAlchemyUserRepository,
-    SQLAlchemySupplierRepository,
-    SQLAlchemyCategoryRepository,
-    SQLAlchemyLedgerRepository,
-    SQLAlchemyUnitOfWork,
-)
-
-# ─── Domain Services ─────────────────────────────────────────────────────────
-from app.domain.services.stock_service import StockService
-from app.domain.services.pricing_service import PricingService
-
-# ─── Application Use Cases ───────────────────────────────────────────────────
-from app.application.use_cases.product_use_cases import ProductUseCases
-from app.application.use_cases.invoice_use_cases import InvoiceUseCases
-from app.application.use_cases.receipt_use_cases import ReceiptUseCases
-from app.application.use_cases.ledger_use_cases import LedgerUseCases
-from app.application.use_cases.auth_use_cases import AuthUseCases
-
-# ─── Event Handlers ──────────────────────────────────────────────────────────
-from app.domain.events import BaseDomainEvent
 from app.application.event_handlers import (
-    LoggingHandler,
-    CacheInvalidationHandler,
     AuditHandler,
+    CacheInvalidationHandler,
+    LoggingHandler,
 )
-
-# ─── Services (старі, для зворотної сумісності) ─────────────────────────────
-from app.domain.services.product_service import ProductService
-from app.domain.services.document_service import DocumentService
-from app.domain.services.ledger_service import LedgerService
-from app.domain.services.auth_service import AuthService
 
 # ─── Application Services ────────────────────────────────────────────────────
 from app.application.services.settings_service import SettingsService
+from app.application.use_cases.auth_use_cases import AuthUseCases
+from app.application.use_cases.invoice_use_cases import InvoiceUseCases
+from app.application.use_cases.ledger_use_cases import LedgerUseCases
+
+# ─── Application Use Cases ───────────────────────────────────────────────────
+from app.application.use_cases.product_use_cases import ProductUseCases
+from app.application.use_cases.receipt_use_cases import ReceiptUseCases
+
+# ─── Event Handlers ──────────────────────────────────────────────────────────
+from app.domain.events import BaseDomainEvent
+from app.domain.services.auth_service import AuthService
+from app.domain.services.document_service import DocumentService
+from app.domain.services.ledger_service import LedgerService
+from app.domain.services.pricing_service import PricingService
+
+# ─── Services (старі, для зворотної сумісності) ─────────────────────────────
+from app.domain.services.product_service import ProductService
+
+# ─── Domain Services ─────────────────────────────────────────────────────────
+from app.domain.services.stock_service import StockService
+
+# ─── Cache ───────────────────────────────────────────────────────────────────
+from app.infrastructure.cache import RedisCacheService
+from app.infrastructure.cache.memory_cache import MemoryCacheService
+from app.infrastructure.cache.redis_cache import REDIS_AVAILABLE
 
 # ─── ПРРО (програмний РРО) ───────────────────────────────────────────────────
 from app.infrastructure.di.prro import (
+    build_fiscalize_use_case,
     get_prro_key_store,
     get_prro_service_factory,
-    build_fiscalize_use_case,
+)
+
+# ─── Event Bus ───────────────────────────────────────────────────────────────
+from app.infrastructure.event_bus import LocalEventBus
+
+# ─── Repository Implementations & Unit of Work ──────────────────────────────
+from app.infrastructure.persistence.repositories import (
+    SQLAlchemyCategoryRepository,
+    SQLAlchemyInvoiceRepository,
+    SQLAlchemyLedgerRepository,
+    SQLAlchemyProductRepository,
+    SQLAlchemyReceiptRepository,
+    SQLAlchemySupplierRepository,
+    SQLAlchemyUnitOfWork,
+    SQLAlchemyUserRepository,
 )
 
 if TYPE_CHECKING:

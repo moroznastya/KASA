@@ -3,21 +3,32 @@ Application Layer: SyncOfflineQueueUseCase — повторна передача
 
 Проходить по prro_queue (status=pending/failed), надсилає документи
 по порядку (з урахуванням локальних номерів) та оновлює статуси.
+
+Спека ПРРО:
+  - кожен документ передається зі своїм id_offline (резервний фіскальний
+    номер офлайн-чека) — він НЕ губиться при повторній передачі;
+  - після успішної передачі shift.last_mac = hash(повного RQ документа) —
+    наступний Check (онлайн/офлайн) посилається на цей хеш (ланцюг не рветься).
 """
 
 from __future__ import annotations
 
 import logging
-from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.use_cases.prro.context import PrroContextFactory
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-from app.application.use_cases.prro.context import PrroContextFactory
+from app.infrastructure.services.prro.xml_builder import (
+    compute_mac,
+    cp1251_bytes,
+    reconstruct_full_rq,
+    signed_bytes_to_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +73,33 @@ class SyncOfflineQueueUseCase:
         if not pending:
             return {"synced": 0, "failed": 0, "skipped": 0, "total": 0, "results": []}
 
-        xml_builder = await self._context.build_xml_builder()
-        crypto = await self._context.build_crypto_signer()
-        grpc_client = await self._context.grpc_client()
+        try:
+            xml_builder = await self._context.build_xml_builder()
+            crypto = await self._context.build_crypto_signer()
+            grpc_client = await self._context.grpc_client()
+        except Exception as exc:
+            # Позначаємо ВСІ pending як failed: sync не має падати 500,
+            # коли ключ КЕП/сервер ПРРО недоступний (контракт: sync → 200 + failed).
+            logger.warning("PRRO_SYNC | компоненти ПРРО недоступні: %s", exc)
+            error = str(exc)
+            for item in pending:
+                await self._offline_queue.mark_failed(item.id, error)
+            return {
+                "synced": 0,
+                "failed": len(pending),
+                "skipped": 0,
+                "total": len(pending),
+                "results": [
+                    {
+                        "id": str(item.id),
+                        "local_number": int(item.local_number),
+                        "check_type": item.check_type,
+                        "status": "failed",
+                        "error": error,
+                    }
+                    for item in pending
+                ],
+            }
 
         synced = 0
         failed = 0
@@ -72,18 +107,50 @@ class SyncOfflineQueueUseCase:
 
         for item in pending:
             try:
-                # Повторно обгортаємо DAT у RQ+MAC та підписуємо
-                message = xml_builder.build_message(item.xml_body)
-                signed = crypto.sign(message.encode("utf-8"))
+                # B2: відправляємо ПОВНИЙ підписаний check_sign as-is (ідемпотентність).
+                # Документи, додані до B2 (check_sign=None), формуються рівно 1 раз
+                # і фіксуються у черзі — повторні sync не переформовують
+                # (build_message ≤ 1 разу на документ, NT/MAC не змінюються).
+                id_offline = str(getattr(item, "id_offline", "") or "")
+                if getattr(item, "check_sign", None):
+                    signed = item.check_sign.encode("cp1251")
+                    if item.check_sign.startswith("b64:"):
+                        import base64
+
+                        signed = base64.b64decode(item.check_sign[4:])
+                else:
+                    # Повний RQ з тим самим MAC/ID, що й при створенні документа
+                    message = xml_builder.build_message(
+                        item.xml_body,
+                        mac_value=getattr(item, "mac", None),
+                        mac_id=id_offline,
+                    )
+                    signed = crypto.sign(cp1251_bytes(message))
+                    await self._offline_queue.update_check_sign(
+                        item.id, signed_bytes_to_text(signed)
+                    )
                 check = await self._context.build_check(
                     check_sign=signed,
                     local_number=int(item.local_number),
                     check_type=item.check_type,
+                    id_offline=id_offline,  # G: id_offline не губиться при sync
                 )
                 response = await grpc_client.send_chk(check)
 
                 if int(response.status) == 1:
                     await self._offline_queue.mark_sent(item.id)
+                    # D: shift.last_mac = hash(повного RQ цього документа) —
+                    # наступний Check посилатиметься на цей хеш (ланцюг).
+                    shift_id = getattr(item, "shift_id", None)
+                    if shift_id is not None:
+                        chain_message = reconstruct_full_rq(
+                            item.xml_body,
+                            getattr(item, "mac", None) or "",
+                            mac_id=id_offline,
+                        )
+                        await self._prro_repo.update_shift_last_mac(
+                            shift_id, compute_mac(chain_message)
+                        )
                     synced += 1
                     results.append({
                         "id": str(item.id),
@@ -102,7 +169,7 @@ class SyncOfflineQueueUseCase:
                         "status": "failed",
                         "error": error,
                     })
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "PRRO_SYNC | документ %s не передано: %s", item.id, exc
                 )

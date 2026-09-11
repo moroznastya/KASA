@@ -7,22 +7,21 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+
+# ─── JSONB сумісність з SQLite ───────────────────────────────────────────────
+# PostgreSQL JSONB тип не підтримується SQLite. Реєструємо компілятор.
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
-
-# ─── JSONB сумісність з SQLite ───────────────────────────────────────────────
-# PostgreSQL JSONB тип не підтримується SQLite. Реєструємо компілятор.
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.pool import StaticPool
 
 
 @compiles(JSONB, "sqlite")
@@ -35,10 +34,10 @@ def _compile_jsonb_sqlite(type_, compiler, **kw):
 
 from app.infrastructure.persistence.models import Base
 from app.infrastructure.persistence.repositories import (
-    SQLAlchemyProductRepository,
-    SQLAlchemyInvoiceRepository,
-    SQLAlchemyReceiptRepository,
     SQLAlchemyCategoryRepository,
+    SQLAlchemyInvoiceRepository,
+    SQLAlchemyProductRepository,
+    SQLAlchemyReceiptRepository,
     SQLAlchemySupplierRepository,
     SQLAlchemyUserRepository,
 )

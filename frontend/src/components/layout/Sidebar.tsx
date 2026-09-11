@@ -1,6 +1,8 @@
 import React from 'react';
-import { NavLink } from 'react-router-dom';
 import {
+  NavLink } from 'react-router-dom';
+import {
+  Server,
   LayoutDashboard,
   ShoppingCart,
   Package,
@@ -11,6 +13,7 @@ import {
   BookOpen,
   Receipt,
   Users,
+  Banknote,
   ChevronLeft,
   ChevronRight,
   UserCog,
@@ -18,16 +21,22 @@ import {
   Clock,
   Printer,
   FileCheck2,
+  Network,
+  PackageSearch,
+  Database,
+  Landmark,
+  FileClock,
 } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
+import logo from '@/assets/logo.png';
 
-interface NavItem {
+export interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
   module: string;
-  roles?: ('admin' | 'cashier')[];
+  roles?: ('admin' | 'cashier' | 'owner' | 'store_manager')[];
 }
 
 const navItems: NavItem[] = [
@@ -44,6 +53,13 @@ const navItems: NavItem[] = [
     icon: <ShoppingCart className="w-5 h-5" />,
     module: 'pos',
     roles: ['admin', 'cashier'],
+  },
+  {
+    path: '/cash',
+    label: 'Каса',
+    icon: <Banknote className="w-5 h-5" />,
+    module: 'cash',
+    roles: ['admin', 'owner'],
   },
   {
     path: '/debtors',
@@ -70,6 +86,13 @@ const navItems: NavItem[] = [
     path: '/printing',
     label: 'Друк цінників та етикеток',
     icon: <Printer className="w-5 h-5" />,
+    module: 'products',
+    roles: ['admin', 'cashier'],
+  },
+  {
+    path: '/inventory/availability',
+    label: 'Наявність в точках',
+    icon: <PackageSearch className="w-5 h-5" />,
     module: 'products',
     roles: ['admin', 'cashier'],
   },
@@ -102,6 +125,27 @@ const navItems: NavItem[] = [
     roles: ['admin'],
   },
   {
+    path: '/network/reports',
+    label: 'Звіти мережі',
+    icon: <BarChart3 className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/finances',
+    label: 'Фінанси мережі',
+    icon: <Landmark className="w-5 h-5" />,
+    module: 'reports',
+    roles: ['admin'],
+  },
+  {
+    path: '/network/audit',
+    label: 'Аудит-лог',
+    icon: <FileClock className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin'],
+  },
+  {
     path: '/work-time',
     label: 'Робочий час',
     icon: <Clock className="w-5 h-5" />,
@@ -123,6 +167,20 @@ const navItems: NavItem[] = [
     roles: ['admin'],
   },
   {
+    path: '/network/devices',
+    label: 'Каси мережі',
+    icon: <Network className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
+  },
+  {
+    path: '/network/nodes',
+    label: 'Вузли мережі',
+    icon: <Server className="w-5 h-5" />,
+    module: 'network',
+    roles: ['admin', 'owner'],
+  },
+  {
     path: '/prro',
     label: 'ПРРО',
     icon: <FileCheck2 className="w-5 h-5" />,
@@ -136,15 +194,37 @@ const navItems: NavItem[] = [
     module: 'settings',
     roles: ['admin'],
   },
+  {
+    path: '/settings/data-source',
+    label: 'Джерело даних',
+    icon: <Database className="w-5 h-5" />,
+    module: 'settings',
+    roles: ['admin', 'store_manager'],
+  },
 ];
 
-export const Sidebar: React.FC = () => {
+export interface SidebarProps {
+  /** Кастомна навігація (веб-адмінка §6: без POS/cash-пунктів). Якщо
+   *  не задано — стандартний набір navItems (поведінка без змін). */
+  items?: NavItem[];
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ items }) => {
   const { sidebarOpen, toggleSidebar, setActiveModule } = useUIStore();
   const user = useAuthStore((state) => state.user);
+  const sourceItems = items ?? navItems;
 
-  const visibleItems = navItems.filter(
-    (item) => !item.roles || item.roles.includes(user?.role as 'admin' | 'cashier')
-  );
+  // Видимість — тільки за ролями (admin/owner/manager бачать адмін-пункти;
+  // cashier — свої). Дані на сторінках обмежені RLS/user_stores на бекенді.
+  const visibleItems = sourceItems.filter((item) => {
+    if (!item.roles) return true;
+    if (!user) return false;
+    // owner/store_manager/manager прирівнюються до admin (адмін-пункти).
+    const privileged =
+      user.role === 'owner' || user.role === 'store_manager' || user.role === 'manager';
+    if (privileged) return item.roles.includes('admin');
+    return item.roles.includes(user.role as 'admin' | 'cashier' | 'owner' | 'store_manager');
+  });
 
   return (
     <aside
@@ -160,12 +240,10 @@ export const Sidebar: React.FC = () => {
       {/* Logo */}
       <div className="flex items-center h-16 px-4 border-b border-gray-200 dark:border-slate-700">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center flex-shrink-0">
-            <span className="text-white font-bold text-sm">K</span>
-          </div>
+          <img src={logo} alt="Torgashka" className="w-8 h-8 object-contain rounded-lg flex-shrink-0" />
           {sidebarOpen && (
             <span className="font-bold text-lg text-gray-900 dark:text-gray-100 whitespace-nowrap">
-              Kasa POS
+              Torgashka
             </span>
           )}
         </div>
@@ -211,7 +289,7 @@ export const Sidebar: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                  {user.name} ({user.role === 'admin' ? 'Адміністратор' : 'Касир'})
+                  {user.name} ({user.role === 'owner' ? 'Власник мережі' : user.role === 'store_manager' || user.role === 'manager' ? 'Керуючий мережею' : user.role === 'admin' ? 'Адміністратор' : 'Касир'})
                 </p>
               </div>
             </div>

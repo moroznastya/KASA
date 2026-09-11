@@ -18,16 +18,16 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import select, union
-from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
-from app.infrastructure.persistence.models.product import Product
-from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
 from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus
+from app.infrastructure.persistence.models.supplier import Supplier
 from app.infrastructure.persistence.models.transfer import Transfer, TransferItem, TransferStatus
 from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
-from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
 from app.schemas.supplier_products import (
     SupplierProductItem,
     SupplierProductMovement,
@@ -212,7 +212,7 @@ class SupplierProductService:
             .join(Receipt, ReceiptItem.receipt_id == Receipt.id)
             .where(
                 ReceiptItem.product_id == product_id,
-                Receipt.is_return == False,
+                not Receipt.is_return,
             )
             .order_by(Receipt.created_at.desc())
             .limit(limit)

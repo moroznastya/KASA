@@ -155,7 +155,6 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   // ── Завантаження збережених налаштувань при монтуванні ──
   useEffect(() => {
     loadTypeSettings(printType).finally(() => setSettingsLoaded(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Бонус: якщо template_id порожній — підставляємо дефолтний шаблон типу ──
@@ -443,14 +442,14 @@ const PrintLabelsPriceTagsPage: React.FC = () => {
   // ═══════════════════════════════════════════════════════════
   if (!settingsLoaded) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-7rem)]">
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 7rem - var(--update-banner-h, 0px))' }}>
         <div className="text-gray-400 dark:text-gray-500">Завантаження налаштувань...</div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-7rem)]">
+    <div className="flex flex-col" style={{ height: 'calc(100vh - 7rem - var(--update-banner-h, 0px))' }}>
       {/* Заголовок */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">

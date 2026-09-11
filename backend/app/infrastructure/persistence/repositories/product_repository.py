@@ -219,7 +219,7 @@ class SQLAlchemyProductRepository(IProductRepository):
     async def delete(self, product_id: UUID) -> None:
         """Видаляє товар за ID."""
         from sqlalchemy.exc import IntegrityError
-        from app.infrastructure.persistence.models.receipt import ReceiptItem
+
 
         # Якщо товар фігурує у чеках (receipt_items) — видалення неможливе
         # (жорстке видалення знищило б історію продажів).
@@ -231,7 +231,7 @@ class SQLAlchemyProductRepository(IProductRepository):
             except IntegrityError as exc:
                 await self._session.rollback()
                 raise ValueError(
-                    f"Товар має пов'язані записи (чеки/накладні) — видалення неможливе"
+                    "Товар має пов'язані записи (чеки/накладні) — видалення неможливе"
                 ) from exc
 
     async def count(self) -> int:

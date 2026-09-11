@@ -1,0 +1,19 @@
+# ============================================================================
+# torgashka-backup.timer — щоденний повний бекап о 02:00 (ЕТАП 11.1)
+# ============================================================================
+# Запускає torgashka-backup.service щодня о 02:00 місцевого часу.
+# RandomizedDelaySec — невелика деградація, щоб бекапи всіх серверів
+# не стартували синхронно (опційно).
+# ============================================================================
+
+[Unit]
+Description=Torgashka POS — щоденний повний бекап о 02:00
+Documentation=docs/infrastructure/backup-restore.md
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

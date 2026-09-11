@@ -1,9 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, TrendingUp, Package, DollarSign, Calendar, PiggyBank } from 'lucide-react';
+import {BarChart3, TrendingUp, DollarSign, PiggyBank} from 'lucide-react';
 import { receiptService } from '@/services/receiptService';
-import { productService } from '@/services/productService';
-import { Button } from '@/components/ui/Button';
 import { Table, Column } from '@/components/ui/Table';
 import { formatCurrency, formatDateTime, formatPaymentMethod } from '@/utils/format';
 import { Badge } from '@/components/ui/Badge';
@@ -63,10 +61,6 @@ const ReportsPage: React.FC = () => {
     enabled: !!dateRange.date_from && !!dateRange.date_to,
   });
 
-  const { data: productsData } = useQuery({
-    queryKey: ['products', { page: 1, size: 1 }],
-    queryFn: () => productService.getProducts({ page: 1, size: 1 }),
-  });
 
   const totalRevenue = receiptsData?.items?.reduce(
     (sum: number, r: Receipt) => sum + parseFloat(r.total_amount),

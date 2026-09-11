@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.rate_limit import limiter
 from app.application.use_cases import AuthUseCases
+
 from .deps import get_auth_use_cases
 
 router = APIRouter(prefix="/auth", tags=["auth_v2"])

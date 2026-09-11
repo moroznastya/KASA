@@ -1,15 +1,16 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, {useMemo, useState} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, XCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Calendar, Edit, Printer, ArrowUp, ArrowDown } from 'lucide-react';
+import {ArrowLeft, CheckCircle, BookOpen, Banknote, RefreshCw, ExternalLink, ShoppingCart, Edit, Printer, ArrowUp, ArrowDown} from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/services/api';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
-import { formatCurrency, formatDateTime, formatDocumentStatus, formatDocumentType } from '@/utils/format';
+import {formatCurrency, formatDateTime, formatDocumentStatus} from '@/utils/format';
 import PrintFromInvoiceModal from '@/components/printing/PrintFromInvoiceModal';
+import { StockReconciliationPanel } from '@/components/documents/StockReconciliationPanel';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
 const statusBadgeVariant: Record<string, 'default' | 'success' | 'danger' | 'warning'> = {
@@ -38,6 +39,16 @@ const RETURN_ACTION_LABELS: Record<string, { label: string; icon: React.ReactNod
 };
 
 /** Визначає тип документа з URL шляху */
+/** Мапа типу документа → сегмент шляху для редагування (маршрути в App.tsx з дефісом) */
+const documentEditPaths: Record<string, string> = {
+  invoice: 'invoice',
+  purchase_order: 'purchase-order',
+  transfer: 'transfer',
+  write_off: 'write-off',
+  return_invoice: 'return',
+  inventory: 'inventory',
+};
+
 function getDocumentTypeFromPath(pathname: string): string {
   if (pathname.includes('/inventory/')) return 'inventory';
   if (pathname.includes('/invoice/')) return 'invoice';
@@ -188,16 +199,25 @@ const DocumentViewPage: React.FC = () => {
 
   if (error || !doc) {
     return (
-      <div className="text-center py-12">
-        <p className="text-danger-600 font-medium">Помилка завантаження документа</p>
-        <p className="text-sm text-gray-500 mt-2">
-          {docType === 'write_off'
-            ? 'Не вдалося завантажити списання. Можливо, документ не існує або стався збій на сервері.'
-            : 'Перевірте правильність ID документа та спробуйте ще раз.'}
-        </p>
-        <Button variant="secondary" onClick={goBack} className="mt-4">
-          Повернутись до списку
-        </Button>
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="text-center py-12">
+          <p className="text-danger-600 font-medium">Помилка завантаження документа</p>
+          <p className="text-sm text-gray-500 mt-2">
+            {docType === 'write_off'
+              ? 'Не вдалося завантажити списання. Можливо, документ не існує або стався збій на сервері.'
+              : 'Перевірте правильність ID документа та спробуйте ще раз.'}
+          </p>
+          <Button variant="secondary" onClick={goBack} className="mt-4">
+            Повернутись до списку
+          </Button>
+        </div>
+
+        {/* §10.3: документ може бути ще в ЛОКАЛЬНІЙ черзі каси (на сервері його
+            немає) — саме тоді звірка залишків найпотрібніша. Панель сама
+            ховається, якщо документа немає і в черзі. */}
+        {(docType === 'invoice' || docType === 'return_invoice') && (
+          <StockReconciliationPanel invoiceId={id!} />
+        )}
       </div>
     );
   }
@@ -332,10 +352,7 @@ const DocumentViewPage: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Причина списання</p>
                 <p className="font-medium text-gray-900 dark:text-gray-100">
-                  {doc.reason === 'expired' ? 'Прострочений термін' :
-                   doc.reason === 'damaged' ? 'Пошкодження' :
-                   doc.reason === 'lost' ? 'Втрата' :
-                   doc.reason === 'other' ? 'Інше' : doc.reason || '-'}
+                  {doc.reason || '-'}
                 </p>
               </div>
               <div>
@@ -632,6 +649,28 @@ const DocumentViewPage: React.FC = () => {
                         {formatCurrency(Number(doc.total_amount))}
                       </td>
                     </tr>
+                    {docType === 'invoice' && (doc.paid_amount != null || doc.remaining != null) && (
+                      <>
+                        <tr className="bg-gray-50 dark:bg-slate-800/50">
+                          <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400">
+                            Сплачено:
+                          </td>
+                          <td colSpan={3} className="px-4 py-2 font-medium text-green-600 dark:text-green-400 text-right">
+                            {formatCurrency(Number(doc.paid_amount || 0))}
+                          </td>
+                        </tr>
+                        <tr className="bg-gray-50 dark:bg-slate-800/50 font-semibold">
+                          <td colSpan={5} className="px-4 py-2 text-right text-gray-500 dark:text-gray-400">
+                            Залишок до оплати:
+                          </td>
+                          <td colSpan={3} className={`px-4 py-2 font-bold text-right ${
+                            Number(doc.remaining) > 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+                          }`}>
+                            {formatCurrency(Number(doc.remaining || 0))}
+                          </td>
+                        </tr>
+                      </>
+                    )}
                   </tfoot>
                 )}
                 {docType === 'inventory' && (
@@ -831,6 +870,11 @@ const DocumentViewPage: React.FC = () => {
           </div>
         )}
 
+        {/* ─── §10.3 Звірка залишків: локальний (оцінка) vs авторитетний ─── */}
+        {(docType === 'invoice' || docType === 'return_invoice') && (
+          <StockReconciliationPanel invoiceId={id!} />
+        )}
+
         {/* Actions */}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
           {doc.status === 'draft' && (
@@ -856,7 +900,7 @@ const DocumentViewPage: React.FC = () => {
           )}
           <Button 
             variant="secondary"
-            onClick={() => navigate(docType === "return_invoice" ? `/documents/return/${id}/edit` : `/documents/${docType}/${id}/edit`)}
+            onClick={() => navigate(`/documents/${documentEditPaths[docType] ?? docType}/${id}/edit`)}
             className="flex items-center gap-2"
           >
             <Edit className="w-4 h-4" />

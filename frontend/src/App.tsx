@@ -25,19 +25,35 @@ const ReturnInvoiceFormPage = lazy(() => import('@/pages/documents/ReturnInvoice
 const InventoryFormPage = lazy(() => import('@/pages/documents/InventoryFormPage'));
 const DocumentViewPage = lazy(() => import('@/pages/documents/DocumentViewPage'));
 const PosPage = lazy(() => import('@/pages/pos/PosPage'));
+const CashPage = lazy(() => import('@/pages/cash/CashPage'));
 const ReportsPage = lazy(() => import('@/pages/reports/ReportsPage'));
 const LedgerPage = lazy(() => import('@/pages/ledger/LedgerPage'));
 const ReceiptListPage = lazy(() => import('@/pages/receipts/ReceiptListPage'));
 const ReceiptDetailPage = lazy(() => import('@/pages/receipts/ReceiptDetailPage'));
 const DebtorsPage = lazy(() => import('@/pages/debtors/DebtorsPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
+const NetworkDevicesPage = lazy(() => import('@/pages/network/DevicesPage'));
+const NetworkReportsPage = lazy(() => import('@/pages/network/NetworkReportsPage'));
+const NetworkFinancesPage = lazy(() => import('@/pages/network/NetworkFinancesPage'));
+const AuditLogPage = lazy(() => import('@/pages/network/AuditLogPage'));
+const NetworkTopologyPage = lazy(() => import('@/pages/network/NetworkTopologyPage'));
+const NodeJoinPage = lazy(() => import('@/pages/network/NodeJoinPage'));
+
+
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
 const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
 const WorkTimePage = lazy(() => import('@/pages/work-time/WorkTimePage'));
 const PrintTemplatesPage = lazy(() => import('@/pages/settings/PrintTemplatesPage'));
 const DevicesPage = lazy(() => import('@/pages/settings/DevicesPage'));
+const DeviceSyncPage = lazy(() => import('@/pages/settings/DeviceSyncPage'));
+const StoresPage = lazy(() => import('@/pages/settings/StoresPage'));
+const StoreDetailPage = lazy(() => import('@/pages/settings/StoreDetailPage'));
+const DataSourcePage = lazy(() => import('@/pages/settings/DataSourcePage'));
 const PrintLabelsPriceTagsPage = lazy(() => import('@/pages/printing/PrintLabelsPriceTagsPage'));
+const OnboardingPage = lazy(() => import('@/pages/onboarding/OnboardingPage'));
+const SetupPage = lazy(() => import('@/pages/setup/SetupPage'));
+const AvailabilityPage = lazy(() => import('@/pages/inventory/AvailabilityPage'));
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[60vh]">
@@ -81,6 +97,18 @@ const App: React.FC = () => {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/* Майстер першого встановлення — САМОДОСТАТНІЙ (без ProtectedRoute):
+              на fresh-БД авторизації ще немає, сторінка створює першого власника. */}
+          <Route path="/setup" element={<SetupPage />} />
+          <Route path="/node-join" element={<NodeJoinPage />} />
+          <Route
+            path="/onboarding"
+            element={
+              <ProtectedRoute>
+                <OnboardingPage />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/"
             element={
@@ -96,6 +124,12 @@ const App: React.FC = () => {
               </RoleRoute>
             } />
             <Route path="pos" element={<PosPage />} />
+            <Route path="cash" element={
+              <RoleRoute roles={['admin', 'owner']}>
+                <CashPage />
+              </RoleRoute>
+            } />
+            <Route path="inventory/availability" element={<AvailabilityPage />} />
             <Route path="debtors" element={<DebtorsPage />} />
             <Route path="products" element={<ProductListPage />} />
             <Route path="products/new" element={
@@ -245,6 +279,31 @@ const App: React.FC = () => {
                 <UsersPage />
               </RoleRoute>
             } />
+            <Route path="network/devices" element={
+              <RoleRoute roles={['admin', 'owner']}>
+                <NetworkDevicesPage />
+              </RoleRoute>
+            } />
+            <Route path="network/reports" element={
+              <RoleRoute roles={['admin']}>
+                <NetworkReportsPage />
+              </RoleRoute>
+            } />
+            <Route path="network/finances" element={
+              <RoleRoute roles={['admin']}>
+                <NetworkFinancesPage />
+              </RoleRoute>
+            } />
+            <Route path="network/nodes" element={
+              <RoleRoute roles={['owner', 'admin']}>
+                <NetworkTopologyPage />
+              </RoleRoute>
+            }/>
+            <Route path="network/audit" element={
+              <RoleRoute roles={['admin']}>
+                <AuditLogPage />
+              </RoleRoute>
+            } />
             <Route path="settings" element={
               <RoleRoute roles={['admin']}>
                 <SettingsPage />
@@ -263,6 +322,26 @@ const App: React.FC = () => {
             <Route path="settings/devices" element={
               <RoleRoute roles={['admin']}>
                 <DevicesPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/device-sync" element={
+              <RoleRoute roles={['admin']}>
+                <DeviceSyncPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/stores" element={
+              <RoleRoute roles={['admin', 'store_manager']}>
+                <StoresPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/stores/:storeId" element={
+              <RoleRoute roles={['admin', 'store_manager']}>
+                <StoreDetailPage />
+              </RoleRoute>
+            } />
+            <Route path="settings/data-source" element={
+              <RoleRoute roles={['admin', 'store_manager']}>
+                <DataSourcePage />
               </RoleRoute>
             } />
             <Route path="prro" element={

@@ -1,5 +1,5 @@
 import api from './api';
-import { Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate, BatchConfirmRequest } from '@/types/document';
+import {Document, DocumentCreate, DocumentType, InvoiceCreate, ReturnInvoiceCreate, PurchaseOrderCreate, WriteOffCreate} from '@/types/document';
 import { PaginatedResponse, SearchParams } from '@/types/api';
 
 /** Отримує правильний ендпоінт для типу документа */
@@ -102,8 +102,23 @@ export const documentService = {
       }
       case 'transfer':
         throw new Error('Transfer creation not implemented yet');
-      case 'write_off':
-        throw new Error('Write-off creation not implemented yet');
+      case 'write_off': {
+        const woData = data as WriteOffCreate;
+        const response = await api.post<Document>('/write-offs', {
+          // Якщо number не вказано, бекенд згенерує автоматично
+          number: woData.number || undefined,
+          reason: woData.reason,
+          write_off_date: woData.write_off_date,
+          notes: woData.notes || undefined,
+          items: woData.items.map(item => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            cost_price: item.cost_price,
+            price: (item as any).price,
+          })),
+        });
+        return response.data;
+      }
       default:
         throw new Error(`Unknown document type: ${data.document_type}`);
     }

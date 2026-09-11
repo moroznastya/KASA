@@ -6,8 +6,6 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
-
 from app.application.dto.receipt_dto import ReceiptCreateDTO, ReceiptItemDTO
 from app.application.use_cases.receipt_use_cases import ReceiptUseCases
 from app.domain.entities.product import Product

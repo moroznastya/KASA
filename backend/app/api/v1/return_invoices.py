@@ -11,27 +11,31 @@ API роутер для роботи з поверненнями постача�
   - POST   /return-invoices/{id}/cancel   — скасувати повернення
 """
 
-from uuid import UUID
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.infrastructure.persistence.models.return_invoice import ReturnInvoice, ReturnInvoiceItem, ReturnInvoiceStatus, ReturnActionType
-from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem
-from app.infrastructure.persistence.models.supplier import Supplier
-from app.infrastructure.persistence.models.product import Product
-from app.schemas.return_invoice import (
-    ReturnInvoiceCreate,
-    ReturnInvoiceUpdate,
-    ReturnInvoiceResponse,
-    ReturnInvoiceConfirmRequest,
-)
 from app.domain.services.auth_service import AuthService
 from app.domain.services.document_service import DocumentService
+from app.infrastructure.persistence.models.invoice import Invoice, InvoiceItem
+from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.return_invoice import (
+    ReturnActionType,
+    ReturnInvoice,
+    ReturnInvoiceItem,
+    ReturnInvoiceStatus,
+)
+from app.schemas.return_invoice import (
+    ReturnInvoiceConfirmRequest,
+    ReturnInvoiceCreate,
+    ReturnInvoiceResponse,
+    ReturnInvoiceUpdate,
+)
 
 router = APIRouter(
     prefix="/return-invoices",

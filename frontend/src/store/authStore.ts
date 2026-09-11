@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import axios from 'axios';
 import { User } from '@/types/auth';
+import { persistSyncCredentials } from '@/services/tauri/offline';
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = import.meta.env.DEV ? '/api/v1' : (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1');
 
 interface AuthStore {
   user: User | null;
@@ -37,6 +38,9 @@ export const useAuthStore = create<AuthStore>((set) => ({
     localStorage.setItem('accessToken', accessToken);
     localStorage.setItem('refreshToken', refreshToken);
     set({ accessToken, refreshToken, isAuthenticated: true });
+    // ЕТАП 5 (outbox-push): Rust читає server_url/api_token з SQLite settings
+    // перед кожним push — оновлюємо при кожній зміні токена (refresh).
+    void persistSyncCredentials(accessToken, API_BASE_URL);
   },
 
   setLoading: (isLoading: boolean) => set({ isLoading }),
@@ -58,6 +62,8 @@ export const useAuthStore = create<AuthStore>((set) => ({
       isAuthenticated: true,
       isLoading: false,
     });
+    // ЕТАП 5 (outbox-push): server_url + api_token для Rust-пушера.
+    void persistSyncCredentials(accessToken, API_BASE_URL);
   },
 
   logout: () => {
@@ -76,39 +82,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
     const refreshToken = localStorage.getItem('refreshToken');
     const userStr = localStorage.getItem('user');
 
-    // ═══════════════════════════════════════════════════════════════
-    // ТИМЧАСОВЕ ЛОГУВАННЯ — прибрати після діагностики 401
-    // ═══════════════════════════════════════════════════════════════
-    // ═══════════════════════════════════════════════════════════════
-    // ДІАГНОСТИКА ТОКЕНА — декодуємо exp
-    // ═══════════════════════════════════════════════════════════════
-    if (accessToken) {
-      try {
-        const payload = JSON.parse(atob(accessToken.split('.')[1]));
-        console.log(
-          '[Auth] initialize() - Token exp:',
-          new Date(payload.exp * 1000).toLocaleString(),
-          'iat:',
-          new Date(payload.iat * 1000).toLocaleString(),
-          'sub:',
-          payload.sub,
-          'role:',
-          payload.role,
-        );
-      } catch (e) {
-        console.log('[Auth] initialize() - Cannot decode token:', e);
-      }
-    }
-    console.log(
-      '[Auth] initialize() - Token:',
-      !!accessToken,
-      'Refresh:',
-      !!refreshToken,
-      'User:',
-      !!userStr,
-      'TokenFirstChars:',
-      accessToken ? accessToken.substring(0, 10) + '...' : 'N/A',
-    );
     // ═══════════════════════════════════════════════════════════════
 
     // Якщо немає ні токена, ні користувача — одразу виходимо
@@ -133,7 +106,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      if (response.data.valid) {
+      if (response.data.valid && accessToken) {
         // Токен валідний — встановлюємо стан
         set({
           user,
@@ -156,6 +129,11 @@ export const useAuthStore = create<AuthStore>((set) => ({
         });
 
         const { access_token, refresh_token: newRefreshToken } = refreshResponse.data;
+
+        // Якщо refresh не повернув валідний access_token — вважаємо спробу невдалою
+        if (!access_token || typeof access_token !== 'string') {
+          throw new Error('Invalid refresh response');
+        }
 
         // Зберігаємо нові токени
         localStorage.setItem('accessToken', access_token);

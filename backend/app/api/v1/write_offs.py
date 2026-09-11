@@ -14,19 +14,19 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
-from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.write_off import WriteOff, WriteOffItem
 from app.schemas.write_off import (
     WriteOffCreate,
-    WriteOffUpdate,
     WriteOffResponse,
+    WriteOffUpdate,
 )
-from app.domain.services.auth_service import AuthService
 
 
 async def generate_write_off_number(session: AsyncSession) -> str:
@@ -163,6 +163,10 @@ async def create_write_off(
         reason=data.reason,
         write_off_date=data.write_off_date,
         notes=data.notes,
+        # Тимчасово draft: confirm_write_off (нижче) проведе документ.
+        # Це робить POST /write-offs/{id}/confirm ідемпотентним —
+        # повторний confirm не зменшує залишки вдруге.
+        status="draft",
         created_by_id=current_user.id,
     )
     session.add(write_off)
@@ -181,7 +185,8 @@ async def create_write_off(
 
     await session.flush()
 
-    # Автоматично підтверджуємо списання (оновлюємо залишки)
+    # Автоматично підтверджуємо списання (оновлюємо залишки).
+    # confirm_write_off ставить статус confirmed; повторні виклики — no-op.
     doc_service = DocumentService(session)
     await doc_service.confirm_write_off(write_off.id)
 

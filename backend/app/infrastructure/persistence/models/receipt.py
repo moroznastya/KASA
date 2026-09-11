@@ -6,32 +6,44 @@
 
 import uuid
 from datetime import datetime
-from enum import Enum as PyEnum
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy import (
-    ForeignKey, String, Text, Numeric, Boolean, Enum, DateTime,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.debtor import Debtor
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.user import User
 
-class ReceiptType(str, PyEnum):
+
+class ReceiptType(StrEnum):
     """Тип чеку."""
     SALE = "sale"           # Продаж
     RETURN = "return"       # Повернення
 
 
-class ReceiptPaymentMethod(str, PyEnum):
+class ReceiptPaymentMethod(StrEnum):
     """Спосіб оплати в чеку."""
     CASH = "cash"        # Готівка
     CARD = "card"        # Картка
     MIXED = "mixed"      # Готівка + картка
 
 
-class FiscalStatus(str, PyEnum):
+class FiscalStatus(StrEnum):
     """Статус відправки фіскального чеку у податкову."""
     NONE = "none"        # Не фіскальний / не потребує відправки
     PENDING = "pending"  # Очікує відправки у податкову
@@ -51,6 +63,22 @@ class Receipt(Base):
         primary_key=True,
         default=uuid.uuid4,
         comment="Унікальний ідентифікатор чеку",
+    )
+
+    # ── Ідемпотентність push (offline-first sync, дизайн 8.2) ────────────
+    client_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="UUID транзакції з каси — ключ ідемпотентного прийому push",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_receipts_client_uuid",
+            "client_uuid",
+            unique=True,
+            postgresql_where=sa.text("client_uuid IS NOT NULL"),
+        ),
     )
     receipt_number: Mapped[str] = mapped_column(
         String(50),

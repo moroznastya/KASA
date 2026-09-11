@@ -10,12 +10,9 @@
   - Повернення товару (type=RETURN) → збільшення залишку
 """
 
-from decimal import Decimal
-from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
-
 
 pytestmark = [
     pytest.mark.integration,
@@ -62,7 +59,7 @@ class TestSaleFlow:
 
         # 2. Шукаємо товар за штрих-кодом
         response = await client.get(
-            f"/api/v1/products/barcode/4820000000001",
+            "/api/v1/products/barcode/4820000000001",
             headers=cashier_headers,
         )
         assert response.status_code == 200

@@ -12,27 +12,30 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.use_cases.prro.context import (
-    PrroContextFactory,
     KEY_AUTO_FISCALIZE,
     KEY_PRRO_FN,
     KEY_PRRO_TN,
     KEY_PRRO_ZN,
+    PrroContextFactory,
 )
 from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     FiscalizeReceiptUseCase,
     PrroFiscalizeError,
 )
-from app.infrastructure.persistence.models.prro import PrroShift
-from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.models.product import Product
+from app.infrastructure.persistence.models.prro import PrroShift
 from app.infrastructure.persistence.models.receipt import Receipt, ReceiptItem
+from app.infrastructure.persistence.models.user import User, UserRole
 from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
 from app.infrastructure.persistence.repositories.prro_settings_repository import (
     PrroSettingsRepository,
 )
 from app.infrastructure.services.prro.key_store import PrroKeyStore
 from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-
+from app.infrastructure.services.prro.xml_builder import (
+    compute_mac,
+    reconstruct_full_rq,
+)
 
 # ─── Допоміжні фабрики ──────────────────────────────────────────────────────
 
@@ -204,6 +207,7 @@ def setup(session: AsyncSession, key_store):
         )
         return {
             "fiscalizer": fiscalizer,
+            "cashier": cashier,
             "receipt": receipt,
             "product": product,
             "shift": shift,
@@ -299,15 +303,16 @@ class TestFiscalizeReceipt:
         )
 
         assert result.fiscal_status == "failed"
-        assert result.error == "Unknown error"
+        # Вимога UX: код помилки ДПС присутній у фінальному повідомленні
+        assert result.error == "[ERROR_UNKNOWN] Unknown error"
 
         await data["session"].refresh(data["receipt"])
         assert data["receipt"].fiscal_status.value == "failed"
-        assert data["receipt"].fiscal_error == "Unknown error"
+        assert data["receipt"].fiscal_error == "[ERROR_UNKNOWN] Unknown error"
 
         items = await data["prro_repo"].list_by_shift(data["shift"].id)
         assert items[0].status.value == "failed"
-        assert items[0].error == "Unknown error"
+        assert items[0].error == "[ERROR_UNKNOWN] Unknown error"
 
     async def test_fiscalize_partial_when_stock_short(self, setup):
         """Нестача fiscal_stock → ЧАСТКОВА фіскалізація + warning."""
@@ -358,6 +363,79 @@ class TestFiscalizeReceipt:
         assert result.fiscal_status == "sent"
         await data["session"].refresh(data["product"])
         assert data["product"].fiscal_stock == 7
+
+    async def test_fiscalize_return_passes_id_cancel(self, setup):
+        """E: повернення (T=1) → Check.id_cancel = фіскальний № оригіналу."""
+        data = await setup(
+            fiscal_quantity=Decimal("2"), quantity=Decimal("2"),
+            is_return=True, with_original=True,
+        )
+        sent: list = []
+
+        async def _send(check):
+            sent.append(check)
+            return make_response(id="FISCAL-RET")
+
+        data["grpc"].send_chk = AsyncMock(side_effect=_send)
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+        assert len(sent) == 1
+        assert sent[0].id_cancel == "FISCAL-ORIG-1", "id_cancel = № оригінального чека"
+        # B: date_time — YYYYMMDDhhmmss (14 цифр), не epoch
+        dt = str(sent[0].date_time)
+        assert len(dt) == 14 and dt.isdigit(), f"date_time={dt} має бути YYYYMMDDhhmmss"
+
+    async def test_fiscalize_sale_id_cancel_empty(self, setup):
+        """E: продаж — id_cancel порожній."""
+        data = await setup()
+        sent: list = []
+
+        async def _send(check):
+            sent.append(check)
+            return make_response()
+
+        data["grpc"].send_chk = AsyncMock(side_effect=_send)
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "sent"
+        assert sent[0].id_cancel == ""
+
+    async def test_fiscalize_offline_queues_with_reserved_id(self, setup):
+        """F/G: офлайн — local_number послідовний, id_offline з діапазону,
+        документ у черзі (pending) без мережевої спроби."""
+        from app.infrastructure.services.prro.offline_state import (
+            KEY_PRRO_OFFLINE,
+            KEY_PRRO_OFFLINE_NEXT,
+            KEY_PRRO_RESERVE_END,
+            KEY_PRRO_RESERVE_START,
+        )
+
+        data = await setup()
+        sr = data["settings_repo"]
+        await sr.set(KEY_PRRO_OFFLINE, "1")
+        await sr.set(KEY_PRRO_RESERVE_START, "1001")
+        await sr.set(KEY_PRRO_RESERVE_END, "1100")
+        await sr.set(KEY_PRRO_OFFLINE_NEXT, "1001")
+
+        result = await data["fiscalizer"].fiscalize_receipt(
+            data["receipt"].id, manual=True
+        )
+        assert result.fiscal_status == "failed", "офлайн: документ у черзі"
+        data["grpc"].send_chk.assert_not_awaited(), "офлайн — без мережевих спроб"
+
+        items = await data["prro_repo"].list_by_shift(data["shift"].id)
+        assert len(items) == 1
+        assert items[0].check_type == "CHK"
+        assert items[0].status.value == "pending"
+        assert items[0].local_number == 1, "local_number — послідовний зі зміни"
+        assert items[0].id_offline == "1001", "id_offline — номер з діапазону (не offline-{n})"
+        assert items[0].mac == "", "MAC першого документа зміни порожній"
+        # наступний номер діапазону спожито
+        nxt = await sr.get(KEY_PRRO_OFFLINE_NEXT)
+        assert nxt == "1002"
 
     async def test_fiscalize_dedup_on_error_save(self, setup):
         """ERROR_SAVE → lastChk знаходить чек → дедуплікація (SENT)."""
@@ -488,3 +566,77 @@ class TestFiscalizeReceipt:
         assert data["receipt"].fiscal_status.value == "none"
         assert data["receipt"].is_fiscal is False
         assert data["receipt"].items[0].fiscal_quantity == 0
+
+
+class TestHashChainD:
+    """D: хеш-ланцюжок через <MAC> повного RQ (H-тега в тілі немає)."""
+
+    async def test_three_checks_form_hash_chain(self, setup):
+        """3 чеки поспіль: MAC(c1)→doc2, MAC(doc2)→doc3 через use case."""
+        data = await setup()
+        fiscalizer = data["fiscalizer"]
+        session = data["session"]
+        prro_repo = data["prro_repo"]
+        shift = data["shift"]
+
+        queue_items = []
+        for i in range(3):
+            # Новий чек для кожної ітерації
+            product = Product(
+                id=uuid4(),
+                title=f"Товар-{i}",
+                price=Decimal("100.00"),
+                stock=Decimal("10"),
+                fiscal_stock=Decimal("10"),
+                is_fiscal=True,
+                tax_rate=Decimal("20.00"),
+                unit="шт",
+            )
+            session.add(product)
+            receipt = Receipt(
+                id=uuid4(),
+                receipt_number=f"SALE-{i}",
+                cashier_id=data["cashier"].id,
+                is_return=False,
+                payment_method="cash",
+                total_amount=float(Decimal("300.00")),
+                cash_amount=float(Decimal("300.00")),
+                is_fiscal=True,
+            )
+            session.add(receipt)
+            session.add(ReceiptItem(
+                id=uuid4(),
+                receipt_id=receipt.id,
+                product_id=product.id,
+                quantity=Decimal("3"),
+                price=Decimal("100.00"),
+                total=float(Decimal("300.00")),
+                fiscal_quantity=Decimal("3"),
+            ))
+            await session.flush()
+
+            result = await fiscalizer.fiscalize_receipt(receipt.id, manual=True)
+            assert result.fiscal_status == "sent", result.error
+
+            items = await prro_repo.list_by_receipt(receipt.id)
+            assert len(items) == 1
+            queue_items.append(items[0])
+
+        # H-ланцюжка в тілі чеку немає; MAC першого чека порожній (перший у зміні,
+        # але після 108 — тут у тесті зміну створено напряму без 108, ланцюг порожній)
+        assert "<H " not in queue_items[0].xml_body
+        doc_macs = [getattr(q, "mac", None) or "" for q in queue_items]
+
+        # doc1: MAC = "" (перший документ зміни)
+        assert doc_macs[0] == ""
+        msg1 = reconstruct_full_rq(queue_items[0].xml_body, doc_macs[0])
+        # doc2: MAC = hash(повного RQ doc1)
+        assert doc_macs[1] == compute_mac(msg1)
+        msg2 = reconstruct_full_rq(queue_items[1].xml_body, doc_macs[1])
+        # doc3: MAC = hash(повного RQ doc2)
+        assert doc_macs[2] == compute_mac(msg2)
+        msg3 = reconstruct_full_rq(queue_items[2].xml_body, doc_macs[2])
+
+        # last_mac зміни = hash(повного RQ doc3) — наступний Check посилається на нього
+        await session.refresh(shift)
+        assert shift.last_mac == compute_mac(msg3)

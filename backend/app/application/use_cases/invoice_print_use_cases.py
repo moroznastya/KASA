@@ -11,9 +11,9 @@ Use Case: InvoicePrintUseCases (друк цінників/етикеток з н
 
 from __future__ import annotations
 
-import math
 import logging
-from datetime import datetime, timezone
+import math
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -151,7 +151,7 @@ class InvoicePrintUseCases:
         products_dicts: list[dict] = []
         price_changes: list[dict] = []
         changed_count = 0
-        now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+        now_str = datetime.now(UTC).strftime("%d.%m.%Y")
 
         for item in invoice.items:
             product = item.product
@@ -241,7 +241,7 @@ class InvoicePrintUseCases:
                 products_dicts,
                 settings,
             )
-            cols, rows, per_page = PriceTagPrintService._calc_grid(
+            _cols, _rows, per_page = PriceTagPrintService._calc_grid(
                 width_mm,
                 height_mm,
                 gap_mm,

@@ -1,16 +1,16 @@
 # =============================================================================
-# Kasa POS — Multi-stage Dockerfile (Backend)
+# Torgashka POS — Multi-stage Dockerfile (Backend)
 # =============================================================================
 # Використання:
-#   docker build -t kasa-backend .
-#   docker run -p 8000:8000 kasa-backend
+#   docker build -t torgashka-backend .
+#   docker run -p 8001:8001 torgashka-backend
 # =============================================================================
 #
 # 🔧 Оновлення 2026-08-01 (контейнеризація):
 #   - Python 3.11 → 3.12 (відповідає pyproject.toml та вимогам проєкту)
 #   - Додано python3-dev у builder: потрібен для збірки twofish (ПРРО-крипто)
 #   - Залежності встановлюються у /opt/venv (virtualenv):
-#     * доступно non-root користувачу kasa (на відміну від /root/.local)
+#     * доступно non-root користувачу torgashka (на відміну від /root/.local)
 #     * чистий ізольований site-packages, не засмічує системний Python
 # =============================================================================
 
@@ -19,7 +19,7 @@
 FROM python:3.12-slim AS builder
 
 LABEL stage="builder"
-LABEL description="Kasa Backend — build stage"
+LABEL description="Torgashka Backend — build stage"
 
 WORKDIR /app
 
@@ -44,8 +44,8 @@ RUN python -m venv /opt/venv && \
 # Мінімальний образ для запуску
 FROM python:3.12-slim AS runtime
 
-LABEL maintainer="Kasa POS Team"
-LABEL description="Kasa POS — Enterprise Point of Sale System (Backend)"
+LABEL maintainer="Torgashka POS Team"
+LABEL description="Torgashka POS — Enterprise Point of Sale System (Backend)"
 LABEL version="1.0.0"
 
 WORKDIR /app
@@ -58,13 +58,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean
 
 # Створюємо користувача для безпеки (non-root)
-RUN groupadd -r kasa && useradd -r -g kasa -d /app -s /sbin/nologin kasa
+RUN groupadd -r torgashka && useradd -r -g torgashka -d /app -s /sbin/nologin torgashka
 
 # Копіюємо віртуальне середовище з builder
 COPY --from=builder /opt/venv /opt/venv
 
 # Копіюємо код застосунку (секрети НЕ копіюються — див. .dockerignore)
-COPY --chown=kasa:kasa . .
+COPY --chown=torgashka:torgashka . .
 
 # Додаємо venv до PATH
 ENV PATH=/opt/venv/bin:$PATH \
@@ -72,14 +72,16 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1
 
 # Переключаємося на non-root користувача
-USER kasa
+USER torgashka
 
-# Health check (перевіряє /health ендпоінт FastAPI)
+# ⚠️ ЕТАП 8: Python sidecar дезактивовано — Rust-ядро torgashka-api :8000.
+# Healthcheck перевіряє Rust-фасад (/api/v1/health). Контейнер збережено
+# як legacy (docker-compose: profiles: legacy, не запускається за замовчуванням).
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" || exit 1
 
 # Відкриваємо порт
-EXPOSE 8000
+EXPOSE 8001
 
 # Запускаємо FastAPI через uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

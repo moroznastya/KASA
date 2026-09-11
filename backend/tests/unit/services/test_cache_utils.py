@@ -1,6 +1,5 @@
 """Unit-тести для cache_utils (декоратор cached, інвалідація)."""
 
-import asyncio
 from typing import Any, Optional
 from uuid import uuid4
 

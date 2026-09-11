@@ -14,21 +14,21 @@ API роутер для роботи з інвентаризацією (Inventor
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.inventory import Inventory, InventoryItem, InventoryStatus
 from app.schemas.inventory import (
-    InventoryCreate,
-    InventoryUpdate,
-    InventoryResponse,
-    InventoryItemResponse,
-    InventorySummary,
     InventoryConfirmRequest,
+    InventoryCreate,
+    InventoryItemResponse,
+    InventoryResponse,
+    InventorySummary,
+    InventoryUpdate,
 )
-from app.domain.services.auth_service import AuthService
 
 
 async def generate_inventory_number(session: AsyncSession) -> str:

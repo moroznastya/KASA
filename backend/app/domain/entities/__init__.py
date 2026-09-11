@@ -1,25 +1,25 @@
-"""Domain Entities для доменного шару Kasa POS."""
+"""Domain Entities для доменного шару Torgashka POS."""
 
-from .product import Product
-from .invoice import Invoice, InvoiceItem, InvoiceStatus
-from .receipt import Receipt, ReceiptItem, PaymentMethod
-from .user import User, UserRole
-from .supplier import Supplier
 from .category import Category
+from .invoice import Invoice, InvoiceItem, InvoiceStatus
 from .ledger_entry import LedgerEntry, OperationType
+from .product import Product
+from .receipt import PaymentMethod, Receipt, ReceiptItem
+from .supplier import Supplier
+from .user import User, UserRole
 
 __all__ = [
-    "Product",
+    "Category",
     "Invoice",
     "InvoiceItem",
     "InvoiceStatus",
-    "Receipt",
-    "ReceiptItem",
-    "PaymentMethod",
-    "User",
-    "UserRole",
-    "Supplier",
-    "Category",
     "LedgerEntry",
     "OperationType",
+    "PaymentMethod",
+    "Product",
+    "Receipt",
+    "ReceiptItem",
+    "Supplier",
+    "User",
+    "UserRole",
 ]

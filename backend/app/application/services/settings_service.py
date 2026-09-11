@@ -5,7 +5,7 @@ Application Layer: SettingsService — сервіс для читання нал
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.persistence.repositories.settings_repository import SettingsRepository

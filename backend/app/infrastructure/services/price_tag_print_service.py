@@ -36,10 +36,10 @@ from __future__ import annotations
 import hashlib
 import html
 import io
-import math
 import logging
+import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -427,10 +427,7 @@ class PriceTagPrintService:
             if field_name is None:
                 return full_block
 
-            if enabled_fields is None:
-                show = True
-            else:
-                show = field_name in enabled_fields
+            show = True if enabled_fields is None else field_name in enabled_fields
 
             return inner_content if show else ""
 
@@ -599,7 +596,7 @@ class PriceTagPrintService:
         page_width_mm = float(settings.get("page_width_mm", 210))
         page_height_mm = float(settings.get("page_height_mm", 297))
         margin_mm = float(settings.get("margin_mm", 10))
-        fields = settings.get("fields", None)
+        fields = settings.get("fields")
         enabled_fields = set(fields) if fields else None
 
         # Адаптивне обмеження висоти штрих-коду: щоб цифри під кодом
@@ -630,7 +627,7 @@ class PriceTagPrintService:
         rendered_items = []
         for product in expanded:
             if not product.get("created_date"):
-                product["created_date"] = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+                product["created_date"] = datetime.now(UTC).strftime("%d.%m.%Y")
             rendered = PriceTagPrintService._render_single(
                 template_content,
                 product,
@@ -734,7 +731,7 @@ body {{ font-family: Arial, Helvetica, sans-serif; font-size: 8pt; line-height: 
         width_mm = float(settings.get("width_mm", 58))
         height_mm = float(settings.get("height_mm", 40))
         gap_mm = float(settings.get("gap_mm", 2))
-        fields = settings.get("fields", None)
+        fields = settings.get("fields")
         enabled_fields = set(fields) if fields else None
 
         # Режим друку: явний параметр → settings['print_mode'] → 'escpos'

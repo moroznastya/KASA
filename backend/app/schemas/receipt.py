@@ -2,14 +2,14 @@
 Pydantic схеми для моделей Receipt та ReceiptItem (Чек продажу / повернення).
 """
 
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.infrastructure.persistence.models.receipt import ReceiptType, ReceiptPaymentMethod
+from app.infrastructure.persistence.models.receipt import ReceiptPaymentMethod, ReceiptType
 
 
 class DebtPaymentInfo(BaseModel):

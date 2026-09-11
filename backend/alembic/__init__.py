@@ -1,1 +1,1 @@
-"""Alembic migrations for Kasa POS."""
+"""Alembic migrations for Torgashka POS."""

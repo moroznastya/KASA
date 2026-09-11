@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from app.domain.events import (
     BaseDomainEvent,
-    ProductCreated,
     InvoiceCreated,
+    ProductCreated,
     ReceiptCreated,
     StockChanged,
 )

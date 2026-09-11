@@ -21,7 +21,7 @@
         key_path=Path("/secure/Key-6.pfx"),
         key_password="secret",
     )
-    signed = signer.sign(dat_xml.encode("utf-8"))
+    signed = signer.sign(cp1251_bytes(dat_xml))  # windows-1251 байти повного RQ
     ok = signer.verify(signed)
     serial = signer.get_serial_number()   # для prro_shifts.signer_serial
     name = signer.get_signer_name()       # для prro_shifts.signer_name
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -343,8 +342,8 @@ class PrroCryptoSigner:
         """
         try:
             import jks  # модуль pyjks
-            from jks.jks import PrivateKeyEntry
             from jks import sun_crypto
+            from jks.jks import PrivateKeyEntry
             from pyasn1.codec.ber import decoder
             from pyasn1_modules import rfc5208
         except ImportError as exc:  # pragma: no cover
@@ -378,7 +377,7 @@ class PrroCryptoSigner:
         PrivateKeyEntry.decrypt = _loose_decrypt
         try:
             store = jks.KeyStore.load(str(self.key_path), self.key_password)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise PrroCryptoError(
                 f"Не вдалося відкрити JKS ({self.key_path.name}): {exc}"
             ) from exc
@@ -396,7 +395,7 @@ class PrroCryptoSigner:
             entry.decrypt(self.key_password)
             key_der: bytes = entry.pkey_pkcs8
             cert_der: bytes = entry.cert_chain[0][1]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise PrroCryptoError(
                 f"Не вдалося розшифрувати ключ JKS ({alias}): {exc}"
             ) from exc
@@ -441,23 +440,27 @@ class PrroCryptoSigner:
             i = 0
             assert key_der[i] == 0x30          # SEQUENCE (PrivateKeyInfo)
             i += 1
-            ln = key_der[i]; i += 1
+            ln = key_der[i]
+            i += 1
             if ln & 0x80:                      # довга форма довжини
                 i += ln & 0x7F
             assert key_der[i] == 0x02          # INTEGER (version)
             i += 1
-            ln = key_der[i]; i += 1
+            ln = key_der[i]
+            i += 1
             if ln & 0x80:
                 i += ln & 0x7F
             i += ln
             assert key_der[i] == 0x30          # SEQUENCE (AlgorithmIdentifier)
             i += 1
-            ln = key_der[i]; i += 1
+            ln = key_der[i]
+            i += 1
             if ln & 0x80:
                 i += ln & 0x7F
             assert key_der[i] == 0x06          # OBJECT (algorithm OID)
             i += 1
-            oid_len = key_der[i]; i += 1
+            oid_len = key_der[i]
+            i += 1
             oid_bytes = key_der[i:i + oid_len]
 
             parts: list[str] = []
@@ -471,7 +474,7 @@ class PrroCryptoSigner:
                     parts.append(str(val))
                     val = 0
             return ".".join(parts)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     def _load_from_pem(self) -> tuple[PrivateKeyTypes, x509.Certificate]:
@@ -544,14 +547,18 @@ class PrroCryptoSigner:
         """
         Підписує XML-документ (XAdES-BES, enveloped, RSA-SHA256).
 
+        Аргумент ОБОВ'ЯЗКОВО має бути повне RQ-повідомлення (п. A/C спеки),
+        закодоване у windows-1251 (див. xml_builder.cp1251_bytes). Саме ці
+        байти «бачить» сервер ДПС (CAdES) — над ними рахується хеш-ланцюжок.
+
         Args:
-            xml_bytes: канонічний XML (наприклад, <DAT>…</DAT>) у bytes.
+            xml_bytes: повне повідомлення <RQ>…</RQ> у байтах windows-1251
+                (з XML-декларацією encoding="windows-1251").
 
         Returns:
-            bytes — підписаний XML: до кореневого елемента додається
-            тег <ds:Signature> (enveloped). Для ДСТУ 4145 (бекенд ІІТ) —
-            бінарний CAdES-BES підпис від XML (формат офіційного семпла
-            programika/prro_sample: `ee.SignInternal(true, data)`).
+            bytes — підписаний XML (XAdES, encoding windows-1251). Для
+            ДСТУ 4145 (бекенд ІІТ) — бінарний CAdES-BES підпис від XML
+            (формат семпла programika/prro_sample: `ee.SignInternal(true, data)`).
 
         Raises:
             PrroCryptoError: якщо підписання не вдалося.
@@ -575,13 +582,14 @@ class PrroCryptoSigner:
                 key=self._key_pem(),
                 cert=self._cert_pem(),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise PrroCryptoError(f"Помилка XAdES-підписання: {exc}") from exc
 
+        # Декларація/кодування — windows-1251 (обов'язково за API ФСКО)
         return etree.tostring(
             signed_root,
             xml_declaration=True,
-            encoding="UTF-8",
+            encoding="windows-1251",
             pretty_print=False,
         )
 
@@ -602,7 +610,7 @@ class PrroCryptoSigner:
             verifier = XMLVerifier()
             verifier.verify(signed_xml, x509_cert=self._cert_pem())
             return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("PRRO_CRYPTO | перевірка підпису не пройшла: %s", exc)
             return False
 
@@ -707,4 +715,4 @@ class PrroCryptoSigner:
         return ""
 
 
-__all__ = ["PrroCryptoSigner", "PrroCryptoError"]
+__all__ = ["PrroCryptoError", "PrroCryptoSigner"]

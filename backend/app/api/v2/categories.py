@@ -11,14 +11,15 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.domain.repositories import ICategoryRepository
 from app.domain.services.cache_service import ICacheService
-from app.config import settings
-from .deps import get_category_repository, get_cache_service
+
 from .cache_utils import cached, invalidate_category_cache
+from .deps import get_cache_service, get_category_repository
 
 router = APIRouter(prefix="/categories", tags=["categories_v2"])
 

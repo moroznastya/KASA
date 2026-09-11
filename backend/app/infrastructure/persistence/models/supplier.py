@@ -6,12 +6,18 @@
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text, Numeric
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import String, Text
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.infrastructure.persistence.models.invoice import Invoice
+    from app.infrastructure.persistence.models.product import Product
+    from app.infrastructure.persistence.models.supplier_ledger import SupplierLedger
 
 
 class Supplier(Base):

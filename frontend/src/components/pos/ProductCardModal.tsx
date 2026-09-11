@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Plus, ImageOff, ShoppingCart, Scale } from 'lucide-react';
+import {X, ImageOff, ShoppingCart, Scale} from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
+import { useDevicesStore } from '@/store/devicesStore';
+import { devicesApi } from '@/services/tauri/devices';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, formatUnit } from '@/utils/format';
 
@@ -32,6 +33,11 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
   const [imageError, setImageError] = useState(false);
   const [isReadingWeight, setIsReadingWeight] = useState(false);
   const quantityInputRef = useRef<HTMLInputElement>(null);
+  // Реальна вага з підключених пристроїв (оновлюється через подію "weight-updated",
+  // на яку PosPage підписується через useDevicesStore.initListeners)
+  const weights = useDevicesStore((s) => s.weights);
+  const devices = useDevicesStore((s) => s.devices);
+  const statuses = useDevicesStore((s) => s.statuses);
 
   // Скидаємо стан при відкритті
   useEffect(() => {
@@ -45,6 +51,17 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
         quantityInputRef.current?.focus();
         quantityInputRef.current?.select();
       }, 100);
+    }
+    // Ваговий товар: передати ціну за кг на ваги (протокол 5, Режим 2),
+    // щоб ваги рахували вартість. При закритті — скинути (Режим 3).
+    if (product?.is_weight) {
+      const scale = devices.find((d) => d.deviceType === 'scale' && d.enabled);
+      if (scale) {
+        const price = parseFloat(String(product.price)) || 0;
+        devicesApi
+          .setScalePrice(scale.id, isOpen ? price : null)
+          .catch((err) => console.error('setScalePrice:', err));
+      }
     }
   }, [isOpen, product?.id]);
 
@@ -208,16 +225,31 @@ const ProductCardModal: React.FC<ProductCardModalProps> = ({
               onClick={async () => {
                 setIsReadingWeight(true);
                 try {
-                  // TODO: Інтеграція з вагами через Tauri API
-                  // Наразі — імітація зчитування
-                  await new Promise((resolve) => setTimeout(resolve, 500));
-                  const mockWeight = (Math.random() * 2 + 0.1).toFixed(3);
-                  setQuantity(mockWeight);
-                  setQuantityError(null);
-                } catch (err) {
-                  setQuantityError('Помилка зчитування ваги');
+                  // Реальна вага: перше значення з weights (перший scale-пристрій)
+                  const weightValues = Object.values(weights);
+                  const weight = weightValues.length > 0 ? weightValues[0] : undefined;
+                  if (weight !== undefined && weight > 0) {
+                    setQuantity(String(weight));
+                    setQuantityError(null);
+                  } else {
+                    // Діагностика: конкретна причина замість generic-повідомлення
+                    const scale = devices.find((d) => d.deviceType === 'scale' && d.enabled);
+                    if (!scale) {
+                      setQuantityError('Ваги не налаштовані. Додайте пристрій: Налаштування → Пристрої');
+                    } else {
+                      const st = statuses[scale.id];
+                      if (st?.status === 'disconnected') {
+                        setQuantityError('Ваги не підключені. Перевірте кабель USB та Налаштування → Пристрої');
+                      } else if (st?.status === 'error') {
+                        setQuantityError(`Помилка ваг: ${st.error ?? 'невідома'}`);
+                      } else {
+                        setQuantityError('Ваги підключені, але не передають дані. Перевірте, що ваги увімкнені, на платформі є вантаж, а в налаштуваннях ваг вибрано режим передачі даних (RS-232)');
+                      }
+                    }
+                  }
                 } finally {
-                  setIsReadingWeight(false);
+                  // Коротка затримка для UX (індикатор «Зчитування...»)
+                  setTimeout(() => setIsReadingWeight(false), 300);
                 }
               }}
               disabled={isReadingWeight}

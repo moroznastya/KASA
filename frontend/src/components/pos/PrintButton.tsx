@@ -112,7 +112,7 @@ function receiptToRenderData(receipt: Receipt): Record<string, string> {
 }
 
 /** Друк HTML у новому вікні (для Tauri та браузера) */
-function printViaNewWindow(html: string, printerName?: string): Promise<void> {
+function printViaNewWindow(html: string, _?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     try {
       const printWindow = window.open('', '_blank');
@@ -125,7 +125,7 @@ function printViaNewWindow(html: string, printerName?: string): Promise<void> {
         <html>
         <head>
           <meta charset="UTF-8">
-          <title>Друк — Kasa POS</title>
+          <title>Друк — Torgashka</title>
           <style>
             @media print {
               body { font-family: 'Courier New', monospace; font-size: 12px; }
@@ -198,7 +198,7 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
                 <html>
                 <head>
                   <meta charset="UTF-8">
-                  <title>Друк — Kasa POS</title>
+                  <title>Друк — Torgashka</title>
                   <style>
                     @media print {
                       body { font-family: 'Courier New', monospace; font-size: 12px; }
@@ -259,7 +259,7 @@ export const PrintButton: React.FC<PrintButtonProps> = ({
             <html>
             <head>
               <meta charset="UTF-8">
-              <title>Друк — Kasa POS</title>
+              <title>Друк — Torgashka</title>
               <style>
                 @media print {
                   body { font-family: 'Courier New', monospace; font-size: 12px; }

@@ -17,7 +17,8 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
 from app.infrastructure.persistence.models.print_template import PrintTemplate
 
 RETURN_TEMPLATE_ID = "a0000000-0000-0000-0000-000000000050"

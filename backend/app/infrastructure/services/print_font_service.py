@@ -84,7 +84,7 @@ class PrintFontService:
         for file_name, unicode_range in subsets:
             try:
                 data = (fonts_dir / file_name).read_bytes()
-            except (OSError, IOError):
+            except OSError:
                 # Файл шрифту відсутній або не читається — не падаємо,
                 # просто не вбудовуємо шрифт у цей документ
                 return ""
@@ -197,12 +197,7 @@ class PrintFontService:
         if font_face_css:
             face_style = f"<style>{font_face_css}</style>"
             head_end = updated.lower().find("</head>")
-            if head_end != -1:
-                updated = (
-                    updated[:head_end] + face_style + updated[head_end:]
-                )
-            else:
-                updated = face_style + updated
+            updated = updated[:head_end] + face_style + updated[head_end:] if head_end != -1 else face_style + updated
 
         # Якщо font-family не зустрічається зовсім — додаємо глобальне
         # правило для body, щоб шрифт застосувався до всього документа.
@@ -211,12 +206,7 @@ class PrintFontService:
                 f"<style>body {{ font-family: {font_family}; }}</style>"
             )
             head_end = updated.lower().find("</head>")
-            if head_end != -1:
-                updated = (
-                    updated[:head_end] + style_tag + updated[head_end:]
-                )
-            else:
-                updated = updated + style_tag
+            updated = updated[:head_end] + style_tag + updated[head_end:] if head_end != -1 else updated + style_tag
 
         logger.info(
             "PRINT_FONT_APPLY | font_family=%s html_len=%d replaced=%d",

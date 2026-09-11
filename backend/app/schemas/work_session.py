@@ -2,11 +2,11 @@
 Pydantic схеми для моделі WorkSession (робоча сесія користувача).
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class WorkSessionResponse(BaseModel):
@@ -33,8 +33,8 @@ class WorkSessionResponse(BaseModel):
             return None
         if dt.tzinfo is None:
             # naive datetime вважаємо UTC
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC).isoformat().replace('+00:00', 'Z')
 
 
 class WorkSessionDetail(WorkSessionResponse):

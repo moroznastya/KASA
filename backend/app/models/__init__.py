@@ -8,4 +8,4 @@
 який ще імпортує з app.models.
 """
 
-from app.infrastructure.persistence.models import *  # noqa: F401, F403
+from app.infrastructure.persistence.models import *  # noqa: F403

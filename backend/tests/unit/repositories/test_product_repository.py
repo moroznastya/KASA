@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
@@ -130,5 +130,5 @@ class TestProductRepository:
         assert total == 5
         assert len(result_page1) == 3
 
-        result_page2, total2 = await product_repo.search(page=2, size=3)
+        result_page2, _total2 = await product_repo.search(page=2, size=3)
         assert len(result_page2) == 2

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Printer, Tag, Loader2, Eye, FileText } from 'lucide-react';
+import {Printer, Tag, Eye, FileText} from 'lucide-react';
 import { printService } from '@/services/printService';
 import { printTemplateService } from '@/services/printTemplateService';
 import { settingsService } from '@/services/settingsService';

@@ -13,13 +13,13 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from app.domain.entities.user import User, UserRole
+from app.application.dto.user_dto import UserCreateDTO, UserDTO
+from app.application.interfaces.i_event_bus import IEventBus
+from app.application.mappers.user_mapper import UserMapper
+from app.domain.entities.user import UserRole
+from app.domain.events import UserCreated, UserLoggedIn
 from app.domain.repositories import IUserRepository
 from app.domain.repositories.i_unit_of_work import IUnitOfWork
-from app.application.dto.user_dto import UserDTO, UserCreateDTO
-from app.application.mappers.user_mapper import UserMapper
-from app.application.interfaces.i_event_bus import IEventBus
-from app.domain.events import UserLoggedIn, UserCreated
 from app.domain.services.auth_service import AuthService
 
 

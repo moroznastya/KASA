@@ -193,7 +193,8 @@ export const usePrroStore = create<PrroStore>((set, get) => ({
       if (result.fiscal_status === 'sent') {
         toast.success(`Чек фіскалізовано №${result.fiscal_number || ''}`);
       } else if (result.fiscal_status === 'failed') {
-        toast.error(`Помилка фіскалізації: ${result.error || 'невідома'}`);
+        // result.error вже у форматі «[КОД] Точний текст» (з API) — показуємо as-is
+        toast.error(result.error || 'Помилка фіскалізації');
       } else {
         toast.success('Чек додано до черги фіскалізації');
       }

@@ -10,15 +10,14 @@ Use Cases: Receipt (Чеки продажу).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
-from app.domain.entities.receipt import Receipt, ReceiptItem, PaymentMethod
-from app.domain.repositories import IReceiptRepository, IProductRepository, IUnitOfWork
-from app.domain.services.stock_service import StockService
+from app.domain.entities.receipt import PaymentMethod, Receipt, ReceiptItem
+from app.domain.repositories import IProductRepository, IReceiptRepository, IUnitOfWork
 from app.domain.services.document_service import DocumentService
+from app.domain.services.stock_service import StockService
 from app.domain.value_objects.money import Money
 from app.domain.value_objects.quantity import Quantity
 from app.domain.value_objects.tax_rate import TaxRate

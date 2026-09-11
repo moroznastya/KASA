@@ -11,7 +11,7 @@ import asyncio
 import uuid
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.infrastructure.persistence.models.category import Category
@@ -200,7 +200,7 @@ async def import_categories():
         # Перевіряємо, чи є вже категорії
         result = await session.execute(text("SELECT count(*) FROM categories"))
         count = result.scalar()
-        
+
         if count > 0:
             print(f"⚠️  В БД вже є {count} категорій. Видаляю...")
             # Спочатку обнуляємо category_id в товарах
@@ -253,7 +253,7 @@ async def import_categories():
             """)
         )
         rows = result.all()
-        
+
         print("\n📂 Структура категорій:")
         current_parent = None
         for parent, child in rows:

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import logging
+import math
 import subprocess
 from typing import Literal
 from uuid import UUID
@@ -30,19 +30,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.domain.services.auth_service import AuthService
 from app.infrastructure.persistence.models.print_template import PrintTemplate
 from app.infrastructure.persistence.models.system_setting import SystemSetting
 from app.infrastructure.persistence.models.user import User
+from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
+from app.infrastructure.services.print_font_service import PrintFontService
+from app.infrastructure.services.print_template_service import PrintTemplateService
 from app.schemas.print import (
-    PriceTagRenderRequest,
-    PriceTagRenderResponse,
     LabelRenderRequest,
     LabelRenderResponse,
+    PriceTagRenderRequest,
+    PriceTagRenderResponse,
 )
-from app.domain.services.auth_service import AuthService
-from app.infrastructure.services.price_tag_print_service import PriceTagPrintService
-from app.infrastructure.services.print_template_service import PrintTemplateService
-from app.infrastructure.services.print_font_service import PrintFontService
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ async def _get_fields_from_settings(
     result = await session.execute(
         select(SystemSetting).where(
             SystemSetting.key == key_name,
-            SystemSetting.is_active == True,
+            SystemSetting.is_active,
         )
     )
     setting = result.scalar_one_or_none()
@@ -241,7 +241,7 @@ async def render_price_tags(
     # ─── 6. Обчислюємо мета-інформацію ──────────────────────────────────────
     total_labels = sum(p.copies for p in data.products)
 
-    cols, rows, per_page = PriceTagPrintService._calc_grid(
+    _cols, _rows, per_page = PriceTagPrintService._calc_grid(
         data.width_mm,
         data.height_mm,
         data.gap_mm,
@@ -583,7 +583,7 @@ async def list_printers():
         loop = asyncio.get_running_loop()
         printers = await loop.run_in_executor(None, _list_printers_sync)
         return {"printers": printers}
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Помилка отримання списку принтерів (lpstat)")
         return {"printers": []}
 
@@ -611,7 +611,7 @@ def _list_printers_sync() -> list[str]:
             for line in result.stdout.splitlines()
             if line.strip()
         ]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 

@@ -7,7 +7,7 @@ Domain Entity: Invoice (Прибуткова накладна).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
@@ -70,7 +70,7 @@ class Invoice:
     items: list[InvoiceItem] = field(default_factory=list)
     total: Optional[Money] = None
     status: InvoiceStatus = InvoiceStatus.DRAFT
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     confirmed_at: Optional[datetime] = None
     notes: str = ""
     # ── Фіскальне оприбуткування ───────────────────────────────────────────
@@ -124,7 +124,7 @@ class Invoice:
         if not self.items:
             raise ValueError("Cannot confirm invoice with no items")
         self.status = InvoiceStatus.CONFIRMED
-        self.confirmed_at = datetime.now(timezone.utc)
+        self.confirmed_at = datetime.now(UTC)
         self._recalculate_total()
 
     def cancel(self) -> None:

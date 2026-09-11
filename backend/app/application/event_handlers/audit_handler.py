@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from app.domain.events import (
     BaseDomainEvent,
-    ProductCreated, ProductUpdated, ProductDeleted,
-    InvoiceCreated, InvoiceUpdated, InvoiceDeleted, InvoiceApproved,
-    ReceiptCreated, ReceiptRefunded,
-    UserLoggedIn, UserCreated,
-    StockChanged,
 )
 
 logger = logging.getLogger(__name__)

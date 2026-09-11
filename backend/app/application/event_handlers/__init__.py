@@ -1,11 +1,11 @@
-"""Event Handlers для Kasa POS."""
+"""Event Handlers для Torgashka POS."""
 
-from .logging_handler import LoggingHandler
-from .cache_handler import CacheInvalidationHandler
 from .audit_handler import AuditHandler
+from .cache_handler import CacheInvalidationHandler
+from .logging_handler import LoggingHandler
 
 __all__ = [
-    "LoggingHandler",
-    "CacheInvalidationHandler",
     "AuditHandler",
+    "CacheInvalidationHandler",
+    "LoggingHandler",
 ]

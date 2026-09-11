@@ -306,8 +306,8 @@ class TestPrroRbac:
     """Касир не має права змінювати налаштування / закривати зміну / синхронізувати."""
 
     async def test_cashier_forbidden_put_settings(self, client, prro_mock, cashier_headers):
-        from app.main import app
         from app.api.v2.deps import get_prro_use_cases
+        from app.main import app
 
         async def _override():
             return prro_mock
@@ -323,8 +323,8 @@ class TestPrroRbac:
             app.dependency_overrides.pop(get_prro_use_cases, None)
 
     async def test_cashier_forbidden_close_shift(self, client, prro_mock, cashier_headers):
-        from app.main import app
         from app.api.v2.deps import get_prro_use_cases
+        from app.main import app
 
         async def _override():
             return prro_mock
@@ -340,8 +340,8 @@ class TestPrroRbac:
             app.dependency_overrides.pop(get_prro_use_cases, None)
 
     async def test_cashier_allowed_get_status(self, client, prro_mock, cashier_headers):
-        from app.main import app
         from app.api.v2.deps import get_prro_use_cases
+        from app.main import app
 
         async def _override():
             return prro_mock

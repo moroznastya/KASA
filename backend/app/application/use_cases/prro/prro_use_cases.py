@@ -18,10 +18,8 @@ from uuid import UUID
 
 from app.application.dto.prro_dto import (
     CloseShiftRequestDTO,
-    FiscalizeRequestDTO,
     FiscalizeResponseDTO,
     OpenShiftRequestDTO,
-    PrroQueueItemDTO,
     PrroSettingsDTO,
     PrroShiftDTO,
     PrroStatusDTO,

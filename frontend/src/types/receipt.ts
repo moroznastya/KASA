@@ -85,6 +85,7 @@ export interface ReceiptCreate {
   receipt_number?: string;
   receipt_type: 'sale' | 'return';
   cashier_id?: string;
+  cashier_name?: string;
   total_amount: string;
   paid_amount?: string;
   debtor_id?: string;

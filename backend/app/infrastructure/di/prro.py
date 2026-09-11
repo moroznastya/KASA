@@ -17,14 +17,6 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
-from app.infrastructure.persistence.repositories.prro_settings_repository import (
-    PrroSettingsRepository,
-)
-from app.infrastructure.services.prro.factory import PrroServiceFactory
-from app.infrastructure.services.prro.key_store import PrroKeyStore
-from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
-
 from app.application.use_cases.prro.context import PrroContextFactory
 from app.application.use_cases.prro.fiscalize_receipt_use_case import (
     FiscalizeReceiptUseCase,
@@ -36,6 +28,13 @@ from app.application.use_cases.prro.shift_use_case import PrroShiftUseCase
 from app.application.use_cases.prro.sync_offline_queue_use_case import (
     SyncOfflineQueueUseCase,
 )
+from app.infrastructure.persistence.repositories.prro_repository import PrroRepository
+from app.infrastructure.persistence.repositories.prro_settings_repository import (
+    PrroSettingsRepository,
+)
+from app.infrastructure.services.prro.factory import PrroServiceFactory
+from app.infrastructure.services.prro.key_store import PrroKeyStore
+from app.infrastructure.services.prro.offline_queue import PrroOfflineQueue
 
 logger = logging.getLogger(__name__)
 
@@ -164,10 +163,10 @@ async def close_prro_service_factory() -> None:
 
 
 __all__ = [
-    "build_prro_use_cases",
     "build_fiscalize_use_case",
     "build_prro_context",
-    "get_prro_service_factory",
-    "get_prro_key_store",
+    "build_prro_use_cases",
     "close_prro_service_factory",
+    "get_prro_key_store",
+    "get_prro_service_factory",
 ]
