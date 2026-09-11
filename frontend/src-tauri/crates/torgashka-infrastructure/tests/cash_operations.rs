@@ -15,6 +15,8 @@ use torgashka_domain::{CashOperationCreateInput, CashOperationType, CashType, Po
 use torgashka_infrastructure::repositories::pos::SqlxPos;
 use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
 
+mod common;
+
 /// «Білий магазин» + власник (ФОП Мельничук) — контекст запиту.
 const STORE_ID: &str = "65d5db51-672f-4a38-9c1e-f36c5feb5374";
 const OWNER_ID: &str = "e30d480c-ef3b-4d0e-8808-0c745196d3d8";
@@ -38,6 +40,7 @@ async fn cleanup(pool: &PgPool) {
 #[tokio::test]
 async fn deposit_and_collection_roundtrip_with_balance() {
     let pool = pool().await;
+    common::ensure_fixture(&pool).await;
     cleanup(&pool).await;
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let user_id = Uuid::parse_str(OWNER_ID).unwrap();

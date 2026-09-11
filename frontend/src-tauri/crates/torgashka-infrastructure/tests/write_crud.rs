@@ -12,9 +12,11 @@ use torgashka_domain::{
     CategoryCreateInput, InventoryCreateInput, InventoryItemInput, ProductCreateInput,
     ProductUpdateInput, SupplierCreateInput, WriteDirectories, WriteError,
 };
-use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
+use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx};
 use torgashka_infrastructure::{db, repositories::write::SqlxWriteDirectories};
 use uuid::Uuid;
+
+mod common;
 
 async fn pool() -> sqlx::PgPool {
     db::connect_test_pool(5)
@@ -55,8 +57,9 @@ async fn cleanup_product(p: &sqlx::PgPool, id: Uuid) {
 #[tokio::test]
 async fn product_crud_flow() {
     let p = pool().await;
-    let r = repo(&p);
-    let ts = uniq();
+    common::ensure_fixture(&p).await;
+    let _r = repo(&p);
+    let _ts = uniq();
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
     let ctx = StoreCtx {
@@ -158,6 +161,7 @@ async fn product_crud_flow() {
 #[tokio::test]
 async fn category_supplier_crud_flow() {
     let p = pool().await;
+    common::ensure_fixture(&p).await;
     let r = repo(&p);
     let ts = uniq();
 
@@ -224,9 +228,10 @@ async fn category_supplier_crud_flow() {
 #[tokio::test]
 async fn inventory_confirm_cancel_flow() {
     let p = pool().await;
-    let r = repo(&p);
-    let ts = uniq();
-    let user = any_user_id(&p).await;
+    common::ensure_fixture(&p).await;
+    let _r = repo(&p);
+    let _ts = uniq();
+    let _user = any_user_id(&p).await;
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
     let ctx = StoreCtx {
@@ -366,9 +371,10 @@ async fn inventory_confirm_cancel_flow() {
 #[tokio::test]
 async fn concurrent_inventory_confirms_no_data_loss() {
     let p = pool().await;
-    let r = repo(&p);
-    let ts = uniq();
-    let user = any_user_id(&p).await;
+    common::ensure_fixture(&p).await;
+    let _r = repo(&p);
+    let _ts = uniq();
+    let _user = any_user_id(&p).await;
     let store_id = Uuid::parse_str(STORE_ID).unwrap();
     let owner_id = Uuid::parse_str(OWNER_ID).unwrap();
     let ctx = StoreCtx {
