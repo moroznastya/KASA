@@ -561,29 +561,219 @@ ALTER SYSTEM SET max_slot_wal_keep_size = '10GB';
 ///   створюються завжди (CREATE TABLE IF NOT EXISTS) — покривають і fresh,
 ///   і вже мігровані БД без них.
 pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
-    // Серіалізація DDL між ПРОЦЕСАМИ (Фаза 3.3b): схема містить
-    // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / `CREATE UNIQUE INDEX
-    // IF NOT EXISTS` (0013/0016/0017/0018-dзеркала). Такі команди беруть
-    // AccessExclusiveLock, навіть коли змін не потрібно — а `ensure_schema`
-    // викликають паралельно кілька процесів (тестові бінарі, старт вузлів),
-    // тому PG ловив `40P01 deadlock detected` (relation A ↔ relation B).
-    // Advisory-lock (сесійний, на окремому з'єднанні) робить цю секцію
-    // послідовною: один процес застосовує схему, решта чекають.
+    // Фаза 2.2 (ізоляція тестів): DDL бере AccessExclusiveLock навіть коли
+    // змін не потрібно (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+    // `DROP/CREATE POLICY`). Поки один процес виконує такий DDL, будь-який
+    // інший паралельний INSERT (напр. `INSERT user_stores` у setup тесту)
+    // може зайти в цикл очікування з ним → `40P01 deadlock detected` у
+    // тестовому прогоні. Тому: (1) усі DDL серіалізовані advisory-локом
+    // (`SCHEMA_DDL_LOCK_KEY`), (2) перед застосуванням перевіряється
+    // fingerprint схеми (`public.schema_revision`) — якщо він збігається,
+    // DDL не виконується ВЗАГАЛІ (гарячий шлях = один SELECT у каталозі).
+    //
+    // Fingerprint — хеш усіх DDL-констант + `SCHEMA_REVISION_EXTRA`
+    // (та частина, що генерується в рантаймі: `ensure_prro_schema`). DDL
+    // змінився → fingerprint інший → DDL застосується знову (ідемпотентно).
     let mut lock_conn = pool.acquire().await.map_err(DbError::Sqlx)?;
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(SCHEMA_DDL_LOCK_KEY)
-        .execute(&mut *lock_conn)
-        .await
-        .map_err(DbError::Sqlx)?;
-    let res = ensure_schema_inner(pool).await;
+    advisory_lock(&mut lock_conn).await?;
+    let res = async {
+        let fp = schema_fingerprint();
+        if schema_revision_matches(pool, &fp).await? {
+            return Ok(());
+        }
+        ensure_schema_inner(pool).await?;
+        record_schema_revision(pool, &fp).await
+    }
+    .await;
     // Бест-ефект: знімаємо лок; якщо не вдалося — сесію закриє pool і PG
     // відпустить лок сам.
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(SCHEMA_DDL_LOCK_KEY)
-        .execute(&mut *lock_conn)
-        .await;
+    advisory_unlock(&mut lock_conn).await;
     drop(lock_conn);
     res
+}
+
+/// Ручна складова fingerprint схеми: DDL, що генерується в рантаймі
+/// (`prro::ensure_prro_schema`, бекофіл `store_id`). Змінив такий DDL —
+/// підніми рядок, інакше гарячий шлях не побачить зміни.
+const SCHEMA_REVISION_EXTRA: &str = "2026-08-24/3.4";
+
+/// Fingerprint схеми: хеш усіх DDL-частин `ensure_schema` + ручна складова.
+fn schema_fingerprint() -> String {
+    let mut fp: u64 = FNV_OFFSET;
+    for part in [
+        SCHEMA_SQL,
+        OWNERS_DB_DDL,
+        CASH_OPS_DDL,
+        NETWORK_DDL,
+        NETWORK_NODES_DDL,
+        NETWORK_EVENTS_DDL,
+        STORE_LEGAL_COLUMNS_DDL,
+        RLS_FORCE_DDL,
+        RECEIPTS_CLIENT_UUID_DDL,
+        WAL_POLICY_DDL,
+        SCHEMA_REVISION_EXTRA,
+    ] {
+        fnv1a_update(&mut fp, part.as_bytes());
+        fnv1a_update(&mut fp, &[0]);
+    }
+    format!("{fp:016x}")
+}
+
+/// Чи застосована поточна ревізія схеми (гарячий шлях: 1 SELECT без DDL).
+///
+/// `to_regclass`-охорона: якщо хтось зніс таблиці, але лишив маркер —
+/// маркер не дійсний (DDL мусить застосуватись знову).
+async fn schema_revision_matches(pool: &PgPool, fp: &str) -> Result<bool, DbError> {
+    // ТРИ окремі запити — свідомо: PG резолвить усі relations запиту на етапі
+    // планування, тому `CASE WHEN to_regclass(...) IS NULL ... ELSE (SELECT …
+    // FROM schema_revision …)` падає з `42P01 relation does not exist` на
+    // свіжій БД (перевірено прогоном). Кожен наступний запит виконується лише
+    // після підтвердження існування таблиці.
+    let has_users: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.users') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(DbError::Sqlx)?;
+    if !has_users {
+        return Ok(false);
+    }
+    let has_marker: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.schema_revision') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(DbError::Sqlx)?;
+    if !has_marker {
+        return Ok(false);
+    }
+    let found: Option<String> =
+        sqlx::query_scalar("SELECT fingerprint FROM public.schema_revision WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+            .map_err(DbError::Sqlx)?;
+    Ok(found.as_deref() == Some(fp))
+}
+
+/// Записати fingerprint застосованої схеми (під тим самим advisory-локом).
+async fn record_schema_revision(pool: &PgPool, fp: &str) -> Result<(), DbError> {
+    sqlx::raw_sql(SCHEMA_REVISION_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::query(
+        "INSERT INTO public.schema_revision (id, fingerprint, applied_at) \
+         VALUES (1, $1, now()) \
+         ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint, \
+                                        applied_at = now()",
+    )
+    .bind(fp)
+    .execute(pool)
+    .await
+    .map_err(DbError::Sqlx)?;
+    eprintln!("[torgashka-infrastructure] схема: ревізія застосована (fingerprint {fp})");
+    Ok(())
+}
+
+/// `schema_revision` — службова таблиця маркера ревізії схеми (Фаза 2.2).
+const SCHEMA_REVISION_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS public.schema_revision (
+    id         integer PRIMARY KEY,
+    fingerprint text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+"#;
+
+/// Зняти/взяти сесійний advisory-лок DDL (окреме з'єднання).
+async fn advisory_lock(conn: &mut sqlx::PgConnection) -> Result<(), DbError> {
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(SCHEMA_DDL_LOCK_KEY)
+        .execute(&mut *conn)
+        .await
+        .map(|_| ())
+        .map_err(DbError::Sqlx)
+}
+
+async fn advisory_unlock(conn: &mut sqlx::PgConnection) {
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(SCHEMA_DDL_LOCK_KEY)
+        .execute(&mut *conn)
+        .await;
+}
+
+/// Ідемпотентний DDL, який виконується РІВНО ОДИН РАЗ на ревізію (Фаза 2.2).
+///
+/// Призначення: тестові та сервісні DDL-хелпери (`sync_schema::apply` у
+/// `tests/common`, майбутні інтеграційні набори) мусять бути сумісні з
+/// паралельними прогонами на СПІЛЬНІЙ БД. Повторне виконання
+/// `ALTER TABLE`/`DROP POLICY` на кожен тест-бінар дає AccessExclusiveLock,
+/// який дедлочиться з одночасними INSERT'ами тестів. Контракт:
+///   * той самий advisory-лок, що `ensure_schema` (DDL глобально серіалізований);
+///   * fingerprint DDL у `public.ddl_markers` → повторний виклик = 1 SELECT;
+///   * повертає `true`, якщо DDL цієї ревізії застосовано цим викликом.
+pub async fn ensure_ddl_once(pool: &PgPool, marker: &str, ddl: &str) -> Result<bool, DbError> {
+    let fp = ddl_fingerprint(ddl);
+    let mut conn = pool.acquire().await.map_err(DbError::Sqlx)?;
+    advisory_lock(&mut conn).await?;
+    let res = async {
+        sqlx::raw_sql(DDL_MARKERS_DDL)
+            .execute(&mut *conn)
+            .await
+            .map_err(DbError::Sqlx)?;
+        let applied: Option<String> =
+            sqlx::query_scalar("SELECT fingerprint FROM public.ddl_markers WHERE key = $1")
+                .bind(marker)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(DbError::Sqlx)?;
+        if applied.as_deref() == Some(fp.as_str()) {
+            return Ok(false);
+        }
+        sqlx::raw_sql(ddl)
+            .execute(&mut *conn)
+            .await
+            .map_err(DbError::Sqlx)?;
+        sqlx::query(
+            "INSERT INTO public.ddl_markers (key, fingerprint, applied_at) VALUES ($1, $2, now()) \
+             ON CONFLICT (key) DO UPDATE SET fingerprint = excluded.fingerprint, \
+                                            applied_at = now()",
+        )
+        .bind(marker)
+        .bind(&fp)
+        .execute(&mut *conn)
+        .await
+        .map_err(DbError::Sqlx)?;
+        Ok(true)
+    }
+    .await;
+    advisory_unlock(&mut conn).await;
+    drop(conn);
+    res
+}
+
+/// `ddl_markers` — службові мітки «DDL ревізії X застосовано» (Фаза 2.2).
+const DDL_MARKERS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS public.ddl_markers (
+    key        text PRIMARY KEY,
+    fingerprint text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+"#;
+
+/// SHA-256 тексту DDL (стабільний між прогонами й машинами).
+pub fn ddl_fingerprint(ddl: &str) -> String {
+    let mut fp: u64 = FNV_OFFSET;
+    fnv1a_update(&mut fp, ddl.as_bytes());
+    format!("{fp:016x}")
+}
+
+/// База FNV-1a (64 біт) — стабільний між прогонами/машинами хеш без залежностей.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a_update(state: &mut u64, bytes: &[u8]) {
+    for b in bytes {
+        *state ^= u64::from(*b);
+        *state = state.wrapping_mul(FNV_PRIME);
+    }
 }
 
 /// Ключ advisory-лока серіалізації DDL схеми (`ensure_schema`). Довільна

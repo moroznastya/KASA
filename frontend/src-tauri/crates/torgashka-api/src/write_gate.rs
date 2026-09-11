@@ -87,6 +87,12 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("store_sync_state", WritePolicy::DisabledOnStandby),
     ("sync_log", WritePolicy::DisabledOnStandby),
     ("replication_ddl_role", WritePolicy::DisabledOnStandby),
+    // Службові таблиці DDL-міток (Фаза 2.2, ізоляція тестів): пише ЛИШЕ
+    // стартовий DDL-шлях (`ensure_schema` / `ensure_ddl_once`) у БД, яку вузол
+    // має право мігрити (primary). На standby DDL репліки вимкнено — клас той
+    // самий, що `replication_ddl_role`/`sync_log` (агрегатор-only).
+    ("schema_revision", WritePolicy::DisabledOnStandby),
+    ("ddl_markers", WritePolicy::DisabledOnStandby),
     ("network_nodes_offline_job", WritePolicy::DisabledOnStandby),
     // ── §11.7: таблиці PG-шару (DML-точки в `repositories/**`, `prro/**`,
     // `provision.rs`, `store_context.rs`) — реєстр і обґрунтування: ADR §11.7.

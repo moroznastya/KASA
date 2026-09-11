@@ -150,9 +150,15 @@ ALTER TABLE receipts DROP COLUMN IF EXISTS client_receipt_uuid;
 "##;
 
 /// Застосувати sync-шар схеми (ідемпотентно). Викликається ПІСЛЯ ensure_schema.
+///
+/// Фаза 2.2 (ізоляція тестів): DDL іде через `db::ensure_ddl_once` — під тим
+/// самим advisory-локом, що `ensure_schema`, і з fingerprint-маркером
+/// (`public.ddl_markers`). Наслідок: `ALTER TABLE`/`DROP POLICY` виконуються
+/// РІВНО ОДИН РАЗ на ревізію DDL на всю тестову БД, а не в кожному
+/// тест-бінарі — саме ці AccessExclusiveLock'и дедлочились із паралельними
+/// INSERT'ами setup'ів (`40P01`) у попередніх прогонах.
 pub async fn apply(pool: &sqlx::PgPool) {
-    sqlx::raw_sql(SYNC_DDL)
-        .execute(pool)
+    torgashka_infrastructure::db::ensure_ddl_once(pool, "test_sync_schema", SYNC_DDL)
         .await
         .expect("sync-шар схеми (Alembic 0011-0014) на тестовій БД");
 }

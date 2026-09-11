@@ -232,26 +232,32 @@ mode == standby:
 
 ## 5. Приймальні тести
 
-| ID | Сценарій | Доказ коректності |
-|----|----------|-------------------|
-| AT-1 | standby + primary up: `POST /api/v1/admin/stores` (#1,#2) | `201/200`; рядок `stores` існує на primary `192.168.0.160:5544`; на `127.0.0.1:5433` `SELECT count(*) FROM stores` = без змін; `pg_is_in_recovery()` на 5433 = `true` упродовж тесту. |
-| AT-2 | standby + primary down: той самий `POST` (#1,#2) | `503`; тіло містить рівно `detail` (json-схема `{"detail": string}`); заголовки `X-Torgashka-Node-Mode: standby`, `X-Torgashka-Upstream: down`; `postgres.log` репліки **не містить** `read-only transaction` (write не робився). |
-| AT-3 | standby + primary down: `POST /api/v1/auth/login` (#38,#39) | `200` + валідний JWT; рядок `work_sessions` з'явився у SQLite вузла; у `postgres.log` репліки — **0** спроб `INSERT/UPDATE work_sessions`; кількість рядків `work_sessions` у репліці не змінилась. |
-| AT-4 | standby + primary up: `login` (#38,#39) | `200`; `work_sessions` **не** з'явився в репліці (F6: на standby PG не пишеться взагалі) — перевірка `SELECT count(*)` до/після; рядок є у SQLite; після рестарту primary outbox доставив op у PG. |
-| AT-5 | standby, прогін ≥ 3 інтервали job'а (180 с) (#21) | У `postgres.log` — рівно **1** рядок `offline-job вимкнено (режим standby)`; **0** рядків `network_nodes offline-job: ...read-only...`; `status` вузлів на репліці не змінюється. |
-| AT-6 | standby: фронт каси опитує `/api/v1/local/status` N разів (#12) | Жодного `read-only transaction` у `postgres.log`; події `degraded_local`/`primary_restored` з'являються у `network_events` **primary**; анти-спам збережено (не більше 1 запису на перехід). |
-| AT-7 | standby + primary up: приймачі синку (#22–#33) | `POST /api/v1/sync/push` → `503` + `X-Torgashka-Node-Mode: standby` (серверна роль недоступна на вузлі); жодного запису в `stock/purchase_orders/...` на репліці. |
-| AT-8 | статичний guard (CI) | Тест сканує `crates/torgashka-api/src/**` і падає, якщо будь-який `INSERT/UPDATE/DELETE`-рядок виконується на пулі локального стану (`state.local.pool` / `store_pool` у standby-гілці); ціль запису ∈ {`upstream_write_pool`, SQLite}. |
-| AT-9 | регресія `mode="primary"` (F2) | Секція `[node]` відсутня або `mode="primary"` → повний наявний набір інтеграційних тестів зелений; unit-тест `NodeConfig::load_from_str` підтверджує, що `upstream_write_url` не впливає на резолв пулів. |
-| AT-10 | негативний: standby без `upstream_write_url` | Будь-який `UPSTREAM_NOW`-запит → `503` (той самий контракт §4), **не** тихий запис у репліку і **не** `500`. |
+**Фаза 3.4 (2026-09-11): AT-тести зроблено виконуваними там, де це можливо
+наявним харнесом.** Колонка «Статус» має машинно-перевірну відповідність:
+✅ executable — тест існує і зелений; ⚠️ частково — виконувана частина є, решта
+потребує 2 вузлів; 🕐 — потребує 2-вузлового середовища (точні перешкоди в
+примітках). Харнес: тести піднімають фасад in-process, «репліку» імітує
+read-only роль на тій самій БД, «primary down» — URL на вільний порт;
+**фізичної реплікації з WAL і `postgres.log` репліки в тестовому середовищі
+НЕМАЄ** — тому всі докази, що вимагають рядків логу репліки, позначені 🕐.
 
-| AT-11 | primary: `POST /api/v1/sync/push` з типом `invoice` (приймач §9) | `200`; накладна видима в `GET /api/v1/invoices` на primary; `stock.quantity` точки виріс на кількість позиції; `products.stock` і `supplier_ledger` (INVOICE) оновлені |
-| AT-12 | ідемпотентність: той самий `client_uuid` двічі (§9) | другий push → `already_exists`; `stock` більше **не** зростає; `sync_log` містить `already_exists` |
-| AT-13 | негативний: `invoices_v1 = None` (фасад без `TORGASHKA_RUST_INVOICES=1`) | приймач → `PushItemResult::error`; `sync_log.status='error'`; outbox лишається `pending` (тихого ack немає) |
-| AT-14 | standby + primary down: створення накладної касою | документ у локальній таблиці `invoices` (offline 0010); SQLite `stock +qty` в **одній** транзакції з outbox; підміна невалідного `product_id` → rollback: немає ні агрегата, ні outbox, ні stock; маркер «очікує синку» |
-| AT-15 | звірка після відновлення репліки (§10) | локальний (SQLite) і авторитетний (репліка PG) залишки показані окремо + дельта; вирівнювання доступне інвентаризацією (`set_stock_level`) |
-
----
+| ID | Сценарій | Статус | Доказ / тест (`файл:рядок`) |
+|----|----------|--------|------------------------------|
+| AT-1 | standby + primary up: `POST /api/v1/admin/stores` (#1,#2) | 🕐 | Дві вимоги поза харнесом: (1) **фізична репліка** на `127.0.0.1:5433` з `pg_is_in_recovery() = true` упродовж тесту — in-process репліки немає; (2) перевірка рядка `stores` на primary `192.168.0.160:5544` — друга машина. Доступна частина (pass-through на живий primary + 0 рядків у локальній БД) покрита `tests/adr0007_at_contract.rs:420` (AT-2, крок 1) |
+| AT-2 | standby + primary down: той самий `POST` (#1,#2) | ✅ | `tests/adr0007_at_contract.rs:420` — крок 1: `server_url` → живий фейковий primary ⇒ `201` + заголовок/тіло primary пройшли як є; крок 2: `server_url` → недосяжний порт ⇒ `503` + рівно `{"detail": STANDBY_DETAIL}` + `X-Torgashka-Node-Mode: standby` + `X-Torgashka-Upstream: down` + `Retry-After`; кількість рядків `stores` у БД не змінилась. Замість рядків `postgres.log` репліки — структурний доказ «PG не торкали»: пул у стані тесту writable, але жодного запису не сталося |
+| AT-3 | standby + primary down: `POST /api/v1/auth/login` (#38,#39) | 🕐 | Харнес не має standby-в'язки `auth`+`work_sessions`-outbox in-process (login-гілка каси піднімається `run_facade` разом із локальною реплікою на `[node] local_port`, якої в тестовому середовищі немає); вимога «0 рядків `INSERT/UPDATE work_sessions` у `postgres.log` репліки» — лог фізичної репліки |
+| AT-4 | standby + primary up: `login` (#38,#39) | 🕐 | Те саме, що AT-3 + «після рестарту primary outbox доставив op у PG» — потрібен окремий живий primary як другий вузол |
+| AT-5 | standby, прогін ≥ 3 інтервали job'а (180 с) (#21) | 🕐 | Вимога — рядки `postgres.log` репліки («рівно 1 `offline-job вимкнено`», «0 `network_nodes offline-job …read-only…`») ⇒ фізична репліка + довгий прогін; in-process доказ класу job'а вже є статично (`write_gate_guard`, #21 = `network_nodes_offline_job`, `DisabledOnStandby`) |
+| AT-6 | standby: фронт каси опитує `/api/v1/local/status` N разів (#12) | 🕐 | Потрібні: реальна репліка (щоб `read-only transaction` узагалі міг з'явитись у її логу) + запис `degraded_local`/`primary_restored` у `network_events` **primary** (другий вузол); анти-спам-механізм покритий статично (`route_local.rs:104-134`, edge-детектор) |
+| AT-7 | standby + primary up: приймачі синку (#22–#33) | ✅ | `tests/write_gate_behavior.rs:295` — `POST /api/v1/sync/push` на standby ⇒ `503` + `X-Torgashka-Node-Mode: standby`; «жодного запису в `stock/purchase_orders/…` на репліці» — структурно: у стані тесту немає PG-пулів, гейт відповідає до маршрутизації (той самий метод доказу, що AT-8) + `tests/adr0007_at_contract.rs:565` (той самий маршрут у наборі AT-10: 0 рядків у БД) |
+| AT-8 | статичний guard (CI) | ✅ | `tests/write_gate_guard.rs` — 9 тестів: `real_all_crates_tree_has_no_unclassified_dml` (`:432`), `real_src_tree_has_no_unclassified_dml`, `pg_table_registry_is_complete_and_consistent` (`:870`), `every_write_route_has_explicit_class` (`:1151`), `every_admin_pool_entity_has_policy`, `adr_registry_has_all_points_and_matching_policies`, + 3 синтетичні негативні контроли |
+| AT-9 | регресія `mode="primary"` (F2) | ✅ | `tests/write_gate_behavior.rs:381` (`primary_mode_behavior_unchanged_f2`) + unit `infrastructure/src/node_config.rs:1039` (`upstream_write_url_field_does_not_affect_primary_resolution`) |
+| AT-10 | негативний: standby без `upstream_write_url` | ✅ | `tests/adr0007_at_contract.rs:565` — 12 `UPSTREAM_NOW`-маршрутів (§3.1 + §11.7.9): усі `503` §4 (0×`500`), тіло рівно `{detail}`, у тілі немає `read-only transaction`/`sqlx`; `stores/devices/network_nodes/products/categories/suppliers` — 0 змін (тихого запису немає). Передумова тесту — `resolve_upstream_write_url() == None` |
+| AT-11 | primary: `POST /api/v1/sync/push` з типом `invoice` (приймач §9) | ✅ | `tests/sync_invoice_push_e2e.rs:250` — приймач застосовує накладну: `invoices` видима, `stock.quantity +qty`, `supplier_ledger`; + `tests/invoice_standby_outbox_e2e.rs:589` (payload адаптера прийнято, `s1.done == 1`) |
+| AT-12 | ідемпотентність: той самий `client_uuid` двічі (§9) | ✅ | `tests/sync_invoice_push_e2e.rs:250` — другий push ⇒ `already_exists`, `stock` не зростає, `sync_log` містить `already_exists` |
+| AT-13 | негативний: `invoices_v1 = None` (без `TORGASHKA_RUST_INVOICES=1`) | ✅ | `tests/sync_invoice_disabled_e2e.rs:70` — приймач ⇒ `PushItemResult::error`, `sync_log.status='error'`, outbox лишається `pending` (тихого ack немає) |
+| AT-14 | standby + primary down: створення накладної касою | ⚠️ ⛔ | Виконувано: `tests/adr0007_at_contract.rs:640` — документ `invoices` + `invoice_items` + `outbox(status='pending')` + SQLite `stock +3.000` в ОДНІЙ транзакції (той самий `client_uuid` у всіх чотирьох), маркер «очікує синку» = `pending` + `pending_count() == 1`, репліка read-only (прямий `INSERT` ⇒ `read-only transaction`), 0 рядків у PG; атомарність контуру доведена РЕАЛЬНИМ провалом ефекту в `enqueue_transaction` (агрегат і outbox відкочуються). Додатково — `tests/invoice_standby_outbox_e2e.rs:338`. **⛔ Розходження ADR↔код**: пункт «підміна невалідного `product_id` → rollback» НЕ реалізовано (див. АНОМАЛІЮ у звіті Фази 3.4) |
+| AT-15 | звірка після відновлення репліки (§10) | ⚠️ ⛔ | Виконувано: `tests/adr0007_at_contract.rs:807` — локальний (SQLite, `stock::get_stock_level`/`stock_with_catalog`) і авторитетний (PG `stock.quantity`) залишки читаються ОКРЕМО, дельта обчислюється (після офлайн-накладної `3.000` ⇒ `local − auth = 3.000`; після push на primary ⇒ дельта `0`; локальна невивантажена накладна #2 ⇒ дельта `2.000`), вирівнювання — **наявним** механізмом інвентаризації (`enqueue_transaction(TYPE_INVENTORY)` → `set_stock_level`), після чого дельта `0`. **⛔ Розходження ADR↔код**: окремої поверхні (HTTP/UI), яка «показує обидва числа й дельту», у коді НЕМАЄ — існують лише примітиви (див. АНОМАЛІЮ у звіті Фази 3.4) |
 
 ## 6. Наслідки
 
@@ -800,6 +806,8 @@ Guard `crates/torgashka-api/tests/write_gate_guard.rs` до цієї фази с
 | `replication_ddl_role` | 4 | `api/network_nodes.rs:513`, `api/network_nodes.rs:521`, `infrastructure/provision.rs:284`, `infrastructure/provision.rs:290` | 503 §4 (вниз не пускається) | Агрегатор-only DDL (§3.2 #34–#35) |
 | `store_sync_state` | 1 | `api/sync.rs:179` | 503 §4 (вниз не пускається) | Агрегатор-only (правило C) |
 | `sync_log` | 1 | `api/sync.rs:987` | 503 §4 (вниз не пускається) | Агрегатор-only (правило C) |
+| `schema_revision` | 1 | `infrastructure/db.rs:663` (`record_schema_revision`, `INSERT … ON CONFLICT`) | не проксіюється: DDL-шлях старту вузла (`ensure_schema`) | **Фаза 2.2**: службовий маркер «ревізія схеми застосована» (fingerprint усіх DDL-констант `ensure_schema`). Гарячий шлях = 1 SELECT → DDL не виконується, якщо ревізія збігається (прибирає AccessExclusiveLock'и, що дедлочились із паралельними INSERT'ами тестів). Пише лише вузол з правом мігрити БД; на standby DDL репліки вимкнено (як `replication_ddl_role`) |
+| `ddl_markers` | 1 | `infrastructure/db.rs:735` (`ensure_ddl_once`, `INSERT … ON CONFLICT`) | не проксіюється: DDL-шлях тестів/сервісу | **Фаза 2.2**: універсальний маркер «DDL ревізії X застосовано» під тим самим advisory-локом, що `ensure_schema` (`SCHEMA_DDL_LOCK_KEY`). Ужиток: `tests/common/sync_schema.rs` (`test_sync_schema`) — sync-шар Alembic 0011–0014 застосовується РАЗ на ревізію, а не в кожному тест-бінарі |
 | **Разом** | **6** | — | — | **3 таблиць** |
 
 #### 11.7.5 Супутні таблиці документів (`satellite`) — 7
