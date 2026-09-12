@@ -24,10 +24,12 @@ pub mod admin_prro;
 pub mod admin_reports;
 pub mod auth;
 pub mod auth_routes;
+pub mod catalog_proposal;
 pub mod categories_v2;
 pub mod crud;
 pub mod debtors;
 pub mod documents;
+pub mod hub_forwarder;
 pub mod invoices;
 pub mod ledger;
 pub mod network;
@@ -51,6 +53,7 @@ pub mod stores;
 pub mod suppliers;
 pub mod sync;
 pub mod sync_receivers;
+pub mod sync_status;
 pub mod write_gate;
 
 use std::sync::Arc;
@@ -1255,6 +1258,7 @@ async fn init_facade_state() -> Result<
             t3.elapsed().as_millis()
         ),
     );
+
     // ── Крок 4: репозиторії/сервіси (кожен пул створюється один раз) ──
     let t4 = Instant::now();
     let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
@@ -1368,6 +1372,36 @@ async fn init_facade_state() -> Result<
         node_config,
         local,
     };
+    // ── E3 (ADR-0008 §7.1-A1, §7.3 п.1): форвардер вузол→хаб ─────────────
+    // Вузол приймає документ каси ЛОКАЛЬНО і мусить передати його вгору — тим
+    // самим протоколом (`POST /api/v1/sync/push` хаба). Задача піднімається
+    // ЛИШЕ якщо хаб налаштований у ВЛАСНІЙ БД (`sync.hub_url`): у хаба цього
+    // налаштування немає, тож «форвард у себе» неможливий. Ґейт Фази 3.8
+    // (`NodeConfig::push_blocked_reason`) шлях форвардера НЕ проходить: тут
+    // власна PG-черга (`hub_outbox`) і спільний HTTP-виклик, а не стара
+    // SQLite-черга каси — ґейт лишається живим до E7 (див. §1.1 плану).
+    if let Some(pool) = state.write_pool.clone() {
+        match crate::hub_forwarder::HubForwardConfig::from_pool(&pool).await {
+            Ok(Some(cfg)) => {
+                eprintln!(
+                    "[torgashka-api] hub_forwarder: вузол віддає прийняте в хаб {} (період {} с)",
+                    cfg.base_url,
+                    crate::hub_forwarder::DEFAULT_INTERVAL_SECS
+                );
+                crate::hub_forwarder::spawn_hub_forward_task(
+                    StorePool::new(pool),
+                    cfg,
+                    crate::hub_forwarder::DEFAULT_INTERVAL_SECS,
+                );
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "[torgashka-api] hub_forwarder: налаштування хаба не прочитано ({e}) — \
+                 форвардер не піднято (інстанс працює як хаб/одиночна точка)"
+            ),
+        }
+    }
+
     // Фоновий job мережі магазинів (ЕТАП 15, план §5.4): кожні 60 с вузли
     // active/lagging без heartbeat > 5 хв → offline (той самий поріг, що й
     // isDeviceOnline кас). Вузли archived не чіпаємо (термінальний стан).

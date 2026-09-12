@@ -526,6 +526,42 @@ pub struct PushConfig {
     pub interval_secs: u64,
 }
 
+/// HTTP-виклик `POST {base_url}/api/v1/sync/push` — ОДИН код для клієнта каси
+/// ([`push_pending_batch`]) і для форвардера вузла→хаб
+/// (`torgashka_api::hub_forwarder`, ADR-0008 §7.3 п.1: «перевикористати
+/// `offline/sync_push.rs` як бібліотеку»).
+///
+/// Повертає `(HTTP-статус, СИРЕ тіло відповіді)`. `Err` — мережа/сервер
+/// недоступний: викликач НЕ змінює стан черги (дизайн 4.3 «немає мережі»).
+/// Штамп батча (`X-Sync-Batch-Id`) і режим авторизації (Етап 2b: device →
+/// без `X-Store-Id`) — тут, щоб клієнт і форвардер не розходились.
+pub async fn post_push_batch(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    store_id: Option<&str>,
+    batch_id: &str,
+    body: &[Value],
+) -> Result<(reqwest::StatusCode, String), String> {
+    let mut req = client
+        .post(format!("{base_url}/api/v1/sync/push"))
+        .header("X-Sync-Batch-Id", batch_id)
+        .bearer_auth(token);
+    // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
+    // сервер визначає точку з device_token (StoreCtx у task-local).
+    if let Some(sid) = store_id {
+        req = req.header("X-Store-Id", sid);
+    }
+    let resp = req
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| format!("push недоступний (сервер вимкнений?): {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    Ok((status, text))
+}
+
 /// Один цикл push: вибірка pending (FIFO, ≤50) → POST → обробка.
 ///
 /// Повертає підсумок. Мережева помилка (сервер недоступний) → Err: статуси
@@ -584,30 +620,28 @@ pub async fn push_pending_batch_with_node(
     // E2a (ADR-0008 §4.3 п.1): клієнт штампує батч — сервер збереже ТОЙ САМИЙ
     // `batch_id` (sync_log/синхронна відповідь). Один цикл push = один батч.
     let batch_id = uuid::Uuid::new_v4().to_string();
-    let mut req = client
-        .post(format!("{}/api/v1/sync/push", cfg.base_url))
-        .header("X-Sync-Batch-Id", &batch_id)
-        .bearer_auth(&cfg.token);
-    // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
-    // сервер визначає точку з device_token (StoreCtx у task-local).
-    if let Some(sid) = &cfg.store_id {
-        req = req.header("X-Store-Id", sid);
-    }
-    let resp = req.json(&body).send().await;
-
-    // Немає мережі / сервер недоступний: pending без змін (дизайн 4.3).
-    // Подія push_fail у sync_log — моніторинг бачить, що push не йде.
-    let resp = match resp {
+    // Сам HTTP-виклик — спільний із форвардером вузла→хаб
+    // (`post_push_batch`): URL, авторизація і штамп батча в одному місці.
+    let (status, text) = match post_push_batch(
+        client,
+        &cfg.base_url,
+        &cfg.token,
+        cfg.store_id.as_deref(),
+        &batch_id,
+        &body,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => {
-            let msg = format!("push недоступний (сервер вимкнений?): {e}");
+        Err(msg) => {
+            // Немає мережі / сервер недоступний: pending без змін (дизайн 4.3).
+            // Подія push_fail у sync_log — моніторинг бачить, що push не йде.
             // Помилка журналу НЕ блокує основний push-цикл.
             let _ = log_event(&conn, "push_fail", None, Some(&msg), None);
             return Err(msg);
         }
     };
 
-    let status = resp.status();
     let mut summary = PushSummary {
         sent: batch.len(),
         ..Default::default()
@@ -625,7 +659,6 @@ pub async fn push_pending_batch_with_node(
 
     // 400/422: валідація всього пакета — failed без retry.
     if status.is_client_error() {
-        let text = resp.text().await.unwrap_or_default();
         for it in &batch {
             mark_failed(&mut conn, it, Some(format!("HTTP {status}: {text}")))?;
         }
@@ -636,7 +669,8 @@ pub async fn push_pending_batch_with_node(
     // 200: per-item результати сервера. Аномалія: HTTP 200, але тіло —
     // невалідний JSON (дефектний/чужий сервер). Журналюємо push_fail —
     // моніторинг бачить причину, а не мовчить (LOW 5.4, sync_push.rs:537).
-    let results: Vec<ServerPushResult> = match resp.json().await {
+    let results: Vec<ServerPushResult> = match serde_json::from_str::<Vec<ServerPushResult>>(&text)
+    {
         Ok(r) => r,
         Err(e) => {
             let msg = format!("невалідна відповідь push (HTTP 200, тіло не JSON): {e}");

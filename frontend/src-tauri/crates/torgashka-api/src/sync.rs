@@ -614,6 +614,16 @@ pub async fn push(
     // Статус батча — за ФАКТИЧНИМ результатом (жодного «на віру»).
     finalize_batch(&pool, batch_id, batch_status(&results)).await;
 
+    // E3 (ADR-0008 §7.1-A1): усе ПРИЙНЯТЕ цим вузлом стає чергою форвардингу
+    // node→hub — конверт агрегата зберігається ЯК Є, щоб хаб отримав той самий
+    // вміст і ТОЙ САМИЙ `batch_id` (E2a), без реконструкції з доменних таблиць.
+    // У хаба налаштування `sync.hub_url` немає → виклик нічого не робить.
+    let queued =
+        crate::hub_forwarder::enqueue_accepted(&pool, ctx_store, batch_id, &body, &results).await;
+    if queued > 0 {
+        eprintln!("[sync/push] батч {batch_id}: у чергу форвардингу в хаб — {queued} агрегат(ів)");
+    }
+
     // Частина 4: device-каса — після успішного прийому пакета (усі агрегати
     // отримали результат) фіксуємо стан точки. JWT-каси/admin — без змін.
     if claims.role == "device" {

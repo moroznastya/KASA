@@ -19,7 +19,9 @@
 /// Фінальний стан Alembic 0011 (sync_meta/sync_log/stock_projection/soft-delete)
 /// + 0012 (server_version + BEFORE bump) + 0013 (client_uuid на приймачах)
 /// + 0014 (drop kasa-спадку client_receipt_uuid) + 0019 (батьківські kinds)
-/// + 0020 (sync_batches + sync_log.batch_id/error_class, етап E2a).
+/// + 0020 (sync_batches + sync_log.batch_id/error_class, етап E2a)
+/// + 0021 (hub_forwarded_at/hub_forward_status + hub_outbox, етап E3)
+/// + 0022 (catalog_change_requests — журнал пропозицій довідників, етап E5).
 const SYNC_DDL: &str = r##"
 CREATE TABLE IF NOT EXISTS public.sync_meta (
     entity text PRIMARY KEY,
@@ -61,6 +63,63 @@ CREATE INDEX IF NOT EXISTS ix_sync_batches_store
     ON sync_batches (store_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_sync_log_batch
     ON sync_log (batch_id) WHERE batch_id IS NOT NULL;
+
+-- 0021 (ADR-0008 §7.1-A1, етап E3): форвардинг прийнятого вузлом у хаб —
+-- стан передачі в журналі прийому + черга `hub_outbox`. Дзеркало Alembic
+-- 0021_hub_forwarding.
+ALTER TABLE public.sync_log ADD COLUMN IF NOT EXISTS hub_forwarded_at timestamptz;
+ALTER TABLE public.sync_log ADD COLUMN IF NOT EXISTS hub_forward_status text;
+CREATE INDEX IF NOT EXISTS ix_sync_log_hub_pending
+    ON sync_log (store_id, hub_forwarded_at) WHERE hub_forwarded_at IS NULL;
+CREATE TABLE IF NOT EXISTS public.hub_outbox (
+    id bigserial PRIMARY KEY,
+    store_id uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+    entity text NOT NULL,
+    client_uuid uuid NOT NULL,
+    batch_id uuid,
+    envelope jsonb NOT NULL,
+    status text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','done','failed')),
+    attempts int NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    forwarded_at timestamptz,
+    forward_status text
+        CHECK (forward_status IS NULL OR forward_status IN ('accepted','failed')),
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hub_outbox_store_client_entity
+    ON hub_outbox (store_id, client_uuid, entity);
+CREATE INDEX IF NOT EXISTS ix_hub_outbox_pending
+    ON hub_outbox (status, next_attempt_at, id);
+
+-- 0022 (ADR-0008 §7.1-D1/D2, етап E5): журнал ПРОПОЗИЦІЙ спільних довідників
+-- (хаб — авторитет; вузол пропонує, хаб присвоює єдиний server_version).
+-- Дзеркало Alembic 0022_catalog_change_requests.
+CREATE TABLE IF NOT EXISTS public.catalog_change_requests (
+    id bigserial PRIMARY KEY,
+    entity text NOT NULL,
+    row_id uuid NOT NULL,
+    op text NOT NULL CHECK (op IN ('upsert','delete')),
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    client_uuid uuid NOT NULL,
+    store_id uuid REFERENCES public.stores(id) ON DELETE SET NULL,
+    status text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','accepted','conflict','rejected')),
+    server_version bigint,
+    base_version bigint NOT NULL DEFAULT 0,
+    priority integer,
+    error text,
+    decided_by uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    decided_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_catalog_change_requests_client_uuid
+    ON catalog_change_requests (client_uuid);
+CREATE INDEX IF NOT EXISTS ix_catalog_change_requests_queue
+    ON catalog_change_requests (status, created_at);
+CREATE INDEX IF NOT EXISTS ix_catalog_change_requests_row
+    ON catalog_change_requests (entity, row_id, status);
 
 CREATE TABLE IF NOT EXISTS public.stock_projection (
     store_id uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,

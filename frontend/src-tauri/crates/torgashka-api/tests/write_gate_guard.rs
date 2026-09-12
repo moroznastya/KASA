@@ -851,12 +851,18 @@ const PG_TABLE_REGISTRY: &[(&str, TableClass)] = &[
     ("network_events", TableClass::ProxyToPrimary),
     ("store_activation_codes", TableClass::ProxyToPrimary),
     ("write_off_reasons", TableClass::ProxyToPrimary),
-    // Агрегатор-only (DisabledOnStandby, 4)
+    // Агрегатор-only (DisabledOnStandby, 5)
     ("store_sync_state", TableClass::DisabledOnStandby),
     ("sync_log", TableClass::DisabledOnStandby),
     // E2a (ADR-0008 §7.1-A2): батчі push — журнал агрегатора, той самий клас,
     // що sync_log (DML лише в приймачі `sync.rs`).
     ("sync_batches", TableClass::DisabledOnStandby),
+    // E3 (ADR-0008 §7.1-A1): черга форвардингу вузол→хаб — журнал агрегатора
+    // (DML у `sync.rs` + `hub_forwarder.rs`), той самий клас, що sync_log.
+    ("hub_outbox", TableClass::DisabledOnStandby),
+    // E5 (ADR-0008 §7.1-D1): журнал пропозицій довідників — журнал агрегатора
+    // (DML у `catalog_proposal.rs`), той самий клас, що sync_log.
+    ("catalog_change_requests", TableClass::DisabledOnStandby),
     ("replication_ddl_role", TableClass::DisabledOnStandby),
     // Службові таблиці DDL-міток (Фаза 2.2 — ізоляція тестів, DisabledOnStandby, 2)
     ("schema_revision", TableClass::DisabledOnStandby),
@@ -884,8 +890,8 @@ const NO_DML_TABLES: &[&str] = &["price_tags"];
 fn pg_table_registry_is_complete_and_consistent() {
     assert_eq!(
         PG_TABLE_REGISTRY.len(),
-        46,
-        "§11.7: 46 таблиць PG-шару зі скану crates/*/src/**"
+        48,
+        "§11.7: 48 таблиць PG-шару зі скану crates/*/src/**"
     );
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let (mut lo, mut px, mut ds) = (0usize, 0usize, 0usize);
@@ -910,7 +916,7 @@ fn pg_table_registry_is_complete_and_consistent() {
     }
     assert_eq!(lo, 22, "§11.7: LocalOutbox — 22 таблиці");
     assert_eq!(px, 18, "§11.7: ProxyToPrimary — 18 таблиць");
-    assert_eq!(ds, 6, "§11.7: DisabledOnStandby — 6 таблиць");
+    assert_eq!(ds, 8, "§11.7: DisabledOnStandby — 8 таблиць");
 
     // satellite: власного рядка немає, політика = політика батька
     assert_eq!(SATELLITE_TABLE.len(), 7, "§11.7 п.2: 7 супутніх таблиць");
@@ -949,20 +955,21 @@ fn pg_table_registry_is_complete_and_consistent() {
         "шар локальної SQLite не має політики PG (§11.7 п.4)"
     );
 
-    // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 29 таблиць
-    // PG-шару (§11.7, з E2a — `sync_batches`) + 5 поверхневих сутностей (§11.7.9).
+    // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 31 таблиця
+    // PG-шару (§11.7, з E2a — `sync_batches`, з E3 — `hub_outbox`,
+    // з E5 — `catalog_change_requests`) + 5 поверхневих сутностей (§11.7.9).
     assert_eq!(
         POLICY_TABLE.len(),
-        59,
-        "POLICY_TABLE: 25 гейт-сутностей + 29 таблиць PG-шару + 5 поверхневих §11.7.9"
+        61,
+        "POLICY_TABLE: 25 гейт-сутностей + 31 таблиця PG-шару + 5 поверхневих §11.7.9"
     );
     assert_eq!(
         PG_TABLE_REGISTRY.len() + SQLITE_ONLY_TABLES.len() + NO_DML_TABLES.len(),
-        55,
-        "§11.7: 46 таблиць PG + 8 лише-SQLite + 1 без DML = 55 рядків реєстру"
+        57,
+        "§11.7: 48 таблиць PG + 8 лише-SQLite + 1 без DML = 57 рядків реєстру"
     );
     eprintln!(
-        "[guard] §11.7: таблиць=55 (PG={lo}, лише-SQLite={}, без-DML={}; класи PG: LocalOutbox={lo}, ProxyToPrimary={px}, Disabled={ds}), satellites={}, POLICY_TABLE={}",
+        "[guard] §11.7: таблиць=57 (PG={lo}, лише-SQLite={}, без-DML={}; класи PG: LocalOutbox={lo}, ProxyToPrimary={px}, Disabled={ds}), satellites={}, POLICY_TABLE={}",
         SQLITE_ONLY_TABLES.len(),
         NO_DML_TABLES.len(),
         SATELLITE_TABLE.len(),
@@ -1005,8 +1012,8 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
     );
     assert_eq!(
         POLICY_TABLE.len(),
-        59,
-        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 29 таблиць PG-шару §11.7 + 5 поверхневих §11.7.9"
+        61,
+        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 31 таблиця PG-шару §11.7 + 5 поверхневих §11.7.9"
     );
     eprintln!(
         "[guard] POLICY_TABLE: {} рядків, усі покриті реєстром §3/§11.6/§11.7 або каналом документів",

@@ -20,10 +20,10 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     admin, admin_audit, admin_db_sources, admin_migrate, admin_network_config, admin_prro,
-    admin_reports, auth, auth_routes, categories_v2, crud, debtors, documents, invoices, ledger,
-    network, network_nodes, ocr, pos, print_templates, products_v2, proxy, prro, purchase_orders,
-    readdirs, return_invoices, route_local, setup, store_context, stores, suppliers, sync,
-    AppState,
+    admin_reports, auth, auth_routes, catalog_proposal, categories_v2, crud, debtors, documents,
+    invoices, ledger, network, network_nodes, ocr, pos, print_templates, products_v2, proxy, prro,
+    purchase_orders, readdirs, return_invoices, route_local, setup, store_context, stores,
+    suppliers, sync, sync_status, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -176,6 +176,17 @@ pub fn build_router(state: AppState) -> Router {
     // POS-гілки (створення чеків з client_uuid) + sync_meta/sync_log (0011).
     if state.pos.is_some() {
         router = router.route("/api/v1/sync/push", post(sync::push));
+    }
+    // E5/E6 (ADR-0008 §7.2 п.3/п.4): арбітраж спільних довідників (пропозиція
+    // вузла → хаб-авторитет) і стан синку інстанса. Потрібен лише пул БД —
+    // жодної POS-гілки (пропозиція не створює чеків).
+    if state.store_pool.is_some() {
+        router = router
+            .route(
+                "/api/v1/sync/catalog-proposal",
+                post(catalog_proposal::propose),
+            )
+            .route("/api/v1/sync/status", get(sync_status::status));
     }
 
     // Rust-гілка ledger (етап 4) — під тим самим feature-flag.
@@ -798,6 +809,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/network-events",
             get(network_nodes::list_network_events),
+        )
+        // E5 (ADR-0008 §7.2 п.5): черга конфліктів спільних довідників —
+        // рішення оператора (admin|owner|store_manager через require_admin).
+        .route(
+            "/api/v1/admin/sync/conflicts",
+            get(catalog_proposal::conflicts),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

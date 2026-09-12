@@ -89,6 +89,14 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     // ADR-0008 §7.1-A2: журнал батчів push — той самий клас, що `sync_log`
     // (DML лише в агрегаторі-приймачі `sync.rs`; на standby вимкнено, E7 видаляє цілком).
     ("sync_batches", WritePolicy::DisabledOnStandby),
+    // E3 (ADR-0008 §7.1-A1): черга форвардингу прийнятого вузлом у хаб — той
+    // самий клас, що `sync_log`/`sync_batches` (агрегатор-only: DML лише в
+    // приймачі `sync.rs` і фоновий задачі `hub_forwarder.rs`; предмет E7).
+    ("hub_outbox", WritePolicy::DisabledOnStandby),
+    // E5 (ADR-0008 §7.1-D1): журнал пропозицій спільних довідників — той самий
+    // клас, що `sync_log`/`sync_batches` (агрегатор-only: DML у приймачі
+    // `catalog_proposal.rs`; на standby вимкнено, предмет E7).
+    ("catalog_change_requests", WritePolicy::DisabledOnStandby),
     ("replication_ddl_role", WritePolicy::DisabledOnStandby),
     // Службові таблиці DDL-міток (Фаза 2.2, ізоляція тестів): пише ЛИШЕ
     // стартовий DDL-шлях (`ensure_schema` / `ensure_ddl_once`) у БД, яку вузол
@@ -329,6 +337,11 @@ pub fn classify_request(method: &Method, path: &str) -> Option<&'static str> {
     // ── Агрегатор-only приймачі (DisabledOnStandby) ──────────────────────────
     if p == "/api/v1/sync/push" {
         return Some("sync_push");
+    }
+    // E5 (ADR-0008 §7.2 п.3): прийом ПРОПОЗИЦІЙ довідників — той самий клас,
+    // що push (журнал агрегатора; DML у `catalog_proposal.rs`, предмет E7).
+    if p == "/api/v1/sync/catalog-proposal" {
+        return Some("catalog_change_requests");
     }
 
     // ── Локальний канал каси (LocalOutbox) ───────────────────────────────────
