@@ -395,6 +395,35 @@ pub async fn set_hub_upstream(pool: &PgPool, hub_base: &str, token: &str) {
     }
 }
 
+/// Політика входу для касира, ще не підтвердженого хабом (ADR-0008 §10 №2,
+/// варіант C): налаштування `sync.require_hub_confirm_before_login` у ВЛАСНІЙ БД
+/// інстанса — так само, як роль вузла (`sync.hub_url`), а НЕ env-прапорець
+/// процесу (той спільний для всіх інстансів і протікав між паралельними тестами
+/// одного бінаря).
+///
+/// `require = true` → активний рядок (варіант C); `false` → ключа немає
+/// (продакшн-дефолт: вхід дозволено, offline-first).
+pub async fn set_require_hub_confirm_before_login(pool: &PgPool, require: bool) {
+    let key = torgashka_infrastructure::sync_settings::REQUIRE_HUB_CONFIRM_BEFORE_LOGIN_SETTING;
+    sqlx::query("DELETE FROM system_settings WHERE key = $1")
+        .bind(key)
+        .execute(pool)
+        .await
+        .expect("очистити політику входу");
+    if require {
+        sqlx::query(
+            "INSERT INTO system_settings \
+                (id, module, key, value, value_type, label, is_active, created_at, updated_at, store_id) \
+             VALUES ($1, 'sync', $2, 'true', 'bool', 'E2E політика входу', true, now(), now(), NULL)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(key)
+        .execute(pool)
+        .await
+        .expect("політика входу");
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // E5/E6: пропозиції довідників, черга конфліктів, стан синку, pull довідників
 // ─────────────────────────────────────────────────────────────────────────────

@@ -319,13 +319,13 @@ async fn login_common(
         }
     }
 
-    // ADR-0008 §10 №2 (рішення Творця Б2, варіант C — за прапорцем):
+    // ADR-0008 §10 №2 (рішення Творця Б2, варіант C — за налаштуванням):
     // касир, створений локально на вузлі (`sync_state='pending_hub'`), за
-    // замовчуванням ВХОДИТЬ (offline-first, ADR §2.2); якщо оператор увімкнув
-    // `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN`, вхід блокується до підтвердження
-    // хабом. Перевірка після крединціалів: неверний пароль не має «зливати»
-    // стан касира.
-    if crate::sync_settings::require_hub_confirm_before_login() {
+    // замовчуванням ВХОДИТЬ (offline-first, ADR §2.2); якщо у ВЛАСНІЙ БД
+    // інстанса є активне `sync.require_hub_confirm_before_login`, вхід
+    // блокується до підтвердження хабом. Перевірка після крединціалів: неверний
+    // пароль не має «зливати» стан касира.
+    if crate::sync_settings::require_hub_confirm_before_login(pool).await {
         let sync_state: Option<String> =
             sqlx::query_scalar("SELECT sync_state FROM users WHERE id = $1")
                 .bind(id)
@@ -335,7 +335,7 @@ async fn login_common(
         if sync_state.as_deref() == Some("pending_hub") {
             return Err(AuthError::Forbidden(
                 "Касир ще не підтверджений хабом (sync_state=pending_hub): вхід заблоковано \
-                 політикою REQUIRE_HUB_CONFIRM_BEFORE_LOGIN"
+                 політикою sync.require_hub_confirm_before_login"
                     .to_string(),
             ));
         }

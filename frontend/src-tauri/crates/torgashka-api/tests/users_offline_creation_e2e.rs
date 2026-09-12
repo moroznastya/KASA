@@ -12,18 +12,20 @@
 //!   1. `cashier_created_offline_confirmed_after_hub_contact` — касир створений
 //!      РЕАЛЬНИМ шляхом вузла (`POST /api/v1/users`) без жодного звернення до
 //!      хаба; маркер `pending_hub`; касир ВХОДИТЬ по PIN до контакту з хабом
-//!      (прапорець `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN` за замовчуванням false —
-//!      offline-first); після контакту пропозиція прийнята, хаб-рядок
+//!      (політика `sync.require_hub_confirm_before_login` у БД вузла відсутня →
+//!      false — offline-first); після контакту пропозиція прийнята, хаб-рядок
 //!      `confirmed`, касир видимий ДРУГОМУ вузлу дельтою `employees`.
 //!   2. `second_proposal_for_same_user_visible_as_conflict` — дві пропозиції на
 //!      одного касира: ОБИДВІ в журналі зі `status='conflict'`, до довідника не
 //!      застосовано нічого нового (жодного «тихого злиття»).
 //!   3. `pending_hub_login_blocked_by_flag` — варіант C (блок входу до
-//!      підтвердження) вмикається ОДНИМ прапорцем середовища; рішення
-//!      оборотне, код не змінюється.
+//!      підтвердження) вмикається ОДНИМ налаштуванням у ВЛАСНІЙ БД інстанса
+//!      (`sync.require_hub_confirm_before_login`); рішення оборотне, код не
+//!      змінюється.
 //!
-//! ⚠ Цей бінар виконувати з `--test-threads=1`: тест прапорця пише змінну
-//! середовища ПРОЦЕСУ (стан спільний для всіх тестів бінаря).
+//! ⚠ Env-змінні тут НЕ використовуються: політика — властивість ІНСТАНСА (як
+//! `sync.hub_url`), а env спільний для всіх потоків процесу і протікав би між
+//! тестами бінаря при паралельному прогоні (дефект, виправлений 2026-09-16).
 //!
 //! Застосування дельти у локальну БД вузла (дзеркало `offline/sync_pull.rs`) і
 //! ПЕРЕСИЛКА пропозиції з вузла — клієнтська частина (Tauri), поза крейтом API;
@@ -127,8 +129,9 @@ async fn cashier_created_offline_confirmed_after_hub_contact() {
     ));
 
     // ── 2. Offline-first: PIN-логін ДО контакту з хабом ───────────────────
-    // Прапорець REQUIRE_HUB_CONFIRM_BEFORE_LOGIN за замовчуванням = false
-    // (ADR §2.2: точка працює без мережі; варіант C — окреме рішення).
+    // Політика `sync.require_hub_confirm_before_login` у БД вузла відсутня →
+    // продакшн-дефолт false (ADR §2.2: точка працює без мережі; варіант C —
+    // окреме рішення оператора).
     let (code_login, body_login) = env::login_pin(&n1_base, &login, "4321").await;
     assert_eq!(
         code_login, 200,
@@ -401,15 +404,9 @@ async fn pending_hub_login_blocked_by_flag() {
         "default false: pending_hub входить (offline-first): {body_default}"
     );
 
-    // 2. Вмикаємо варіант C → вхід блокується до підтвердження хабом.
-    struct FlagGuard;
-    impl Drop for FlagGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("REQUIRE_HUB_CONFIRM_BEFORE_LOGIN");
-        }
-    }
-    std::env::set_var("REQUIRE_HUB_CONFIRM_BEFORE_LOGIN", "true");
-    let _guard = FlagGuard;
+    // 2. Вмикаємо варіант C — НАЛАШТУВАННЯМ У ВЛАСНІЙ БД вузла (не env: той
+    //    спільний для всього процесу і протікав би в сусідні тести).
+    env::set_require_hub_confirm_before_login(&node, true).await;
     let (code_blocked, body_blocked) = env::login_pin(&n_base, &login, "4321").await;
     assert_eq!(
         code_blocked, 403,
@@ -423,14 +420,29 @@ async fn pending_hub_login_blocked_by_flag() {
         "причина відмови називає стан: {body_blocked}"
     );
     evidence(&format!(
-        "прапорець REQUIRE_HUB_CONFIRM_BEFORE_LOGIN=true → 403 для pending_hub: {}",
+        "налаштування sync.require_hub_confirm_before_login=true у БД вузла → 403 для pending_hub: {}",
         body_blocked["detail"].as_str().unwrap_or_default()
     ));
 
-    // 3. Після підтвердження (канонічний рядок) прапорець не блокує.
+    // 3. Після підтвердження (канонічний рядок) політика не блокує.
     //    Клієнтську реконсиляцію («моя правка прийнята як версія N» → локальний
     //    маркер confirmed) тут МОДЕЛЮЄМО прямим UPDATE: пересилка пропозиції з
     //    вузла — клієнтська частина (Tauri), поза крейтом API.
+    //    Спершу доводимо, що варіант C СПРАВДІ активний (тією ж функцією-парсером,
+    //    що й прод): інакше «200» нічого не доводив би.
+    let policy_value: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM system_settings \
+         WHERE key = $1 AND is_active AND value IS NOT NULL AND value <> '' \
+         ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(torgashka_infrastructure::sync_settings::REQUIRE_HUB_CONFIRM_BEFORE_LOGIN_SETTING)
+    .fetch_optional(&node)
+    .await
+    .expect("читання політики C");
+    assert!(
+        torgashka_infrastructure::sync_settings::setting_is_on(policy_value.as_deref()),
+        "варіант C активний на кроці 3: {policy_value:?}"
+    );
     sqlx::query("UPDATE users SET sync_state = 'confirmed' WHERE id = $1")
         .bind(cashier_id)
         .execute(&node)
@@ -439,6 +451,14 @@ async fn pending_hub_login_blocked_by_flag() {
     let (code_ok, body_ok) = env::login_pin(&n_base, &login, "4321").await;
     assert_eq!(
         code_ok, 200,
-        "підтверджений касир входить навіть із прапорцем C: {body_ok}"
+        "підтверджений касир входить навіть із політикою C: {body_ok}"
+    );
+
+    // 4. Оборотність рішення: вимикаємо політику (ключ видалено → дефолт false).
+    env::set_require_hub_confirm_before_login(&node, false).await;
+    let (code_off, body_off) = env::login_pin(&n_base, &login, "4321").await;
+    assert_eq!(
+        code_off, 200,
+        "після вимкнення політики вхід дозволено: {body_off}"
     );
 }

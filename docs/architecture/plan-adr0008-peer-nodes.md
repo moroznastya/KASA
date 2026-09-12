@@ -186,9 +186,12 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
   створення касира НА ВУЗЛІ (є `sync.hub_url` у власній БД) → `pending_hub`; хаб при прийнятті
   пропозиції ставить `confirmed` (він — авторитет §4.2); рядок, отриманий pull'ом, канонічний за
   визначенням (DEFAULT).
-- Політика входу: `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN` — **default false** (offline-first, ADR §2.2:
-  точка без VPN заводить касира і він одразу працює); `=true|1|yes|on` вмикає варіант C (блок входу
-  до підтвердження). Рішення ОБОРОТНЕ: змінюється прапорець, не код.
+- Політика входу: `system_settings.sync.require_hub_confirm_before_login` у ВЛАСНІЙ БД інстанса —
+  **default false** (offline-first, ADR §2.2: точка без VPN заводить касира і він одразу працює);
+  `=true|1|yes|on` вмикає варіант C (блок входу до підтвердження). Рішення ОБОРОТНЕ: змінюється
+  налаштування в БД, не код. ⚠ Env-прапорець прибрано 2026-10-01: він був процес-глобальним,
+  суперечив принципу модуля («роль інстанса — налаштування ЙОГО власної БД») і протікав між
+  паралельними тестами одного бінаря.
 - **РЕАЛІЗОВАНО 2026-09-30 (E5-частина B):** `users` у `ARBITRATED_ENTITIES` + `apply_users`
   (валідація ролі до SQL; `owner` навмисно поза набором — як у `auth_routes::parse_role`),
   маркер у `repositories/auth.rs::create_user`, політика входу в `login_common`,

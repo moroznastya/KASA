@@ -48,22 +48,59 @@ pub async fn hub_configured(pool: &PgPool) -> bool {
     matches!(setting(pool, HUB_URL_SETTING).await, Ok(Some(_)))
 }
 
-/// Прапорець політики входу для касира, ще не підтвердженого хабом
-/// (ADR-0008 §10 №2, рішення Творця Б2 від 2026-09-16).
+/// Ключ налаштування політики входу для касира, ще не підтвердженого хабом.
+pub const REQUIRE_HUB_CONFIRM_BEFORE_LOGIN_SETTING: &str = "sync.require_hub_confirm_before_login";
+
+/// Чи значення налаштування означає «увімкнено»: `1|true|yes|on` (регістр і
+/// крайні пробіли не важливі), усе інше (і `None`) — ні.
+pub fn setting_is_on(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+/// Політика входу для касира, ще не підтвердженого хабом (ADR-0008 §10 №2,
+/// рішення Творця Б2 від 2026-09-16): налаштування
+/// `sync.require_hub_confirm_before_login` **у власній БД інстанса**.
 ///
-/// **За замовчуванням `false`** — вхід дозволено для `sync_state='pending_hub'`.
-/// Це збереження offline-first (ADR §2.2): каса мусить працювати, коли хаба
-/// немає; касир, створений у точці, не чекає на мережу.
+/// **За замовчуванням `false`** — немає налаштування / порожнє / не
+/// `1|true|yes|on` / помилка читання → вхід дозволено для
+/// `sync_state='pending_hub'`. Це збереження offline-first (ADR §2.2): каса
+/// мусить працювати, коли хаба немає; касир, створений у точці, не чекає на
+/// мережу.
 ///
-/// `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN=true|1|yes|on` вмикає **варіант C**
-/// («блок входу до підтвердження хабом») — рішення стає ОБОРОТНИМ: щоб
-/// перейти на варіант C, змінюється один прапорець, а не код.
-pub fn require_hub_confirm_before_login() -> bool {
-    match std::env::var("REQUIRE_HUB_CONFIRM_BEFORE_LOGIN") {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
+/// Активне `sync.require_hub_confirm_before_login = true|1|yes|on` вмикає
+/// **варіант C** («блок входу до підтвердження хабом») — рішення стає
+/// ОБОРОТНИМ: щоб перейти на варіант C, змінюється налаштування в БД, а не код.
+///
+/// Чому НЕ env-змінна: політика — властивість ІНСТАНСА (як `sync.hub_url`), а
+/// змінна середовища спільна для ВСІХ інстансів і потоків одного процесу, що
+/// суперечить принципу модуля («роль інстанса вирішує налаштування ЙОГО ВЛАСНОЇ
+/// БД»). Практичний наслідок env-читання: прапорець протікав із тесту в тест у
+/// паралельному прогоні (процес-глобальний стан) і ламав сусідній сценарій.
+pub async fn require_hub_confirm_before_login(pool: &PgPool) -> bool {
+    match setting(pool, REQUIRE_HUB_CONFIRM_BEFORE_LOGIN_SETTING).await {
+        Ok(value) => setting_is_on(value.as_deref()),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setting_is_on_parses_truthy_values_case_and_space_insensitive() {
+        for on in ["1", "true", "TRUE", " yes ", "On", "ON"] {
+            assert!(setting_is_on(Some(on)), "мусить бути увімкнено: {on:?}");
+        }
+        for off in ["0", "false", "no", "off", "", "   ", "true1", "увімкнено"] {
+            assert!(!setting_is_on(Some(off)), "мусить бути вимкнено: {off:?}");
+        }
+        assert!(
+            !setting_is_on(None),
+            "немає налаштування → продакшн-дефолт false"
+        );
     }
 }
