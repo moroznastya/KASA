@@ -29,5 +29,6 @@ pub mod repositories;
 pub mod standby_heartbeat;
 pub mod standby_provision;
 pub mod store_ctx;
+pub mod sync_schema;
 pub mod sync_settings;
 pub mod terminal;

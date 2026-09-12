@@ -366,6 +366,46 @@ pub async fn push(
     (code, body, batch)
 }
 
+/// `POST /api/v1/sync/push` з явним оголошенням major-версії схеми (E9,
+/// ADR-0008 §10 №8, варіант A) → (код, тіло, `X-Sync-Batch-Id` відповіді,
+/// `X-Schema-Major` відповіді).
+///
+/// `major = None` — заголовка НЕМАЄ: імітація вузла, випущеного ДО E9 (хаб
+/// приписує йому major базового протоколу). Окремий хелпер, а не параметр у
+/// [`push`], — щоб жоден наявний тест не змінив поведінку (вони перевіряють
+/// сумісність зі старими вузлами, і це корисно лишити явним).
+pub async fn push_e9(
+    base: &str,
+    token: &str,
+    batch_id: Uuid,
+    envelopes: &[Value],
+    major: Option<&str>,
+) -> (u16, Value, String, Option<String>) {
+    let mut req = reqwest::Client::new()
+        .post(format!("{base}/api/v1/sync/push"))
+        .bearer_auth(token)
+        .header("x-store-id", store_id().to_string())
+        .header("x-sync-batch-id", batch_id.to_string());
+    if let Some(m) = major {
+        req = req.header("x-schema-major", m);
+    }
+    let r = req.json(envelopes).send().await.expect("push-запит (E9)");
+    let code = r.status().as_u16();
+    let schema_major = r
+        .headers()
+        .get("x-schema-major")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let batch = r
+        .headers()
+        .get("x-sync-batch-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body: Value = r.json().await.unwrap_or(Value::Null);
+    (code, body, batch, schema_major)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Роль інстанса: налаштування хаба у ВЛАСНІЙ БД
 // ─────────────────────────────────────────────────────────────────────────────

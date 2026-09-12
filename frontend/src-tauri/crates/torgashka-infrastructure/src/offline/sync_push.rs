@@ -541,11 +541,18 @@ pub async fn post_push_batch(
     token: &str,
     store_id: Option<&str>,
     batch_id: &str,
+    schema_major: u32,
     body: &[Value],
 ) -> Result<(reqwest::StatusCode, String), String> {
     let mut req = client
         .post(format!("{base_url}/api/v1/sync/push"))
         .header("X-Sync-Batch-Id", batch_id)
+        // E9 (ADR-0008 §10 №8, варіант A): вузол оголошує major-версію СВОЄЇ
+        // схеми — хаб відхиляє батч із чужою major (409, error_class=VALIDATION).
+        .header(
+            crate::sync_schema::SCHEMA_MAJOR_HEADER,
+            schema_major.to_string(),
+        )
         .bearer_auth(token);
     // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
     // сервер визначає точку з device_token (StoreCtx у task-local).
@@ -628,6 +635,9 @@ pub async fn push_pending_batch_with_node(
         &cfg.token,
         cfg.store_id.as_deref(),
         &batch_id,
+        // Каса→вузол (legacy-шлях, SQLite): тут PG немає, тому версію беремо з
+        // КОНСТАНТИ БІНАРНИКА — саме її схему цей код і пише.
+        crate::sync_schema::SCHEMA_MAJOR,
         &body,
     )
     .await

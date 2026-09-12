@@ -197,6 +197,10 @@ pub async fn forward_pending(
     max_batches: usize,
 ) -> Result<ForwardSummary, String> {
     let mut summary = ForwardSummary::default();
+    // E9: major-версія схеми ВУЗЛА — з його власної `schema_revision` (фолбек —
+    // константа бінарника, якщо рядка/колонки немає). Читаємо один раз на
+    // цикл: значення не змінюється під час проходу черги.
+    let own_schema_major = torgashka_infrastructure::sync_schema::schema_major(pool).await;
     for _ in 0..max_batches.max(1) {
         // 1. Голова черги: найстаріший pending, який уже дозволено за backoff.
         let head: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
@@ -245,6 +249,7 @@ pub async fn forward_pending(
             &cfg.token,
             Some(&store_id.to_string()),
             &batch_id.to_string(),
+            own_schema_major,
             &body,
         )
         .await

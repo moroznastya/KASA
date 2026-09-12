@@ -10,6 +10,12 @@
 //! Версії довідників (`sync_meta`) показують, докуди дійшли дані по кожній
 //! сутності — за ними оператор бачить рух, не роблячи мережевих викликів.
 //!
+//! E9 (ADR-0008 §10 №8, варіант A): тут же видно `schema_major` — major-версію
+//! схеми ЦЬОГО інстанса (з його власної `schema_revision`). На хабі це саме та
+//! версія, яку хаб вимагає від вузлів; вузол порівнює її зі своєю й бачить
+//! розбіжність ЗАЗДАЛЕГІДЬ — одним локальним GET, БЕЗ звернення до хаба (див.
+//! нижче, чому жодне поле цього ендпоінта не ходить у мережу).
+//!
 //! РЕТЕНШН (`sync_log` / `catalog_change_requests`) — НЕ реалізовано:
 //! блокер Б6 (план §6, «термін, партиціювання»). Місце й константа — нижче,
 //! щоб рішення Творця вмикалось одним правленням, а не пошуком по коду.
@@ -63,6 +69,12 @@ pub async fn status(
     let hub = crate::hub_forwarder::HubForwardConfig::from_pool(&pool).await?;
     let role = if hub.is_some() { "node" } else { "hub" };
 
+    // E9: major-версія схеми ЦЬОГО інстанса — з його власної `schema_revision`
+    // (не з константи бінарника: джерело істини — те, що записала міграція).
+    // `minor` тут навмисно не віддається: на прийом push він не впливає (E9
+    // порівнює ЛИШЕ major), а зайве поле — зайвий контракт.
+    let schema_major = torgashka_infrastructure::sync_schema::schema_major(&pool).await;
+
     // Черга форвардингу вгору (E3): pending = ще не доїхало до хаба.
     let (pending, failed): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*) FILTER (WHERE status = 'pending'), \
@@ -99,6 +111,9 @@ pub async fn status(
 
     Ok(Json(json!({
         "role": role,
+        // E9: major-версія схеми інстанса (хаб → версія хаба, вузол → версія
+        // вузла). Порівняння двох значень = виявлення несумісності до push.
+        "schema_major": schema_major,
         "hub_url": hub.map(|c| c.base_url),
         "store_id": store_id,
         "lag_seconds": lag_seconds,

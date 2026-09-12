@@ -120,6 +120,15 @@ pub enum SyncError {
     Db(#[from] sqlx::Error),
     #[error("серверна база недоступна")]
     Unavailable,
+    /// E9 (ADR-0008 §10 №8, варіант A): major-версія схеми вузла не збігається
+    /// з major хаба → батч відхилено ЦІЛКОМ, `error_class = VALIDATION`.
+    #[error("несумісна major-версія схеми: вузол={node_major}, хаб={hub_major}")]
+    SchemaVersionMismatch {
+        node_major: u32,
+        hub_major: u32,
+        /// Версію вузла приписано (заголовок не надіслано — вузол до E9).
+        assumed: bool,
+    },
 }
 
 impl IntoResponse for SyncError {
@@ -133,6 +142,57 @@ impl IntoResponse for SyncError {
                 Json(json!({"detail": "серверна база недоступна"})),
             )
                 .into_response(),
+            // E9: 409 Conflict — НЕ 422 і НЕ 400.
+            //
+            // Обґрунтування коду: тіло запиту СИНТАКСИЧНО й СЕМАНТИЧНО
+            // валідне (payload розібрано, агрегати коректні) — конфлікт не в
+            // даних, а у ВЕРСІЇ СХЕМИ двох інстансів, тобто в стані
+            // співрозмовника. Саме для «стан не збігається зі станом цільового
+            // ресурсу» HTTP і має 409 (як optimistic-concurrency в If-Match);
+            // 422 казав би «дані незрозумілі», 400 — «запит зіпсований».
+            // Додатковий бонус 409: на клієнті він НЕ змішується з наявними
+            // 400/422 валідаційними помилками payload — оператор у журналі
+            // бачить клас причини («несумісність версій»), а не «поганий чек».
+            SyncError::SchemaVersionMismatch {
+                node_major,
+                hub_major,
+                assumed,
+            } => {
+                let node_desc = if assumed {
+                    format!(
+                        "вузол={node_major} (заголовок {} не надіслано — прийнято major                          протоколу, що існував до E9)",
+                        torgashka_infrastructure::sync_schema::SCHEMA_MAJOR_HEADER
+                    )
+                } else {
+                    format!(
+                        "вузол={node_major} (заголовок {})",
+                        torgashka_infrastructure::sync_schema::SCHEMA_MAJOR_HEADER
+                    )
+                };
+                let mut resp = (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        // Машинний клас — той самий перелік, що в E2b
+                        // (`PushItemResult.error_class`, `sync_log.error_class`):
+                        // жодного нового класу для версій не вигадуємо.
+                        "error_class": error_class::VALIDATION,
+                        "detail": format!(
+                            "Несумісна major-версія схеми: {node_desc}, хаб={hub_major}.                              Батч відхилено цілком, жодного агрегата не прийнято.                              Дія: оновіть вузол (міграція схеми) до major-версії {hub_major}                              і повторіть push — повтор без оновлення не допоможе."
+                        ),
+                        // ОБИДВІ версії — машинночитні (критерій E9).
+                        "schema_major": { "node": node_major, "hub": hub_major },
+                        "node_major_assumed": assumed,
+                        "action": "update_node",
+                    })),
+                )
+                    .into_response();
+                // Хаб оголошує свою major у ВІДПОВІДІ (у т.ч. у відмові) —
+                // вузол бачить розбіжність, не роблячи жодного зайвого запиту.
+                if let Ok(value) = axum::http::HeaderValue::from_str(&hub_major.to_string()) {
+                    resp.headers_mut().insert(SCHEMA_MAJOR_HEADER_NAME, value);
+                }
+                resp
+            }
             SyncError::Db(e) => {
                 eprintln!("[sync] DB помилка: {e}");
                 (
@@ -666,6 +726,12 @@ pub mod error_class {
     pub const CONFLICT: &str = "CONFLICT";
 }
 
+/// `X-Schema-Major` як `HeaderName` (у `HeaderMap`/`HeaderName` — лише
+/// lowercase; людське написання живе в
+/// [`torgashka_infrastructure::sync_schema::SCHEMA_MAJOR_HEADER`]).
+const SCHEMA_MAJOR_HEADER_NAME: axum::http::HeaderName =
+    axum::http::HeaderName::from_static("x-schema-major");
+
 /// Заголовок ідентичності батча: клієнт штампує, сервер повертає той самий
 /// (ADR-0008 §4.3 п.1 «клієнт штампує батч, сервер повертає його ж у
 /// відповіді»). Критерій E3: на хабі `sync_log.batch_id` = батч вузла.
@@ -794,6 +860,53 @@ pub async fn push(
     let node_id = (claims.role == "device")
         .then(|| Uuid::parse_str(&claims.sub).ok())
         .flatten();
+    // ── E9 (ADR-0008 §10 №8, варіант A): major-версія схеми ────────────────
+    // ПЕРЕД прийомом хоч одного агрегата. Хаб порівнює оголошуєму major вузла з
+    // major, записаною в ЙОГО ВЛАСНІЙ `schema_revision` (джерело істини —
+    // міграція, не константа бінарника; див. `sync_schema::schema_major`).
+    //
+    // ГВАРДІЯ ДІЄ ЛИШЕ НА ХАБІ (роль — з ВЛАСНОЇ БД інстанса, як усюди:
+    // `sync.hub_url` немає → хаб). Причина: несумісність схем існує рівно там,
+    // де зустрічаються ДВІ самостійно мігровані БД (ADR §10 №8: `schema_revision`
+    // локальна для кожної БД) — тобто на плечі вузол→хаб. На плечі каса→вузол
+    // приймач пише у СВОЮ БД СВОЇМ кодом (у каси власної PG-схеми немає), і
+    // відмова там лише зламала б локальний прийом чеків — проти чого весь
+    // offline-first (ADR §2.2). Хаб приймає дані ЧУЖИХ схем — тільки він і має
+    // право відмовити.
+    let is_node = crate::hub_forwarder::HubForwardConfig::from_pool(&pool)
+        .await?
+        .is_some();
+    let guard_active = !is_node;
+    let hub_major = torgashka_infrastructure::sync_schema::schema_major(&pool).await;
+    let declared = torgashka_infrastructure::sync_schema::declared_major(
+        headers
+            .get(torgashka_infrastructure::sync_schema::SCHEMA_MAJOR_HEADER)
+            .and_then(|v| v.to_str().ok()),
+    )
+    .map_err(SyncError::BadRequest)?;
+    if guard_active && declared.major() != hub_major {
+        // Нічого не приймаємо: жодного агрегата не оброблено, `sync_log` чистий.
+        // Але спробу лишаємо ВИДИМОЮ: батч у `sync_batches` зі статусом
+        // `failed` (та сама семантика, що «пакет, який впав посеред обробки»,
+        // ADR §4.3 — оператор бачить, що вузол стукав і отримав відмову).
+        open_batch(&pool, batch_id, ctx_store, node_id, body.len()).await;
+        finalize_batch(&pool, batch_id, "failed").await;
+        eprintln!(
+            "[sync/push] батч {batch_id}: ВІДМОВА за major-версією схеми — вузол={} ({}), хаб={hub_major}",
+            declared.major(),
+            if declared.is_assumed() {
+                "заголовок не надіслано"
+            } else {
+                "заголовок X-Schema-Major"
+            }
+        );
+        return Err(SyncError::SchemaVersionMismatch {
+            node_major: declared.major(),
+            hub_major,
+            assumed: declared.is_assumed(),
+        });
+    }
+
     open_batch(&pool, batch_id, ctx_store, node_id, body.len()).await;
 
     // Топологічний порядок: дитина не мусить іти раніше батька (E2b).
@@ -844,6 +957,12 @@ pub async fn push(
     let mut resp_headers = axum::http::HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&batch_id.to_string()) {
         resp_headers.insert(BATCH_ID_HEADER, v);
+    }
+    // E9: хаб оголошує свою major у кожній прийнятій відповіді — вузол бачить
+    // версію співрозмовника ДО того, як натрапить на відмову (і може показати
+    // розбіжність оператору заздалегідь).
+    if let Ok(value) = axum::http::HeaderValue::from_str(&hub_major.to_string()) {
+        resp_headers.insert(SCHEMA_MAJOR_HEADER_NAME, value);
     }
     Ok((resp_headers, Json(results)))
 }

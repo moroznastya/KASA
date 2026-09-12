@@ -64,7 +64,7 @@ read-write PostgreSQL, обмін даними — наявним приклад
 | **E6** | Моніторинг/гігієна: `/api/v1/sync/status`, ретеншн `sync_log`/`catalog_change_requests`, процедура бекапу хаба | E5 | `tests/sync_status_e2e.rs::status_reports_lag_queue_conflicts` | **№5, №6** |
 | **E7** | **ІЗОЛЬОВАНИЙ ТРЕК ВИДАЛЕННЯ** (див. §4) | E1–E5 доведені | `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` + `cargo fmt --check`; grep-доказ: `grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|pg_promote" crates/` → 0 збігів у коді | — |
 | **E8** | Документація: ADR-0007 → Superseded, архів `operations/network-two-devices.md`, `setup-two-devices.md`, `disaster-recovery-network.md`, `network-replication-etap15-20.md`; новий ops-док «хаб + вузли» | E7 | Файли в `docs/operations/archive/`; новий `docs/operations/hub-and-nodes.md` існує; ADR-0007 має статус Superseded | №6 (частк.) |
-| **E9** | Протокол версій схеми (major-сумісність хаб↔вузол). **Рішення прийнято 2026-09-16: варіант A** (major-версія у `schema_revision`; хаб відхиляє push із чужою major) — реалізація лише тут, у E5-частині B НЕ кодується | E5 | Схема: push від вузла з несумісною major-версією відхиляється з `error_class='VALIDATION'`; `tests/schema_version_guard_e2e.rs` | **№8 — рішення є, лишається реалізація (блокує прод-викатку)** |
+| **E9** | Протокол версій схеми (major-сумісність хаб↔вузол). **Рішення 2026-09-16: варіант A** — РЕАЛІЗОВАНО 2026-10-02: `schema_revision.major/.minor` (Alembic `0025`, Rust-DDL), заголовок `X-Schema-Major`, 409 + `error_class='VALIDATION'` перед прийомом items, `schema_major` у `/api/v1/sync/status` | E5 | Схема: push від вузла з несумісною major-версією відхиляється з `error_class='VALIDATION'`; `tests/schema_version_guard_e2e.rs` | **№8 — ЗАКРИТО (E9 виконано, 7/7 тестів зелені; блокування прод-викатки знято)** |
 | **E10** | Мережевий фіскальний аудит (розширення B3) | E5 | Визначено за рішенням Творця (нічний звіт хаба vs лише push `prro_shifts`) | **№3** |
 
 Порядок: E0 → E1.5 → E1 → E2a → E2b → E3 → E4 → E5 → E6 → E7 → E8 (E9/E10 — паралельно, поза критичним шляхом; **E1.5 виконується паралельно з E2**).
@@ -157,9 +157,13 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 
 ### БЛОКУЮТЬ продакшн-викатку (не розробку)
 
-**Б5 (ADR §10 №8) — РІШЕННЯ ПРИЙНЯТО 2026-09-16** (варіант A: major-версія у `schema_revision`,
-хаб відхиляє push із чужою major). Див. «НЕ блокують старт» нижче: питання закрито, розробка не
-заблокована; **прод-викатка все ще чекає на РЕАЛІЗАЦІЮ протоколу в E9** (рішення ≠ код).
+**Б5 (ADR §10 №8) — ЗАКРИТО 2026-10-02 (E9 виконано).** Варіант A (major-версія у `schema_revision`,
+хаб відхиляє push із чужою major) — не лише рішення, а й код:
+`crates/torgashka-infrastructure/src/sync_schema.rs`, Alembic `0025_schema_revision_major.py`,
+`crates/torgashka-api/src/sync.rs` (409 + `error_class='VALIDATION'` до прийому items),
+`schema_major` у `/api/v1/sync/status`. Тести: `tests/schema_version_guard_e2e.rs` (7/7), повний
+паралельний прогін воркспейсу — 0 failed. **Прод-викатка за цим пунктом розблокована** (⚠ порядок
+викатки: спершу вузли, потім підняття `SCHEMA_MAJOR` хаба разом із несумісною міграцією).
 
 **Б6 (ADR §10 №5) → блокує E6.** Ретеншн `sync_log`/`catalog_change_requests` (термін, партиціювання).
 **Б7 (ADR §10 №6) → блокує E8 (ops-частина).** Процедура бекапу/копії хаба.
@@ -201,11 +205,13 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 - Залишок (клієнтський інкремент, поза крейтом API): пересилка пропозиції з вузла і локальна
   реконсиляція маркера `pending_hub → confirmed` за присвоєною хабом версією.
 
-**Б5 (ADR §10 №8) — РІШЕННЯ ПРИЙНЯТО 2026-09-16: варіант A** — major-версія схеми у
-`schema_revision`; хаб ВІДХИЛЯЄ push від вузла з чужою major (клас помилки `VALIDATION`, §4.3).
-Питання закрито → **розробка E5/E6 не заблокована**. ⚠ Рішення ≠ реалізація: сам протокол версій
-схеми — окремий етап **E9** (`tests/schema_version_guard_e2e.rs`), у E5-частині B він НЕ кодується;
-до виконання E9 **прод-викатка мережі лишається заблокованою** (це і був сенс Б5).
+**Б5 (ADR §10 №8) — ЗАКРИТО 2026-10-02. Реалізовано в E9** (варіант A): major-версія схеми у
+`schema_revision`; хаб ВІДХИЛЯЄ push від вузла з чужою major (код 409, клас помилки `VALIDATION`,
+§4.3) — ДО прийому жодного агрегата; вузол бачить версію хаба в `/api/v1/sync/status` і в заголовку
+`X-Schema-Major` кожної відповіді. Вузли без заголовка (до E9) не ламаються мовчки: на базовій
+major хаба працюють як раніше, після несумісного підняття — отримують явну відмову з обома версіями.
+⚠ Порядок викатки: спершу вузли (починають оголошувати версію), потім підняття `SCHEMA_MAJOR` хаба
+разом із несумісною міграцією. Доказ: `tests/schema_version_guard_e2e.rs` (7 тестів), ADR §7.1-E9.
 
 ---
 

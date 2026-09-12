@@ -595,7 +595,10 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<(), DbError> {
 /// Ручна складова fingerprint схеми: DDL, що генерується в рантаймі
 /// (`prro::ensure_prro_schema`, бекофіл `store_id`). Змінив такий DDL —
 /// підніми рядок, інакше гарячий шлях не побачить зміни.
-const SCHEMA_REVISION_EXTRA: &str = "2026-08-24/3.4";
+// E9 (ADR-0008 §10 №8, варіант A): у SCHEMA_REVISION_DDL додано
+// major/minor — DDL змінився → рядок піднято (інакше гарячий шлях
+// не побачив би зміни на вже мігрованих БД).
+const SCHEMA_REVISION_EXTRA: &str = "2026-10-02/3.5";
 
 /// Fingerprint схеми: хеш усіх DDL-частин `ensure_schema` + ручна складова.
 fn schema_fingerprint() -> String {
@@ -658,13 +661,18 @@ async fn record_schema_revision(pool: &PgPool, fp: &str) -> Result<(), DbError> 
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;
+    // E9: для СВІЖОЇ БД версію беремо з константи бінарника; на конфлікті
+    // major/minor НЕ перезаписуємо — їх власник — міграція/оператор
+    // (`schema_major()` читає саме колонку, а не константу).
     sqlx::query(
-        "INSERT INTO public.schema_revision (id, fingerprint, applied_at) \
-         VALUES (1, $1, now()) \
+        "INSERT INTO public.schema_revision (id, fingerprint, applied_at, major, minor) \
+         VALUES (1, $1, now(), $2, $3) \
          ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint, \
                                         applied_at = now()",
     )
     .bind(fp)
+    .bind(crate::sync_schema::SCHEMA_MAJOR as i32)
+    .bind(crate::sync_schema::SCHEMA_MINOR as i32)
     .execute(pool)
     .await
     .map_err(DbError::Sqlx)?;
@@ -672,13 +680,27 @@ async fn record_schema_revision(pool: &PgPool, fp: &str) -> Result<(), DbError> 
     Ok(())
 }
 
-/// `schema_revision` — службова таблиця маркера ревізії схеми (Фаза 2.2).
+/// `schema_revision` — службова таблиця маркера ревізії схеми (Фаза 2.2) +
+/// major/minor версія схеми (E9, ADR-0008 §10 №8, варіант A — «ЗАКРИТО»).
+///
+/// `major`/`minor` — не «ще один fingerprint»: fingerprint відповідає на
+/// питання «чи застосовано цей DDL», а major/minor — «чи сумісна схема цієї
+/// БД зі схемою співрозмовника» (хаб відхиляє push із чужою major,
+/// `torgashka_infrastructure::sync_schema`).
+///
+/// `ADD COLUMN IF NOT EXISTS` (а не UPDATE) — свідомо: значення, записане
+/// міграцією/оператором, повторний DDL-прохід НЕ перетирає (ідемпотентність
+/// DDL не має права скидати версію схеми назад до константи бінарника).
 const SCHEMA_REVISION_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS public.schema_revision (
     id         integer PRIMARY KEY,
     fingerprint text NOT NULL,
-    applied_at timestamptz NOT NULL DEFAULT now()
+    applied_at timestamptz NOT NULL DEFAULT now(),
+    major      integer NOT NULL DEFAULT 1,
+    minor      integer NOT NULL DEFAULT 0
 );
+ALTER TABLE public.schema_revision ADD COLUMN IF NOT EXISTS major integer NOT NULL DEFAULT 1;
+ALTER TABLE public.schema_revision ADD COLUMN IF NOT EXISTS minor integer NOT NULL DEFAULT 0;
 "#;
 
 /// Зняти/взяти сесійний advisory-лок DDL (окреме з'єднання).
