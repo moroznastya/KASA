@@ -60,11 +60,11 @@ read-write PostgreSQL, обмін даними — наявним приклад
 | **E2b** | Порядок і retry: `error_class` (`RETRYABLE_FK`/`VALIDATION`/`CONFLICT`) + топосорт за DAG + `defer` замість `failed` | E2a | `tests/sync_retryable_fk_e2e.rs::child_before_parent_deferred_then_accepted` (дитина в батчі раніше батька → `deferred`, після повтору — прийнято; SQLSTATE 23503) | — |
 | **E3** | Форвардер node→hub: задача на вузлі (читає outbox/`sync_log`, POST у хаб, backoff, `hub_forwarded_at/status`) + A1/A3 | E1, E2a | `tests/hub_forwarder_e2e.rs::node_forwards_receipt_to_hub` (два фасади в одному тесті: вузол приймає локальний чек → на хабі `sync_log` має запис із тим самим `batch_id`, `hub_forwarded_at IS NOT NULL`) | — |
 | **E4** | E2E нового світу: «хаб недоступний» замість «вузол read-only» | E3 | `tests/hub_outage_e2e.rs::node_writes_offline_hub_down_then_syncs` (хаб лежить → вузол пише локально, `/api/v1/setup/status != 503`, черга росте; хаба піднято → дані на хабі) | — |
-| **E5** | Арбітраж спільних сутностей: `catalog_change_requests` + `/api/v1/sync/catalog-proposal` + `/api/v1/admin/sync/conflicts` + pull результату + C1–C6 (довідники без версій/шляху) + D3-маркер + **1 додатковий entity-шлях: `store_product_prices` як спільна сутність** (рішення Творця від 2026-09-12: `server_version` + арбітраж D1, механізм як у `products.price`) | E2a, E3 | `tests/catalog_proposal_e2e.rs::proposal_accepted_and_visible_on_second_node` + `::conflict_visible_in_admin_queue` (дві пропозиції на один рядок → обидві в журналі, `status='conflict'`) + **`::store_price_proposal_accepted_and_visible_on_second_node`** (пропозиція ціни з вузла → хаб присвоює єдиний `server_version` → ціна видима на другому вузлі) | **№2, №4, №7** |
+| **E5** | Арбітраж спільних сутностей: `catalog_change_requests` + `/api/v1/sync/catalog-proposal` + `/api/v1/admin/sync/conflicts` + pull результату + C1–C6 (довідники без версій/шляху) + D3-маркер + **1 додатковий entity-шлях: `store_product_prices` як спільна сутність** (рішення Творця від 2026-09-12: `server_version` + арбітраж D1, механізм як у `products.price`) + **`users`-шлях (Б2: касир створюється локально, маркер `sync_state`)** | E2a, E3 | `tests/catalog_proposal_e2e.rs::proposal_accepted_and_visible_on_second_node` + `::conflict_visible_in_admin_queue` (дві пропозиції на один рядок → обидві в журналі, `status='conflict'`) + **`::store_price_proposal_accepted_and_visible_on_second_node`** (пропозиція ціни з вузла → хаб присвоює єдиний `server_version` → ціна видима на другому вузлі) + **`tests/users_offline_creation_e2e.rs::{cashier_created_offline_confirmed_after_hub_contact, second_proposal_for_same_user_visible_as_conflict}`** | **№2 — ЗАКРИТО 2026-09-16**; відкриті: №4, №7 |
 | **E6** | Моніторинг/гігієна: `/api/v1/sync/status`, ретеншн `sync_log`/`catalog_change_requests`, процедура бекапу хаба | E5 | `tests/sync_status_e2e.rs::status_reports_lag_queue_conflicts` | **№5, №6** |
 | **E7** | **ІЗОЛЬОВАНИЙ ТРЕК ВИДАЛЕННЯ** (див. §4) | E1–E5 доведені | `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` + `cargo fmt --check`; grep-доказ: `grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|pg_promote" crates/` → 0 збігів у коді | — |
 | **E8** | Документація: ADR-0007 → Superseded, архів `operations/network-two-devices.md`, `setup-two-devices.md`, `disaster-recovery-network.md`, `network-replication-etap15-20.md`; новий ops-док «хаб + вузли» | E7 | Файли в `docs/operations/archive/`; новий `docs/operations/hub-and-nodes.md` існує; ADR-0007 має статус Superseded | №6 (частк.) |
-| **E9** | Протокол версій схеми (major-сумісність хаб↔вузол) | E5 | Схема: push від вузла з несумісною major-версією відхиляється з `error_class='VALIDATION'`; `tests/schema_version_guard_e2e.rs` | **№8 (жорсткий)** |
+| **E9** | Протокол версій схеми (major-сумісність хаб↔вузол). **Рішення прийнято 2026-09-16: варіант A** (major-версія у `schema_revision`; хаб відхиляє push із чужою major) — реалізація лише тут, у E5-частині B НЕ кодується | E5 | Схема: push від вузла з несумісною major-версією відхиляється з `error_class='VALIDATION'`; `tests/schema_version_guard_e2e.rs` | **№8 — рішення є, лишається реалізація (блокує прод-викатку)** |
 | **E10** | Мережевий фіскальний аудит (розширення B3) | E5 | Визначено за рішенням Творця (нічний звіт хаба vs лише push `prro_shifts`) | **№3** |
 
 Порядок: E0 → E1.5 → E1 → E2a → E2b → E3 → E4 → E5 → E6 → E7 → E8 (E9/E10 — паралельно, поза критичним шляхом; **E1.5 виконується паралельно з E2**).
@@ -142,11 +142,8 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 
 ### БЛОКУЮТЬ старт відповідних етапів
 
-**Б2 (ADR §10 №2) → блокує частину E5 (users).** Касир створюється локально на вузлі?
-- Варіант A: так, локально зі статусом `pending_hub` (D3) — потрібен `users`-шлях proposal.
-- Варіант B: ні, лише на хабі (адмінка) — але тоді offline-first ламається: точка без VPN не заведе касира.
-- Варіант C: гібрид — локально, з обов'язковим підтвердженням хаба до першого входу касира.
-- Наслідок: варіант B суперечить §2.2 ADR (дозволяє лише хаб) → потрібне явне підтвердження відходу від offline-first.
+**Б2 (ADR §10 №2) — ЗАКРИТО 2026-09-16** (рішення Творця: локально, гібрид із маркером).
+Див. «НЕ блокують старт» нижче — пункт більше не блокує частину E5 (users).
 
 **Б3 (ADR §10 №4) → блокує обсяг E5/E6.** Чи потрібні вузлу чужі операційні дані
 (взаємні борги/переміщення між точками)?
@@ -160,11 +157,9 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 
 ### БЛОКУЮТЬ продакшн-викатку (не розробку)
 
-**Б5 (ADR §10 №8) → жорсткий блокер E9 і викатки.** Протокол сумісності версій схеми
-хаб↔вузол. Несумісна міграція хаба → вузли зі старою схемою шлють у нікуди.
-- Варіант A: major-версія у `schema_revision`, хаб відхиляє push із чужою major.
-- Варіант B: «мінімально сумісна версія» + двофазні міграції (expand/contract).
-- Наслідок: без рішення мережу не можна викочувати в прод (лише в тестовий контур).
+**Б5 (ADR §10 №8) — РІШЕННЯ ПРИЙНЯТО 2026-09-16** (варіант A: major-версія у `schema_revision`,
+хаб відхиляє push із чужою major). Див. «НЕ блокують старт» нижче: питання закрито, розробка не
+заблокована; **прод-викатка все ще чекає на РЕАЛІЗАЦІЮ протоколу в E9** (рішення ≠ код).
 
 **Б6 (ADR §10 №5) → блокує E6.** Ретеншн `sync_log`/`catalog_change_requests` (термін, партиціювання).
 **Б7 (ADR §10 №6) → блокує E8 (ops-частина).** Процедура бекапу/копії хаба.
@@ -178,6 +173,36 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 арбітрує єдиний `server_version` і роздає всім вузлам (механізм як у `products.price`, `sync.rs:278-311`).
 Деталі: ADR-0008 §10 №1, §5 рядок 33, §7.1-B5. **E5 розблоковано за цим пунктом**; обсяг E5 зростає
 на 1 entity-шлях (див. §3, рядок E5). Перенесено в §6.1 «НЕ блокують старт».
+**РЕАЛІЗОВАНО 2026-09-30 (E5-частина B):** Alembic `0024_store_prices_sync_state.py`
+(`server_version` + tombstone + `trg_store_product_prices_bump` + рядок `sync_meta`), entity у
+`ALLOWED_ENTITIES` (pull ↓), арбітраж — наявний `/api/v1/sync/catalog-proposal`
+(`ARBITRATED_ENTITIES` + `apply_store_product_prices`); **окремий push-kind `store_product_price`
+НЕ потрібен і шкідливий** (push = «це сталося, прийми» в обхід арбітражу → last-write-wins).
+Тест: `catalog_proposal_e2e::store_price_proposal_accepted_and_visible_on_second_node`.
+
+**Б2 (ADR §10 №2) — ЗАКРИТО 2026-09-16 (рішення Творця): касир створюється ЛОКАЛЬНО на вузлі
+(варіант A), але гібрид із маркером — варіант C лишається доступним одним прапорцем.**
+- Локальний маркер §7.1-D3: `users.sync_state CHECK(local|pending_hub|confirmed) DEFAULT 'confirmed'`;
+  створення касира НА ВУЗЛІ (є `sync.hub_url` у власній БД) → `pending_hub`; хаб при прийнятті
+  пропозиції ставить `confirmed` (він — авторитет §4.2); рядок, отриманий pull'ом, канонічний за
+  визначенням (DEFAULT).
+- Політика входу: `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN` — **default false** (offline-first, ADR §2.2:
+  точка без VPN заводить касира і він одразу працює); `=true|1|yes|on` вмикає варіант C (блок входу
+  до підтвердження). Рішення ОБОРОТНЕ: змінюється прапорець, не код.
+- **РЕАЛІЗОВАНО 2026-09-30 (E5-частина B):** `users` у `ARBITRATED_ENTITIES` + `apply_users`
+  (валідація ролі до SQL; `owner` навмисно поза набором — як у `auth_routes::parse_role`),
+  маркер у `repositories/auth.rs::create_user`, політика входу в `login_common`,
+  `infrastructure::sync_settings` (спільні ключі `sync.hub_url`/`sync.hub_token`).
+- Тести: `users_offline_creation_e2e::{cashier_created_offline_confirmed_after_hub_contact,
+  second_proposal_for_same_user_visible_as_conflict, pending_hub_login_blocked_by_flag}`.
+- Залишок (клієнтський інкремент, поза крейтом API): пересилка пропозиції з вузла і локальна
+  реконсиляція маркера `pending_hub → confirmed` за присвоєною хабом версією.
+
+**Б5 (ADR §10 №8) — РІШЕННЯ ПРИЙНЯТО 2026-09-16: варіант A** — major-версія схеми у
+`schema_revision`; хаб ВІДХИЛЯЄ push від вузла з чужою major (клас помилки `VALIDATION`, §4.3).
+Питання закрито → **розробка E5/E6 не заблокована**. ⚠ Рішення ≠ реалізація: сам протокол версій
+схеми — окремий етап **E9** (`tests/schema_version_guard_e2e.rs`), у E5-частині B він НЕ кодується;
+до виконання E9 **прод-викатка мережі лишається заблокованою** (це і був сенс Б5).
 
 ---
 
@@ -202,3 +227,5 @@ grep -rn "NodeMode\|write_gate\|readonly_net\|standby_provision\|pg_basebackup\|
 
 **Не починати з E7 (видалення)**: до E4/E5 немає доведеної заміни, а регресійне покриття
 офлайн-черги тримається саме на тестах, які планується видалити.
+
+*Оновлено 2026-09-16 (рішення Б2 і Б5) та 2026-09-30 (реалізація E5-частини B).*

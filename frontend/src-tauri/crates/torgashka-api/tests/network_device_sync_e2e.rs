@@ -58,8 +58,12 @@ async fn apply_schema() {
                 );
                 INSERT INTO public.sync_meta (entity) VALUES
                     ('categories'), ('products'), ('suppliers'),
-                    ('employees'), ('settings'), ('stock_norms')
+                    ('employees'), ('settings')
                 ON CONFLICT (entity) DO NOTHING;
+                -- E5-C6 (ADR-0008 §7.1-C6): stock_norms прибрано — таблиці в
+                -- серверній схемі немає (Alembic 0012:16-18). DELETE, а не лише
+                -- відсутність у seed: спільна тестова БД переживає прогони.
+                DELETE FROM public.sync_meta WHERE entity = 'stock_norms';
 
                 ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS
                     is_deleted boolean NOT NULL DEFAULT false;

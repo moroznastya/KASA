@@ -801,7 +801,7 @@ impl TableClass {
     }
 }
 
-/// Реєстр §11.7: 45 таблиць PG-шару (266 DML-точок). Таблиці-`satellite`
+/// Реєстр §11.7: 49 таблиць PG-шару. Таблиці-`satellite`
 /// (`*_items`) стоять тут зі своїм класом, але власного рядка в `POLICY_TABLE`
 /// НЕ мають — політику беруть від батька через `SATELLITE_TABLE`.
 const PG_TABLE_REGISTRY: &[(&str, TableClass)] = &[
@@ -851,6 +851,10 @@ const PG_TABLE_REGISTRY: &[(&str, TableClass)] = &[
     ("network_events", TableClass::ProxyToPrimary),
     ("store_activation_codes", TableClass::ProxyToPrimary),
     ("write_off_reasons", TableClass::ProxyToPrimary),
+    // E5-B5/C3 (ADR-0008 §7.1-B5, рішення Творця Б1): ціна точки — спільна
+    // сутність МЕРЕЖІ; DML лише в приймачі пропозицій (`catalog_proposal.rs`),
+    // той самий клас, що решта довідників/референсів.
+    ("store_product_prices", TableClass::ProxyToPrimary),
     // Агрегатор-only (DisabledOnStandby, 5)
     ("store_sync_state", TableClass::DisabledOnStandby),
     ("sync_log", TableClass::DisabledOnStandby),
@@ -890,8 +894,8 @@ const NO_DML_TABLES: &[&str] = &["price_tags"];
 fn pg_table_registry_is_complete_and_consistent() {
     assert_eq!(
         PG_TABLE_REGISTRY.len(),
-        48,
-        "§11.7: 48 таблиць PG-шару зі скану crates/*/src/**"
+        49,
+        "§11.7: 49 таблиць PG-шару зі скану crates/*/src/** (48 + ціна мережі E5-B5)"
     );
     let mut names: BTreeSet<&str> = BTreeSet::new();
     let (mut lo, mut px, mut ds) = (0usize, 0usize, 0usize);
@@ -915,7 +919,10 @@ fn pg_table_registry_is_complete_and_consistent() {
         }
     }
     assert_eq!(lo, 22, "§11.7: LocalOutbox — 22 таблиці");
-    assert_eq!(px, 18, "§11.7: ProxyToPrimary — 18 таблиць");
+    assert_eq!(
+        px, 19,
+        "§11.7: ProxyToPrimary — 19 таблиць (з E5-B5 ціна мережі)"
+    );
     assert_eq!(ds, 8, "§11.7: DisabledOnStandby — 8 таблиць");
 
     // satellite: власного рядка немає, політика = політика батька
@@ -955,18 +962,19 @@ fn pg_table_registry_is_complete_and_consistent() {
         "шар локальної SQLite не має політики PG (§11.7 п.4)"
     );
 
-    // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 31 таблиця
+    // POLICY_TABLE = 25 рядків гейт-сутностей (§11.1 + §11.6) + 32 таблиці
     // PG-шару (§11.7, з E2a — `sync_batches`, з E3 — `hub_outbox`,
-    // з E5 — `catalog_change_requests`) + 5 поверхневих сутностей (§11.7.9).
+    // з E5 — `catalog_change_requests` і ціна мережі `store_product_prices`)
+    // + 5 поверхневих сутностей (§11.7.9).
     assert_eq!(
         POLICY_TABLE.len(),
-        61,
-        "POLICY_TABLE: 25 гейт-сутностей + 31 таблиця PG-шару + 5 поверхневих §11.7.9"
+        62,
+        "POLICY_TABLE: 25 гейт-сутностей + 32 таблиці PG-шару + 5 поверхневих §11.7.9"
     );
     assert_eq!(
         PG_TABLE_REGISTRY.len() + SQLITE_ONLY_TABLES.len() + NO_DML_TABLES.len(),
-        57,
-        "§11.7: 48 таблиць PG + 8 лише-SQLite + 1 без DML = 57 рядків реєстру"
+        58,
+        "§11.7: 49 таблиць PG + 8 лише-SQLite + 1 без DML = 58 рядків реєстру"
     );
     eprintln!(
         "[guard] §11.7: таблиць=57 (PG={lo}, лише-SQLite={}, без-DML={}; класи PG: LocalOutbox={lo}, ProxyToPrimary={px}, Disabled={ds}), satellites={}, POLICY_TABLE={}",
@@ -1012,8 +1020,8 @@ fn every_policy_entity_is_covered_by_adr_registry_or_document_channel() {
     );
     assert_eq!(
         POLICY_TABLE.len(),
-        61,
-        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 31 таблиця PG-шару §11.7 + 5 поверхневих §11.7.9"
+        62,
+        "таблиця політик = 23 рядки §11.1 + 2 §11.6 + 32 таблиці PG-шару §11.7 + 5 поверхневих §11.7.9"
     );
     eprintln!(
         "[guard] POLICY_TABLE: {} рядків, усі покриті реєстром §3/§11.6/§11.7 або каналом документів",

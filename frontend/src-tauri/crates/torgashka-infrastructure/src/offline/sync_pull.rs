@@ -5,8 +5,10 @@
 //!
 //! Обов'язки модуля:
 //!   * циклічний pull довідників сервера у визначеному порядку
-//!     (settings → employees → categories → products → stock_norms →
-//!     suppliers), кожна сутність незалежна (помилка не блокує наступні);
+//!     (settings → employees → categories → products → suppliers), кожна
+//!     сутність незалежна (помилка не блокує наступні). `stock_norms`
+//!     прибрано (E5-C6, ADR-0008 §7.1-C6): таблиці в серверній схемі немає,
+//!     дельта завжди була порожньою, а хаб повертає 400 — запит був марним;
 //!   * збереження since_version локально в sync_meta (SQLite, міграція 0002);
 //!   * застосування дельти ОДНОЮ SQLite-транзакцією: помилка → ROLLBACK,
 //!     since_version не просувається, pull повторюється (дизайн 1.4);
@@ -16,7 +18,8 @@
 //!     використовується; рядок зникає з продажу, історія зберігається).
 //!
 //! Майстер-дані пишуться в нормалізовані таблиці міграції 0003
-//! (categories, suppliers, employees, stock_norms, products_v2) та
+//! (categories, suppliers, employees, stock_norms, products_v2 — локальна
+//! таблиця `stock_norms` лишається, але дельти для неї вже не приходять) та
 //! settings (ключі сервера; простір `local.*` НЕ зачіпається — дизайн 5).
 //! Існуючий JSON-кеш `products` (0001) не змінюється.
 
@@ -29,12 +32,16 @@ use serde::Deserialize;
 use super::migrations;
 
 /// Порядок pull у межах циклу (дизайн, розділ 5).
-pub const ENTITY_ORDER: [&str; 6] = [
+///
+/// E5-C6 (ADR-0008 §7.1-C6): `stock_norms` прибрано — таблиці в серверній
+/// схемі НЕ ІСНУЄ, тому хаб відповідає 400 і цикл щотика писав `pull_fail`.
+/// Порядок решти сутностей не змінюється (topological: довідники товару →
+/// товар → постачальник).
+pub const ENTITY_ORDER: [&str; 5] = [
     "settings",
     "employees",
     "categories",
     "products",
-    "stock_norms",
     "suppliers",
 ];
 

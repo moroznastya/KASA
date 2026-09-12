@@ -319,6 +319,28 @@ async fn login_common(
         }
     }
 
+    // ADR-0008 §10 №2 (рішення Творця Б2, варіант C — за прапорцем):
+    // касир, створений локально на вузлі (`sync_state='pending_hub'`), за
+    // замовчуванням ВХОДИТЬ (offline-first, ADR §2.2); якщо оператор увімкнув
+    // `REQUIRE_HUB_CONFIRM_BEFORE_LOGIN`, вхід блокується до підтвердження
+    // хабом. Перевірка після крединціалів: неверний пароль не має «зливати»
+    // стан касира.
+    if crate::sync_settings::require_hub_confirm_before_login() {
+        let sync_state: Option<String> =
+            sqlx::query_scalar("SELECT sync_state FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
+        if sync_state.as_deref() == Some("pending_hub") {
+            return Err(AuthError::Forbidden(
+                "Касир ще не підтверджений хабом (sync_state=pending_hub): вхід заблоковано \
+                 політикою REQUIRE_HUB_CONFIRM_BEFORE_LOGIN"
+                    .to_string(),
+            ));
+        }
+    }
+
     // Робоча сесія: закриваємо попередні активні, створюємо нову.
     // На standby (F6) обидва виклики пишуть ЛОКАЛЬНО в SQLite вузла (жодного
     // звернення до PG): логін мусить працювати при недоступному primary.
@@ -534,8 +556,17 @@ impl AuthService for SqlxAuth {
 
         let id = Uuid::new_v4();
         let now = Utc::now().naive_utc();
+        // ADR-0008 §7.1-D3 (рішення Творця Б2, варіант A): рядок, створений НА
+        // ВУЗЛІ, ще не підтверджений хабом → `pending_hub`. Роль інстанса
+        // вирішує налаштування `sync.hub_url` ЙОГО власної БД (не прапорець):
+        // на хабі/одиночній точці рядок канонічний одразу (`confirmed`).
+        let sync_state = if crate::sync_settings::hub_configured(&self.pool).await {
+            "pending_hub"
+        } else {
+            "confirmed"
+        };
         sqlx::query(
-            "INSERT INTO users (id, name, login, password_hash, pin_code, role, is_active, permissions, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6::user_role,$7,$8,$9,$10)",
+            "INSERT INTO users (id, name, login, password_hash, pin_code, role, is_active, permissions, created_at, updated_at, sync_state) VALUES ($1,$2,$3,$4,$5,$6::user_role,$7,$8,$9,$10,$11)",
         )
         .bind(id)
         .bind(&input.name)
@@ -547,6 +578,7 @@ impl AuthService for SqlxAuth {
         .bind(&permissions_json)
         .bind(now)
         .bind(now)
+        .bind(sync_state)
         .execute(&self.pool)
         .await
         .map_err(|e| AuthError::Infrastructure(e.to_string()))?;

@@ -486,3 +486,322 @@ async fn conflict_visible_in_admin_queue() {
     assert_eq!(code_403, 403, "касир не бачить черги конфліктів");
     evidence("доступ до черги конфліктів: касир → 403 (лише admin|owner|store_manager)");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// E5-частина B (Б1/B5/C3): ціна точки як СПІЛЬНА сутність МЕРЕЖІ
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `store_price_proposal_accepted_and_visible_on_second_node` (критерій E5-Б1).
+///
+/// Рішення Творця Б1 (2026-09-12, ADR §10 №1): ціна товару в точці —
+/// атрибут МЕРЕЖІ; хаб — авторитет, арбітрує ЄДИНИЙ `server_version` і роздає
+/// всім вузлам (механізм той самий, що `products.price`).
+///
+/// Що доводиться:
+///   1. вузол створив ціну ЛОКАЛЬНО (offline-first, рядок у своїй БД) і надіслав
+///      ПРОПОЗИЦІЮ — жодного нового ендпоінта/kind (наявний арбітраж §4.2);
+///   2. хаб присвоїв ЄДИНИЙ `server_version` (наявний тригер + `sync_meta`),
+///      і той самий номер ДРУГИЙ вузол бачить у дельті `store_product_prices`;
+///   3. два вузли незалежно створили ціну для ОДНІЄЇ пари `(store, product)`:
+///      хаб застосовує правку до КАНОНІЧНОГО рядка (природний ключ) і каже про
+///      це вузлу — жодного другого рядка (UNIQUE) і жодної втраченої правки;
+///   4. `op=delete` їде як `op=delete` (tombstone, ADR §4.2 п.3).
+#[tokio::test]
+async fn store_price_proposal_accepted_and_visible_on_second_node() {
+    common::force_test_db();
+    let admin = env::pool_to(&env::test_db_url()).await;
+    let hub = env::hub_pool(&admin, "priceB").await;
+    let node1 = env::node_pool(&hub, "priceB1").await;
+    let node2 = env::node_pool(&hub, "priceB2").await;
+    let product = Uuid::new_v4();
+    env::seed(&hub, product, "priceB-hub").await;
+    env::seed(&node1, product, "priceB-n1").await;
+    env::seed(&node2, product, "priceB-n2").await;
+
+    let (hub_base, _) = env::serve_any(env::app_state_with_readdirs(&hub)).await;
+    let (n1_base, _) = env::serve_any(env::app_state(&node1)).await;
+    let (n2_base, _) = env::serve_any(env::app_state(&node2)).await;
+    env::wait_ready(&hub_base).await;
+    env::wait_ready(&n1_base).await;
+    env::wait_ready(&n2_base).await;
+
+    let token = env::owner_token();
+    env::set_hub_upstream(&node1, &hub_base, &token).await;
+    env::set_hub_upstream(&node2, &hub_base, &token).await;
+
+    // ── 1. Вузол 1 створює ціну ЛОКАЛЬНО (offline-first) ──────────────────
+    // Це і є «менеджер точки поставив мережеву ціну»: жодного звернення до
+    // хаба, рядок живе у власній БД вузла і несе локальний `server_version`.
+    let price1 = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO store_product_prices (id, store_id, product_id, price) \
+         VALUES ($1, $2, $3, $4::numeric)",
+    )
+    .bind(price1)
+    .bind(env::store_id())
+    .bind(product)
+    .bind("99.50")
+    .execute(&node1)
+    .await
+    .expect("локальна ціна на вузлі 1");
+    let local_version: i64 =
+        sqlx::query_scalar("SELECT server_version FROM store_product_prices WHERE id = $1")
+            .bind(price1)
+            .fetch_one(&node1)
+            .await
+            .expect("локальний рядок ціни");
+    assert!(
+        local_version > 0,
+        "локальний тригер bump працює на вузлі: {local_version}"
+    );
+
+    // ── 2. Пропозиція хабові (НАЯВНИЙ арбітраж §4.2, без нового kind) ──────
+    let cu1 = Uuid::new_v4();
+    let payload1 = json!({
+        "store_id": env::store_id(),
+        "product_id": product,
+        "price": "99.50",
+    });
+    let (code1, body1) = env::propose(
+        &hub_base,
+        &token,
+        &[env::proposal_env(
+            "store_product_prices",
+            price1,
+            "upsert",
+            cu1,
+            payload1,
+            0,
+        )],
+    )
+    .await;
+    assert_eq!(code1, 200, "вузол → хаб (пропозиція ціни): {body1}");
+    assert_eq!(
+        body1["results"][0]["status"], "accepted",
+        "хаб приймає ціну як КАНОНІЧНУ (рішення Б1): {body1}"
+    );
+    let version = body1["results"][0]["server_version"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("хаб мусить присвоїти server_version: {body1}"));
+
+    // ── 3. Хаб: ЄДИНИЙ server_version + одиниця виміру `sync_meta` ─────────
+    let (hub_id, price_text, hub_deleted, hub_version): (Uuid, String, bool, i64) = sqlx::query_as(
+        "SELECT id, price::text, is_deleted, server_version FROM store_product_prices \
+         WHERE id = $1",
+    )
+    .bind(price1)
+    .fetch_one(&hub)
+    .await
+    .expect("рядок ціни на хабі");
+    assert_eq!(hub_id, price1);
+    assert_eq!(price_text, "99.50", "ціна з пропозиції стала канонічною");
+    assert!(!hub_deleted);
+    assert_eq!(hub_version, version, "версія рядка = версія з відповіді");
+    let meta: i64 =
+        sqlx::query_scalar("SELECT version FROM sync_meta WHERE entity = 'store_product_prices'")
+            .fetch_one(&hub)
+            .await
+            .expect("sync_meta.store_product_prices");
+    assert_eq!(
+        meta, version,
+        "присвоєна версія = sync_meta.version (одне джерело канонічної версії)"
+    );
+    evidence(&format!(
+        "вузол1→хаб: ціна {price1} ({product}) прийнята, server_version={version} \
+         (= sync_meta.store_product_prices)"
+    ));
+
+    // ── 4. Другий вузол бачить ціну ТІЄЮ Ж дельтою (наявний pull) ──────────
+    let (code_st, st2) = env::sync_status(&n2_base, &token).await;
+    assert_eq!(code_st, 200, "status другого вузла: {st2}");
+    assert_eq!(st2["role"], "node", "другий вузол — окремий інстанс: {st2}");
+
+    let (code_d, delta) = env::master_delta(&hub_base, &token, "store_product_prices", 0).await;
+    assert_eq!(code_d, 200, "GET /api/v1/sync/master: {delta}");
+    let found = delta["changes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("дельта без changes: {delta}"))
+        .iter()
+        .find(|c| c["id"] == price1.to_string())
+        .unwrap_or_else(|| panic!("ціни немає в дельті хаба: {delta}"));
+    assert_eq!(found["op"], "upsert");
+    assert_eq!(found["version"].as_i64(), Some(version));
+    assert_eq!(
+        found["data"]["price"]
+            .as_str()
+            .and_then(|p| p.parse::<f64>().ok()),
+        Some(99.5),
+        "ціна в дельті: {found}"
+    );
+    assert_eq!(
+        found["data"]["product_id"],
+        product.to_string(),
+        "вузол бачить, до якого товару ціна: {found}"
+    );
+    evidence(&format!(
+        "другий вузол через наявний pull хаба: у дельті store_product_prices є {price1} \
+         з version={version} і ціною 99.50"
+    ));
+
+    // ── 5. Два вузли, ОДНА пара (store, product): канонікалізація ──────────
+    // Вузол 2 теж створив свою ціну локально (свій uuid!) для тієї ж пари —
+    // саме так виникає реальна гонка: UNIQUE у схемі на (store_id, product_id).
+    let price2 = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO store_product_prices (id, store_id, product_id, price) \
+         VALUES ($1, $2, $3, $4::numeric)",
+    )
+    .bind(price2)
+    .bind(env::store_id())
+    .bind(product)
+    .bind("105.00")
+    .execute(&node2)
+    .await
+    .expect("локальна ціна на вузлі 2");
+
+    let cu2 = Uuid::new_v4();
+    let (code2, body2) = env::propose(
+        &hub_base,
+        &token,
+        &[env::proposal_env(
+            "store_product_prices",
+            price2,
+            "upsert",
+            cu2,
+            json!({
+                "store_id": env::store_id(),
+                "product_id": product,
+                "price": "105.00",
+            }),
+            0,
+        )],
+    )
+    .await;
+    assert_eq!(code2, 200, "друга пропозиція ціни: {body2}");
+    assert_eq!(
+        body2["results"][0]["status"], "accepted",
+        "правка вузла2 не втрачається: {body2}"
+    );
+    let note = body2["results"][0]["note"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        note.contains(&price1.to_string()),
+        "вузол2 бачить, що застосовано до КАНОНІЧНОГО рядка {price1}: {body2}"
+    );
+    let rows_for_pair: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM store_product_prices WHERE store_id = $1 AND product_id = $2",
+    )
+    .bind(env::store_id())
+    .bind(product)
+    .fetch_one(&hub)
+    .await
+    .expect("рядки пари на хабі");
+    assert_eq!(
+        rows_for_pair, 1,
+        "другого рядка для пари (store, product) немає — хаб канонікалізував"
+    );
+    let canonical_price: String =
+        sqlx::query_scalar("SELECT price::text FROM store_product_prices WHERE id = $1")
+            .bind(price1)
+            .fetch_one(&hub)
+            .await
+            .expect("канонічна ціна");
+    assert_eq!(canonical_price, "105.00", "канонічна ціна оновлена");
+    evidence(&format!(
+        "два вузли, одна пара (store,product): хаб застосував правку до канонічного {price1} \
+         (note вузлу2 містить його id), рядків для пари = {rows_for_pair}"
+    ));
+
+    // ── 6. Інформативно: послідовна правка ТОГО САМОГО рядка ──────────────
+    // Наявне правило E5-ядра (частина A): конкурент — будь-яка інша НЕвирішена
+    // АБО вже застосована (`accepted`) пропозиція на той самий рядок. Тому друга
+    // правка того самого рядка дає `conflict` і чекає оператора. Для мережевої
+    // ціни (Б1) це питання рішення Творця → ескаловано у звіті; тут ЛИШЕ
+    // фіксуємо фактичну поведінку (без ассерту, щоб не «узаконити» її).
+    let (code_seq, body_seq) = env::propose(
+        &hub_base,
+        &token,
+        &[env::proposal_env(
+            "store_product_prices",
+            price1,
+            "upsert",
+            Uuid::new_v4(),
+            json!({
+                "store_id": env::store_id(),
+                "product_id": product,
+                "price": "97.00",
+            }),
+            version,
+        )],
+    )
+    .await;
+    assert_eq!(
+        code_seq, 200,
+        "послідовна правка того самого рядка: {body_seq}"
+    );
+    evidence(&format!(
+        "послідовна правка того самого рядка {price1} → status={} (наявне правило E5-ядра: \
+         прийнята пропозиція лишається конкурентом; рішення Творця потрібне для Б1)",
+        body_seq["results"][0]["status"].as_str().unwrap_or("?")
+    ));
+
+    // ── 7. Tombstone: зняте перевизначення їде як op=delete ────────────────
+    // Рядок УЖЕ канонічний на хабі (його створив адмін хаба/інший вузол
+    // раніше) і це ПЕРША пропозиція на нього — інакше крок перевіряв би не
+    // tombstone, а правило конкурентів вище.
+    let product2 = Uuid::new_v4();
+    env::seed(&hub, product2, "priceB-hub-2").await;
+    env::seed(&node1, product2, "priceB-n1-2").await;
+    let price_del = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO store_product_prices (id, store_id, product_id, price) \
+         VALUES ($1, $2, $3, $4::numeric)",
+    )
+    .bind(price_del)
+    .bind(env::store_id())
+    .bind(product2)
+    .bind("42.00")
+    .execute(&hub)
+    .await
+    .expect("канонічна ціна на хабі (предмет зняття)");
+    let (code3, body3) = env::propose(
+        &hub_base,
+        &token,
+        &[env::proposal_env(
+            "store_product_prices",
+            price_del,
+            "delete",
+            Uuid::new_v4(),
+            json!({"store_id": env::store_id(), "product_id": product2}),
+            0,
+        )],
+    )
+    .await;
+    assert_eq!(code3, 200, "пропозиція видалення ціни: {body3}");
+    assert_eq!(
+        body3["results"][0]["status"], "accepted",
+        "зняття перевизначення приймається (перша пропозиція на рядок): {body3}"
+    );
+    let del_version = body3["results"][0]["server_version"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("версія tombstone: {body3}"));
+    let (code_t, tomb) =
+        env::master_delta(&hub_base, &token, "store_product_prices", del_version - 1).await;
+    assert_eq!(code_t, 200, "дельта після видалення: {tomb}");
+    let tomb_change = tomb["changes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("дельта без changes: {tomb}"))
+        .iter()
+        .find(|c| c["id"] == price_del.to_string())
+        .unwrap_or_else(|| panic!("tombstone у дельті: {tomb}"));
+    assert_eq!(
+        tomb_change["op"], "delete",
+        "зняте перевизначення доїжджає вузлам як delete: {tomb_change}"
+    );
+    evidence(&format!(
+        "op=delete: ціну {price_del} знято tombstone'ом (is_deleted=true) і вузли бачать op=delete \
+         на version={del_version}"
+    ));
+}

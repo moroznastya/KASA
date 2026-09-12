@@ -1,8 +1,23 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // sync — pull майстер-даних (ЕТАП 3 offline-first).
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/sync/master?entity={categories|products|stock_norms|suppliers|
-//                                employees|settings}&since_version={int}
+// GET /api/v1/sync/master?entity={categories|products|suppliers|employees|
+//                                settings|barcodes|product_images|
+//                                write_off_reasons}&since_version={int}
+//
+// E5 «частина A» (ADR-0008 §7.1-C): довідники, які не мали ні версій, ні
+// шляху до вузлів, стали придатними для pull:
+//   C1 barcodes, product_images — server_version + trg_*_bump + sync_meta + entity;
+//   C2 write_off_reasons        — те саме + is_deleted (tombstone-делеція доїжджає);
+//   C5 system_settings          — is_deleted → op=delete РЕАЛЬНО їде (раніше завжди upsert);
+//   C6 stock_norms              — прибрано з ALLOWED_ENTITIES/sync_meta: таблиці
+//                                 в серверній схемі немає, дельта завжди порожня.
+// C4: локальний оверрайд — рішення Творця відсутнє (Б?). `print_templates`
+// навмисно НЕ синхронізується: точка має власні шаблони друку (9 ендпоінтів
+// CRUD + `set-default` у backend), `schema.sql` дає таблиці `store_id`, а
+// `uq_print_templates_default_per_type` дозволяє ОДИН default на type
+// ГЛОБАЛЬНО (ADR §5 рядок 17: власник «→ В (локальний оверрайд)»). Роздача
+// каталогу хаба на вузли затерла б шаблони точки — потрібне рішення Творця.
 //
 // Дизайн: docs/design/sync-schema-design.md, розділи 1.4 (дельти), 2.1 (формат).
 //
@@ -42,13 +57,31 @@ pub const PAGE_SIZE: i64 = 500;
 const FETCH_LIMIT: i64 = PAGE_SIZE + 1;
 
 /// Дозволені сутності pull (дизайн 1.2, порядок каси задає клієнт).
-pub const ALLOWED_ENTITIES: [&str; 6] = [
+///
+/// E5-C6: `stock_norms` прибрано — таблиці в серверній схемі НЕ ІСНУЄ
+/// (Alembic 0012:16-18: `stock_norms` немає ні в схемі, ні в моделях), дельта
+/// завжди була порожньою. Створити таблицю — рішення поза обсягом E5-C.
+pub const ALLOWED_ENTITIES: [&str; 9] = [
     "categories",
     "products",
-    "stock_norms",
     "suppliers",
     "employees",
     "settings",
+    // E5-C1 (ADR-0008 §7.1-C): штрих-коди товарів — довідник хаба (↓).
+    // Раніше не мали ні `server_version`, ні шляху → зміни хаба не доїжджали.
+    "barcodes",
+    // E5-C1: зображення товарів — той самий випадок, що `barcodes`.
+    "product_images",
+    // E5-C2: причини списання — ГЛОБАЛЬНИЙ довідник (без `store_id`, без RLS):
+    // входить у дельту для всіх точок; видалення їде як `op=delete` (tombstone).
+    "write_off_reasons",
+    // E5-B5/C3 (ADR-0008 §7.1-B5, рішення Творця Б1): ціна точки — СПІЛЬНА
+    // сутність МЕРЕЖІ. Канал ОДНОБІЧНИЙ (↓): канонічну версію присвоює хаб при
+    // прийнятті ПРОПОЗИЦІЇ (`POST /api/v1/sync/catalog-proposal`, арбітраж §4.2),
+    // а вузли отримують результат цим pull. Окремого push-kind для цін НЕМАЄ
+    // свідомо: `push` = «це сталося, прийми» в обхід арбітражу (last-write-wins
+    // → мовчазна втрата правки іншого вузла).
+    "store_product_prices",
 ];
 
 // ─── DTO дельти (розділ 2.1) ────────────────────────────────────────────────
@@ -209,10 +242,13 @@ async fn fetch_delta(
         "suppliers" => query_suppliers(pool, since).await?,
         "employees" => query_employees(pool, since).await?,
         "settings" => query_settings(pool, since, store_id).await?,
-        // stock_norms: таблиці в реальній серверній схемі НЕМАЄ (див.
-        // Alembic 0011 — зафіксовано аномалією). Дельти завжди порожні,
-        // sync_meta.stock_norms лишається 0.
-        "stock_norms" => (Vec::new(), false),
+        // E5-C1/C2: довідники, що раніше не мали шляху до вузлів.
+        "barcodes" => query_barcodes(pool, since, store_id).await?,
+        "product_images" => query_product_images(pool, since, store_id).await?,
+        "write_off_reasons" => query_write_off_reasons(pool, since).await?,
+        // E5-B5/C3: ціна мережі — без фільтра точки: рішення Творця Б1 прямо
+        // каже «роздає ВСІМ вузлам» (мережева ціна єдина для всіх точок).
+        "store_product_prices" => query_store_product_prices(pool, since).await?,
         _ => {
             return Err(SyncError::BadRequest(format!(
                 "невідома сутність '{entity}'"
@@ -381,13 +417,57 @@ async fn query_employees(pool: &StorePool, since: i64) -> Result<(Vec<Change>, b
     Ok((changes, false))
 }
 
+/// E5-B5/C3 (ADR-0008 §7.1-B5): дельта цін мережі для вузлів.
+///
+/// Фільтра за точкою НЕМАЄ — свідомо: рішення Творця Б1 (ADR §10 №1) —
+/// «ціна товару в точці — атрибут МЕРЕЖІ; хаб роздає всім вузлам». Вузол
+/// отримує ціни всіх точок (як `products.price` — спільний для мережі).
+/// `store_id`/`product_id` входять у payload: за ними вузол будує пропозицію
+/// (§4.2) і за ними ж хаб знаходить канонічний рядок.
+async fn query_store_product_prices(
+    pool: &StorePool,
+    since: i64,
+) -> Result<(Vec<Change>, bool), sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, store_id, product_id, price, is_deleted, server_version \
+         FROM store_product_prices WHERE server_version > $1 \
+         ORDER BY server_version, id LIMIT $2",
+    )
+    .bind(since)
+    .bind(FETCH_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    let changes = rows
+        .into_iter()
+        .map(|r| {
+            let id: Uuid = r.get(0);
+            let store_id: Uuid = r.get(1);
+            let product_id: Uuid = r.get(2);
+            let price: sqlx::types::BigDecimal = r.get(3);
+            let deleted: bool = r.get(4);
+            let version: i64 = r.get(5);
+            change(
+                id,
+                version,
+                deleted,
+                Some(json!({
+                    "store_id": store_id,
+                    "product_id": product_id,
+                    "price": price.to_string(),
+                })),
+            )
+        })
+        .collect();
+    Ok((changes, false))
+}
+
 async fn query_settings(
     pool: &StorePool,
     since: i64,
     store_id: uuid::Uuid,
 ) -> Result<(Vec<Change>, bool), sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT id, key, value, server_version \
+        "SELECT id, key, value, is_deleted, server_version \
          FROM system_settings \
          WHERE server_version > $1 AND store_id = $2 \
          ORDER BY server_version, id LIMIT $3",
@@ -397,19 +477,147 @@ async fn query_settings(
     .bind(FETCH_LIMIT)
     .fetch_all(pool)
     .await?;
-    // system_settings НЕ має is_deleted (0011 не додавав) → op завжди upsert.
+    // E5-C5 (ADR-0008 §7.1-C5): `is_deleted` додано міграцією 0023 — раніше
+    // колонки не було, і хендлер був ЗМУШЕНИЙ видавати лише `upsert`, тож
+    // видалені налаштування точки не доїжджали до вузла взагалі.
     let changes = rows
         .into_iter()
         .map(|r| {
             let id: Uuid = r.get(0);
             let key: String = r.get(1);
             let value: Option<String> = r.get(2);
-            let version: i64 = r.get(3);
+            let deleted: bool = r.get(3);
+            let version: i64 = r.get(4);
+            change(
+                id,
+                version,
+                deleted,
+                Some(json!({"key": key, "value": value})),
+            )
+        })
+        .collect();
+    Ok((changes, false))
+}
+
+// ─── E5-C1/C2: довідники, додані до pull (ADR-0008 §7.1-C) ─────────────────
+
+/// `barcodes` (C1): довідник хаба, прив'язаний до товару. `store_id`
+/// NULL = глобальний штрих-код власника (як `categories`), тому фільтр
+/// дзеркалить `query_categories`.
+async fn query_barcodes(
+    pool: &StorePool,
+    since: i64,
+    store_id: uuid::Uuid,
+) -> Result<(Vec<Change>, bool), sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, product_id, barcode, is_primary, server_version \
+         FROM barcodes \
+         WHERE server_version > $1 AND (store_id IS NULL OR store_id = $2) \
+         ORDER BY server_version, id LIMIT $3",
+    )
+    .bind(since)
+    .bind(store_id)
+    .bind(FETCH_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    // `barcodes` не має `is_deleted` (фізичне видалення) — op завжди `upsert`.
+    let changes = rows
+        .into_iter()
+        .map(|r| {
+            let id: Uuid = r.get(0);
+            let product_id: Uuid = r.get(1);
+            let barcode: String = r.get(2);
+            let is_primary: bool = r.get(3);
+            let version: i64 = r.get(4);
             change(
                 id,
                 version,
                 false,
-                Some(json!({"key": key, "value": value})),
+                Some(json!({
+                    "product_id": product_id,
+                    "barcode": barcode,
+                    "is_primary": is_primary,
+                })),
+            )
+        })
+        .collect();
+    Ok((changes, false))
+}
+
+/// `product_images` (C1): довідник хаба; фільтр точки — як у `barcodes`.
+async fn query_product_images(
+    pool: &StorePool,
+    since: i64,
+    store_id: uuid::Uuid,
+) -> Result<(Vec<Change>, bool), sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, product_id, url, is_main, sort_order, server_version \
+         FROM product_images \
+         WHERE server_version > $1 AND (store_id IS NULL OR store_id = $2) \
+         ORDER BY server_version, id LIMIT $3",
+    )
+    .bind(since)
+    .bind(store_id)
+    .bind(FETCH_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    // `product_images` не має `is_deleted` — op завжди `upsert`.
+    let changes = rows
+        .into_iter()
+        .map(|r| {
+            let id: Uuid = r.get(0);
+            let product_id: Uuid = r.get(1);
+            let url: String = r.get(2);
+            let is_main: bool = r.get(3);
+            let sort_order: i32 = r.get(4);
+            let version: i64 = r.get(5);
+            change(
+                id,
+                version,
+                false,
+                Some(json!({
+                    "product_id": product_id,
+                    "url": url,
+                    "is_main": is_main,
+                    "sort_order": sort_order,
+                })),
+            )
+        })
+        .collect();
+    Ok((changes, false))
+}
+
+/// `write_off_reasons` (C2): ГЛОБАЛЬНИЙ довідник причин списання — без
+/// `store_id` і без RLS (перевірено: 0004_rls його не покриває), тому в
+/// дельту входить для всіх точок без фільтра. `is_deleted` (0023) дає
+/// tombstone-делецію: вузол бачить `op=delete`, а не мовчазне зникнення.
+async fn query_write_off_reasons(
+    pool: &StorePool,
+    since: i64,
+) -> Result<(Vec<Change>, bool), sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, name, is_active, is_deleted, server_version \
+         FROM write_off_reasons \
+         WHERE server_version > $1 \
+         ORDER BY server_version, id LIMIT $2",
+    )
+    .bind(since)
+    .bind(FETCH_LIMIT)
+    .fetch_all(pool)
+    .await?;
+    let changes = rows
+        .into_iter()
+        .map(|r| {
+            let id: Uuid = r.get(0);
+            let name: String = r.get(1);
+            let is_active: bool = r.get(2);
+            let deleted: bool = r.get(3);
+            let version: i64 = r.get(4);
+            change(
+                id,
+                version,
+                deleted,
+                Some(json!({"name": name, "is_active": is_active})),
             )
         })
         .collect();

@@ -182,7 +182,9 @@ async fn pull_client_initial_and_repeat_sync() {
     let ok = pull_all(&db_path, &client, &cfg)
         .await
         .expect("перший цикл pull");
-    assert_eq!(ok, 6, "усі 6 сутностей успішно оновлені");
+    // E5-C6 (ADR-0008 §7.1-C6): `stock_norms` прибрано з циклу pull (таблиці
+    // в серверній схемі немає) — успішних сутностей 5, а не 6.
+    assert_eq!(ok, 5, "усі 5 сутностей циклу успішно оновлені");
 
     let conn = open_connection(&db_path).expect("open db");
     let version: i64 = conn

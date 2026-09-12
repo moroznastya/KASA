@@ -139,6 +139,12 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("product_images", WritePolicy::ProxyToPrimary),
     ("barcodes", WritePolicy::ProxyToPrimary),
     ("suppliers", WritePolicy::ProxyToPrimary),
+    // E5-B5/C3 (ADR-0008 §7.1-B5, рішення Творця Б1 2026-09-12): ціна точки —
+    // СПІЛЬНА сутність МЕРЕЖІ (як `products`/`suppliers`): канонічну версію
+    // присвоює хаб при прийнятті ПРОПОЗИЦІЇ (`catalog_proposal.rs` — єдина
+    // DML-точка таблиці), вузли отримують результат наявним pull. Клас той
+    // самий, що в решти довідників (джерело істини для мережі — авторитет).
+    ("store_product_prices", WritePolicy::ProxyToPrimary),
     ("owners_db", WritePolicy::ProxyToPrimary),
     ("print_templates", WritePolicy::ProxyToPrimary),
     ("system_settings", WritePolicy::ProxyToPrimary),

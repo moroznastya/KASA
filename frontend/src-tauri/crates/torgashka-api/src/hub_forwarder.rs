@@ -48,11 +48,11 @@ use uuid::Uuid;
 
 use crate::sync::{PushEnvelope, PushItemResult};
 
-/// Ключ налаштування з URL хаба (у ВЛАСНІЙ БД вузла; store-scoped або
-/// глобальний — як `system_settings` загалом).
-pub const HUB_URL_SETTING: &str = "sync.hub_url";
-/// Ключ налаштування з токеном вузла для хаба.
-pub const HUB_TOKEN_SETTING: &str = "sync.hub_token";
+/// Ключі налаштувань вузла (у ВЛАСНІЙ БД вузла; store-scoped або глобальний —
+/// як `system_settings` загалом). Оголошені в `infrastructure::sync_settings`
+/// (єдине джерело назв): той самий предикат ролі читає репозиторій
+/// користувачів для локального маркера `users.sync_state` (ADR-0008 §7.1-D3).
+pub use torgashka_infrastructure::sync_settings::{HUB_TOKEN_SETTING, HUB_URL_SETTING};
 /// Період циклу форвардера (сек) і нижня межа — як у черги каси.
 pub const DEFAULT_INTERVAL_SECS: u64 = 30;
 pub const MIN_INTERVAL_SECS: u64 = 5;
@@ -93,16 +93,10 @@ impl HubForwardConfig {
     }
 }
 
-/// Останнє (за `updated_at`) активне значення налаштування.
+/// Останнє (за `updated_at`) активне значення налаштування — делегація в
+/// `infrastructure::sync_settings` (той самий запит; одне місце правди).
 async fn read_setting(pool: &PgPool, key: &str) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT value FROM system_settings \
-         WHERE key = $1 AND is_active AND value IS NOT NULL AND value <> '' \
-         ORDER BY updated_at DESC LIMIT 1",
-    )
-    .bind(key)
-    .fetch_optional(pool)
-    .await
+    torgashka_infrastructure::sync_settings::setting(pool, key).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

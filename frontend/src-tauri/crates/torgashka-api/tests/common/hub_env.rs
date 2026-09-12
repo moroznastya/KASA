@@ -31,6 +31,7 @@ use sqlx::PgPool;
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_infrastructure::node_config::NodeConfig;
+use torgashka_infrastructure::repositories::auth::SqlxAuth;
 use torgashka_infrastructure::repositories::directories::SqlxDirectories;
 use torgashka_infrastructure::repositories::pos::SqlxPos;
 use torgashka_infrastructure::repositories::setup::SqlxSetupService;
@@ -245,6 +246,17 @@ pub fn app_state(pool: &PgPool) -> AppState {
     }
 }
 
+/// Стан ВУЗЛА в тестах E5-частини B (Б2/D3): `readdirs` (роздача/прийом
+/// довідників) + `auth` (створення касира `POST /api/v1/users`, PIN-логін
+/// `/api/v1/auth/login-pin`). У проді обидві гілки вмикаються прапорцями
+/// (`TORGASHKA_RUST_AUTH=1` і readdirs) — тут потрібні, щоб тест йшов РЕАЛЬНИМ
+/// шляхом створення касира, а не INSERT'ом із тесту.
+pub fn app_state_node(pool: &PgPool) -> AppState {
+    let mut state = app_state_with_readdirs(pool);
+    state.auth = Some(Arc::new(SqlxAuth::new(StorePool::new(pool.clone()))));
+    state
+}
+
 /// Стан фасаду З гілкою readdirs: потрібен тестам, які перевіряють роздачу
 /// довідників вузлам (`GET /api/v1/sync/master` реєструється лише за
 /// `state.readdirs.is_some()` — як у проді). Решта гілок та сама.
@@ -418,6 +430,34 @@ pub async fn propose(base: &str, token: &str, items: &[Value]) -> (u16, Value) {
         .send()
         .await
         .expect("catalog-proposal запит");
+    let code = r.status().as_u16();
+    let body: Value = r.json().await.unwrap_or(Value::Null);
+    (code, body)
+}
+
+/// `POST /api/v1/users` (require_admin + X-Store-Id) → (код, повна відповідь).
+pub async fn create_user(base: &str, token: &str, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::new()
+        .post(format!("{base}/api/v1/users"))
+        .bearer_auth(token)
+        .header("x-store-id", store_id().to_string())
+        .json(&body)
+        .send()
+        .await
+        .expect("POST /api/v1/users");
+    let code = r.status().as_u16();
+    let body: Value = r.json().await.unwrap_or(Value::Null);
+    (code, body)
+}
+
+/// `POST /api/v1/auth/login-pin` (публічний) → (код, повна відповідь).
+pub async fn login_pin(base: &str, login: &str, pin: &str) -> (u16, Value) {
+    let r = reqwest::Client::new()
+        .post(format!("{base}/api/v1/auth/login-pin"))
+        .json(&json!({"login": login, "pin_code": pin}))
+        .send()
+        .await
+        .expect("POST /api/v1/auth/login-pin");
     let code = r.status().as_u16();
     let body: Value = r.json().await.unwrap_or(Value::Null);
     (code, body)

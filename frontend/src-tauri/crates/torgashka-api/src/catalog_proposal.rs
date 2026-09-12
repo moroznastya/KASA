@@ -15,16 +15,26 @@
 //!   * ідемпотентність тут своя: `client_uuid` пропозиції UNIQUE (повтор
 //!     мережевого запиту повертає РАНІШЕ рішення, не створює другої правки).
 //!
-//! МЕЖА ОБСЯГУ (свідомо, не «забуто»): арбітруються ЛИШЕ `products` і
-//! `suppliers` — для них ADR §4.2 визначив політику однозначно (хаб-авторитет,
-//! tombstone `is_deleted` уже є, версійні тригери `trg_*_bump` уже є).
+//! ОБСЯГ арбітражу (усі — СПІЛЬНІ сутності без винятку за точкою):
+//!   * `products`, `suppliers` — ADR §4.2 (E5-ядро, 0022);
+//!   * `store_product_prices` — рішення Творця Б1 (2026-09-12, ADR §10 №1):
+//!     ціна точки — атрибут МЕРЕЖІ, шлях той самий, що `products.price`;
+//!   * `users` — рішення Творця Б2 (2026-09-16, ADR §10 №2, варіант A):
+//!     касир створюється ЛОКАЛЬНО на вузлі (offline-first, ADR §2.2) з
+//!     локальним маркером `sync_state='pending_hub'` (§7.1-D3), а канонічним
+//!     стає після прийняття пропозиції хабом (`sync_state='confirmed'`).
+//!
 //! НЕ додані (потребують рішення Творця, план §6):
-//!   * `store_product_prices` — блокер Б1 у поточному контракті E5 (ціна —
-//!     атрибут точки чи мережі; у плані §6 стоїть «закрито 2026-09-12», у
-//!     контракті — «невідомо» → суперечність ескалована координатору);
-//!   * `users` — блокер Б2 (політика створення касирів);
-//!   * `barcodes`/`product_images`/`print_templates`/`write_off_reasons`/
-//!     `system_settings` — C1/C2/C4/C5 (немає версій/шляху або це C-обсяг).
+//!   * `print_templates` — блокер C4 (каталог хаба чи локальний оверрайд);
+//!   * `barcodes`/`product_images`/`write_off_reasons`/`system_settings` —
+//!     C1/C2/C5: придатні для pull (0023), але власних пропозицій поки не
+//!     приймають (розширення = рядок у `ARBITRATED_ENTITIES` + `apply_*`).
+//!
+//! Окремого push-kind для цін НЕМАЄ і не буде: `push` приймає ОПЕРАЦІЙНІ
+//! факти («це сталося — прийми»), а спільна сутність вимагає АРБІТРАЖУ
+//! (хаб присвоює ЄДИНИЙ `server_version`, дві правки на один рядок стають
+//! видимим конфліктом). Двері `push` = last-write-wins в обхід арбітражу →
+//! мовчазна втрата правки іншого вузла (ADR §4.2 прямо забороняє).
 //!
 //! Розширення = один рядок у `ARBITRATED_ENTITIES` + `apply_*` (явний SQL).
 
@@ -95,8 +105,10 @@ impl From<auth_routes::AuthRouteError> for CatalogErr {
 // ─── Довідники під арбітражем (хаб — авторитет) ─────────────────────────────
 
 /// Спільні довідники, для яких політика ADR §4.2 визначена однозначно.
-/// ⚠ Розширення списку = рішення Творця (блокери Б1/Б2, план §6) — див. шапку.
-pub const ARBITRATED_ENTITIES: [&str; 2] = ["products", "suppliers"];
+/// ⚠ Розширення списку = рішення Творця (див. шапку: C4 `print_templates` —
+/// єдиний незакритий блокер E5).
+pub const ARBITRATED_ENTITIES: [&str; 4] =
+    ["products", "suppliers", "store_product_prices", "users"];
 
 /// Ключі payload-конверта: ТІ САМІ, що віддає pull-дельта
 /// (`sync.rs::query_products`/`query_suppliers`), щоб вузол міг побудувати
@@ -113,6 +125,35 @@ const PRODUCT_KEYS: [&str; 9] = [
     "tax_group",
 ];
 const SUPPLIER_KEYS: [&str; 3] = ["name", "phone", "edrpou"];
+
+/// Б5/C3: ціна точки. Природний ключ рядка — `(store_id, product_id)` (UNIQUE
+/// у схемі), тому обидва поля входять у конверт: за ними хаб знаходить
+/// КАНОНІЧНИЙ рядок, якщо вузол пропонує свій локальний uuid (див.
+/// `apply_store_product_prices`).
+const STORE_PRICE_KEYS: [&str; 3] = ["store_id", "product_id", "price"];
+
+/// Б2/D3: касир. `name`/`pin_hash`/`role` — ТІ САМІ ключі, що віддає pull-дельта
+/// `employees` (`sync.rs::query_employees`), тому вузол будує пропозицію прямо
+/// зі свого рядка. `login`/`password_hash` додані свідомо: у схемі `users` вони
+/// NOT NULL, і без них хаб не може створити канонічний рядок (вигадувати
+/// логін/хеш за вузол — не наша справа). `pin_hash` — саме хеш (як у pull).
+const USER_KEYS: [&str; 6] = [
+    "name",
+    "login",
+    "password_hash",
+    "pin_hash",
+    "role",
+    "is_active",
+];
+
+/// Ролі, які вузол може запропонувати — валідація ДО SQL (невідома роль дає
+/// зрозумілу відмову, а не сирий текст приведення типу).
+///
+/// ⚠ `owner` СВІДОМО відсутній, хоч і є в enum `user_role`: політику задає
+/// наявний шлях створення (`auth_routes::parse_role` — «owner лише через
+/// setup/БД»), і пропозиція з вузла не має її обходити (ескалація привілеїв).
+/// Тому набір = {admin, cashier, store_manager}, як у API.
+const USER_ROLES: [&str; 3] = ["admin", "cashier", "store_manager"];
 
 // ─── DTO ────────────────────────────────────────────────────────────────────
 
@@ -226,7 +267,7 @@ async fn decide_one(
             None,
             Some(format!(
                 "довідник '{entity}' не під арбітражем E5 (дозволено: {}); \
-                 розширення — рішення Творця (блокери Б1/Б2, план §6)",
+                 розширення — рішення Творця (план §6)",
                 ARBITRATED_ENTITIES.join(", ")
             )),
         ));
@@ -374,7 +415,7 @@ async fn decide_one(
         .execute(&mut *tx)
         .await?;
     match apply_proposal(&mut tx, entity, row_id, &op, &item.payload).await {
-        Ok(version) => {
+        Ok(applied) => {
             sqlx::query("RELEASE SAVEPOINT proposal_apply")
                 .execute(&mut *tx)
                 .await?;
@@ -384,17 +425,17 @@ async fn decide_one(
                  WHERE id = $1",
             )
             .bind(id)
-            .bind(version)
+            .bind(applied.version)
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
-            if let Some(v) = version {
+            if let Some(v) = applied.version {
                 eprintln!(
                     "[catalog-proposal] ПРИЙНЯТО {entity}/{row_id} op={op} → server_version={v} \
                      (роздача вузлам — наявним pull: server_version > since_version)"
                 );
             }
-            Ok(base("accepted", version, None))
+            Ok(base("accepted", applied.version, applied.note))
         }
         Err(reason) => {
             // Застосувати не вдалось (валідація payload/рядка) — відкочуємо
@@ -429,11 +470,39 @@ async fn apply_proposal(
     row_id: Uuid,
     op: &str,
     payload: &Value,
-) -> Result<Option<i64>, String> {
+) -> Result<Applied, String> {
     match entity {
-        "products" => apply_products(tx, row_id, op, payload).await,
-        "suppliers" => apply_suppliers(tx, row_id, op, payload).await,
+        "products" => apply_products(tx, row_id, op, payload)
+            .await
+            .map(Applied::version),
+        "suppliers" => apply_suppliers(tx, row_id, op, payload)
+            .await
+            .map(Applied::version),
+        // E5-B5/C3: ціна точки — спільна сутність мережі (рішення Б1).
+        "store_product_prices" => apply_store_product_prices(tx, row_id, op, payload).await,
+        // E5-B2/D3: касир, створений локально на вузлі (рішення Б2).
+        "users" => apply_users(tx, row_id, op, payload).await,
         other => Err(format!("довідник '{other}' не під арбітражем")),
+    }
+}
+
+/// Результат застосування пропозиції до довідника на хабі.
+///
+/// `note` — необов'язкове пояснення для вузла-автора (те, що він мусить знати,
+/// але що не влізає у `version`): напр. канонікалізація рядка за природним
+/// ключем (`store_product_prices`) — вузол дізнається, що хаб застосував правку
+/// до ІНШОГО рядка, і не вважатиме свій uuid канонічним.
+struct Applied {
+    version: Option<i64>,
+    note: Option<String>,
+}
+
+impl Applied {
+    fn version(version: Option<i64>) -> Self {
+        Self {
+            version,
+            note: None,
+        }
     }
 }
 
@@ -601,6 +670,221 @@ async fn apply_suppliers(
     }
 }
 
+/// E5-B5/C3 (ADR-0008 §7.1-B5, §5 рядок 33, рішення Творця Б1 2026-09-12):
+/// ціна точки — СПІЛЬНА сутність МЕРЕЖІ. Хаб — авторитет: присвоює ЄДИНИЙ
+/// `server_version` (тригер `trg_store_product_prices_bump`), роздає всім вузлам
+/// наявним pull. Шлях той самий, що `products.price`.
+///
+/// ⚠ Ключова відмінність від `products`/`suppliers`: рядок має ПРИРОДНИЙ ключ
+/// `(store_id, product_id)` (UNIQUE у схемі), тобто два вузли незалежно можуть
+/// створити ДВІ локальні рядки для однієї пари (різні `id`). Тому upsert
+/// застосовується у три кроки (id → природний ключ → INSERT) і, якщо хаб
+/// застосував правку до ІНШОГО рядка, у відповідь додається `note` з
+/// канонічним id — інакше вузол вважав би канонічним свій локальний uuid, а
+/// `INSERT` із ним упав би на UNIQUE і правка вузла не доїхала б зовсім.
+async fn apply_store_product_prices(
+    tx: &mut PgConnection,
+    row_id: Uuid,
+    op: &str,
+    payload: &Value,
+) -> Result<Applied, String> {
+    if op == "delete" {
+        // Tombstone: «перевизначення ціни знято» ≠ «рядка не існує» (історія
+        // ціни лишається, вузли отримують op=delete — як у products).
+        let version: Option<i64> = sqlx::query_scalar(
+            "UPDATE store_product_prices SET is_deleted = true, updated_at = now() \
+             WHERE id = $1 RETURNING server_version",
+        )
+        .bind(row_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("tombstone store_product_prices: {e}"))?;
+        return match version {
+            Some(v) => Ok(Applied::version(Some(v))),
+            None => Err("рядка немає на хабі — tombstone не потрібен".to_string()),
+        };
+    }
+
+    let store_id = opt_uuid(payload, "store_id")?;
+    let product_id = opt_uuid(payload, "product_id")?;
+    let price = opt_decimal(payload, "price")?;
+
+    // Крок 1: рядок за id — звичайний шлях (вузол пропонує рядок, який уже
+    // канонічний на хабі). `is_deleted = false` СВІДОМО (на відміну від
+    // products/suppliers): tombstone ціни означає «перевизначення знято», а
+    // нова пропозиція на ту саму пару = перевизначення повернуто; лишити
+    // is_deleted=true означало б тихо поховати живу правку вузла.
+    let by_id: Option<i64> = sqlx::query_scalar(
+        "UPDATE store_product_prices \
+         SET price = COALESCE($2, price), is_deleted = false, updated_at = now() \
+         WHERE id = $1 RETURNING server_version",
+    )
+    .bind(row_id)
+    .bind(price.clone())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("upsert store_product_prices (id): {e}"))?;
+    if let Some(v) = by_id {
+        return Ok(Applied::version(Some(v)));
+    }
+
+    // Крок 2: КАНОНІЧНИЙ рядок за природним ключем. Сюди потрапляємо, коли
+    // uuid вузла на хабі невідомий, але рядок для пари вже є (створив інший
+    // вузол/адмінка хаба). Застосовуємо до канонічного і повідомляємо його id.
+    if let (Some(sid), Some(pid)) = (store_id, product_id) {
+        let canonical: Option<(i64, Uuid)> = sqlx::query_as(
+            "UPDATE store_product_prices \
+             SET price = COALESCE($3, price), is_deleted = false, updated_at = now() \
+             WHERE store_id = $1 AND product_id = $2 \
+             RETURNING server_version, id",
+        )
+        .bind(sid)
+        .bind(pid)
+        .bind(price.clone())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("upsert store_product_prices (store,product): {e}"))?;
+        if let Some((version, hub_id)) = canonical {
+            return Ok(Applied {
+                version: Some(version),
+                note: Some(format!(
+                    "рядок {row_id} на хабі відсутній; правку застосовано до КАНОНІЧНОГО                      рядка {hub_id} за (store_id, product_id) — локальний id вузла не                      канонічний, орієнтуйтесь на delta pull"
+                )),
+            });
+        }
+    }
+
+    // Крок 3: новий рядок. Поля NOT NULL у схемі → без них відмова з причиною
+    // (вигадувати ціну/пару за вузол заборонено).
+    let (Some(sid), Some(pid), Some(price)) = (store_id, product_id, price) else {
+        return Err(
+            "новий рядок ціни вимагає payload.store_id, payload.product_id, payload.price"
+                .to_string(),
+        );
+    };
+    let version: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO store_product_prices (id, store_id, product_id, price) \
+         VALUES ($1, $2, $3, $4) RETURNING server_version",
+    )
+    .bind(row_id)
+    .bind(sid)
+    .bind(pid)
+    .bind(price)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("insert store_product_prices: {e}"))?;
+    Ok(Applied::version(version))
+}
+
+/// E5-B2/D3 (ADR-0008 §7.1-D3, §10 №2, рішення Творця Б2 2026-09-16, варіант A):
+/// касир створюється ЛОКАЛЬНО на вузлі (offline-first, §2.2) і стає
+/// канонічним після прийняття пропозиції хабом.
+///
+/// Хаб ставить рядку `sync_state='confirmed'` — він і є авторитет (§4.2 п.3).
+/// Локальний маркер вузла (`pending_hub`) при цьому НЕ роздається в pull: рядок,
+/// що приїхав із хаба, канонічний за визначенням (DEFAULT колонки).
+///
+/// `login`/`password_hash` обов'язкові для INSERT (NOT NULL у схемі), `role`
+/// валідується ДО SQL (невідома роль → зрозуміла відмова, не текст приведення).
+/// Колізія `login` (UNIQUE) → пропозиція стає `rejected` з текстом причини:
+/// злити двох різних касирів в одного хаб не має права.
+async fn apply_users(
+    tx: &mut PgConnection,
+    row_id: Uuid,
+    op: &str,
+    payload: &Value,
+) -> Result<Applied, String> {
+    if op == "delete" {
+        let version: Option<i64> = sqlx::query_scalar(
+            "UPDATE users SET is_deleted = true, updated_at = now() \
+             WHERE id = $1 RETURNING server_version",
+        )
+        .bind(row_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("tombstone users: {e}"))?;
+        return match version {
+            Some(v) => Ok(Applied::version(Some(v))),
+            None => Err("рядка немає на хабі — tombstone не потрібен".to_string()),
+        };
+    }
+
+    let name = opt_str(payload, &["name"]);
+    let login = opt_str(payload, &["login"]);
+    let password_hash = opt_str(payload, &["password_hash"]);
+    let pin_hash = opt_str(payload, &["pin_hash"]);
+    let role = opt_str(payload, &["role"]);
+    let is_active = opt_bool(payload, "is_active")?;
+    if let Some(r) = &role {
+        if !USER_ROLES.contains(&r.as_str()) {
+            return Err(format!(
+                "невідома роль '{r}' (дозволено: {})",
+                USER_ROLES.join(", ")
+            ));
+        }
+    }
+
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
+        .bind(row_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("перевірка users: {e}"))?;
+
+    if exists {
+        // Часткове злиття (як у products/suppliers): NULL = «поле не надіслали
+        // → не чіпати». `sync_state='confirmed'` — хаб канонізує рядок.
+        let version: Option<i64> = sqlx::query_scalar(
+            "UPDATE users SET \
+                name = COALESCE($2, name), \
+                login = COALESCE($3, login), \
+                password_hash = COALESCE($4, password_hash), \
+                pin_code = COALESCE($5, pin_code), \
+                role = COALESCE($6::user_role, role), \
+                is_active = COALESCE($7, is_active), \
+                sync_state = 'confirmed', \
+                updated_at = now() \
+             WHERE id = $1 RETURNING server_version",
+        )
+        .bind(row_id)
+        .bind(name)
+        .bind(login)
+        .bind(password_hash)
+        .bind(pin_hash)
+        .bind(role)
+        .bind(is_active)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("upsert users: {e}"))?;
+        Ok(Applied::version(version))
+    } else {
+        let (Some(name), Some(login), Some(password_hash)) = (name, login, password_hash) else {
+            return Err(
+                "новий касир вимагає payload.name, payload.login, payload.password_hash \
+                 (NOT NULL у схемі `users`; логін/пароль створює вузол, хаб не вигадує)"
+                    .to_string(),
+            );
+        };
+        let version: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO users \
+                (id, name, login, password_hash, pin_code, role, is_active, sync_state) \
+             VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'cashier')::user_role, \
+                     COALESCE($7, true), 'confirmed') \
+             RETURNING server_version",
+        )
+        .bind(row_id)
+        .bind(name)
+        .bind(login)
+        .bind(password_hash)
+        .bind(pin_hash)
+        .bind(role)
+        .bind(is_active)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("insert users: {e}"))?;
+        Ok(Applied::version(version))
+    }
+}
+
 // ─── Хендлер: GET /api/v1/admin/sync/conflicts ───────────────────────────────
 
 /// Правило детермінованого порядку з ADR §4.2 п.5 — використовується і для
@@ -752,6 +1036,8 @@ pub fn allowed_keys(entity: &str) -> &'static [&'static str] {
     match entity {
         "products" => &PRODUCT_KEYS,
         "suppliers" => &SUPPLIER_KEYS,
+        "store_product_prices" => &STORE_PRICE_KEYS,
+        "users" => &USER_KEYS,
         _ => &[],
     }
 }

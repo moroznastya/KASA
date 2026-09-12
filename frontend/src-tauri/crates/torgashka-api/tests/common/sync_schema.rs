@@ -21,16 +21,29 @@
 /// + 0014 (drop kasa-спадку client_receipt_uuid) + 0019 (батьківські kinds)
 /// + 0020 (sync_batches + sync_log.batch_id/error_class, етап E2a)
 /// + 0021 (hub_forwarded_at/hub_forward_status + hub_outbox, етап E3)
-/// + 0022 (catalog_change_requests — журнал пропозицій довідників, етап E5).
+/// + 0022 (catalog_change_requests — журнал пропозицій довідників, етап E5)
+/// + 0023 (E5 «частина A»: barcodes/product_images/write_off_reasons —
+///   server_version + тригери + sync_meta; write_off_reasons/system_settings
+///   is_deleted; stock_norms прибрано з sync_meta — §7.1-C1/C2/C5/C6)
+/// + 0024 (E5 «частина B»: store_product_prices — server_version + тригер +
+///   sync_meta + tombstone, §7.1-B5/C3; users.sync_state — локальний маркер
+///   вузла, §7.1-D3).
 const SYNC_DDL: &str = r##"
 CREATE TABLE IF NOT EXISTS public.sync_meta (
     entity text PRIMARY KEY,
     version bigint NOT NULL DEFAULT 0
 );
 INSERT INTO sync_meta (entity) VALUES
-    ('categories'), ('products'), ('stock_norms'),
-    ('suppliers'), ('employees'), ('settings')
+    ('categories'), ('products'),
+    ('suppliers'), ('employees'), ('settings'),
+    -- 0023 (E5-C1/C2): нові довідники, придатні для pull.
+    ('barcodes'), ('product_images'), ('write_off_reasons'),
+    -- 0024 (E5-B5/C3): ціна точки — спільна сутність мережі (рішення Б1).
+    ('store_product_prices')
 ON CONFLICT (entity) DO NOTHING;
+-- 0023 (E5-C6): stock_norms прибрано — таблиці в серверній схемі немає.
+-- DELETE (а не лише відсутність у seed): тестова БД переживає прогони.
+DELETE FROM sync_meta WHERE entity = 'stock_norms';
 
 CREATE TABLE IF NOT EXISTS public.sync_log (
     id bigserial PRIMARY KEY,
@@ -187,6 +200,44 @@ CREATE TRIGGER trg_users_bump BEFORE INSERT OR UPDATE OR DELETE ON users
 DROP TRIGGER IF EXISTS trg_system_settings_bump ON system_settings;
 CREATE TRIGGER trg_system_settings_bump BEFORE INSERT OR UPDATE OR DELETE ON system_settings
     FOR EACH ROW EXECUTE FUNCTION bump_sync_version('settings');
+
+-- ── 0023 (E5 «частина A», ADR-0008 §7.1-C): довідники, придатні для pull ────
+-- C1: barcodes, product_images — server_version + тригер bump.
+ALTER TABLE barcodes       ADD COLUMN IF NOT EXISTS server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS server_version bigint NOT NULL DEFAULT 0;
+-- C2: write_off_reasons — версія + tombstone (pull віддає op=delete).
+ALTER TABLE write_off_reasons ADD COLUMN IF NOT EXISTS server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE write_off_reasons ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false;
+-- C5: system_settings.is_deleted — інакше pull завжди видає upsert.
+ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false;
+
+DROP TRIGGER IF EXISTS trg_barcodes_bump ON barcodes;
+CREATE TRIGGER trg_barcodes_bump BEFORE INSERT OR UPDATE OR DELETE ON barcodes
+    FOR EACH ROW EXECUTE FUNCTION bump_sync_version('barcodes');
+DROP TRIGGER IF EXISTS trg_product_images_bump ON product_images;
+CREATE TRIGGER trg_product_images_bump BEFORE INSERT OR UPDATE OR DELETE ON product_images
+    FOR EACH ROW EXECUTE FUNCTION bump_sync_version('product_images');
+DROP TRIGGER IF EXISTS trg_write_off_reasons_bump ON write_off_reasons;
+CREATE TRIGGER trg_write_off_reasons_bump BEFORE INSERT OR UPDATE OR DELETE ON write_off_reasons
+    FOR EACH ROW EXECUTE FUNCTION bump_sync_version('write_off_reasons');
+
+-- ── 0024 (E5 «частина B», ADR-0008 §7.1-B5/C3/D3): ціна точки як СПІЛЬНА
+-- сутність мережі (рішення Б1: хаб арбітрує єдину версію, роздає всім) +
+-- локальний маркер касира. Дзеркало Alembic 0024. ────────────────────────────
+-- C3/B5: store_product_prices — версія + tombstone («перевизначення знято»).
+ALTER TABLE store_product_prices ADD COLUMN IF NOT EXISTS server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE store_product_prices ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false;
+DROP TRIGGER IF EXISTS trg_store_product_prices_bump ON store_product_prices;
+CREATE TRIGGER trg_store_product_prices_bump BEFORE INSERT OR UPDATE OR DELETE ON store_product_prices
+    FOR EACH ROW EXECUTE FUNCTION bump_sync_version('store_product_prices');
+-- D3: users.sync_state — «локально створене, ще не підтверджене» (offline-first).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sync_state text NOT NULL DEFAULT 'confirmed';
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_sync_state_check') THEN
+        ALTER TABLE users ADD CONSTRAINT users_sync_state_check
+            CHECK (sync_state IN ('local','pending_hub','confirmed'));
+    END IF;
+END $$;
 
 ALTER TABLE receipts        ADD COLUMN IF NOT EXISTS client_uuid uuid;
 ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS client_uuid uuid;
