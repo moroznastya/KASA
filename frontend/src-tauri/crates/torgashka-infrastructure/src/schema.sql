@@ -1538,6 +1538,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_ledger_client_uuid
     WHERE client_uuid IS NOT NULL;
 
 -- ============================================================================
+-- ADR-0008 §7.1-B (етап E1): push-kinds БАТЬКІВСЬКИХ сутностей вузла.
+-- Боржник і ПРРО-зміна, створені на вузлі, доїжджають на хаб kind'ами
+-- `debtor`/`prro_shift` (sync.rs receiver_table) — ідемпотентний ключ каси.
+-- Дзеркало Alembic 0019_peer_parents_push_kinds (Python-БД).
+-- `work_sessions` тут не згадується: client_uuid + uq_work_sessions_client_uuid
+-- уже є в sync-шарі (Alembic 0013).
+-- ============================================================================
+ALTER TABLE public.debtors ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_debtors_client_uuid
+    ON public.debtors (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+ALTER TABLE public.prro_shifts ADD COLUMN IF NOT EXISTS client_uuid uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prro_shifts_client_uuid
+    ON public.prro_shifts (client_uuid)
+    WHERE client_uuid IS NOT NULL;
+
+-- ============================================================================
 -- Мережеві події (рішення Творця): діагностичний журнал взаємодії вузлів.
 -- Той самий ідемпотентний DDL, що й NETWORK_EVENTS_DDL у db.rs (для fresh БД).
 -- ============================================================================

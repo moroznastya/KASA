@@ -18,7 +18,8 @@
 
 /// Фінальний стан Alembic 0011 (sync_meta/sync_log/stock_projection/soft-delete)
 /// + 0012 (server_version + BEFORE bump) + 0013 (client_uuid на приймачах)
-/// + 0014 (drop kasa-спадку client_receipt_uuid).
+/// + 0014 (drop kasa-спадку client_receipt_uuid) + 0019 (батьківські kinds)
+/// + 0020 (sync_batches + sync_log.batch_id/error_class, етап E2a).
 const SYNC_DDL: &str = r##"
 CREATE TABLE IF NOT EXISTS public.sync_meta (
     entity text PRIMARY KEY,
@@ -42,6 +43,24 @@ CREATE TABLE IF NOT EXISTS public.sync_log (
 );
 CREATE INDEX IF NOT EXISTS ix_sync_log_store ON sync_log (store_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_sync_log_status ON sync_log (status, created_at);
+
+-- 0020 (ADR-0008 §7.1-A2, етап E2a): батчі push — ідентичність пакета
+-- (`sync_batches` + `sync_log.batch_id`) і машинний клас помилки агрегата
+-- (`sync_log.error_class`, §7.1-E1). Дзеркало Alembic 0020_sync_batches.
+ALTER TABLE public.sync_log ADD COLUMN IF NOT EXISTS batch_id uuid;
+ALTER TABLE public.sync_log ADD COLUMN IF NOT EXISTS error_class text;
+CREATE TABLE IF NOT EXISTS public.sync_batches (
+    id uuid PRIMARY KEY,
+    store_id uuid NOT NULL,
+    node_id uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    items int NOT NULL,
+    status text NOT NULL CHECK (status IN ('accepted','partial','failed'))
+);
+CREATE INDEX IF NOT EXISTS ix_sync_batches_store
+    ON sync_batches (store_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_sync_log_batch
+    ON sync_log (batch_id) WHERE batch_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS public.stock_projection (
     store_id uuid NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
@@ -123,6 +142,10 @@ ALTER TABLE work_sessions   ADD COLUMN IF NOT EXISTS client_uuid uuid;
 ALTER TABLE invoices        ADD COLUMN IF NOT EXISTS client_uuid uuid;
 -- 0017 (cash operation push idempotency): дзеркало Alembic 0017.
 ALTER TABLE cash_operations ADD COLUMN IF NOT EXISTS client_uuid uuid;
+-- 0019 (ADR-0008 §7.1-B, етап E1): батьківські сутності вузла — боржник і
+-- ПРРО-зміна. Дзеркало Alembic 0019_peer_parents_push_kinds.
+ALTER TABLE debtors     ADD COLUMN IF NOT EXISTS client_uuid uuid;
+ALTER TABLE prro_shifts ADD COLUMN IF NOT EXISTS client_uuid uuid;
 
 DROP INDEX IF EXISTS uq_receipts_client_uuid;
 CREATE UNIQUE INDEX uq_receipts_client_uuid ON receipts (client_uuid) WHERE client_uuid IS NOT NULL;
@@ -144,6 +167,10 @@ DROP INDEX IF EXISTS uq_invoices_client_uuid;
 CREATE UNIQUE INDEX uq_invoices_client_uuid ON invoices (client_uuid) WHERE client_uuid IS NOT NULL;
 DROP INDEX IF EXISTS uq_cash_operations_client_uuid;
 CREATE UNIQUE INDEX uq_cash_operations_client_uuid ON cash_operations (client_uuid) WHERE client_uuid IS NOT NULL;
+DROP INDEX IF EXISTS uq_debtors_client_uuid;
+CREATE UNIQUE INDEX uq_debtors_client_uuid ON debtors (client_uuid) WHERE client_uuid IS NOT NULL;
+DROP INDEX IF EXISTS uq_prro_shifts_client_uuid;
+CREATE UNIQUE INDEX uq_prro_shifts_client_uuid ON prro_shifts (client_uuid) WHERE client_uuid IS NOT NULL;
 
 DROP INDEX IF EXISTS uq_receipts_client_receipt_uuid;
 ALTER TABLE receipts DROP COLUMN IF EXISTS client_receipt_uuid;

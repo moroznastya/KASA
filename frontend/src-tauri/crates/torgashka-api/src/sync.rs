@@ -443,6 +443,26 @@ async fn query_settings(
 /// Максимум агрегатів на один push-запит (дизайн 4.2: до 50).
 pub const PUSH_BATCH_MAX: usize = 50;
 
+/// Машинні класи помилок агрегата (ADR-0008 §4.3, §7.1-E1, етап E2b).
+///
+/// Клас вирішує долю агрегата на КЛІЄНТІ: `RETRYABLE_FK` → `defer` (агрегат
+/// лишається в черзі й повторюється, бо батько ще доїде), решта → незворотний
+/// `failed` (потрібне втручання оператора).
+pub mod error_class {
+    /// ПОВТОРЮВАНО: батьківський агрегат ще не прийнятий (FK / SQLSTATE 23503).
+    pub const RETRYABLE_FK: &str = "RETRYABLE_FK";
+    /// Незворотно: payload або стан не проходить валідацію.
+    pub const VALIDATION: &str = "VALIDATION";
+    /// Конфлікт даних (UNIQUE поза ідемпотентним `client_uuid`, SQLSTATE 23505).
+    /// Окрема черга конфліктів — етап E5 (§7.1-D1); поки що незворотний.
+    pub const CONFLICT: &str = "CONFLICT";
+}
+
+/// Заголовок ідентичності батча: клієнт штампує, сервер повертає той самий
+/// (ADR-0008 §4.3 п.1 «клієнт штампує батч, сервер повертає його ж у
+/// відповіді»). Критерій E3: на хабі `sync_log.batch_id` = батч вузла.
+pub const BATCH_ID_HEADER: &str = "x-sync-batch-id";
+
 /// Агрегат з outbox каси (дизайн 2.2).
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PushEnvelope {
@@ -466,6 +486,12 @@ pub struct PushItemResult {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_id: Option<Uuid>,
+    /// Машинний клас помилки (ADR-0008 §7.1-E1): `RETRYABLE_FK` | `VALIDATION`
+    /// | `CONFLICT`. Відсутній у успішних результатів. `status` лишається
+    /// `error` (сумісність з наявними клієнтами й тестами) — саме `error_class`
+    /// вирішує, чи це `defer`, чи незворотний `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -476,6 +502,7 @@ impl PushItemResult {
             client_uuid: uuid,
             status: "created",
             server_id: Some(server_id),
+            error_class: None,
             error: None,
         }
     }
@@ -484,25 +511,45 @@ impl PushItemResult {
             client_uuid: uuid,
             status: "already_exists",
             server_id: Some(server_id),
+            error_class: None,
             error: None,
         }
     }
+    /// Помилка агрегата. Клас виводиться з ТІЛА помилки
+    /// ([`classify_error_body`]) — щоб 25 місць формування помилки не мали
+    /// власної думки про класифікацію (один контракт на всі шляхи).
     fn error(uuid: Uuid, msg: impl Into<String>) -> Self {
+        let msg = msg.into();
         Self {
             client_uuid: uuid,
             status: "error",
             server_id: None,
-            error: Some(msg.into()),
+            error_class: Some(classify_error_body(&msg)),
+            error: Some(msg),
         }
     }
 }
 
 /// POST /api/v1/sync/push → 200 (усі результати per-item у тілі).
+/// Етап E2a (ADR-0008 §4.3, §7.1-A2): агрегати одного запиту — БАТЧ.
+///
+/// * `batch_id` — з заголовка [`BATCH_ID_HEADER`] (штамп клієнта: вузол → хаб
+///   той самий id) або нова UUIDv4; рядок `sync_batches` створюється ДО
+///   обробки з песимістичним `failed`, після — оновлюється фактичним статусом
+///   (`accepted`/`partial`/`failed`). Гарантія: `sync_log.batch_id` завжди має
+///   свого батька, а пакет, що впав посеред обробки, лишається видимим як
+///   невзятий (відрізняється від «загублено»);
+/// * `sync_log.batch_id` + `sync_log.error_class` — у кожного агрегата батча;
+/// * обробка йде в ТОПОЛОГІЧНОМУ порядку ([`topological_order`] — батьки
+///   раніше дітей), відповідь — у порядку запиту (клієнт шукає результат за
+///   `client_uuid`, порядок для нього не значущий);
+/// * `X-Sync-Batch-Id` у відповіді — той самий `batch_id` (ADR §4.3 п.1).
 pub async fn push(
     State(state): State<AppState>,
     Extension(claims): Extension<crate::auth::Claims>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Vec<PushEnvelope>>,
-) -> Result<Json<Vec<PushItemResult>>, SyncError> {
+) -> Result<impl axum::response::IntoResponse, SyncError> {
     if body.is_empty() {
         return Err(SyncError::BadRequest("порожній пакет push".to_string()));
     }
@@ -527,21 +574,45 @@ pub async fn push(
         .map(|c| c.store_id)
         .unwrap_or_else(uuid::Uuid::nil);
 
-    let mut results = Vec::with_capacity(body.len());
-    for item in &body {
-        results.push(
-            process_push_item(
-                &svc,
-                &pool,
-                state.invoices_v1.as_ref(),
-                state.return_invoices.as_ref(),
-                item,
-                cashier,
-                ctx_store,
-            )
-            .await,
-        );
-    }
+    // ── Батч (E2a) ─────────────────────────────────────────────────────────
+    let batch_id = headers
+        .get(BATCH_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| Uuid::parse_str(v.trim()).ok())
+        .unwrap_or_else(Uuid::new_v4);
+    // `node_id` — ідентичність ВУЗЛА. Є лише в device-режимі (claims.sub =
+    // device_id, Етап 2b); JWT-каса/admin — це користувач, не вузол → NULL
+    // (вигадувати вузол із user_id не можна).
+    let node_id = (claims.role == "device")
+        .then(|| Uuid::parse_str(&claims.sub).ok())
+        .flatten();
+    open_batch(&pool, batch_id, ctx_store, node_id, body.len()).await;
+
+    // Топологічний порядок: дитина не мусить іти раніше батька (E2b).
+    let order = topological_order(&body);
+    let mut slots: Vec<Option<PushItemResult>> = (0..body.len()).map(|_| None).collect();
+    with_sync_batch(batch_id, async {
+        for idx in order {
+            let item = &body[idx];
+            slots[idx] = Some(
+                process_push_item(
+                    &svc,
+                    &pool,
+                    state.invoices_v1.as_ref(),
+                    state.return_invoices.as_ref(),
+                    item,
+                    cashier,
+                    ctx_store,
+                )
+                .await,
+            );
+        }
+    })
+    .await;
+    let results: Vec<PushItemResult> = slots.into_iter().flatten().collect();
+
+    // Статус батча — за ФАКТИЧНИМ результатом (жодного «на віру»).
+    finalize_batch(&pool, batch_id, batch_status(&results)).await;
 
     // Частина 4: device-каса — після успішного прийому пакета (усі агрегати
     // отримали результат) фіксуємо стан точки. JWT-каси/admin — без змін.
@@ -552,7 +623,11 @@ pub async fn push(
             }
         }
     }
-    Ok(Json(results))
+    let mut resp_headers = axum::http::HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&batch_id.to_string()) {
+        resp_headers.insert(BATCH_ID_HEADER, v);
+    }
+    Ok((resp_headers, Json(results)))
 }
 
 /// Обробляє ОДИН агрегат: ідемпотентний прийом + sync_log (ЕТАП 7b:
@@ -580,7 +655,7 @@ pub(crate) async fn process_push_item(
         Some(t) => t,
         None => {
             log_sync(pool, item, ctx_store, "error", &hash, Some(format!(
-                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/                 purchase_order/inventory/transfer/write_off/cash_operation; ADR-0007 — invoice)", item.kind
+                "тип '{}' не підтримується push (ЕТАП 7b приймає receipt/return_receipt/purchase_order/inventory/transfer/write_off/cash_operation; ADR-0007 — invoice/return_invoice/debtor_payment/supplier_ledger; ADR-0008 §7.1-B — debtor/work_session/prro_shift)", item.kind
             ))).await;
             return PushItemResult::error(
                 item.client_uuid,
@@ -657,6 +732,136 @@ pub(crate) async fn process_push_item(
     }
 }
 
+// ─── Батч push (E2a): ідентичність пакета ───────────────────────────────────
+
+tokio::task_local! {
+    /// `batch_id` поточного push-пакета — property ЗАПИТУ, не агрегата (той
+    /// самий підхід, що `store_ctx::StoreCtx`). Поза скоупом (drain черги
+    /// каси після promote, `promote.rs`) — `None` → `sync_log.batch_id` NULL.
+    static SYNC_BATCH_ID: Uuid;
+}
+
+/// Виконати обробку агрегатів у контексті батча.
+pub async fn with_sync_batch<T>(batch_id: Uuid, fut: impl std::future::Future<Output = T>) -> T {
+    SYNC_BATCH_ID.scope(batch_id, fut).await
+}
+
+/// `batch_id` поточного батча (якщо обробка йде в [`with_sync_batch`]).
+fn current_sync_batch() -> Option<Uuid> {
+    SYNC_BATCH_ID.try_with(|b| *b).ok()
+}
+
+/// Створити рядок батча ДО обробки (песимістичний `failed`).
+///
+/// Свідомо НЕ на «успіх»: якщо процес упаде між INSERT і UPDATE, батч
+/// лишиться `failed` — тобто «не взято», а не «взято на віру». Аудит-рядок не
+/// є контрактом прийому (як і `log_sync`): помилка INSERT'у не валить push.
+async fn open_batch(
+    pool: &StorePool,
+    batch_id: Uuid,
+    store_id: Uuid,
+    node_id: Option<Uuid>,
+    items: usize,
+) {
+    let res = sqlx::query(
+        "INSERT INTO sync_batches (id, store_id, node_id, items, status) \
+         VALUES ($1, $2, $3, $4, 'failed') ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(batch_id)
+    .bind(store_id)
+    .bind(node_id)
+    .bind(items as i32)
+    .execute(pool)
+    .await;
+    if let Err(e) = res {
+        eprintln!("[sync/push] sync_batches INSERT не вдався: {e}");
+    }
+}
+
+/// Підсумковий статус батча за фактичним результатом агрегатів.
+async fn finalize_batch(pool: &StorePool, batch_id: Uuid, status: &str) {
+    let res = sqlx::query("UPDATE sync_batches SET status = $2 WHERE id = $1")
+        .bind(batch_id)
+        .bind(status)
+        .execute(pool)
+        .await;
+    if let Err(e) = res {
+        eprintln!("[sync/push] sync_batches UPDATE не вдався: {e}");
+    }
+}
+
+/// Статус батча за фактичним результатом (E2a):
+/// усі прийняті (`created`/`already_exists`) → `accepted`; частина → `partial`;
+/// жодного → `failed`.
+///
+/// Нюанс (свідомо, за специфікацією CHECK — лише 3 значення, ADR §7.1-A2):
+/// агрегати, відкладені клієнтом (`error_class = RETRYABLE_FK`), на сервері
+/// мають `status = error` → батч із ЛИШЕ такими агрегатами виходить `failed`.
+/// Причина видима per-item (`error_class`) і в черзі вузла (агрегат живий,
+/// не втрачений) — див. звіт E2b, аномалія «статус батча для deferred».
+fn batch_status(results: &[PushItemResult]) -> &'static str {
+    let accepted = results.iter().filter(|r| r.status != "error").count();
+    if results.is_empty() {
+        "failed"
+    } else if accepted == results.len() {
+        "accepted"
+    } else if accepted == 0 {
+        "failed"
+    } else {
+        "partial"
+    }
+}
+
+// ─── Порядок обробки батча: DAG батько → дитина (E2b) ───────────────────────
+
+/// DAG залежностей батча: kind-ДИТИНА → kind-и-БАТЬКИ, які мусять бути
+/// прийняті раніше.
+///
+/// Джерело — ФАКТИЧНІ FK у PG (`pg_constraint`, перевірено на прод-схемі):
+///   `debtor_payments.debtor_id → debtors.id`,
+///   `receipts.debtor_id → debtors.id`,
+///   `purchase_orders.invoice_id → invoices.id`,
+///   `return_invoices.source_invoice_id → invoices.id`.
+/// Діти-рядки (`receipt_items`, `*_items`) власного kind НЕ мають — їдуть у
+/// конверті батька однією транзакцією (`sync_receivers`: `pool.begin()` …
+/// `commit()`), тому в DAG їх немає: окремо вони не подорожують.
+///
+/// Батьки-ДОВІДНИКИ (`products`, `suppliers`, `users`) тут відсутні свідомо:
+/// вони належать хабу (ADR-0008 §5) і kind'а push не мають — дитина з
+/// невідомим довідником не стане валідною від очікування (це `VALIDATION`,
+/// а не порядок).
+fn push_kind_parents(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "debtor_payment" | "receipt" | "return_receipt" => &["debtor"],
+        "purchase_order" | "purchase" | "return_invoice" => &["invoice"],
+        _ => &[],
+    }
+}
+
+/// Глибина залежності kind у DAG (0 — батьків немає). `guard` — захист від
+/// циклу в карті залежностей (сьогодні його немає; рекурсія обмежена).
+fn kind_depth(kind: &str, guard: usize) -> usize {
+    if guard == 0 {
+        return 0;
+    }
+    push_kind_parents(kind)
+        .iter()
+        .map(|p| 1 + kind_depth(p, guard - 1))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Порядок індексів агрегатів батча для обробки: БАТЬКИ раніше дітей.
+///
+/// Стабільний: у межах одного рівня зберігається порядок запиту (FIFO каси не
+/// порушується — дизайн 4.2). Сортування за `(глибина, індекс запиту)`
+/// детерміноване навіть для однакових глибин.
+fn topological_order(items: &[PushEnvelope]) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..items.len()).collect();
+    idx.sort_by_key(|&i| (kind_depth(&items[i].kind, 8), i));
+    idx
+}
+
 /// Таблиця-приймач client_uuid за типом агрегата (дизайн 2.2, ЕТАП 6 типи).
 fn receiver_table(kind: &str) -> Option<&'static str> {
     match kind {
@@ -677,6 +882,14 @@ fn receiver_table(kind: &str) -> Option<&'static str> {
         "return_invoice" => Some("return_invoices"),
         "debtor_payment" => Some("debtor_payments"),
         "supplier_ledger" => Some("supplier_ledger"),
+        // ADR-0008 §7.1-B (етап E1): БАТЬКІВСЬКІ сутності, які створює ВУЗОЛ.
+        // Без батька дитина не приймається (`debtor_payment` → FK
+        // `debtor_payments.debtor_id` → `debtors.id`); `work_session` вузол уже
+        // кладе в outbox (`offline/transactions.rs::open_work_session`), але хаб
+        // його не приймав; `prro_shift` — аудит фіскалізації по точках.
+        "debtor" => Some("debtors"),
+        "work_session" => Some("work_sessions"),
+        "prro_shift" => Some("prro_shifts"),
         _ => None,
     }
 }
@@ -1111,6 +1324,41 @@ async fn accept_non_receipt_kind(
             )
             .await
         }
+        // ADR-0008 §7.1-B (E1): батьківські сутності вузла — окремі SQL-приймачі
+        // `sync_receivers` (як cash_operation/debtor_payment/supplier_ledger).
+        "debtor" => {
+            crate::sync_receivers::accept_debtor(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
+        "work_session" => {
+            crate::sync_receivers::accept_work_session(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
+        "prro_shift" => {
+            crate::sync_receivers::accept_prro_shift(
+                pool,
+                ctx_store,
+                cashier,
+                item.client_uuid,
+                created_at,
+                &item.payload,
+            )
+            .await
+        }
         _ => unreachable!("receiver_table пропустив тип"),
     };
     match res {
@@ -1223,11 +1471,60 @@ fn receiver_error_is_db(msg: &str) -> bool {
 }
 
 /// Тіло `error` для нечекових приймачів: DB-текст → клас, решта — як була.
+///
+/// Якщо приймач зберіг SQLSTATE у токені (`sync_receivers::db_err`) — тіло
+/// несе його (`[DB_ERROR 23503]`): саме звідти [`classify_error_body`] бере
+/// `RETRYABLE_FK`/`CONFLICT`. Без токена — загальний `[DB_ERROR]`.
 fn receiver_error_body(msg: &str) -> String {
-    if receiver_error_is_db(msg) {
-        DB_ERROR_BODY.to_string()
-    } else {
-        msg.to_string()
+    if !receiver_error_is_db(msg) {
+        return msg.to_string();
+    }
+    match sqlstate_token(msg) {
+        Some(code) => format!("[DB_ERROR {code}]"),
+        None => DB_ERROR_BODY.to_string(),
+    }
+}
+
+/// SQLSTATE із машинного маркера тіла `[DB_ERROR <sqlstate>]`
+/// (формат — `readonly_guard::db_error_class`; тут лише читання).
+fn sqlstate_from_body(body: &str) -> Option<&str> {
+    let rest = body.trim().strip_prefix("[DB_ERROR ")?;
+    let code = rest.strip_suffix(']')?.trim();
+    (!code.is_empty()).then_some(code)
+}
+
+/// SQLSTATE із токена каналу приймачів `[SQLSTATE 23503]`
+/// (`sync_receivers::db_err`): типізований `sqlx::Error` губиться на межі
+/// `Result<_, String>`, тому код їде поруч із текстом операції.
+fn sqlstate_token(body: &str) -> Option<&str> {
+    let start = body.rfind("[SQLSTATE ")? + "[SQLSTATE ".len();
+    let rest = &body[start..];
+    let code = rest[..rest.find(']')?].trim();
+    (!code.is_empty()).then_some(code)
+}
+
+/// Клас помилки агрегата (ADR-0008 §4.3, §7.1-E1) — ЄДИНЕ місце класифікації:
+/// і per-item відповідь клієнту, і `sync_log.error_class`.
+///
+/// * `RETRYABLE_FK` — FK-батько ще не прийнятий: SQLSTATE `23503` (у тілі
+///   `[DB_ERROR 23503]` або токені `[SQLSTATE 23503]`) АБО pre-flight маркер
+///   приймача `[MISSING_PARENT]` (той самий FK, перевірений наперед). Клієнт
+///   робить `defer` — агрегат повертається в чергу, а не гине назавжди.
+/// * `CONFLICT` — `23505` (UNIQUE поза ідемпотентним `client_uuid`).
+/// * `VALIDATION` — усе інше (невалідний payload, стан): незворотний `failed`.
+///
+/// Свідома межа: якщо тіло втратило SQLSTATE (доменні `PosError::Integrity` /
+/// `Infrastructure` сервісного шляху маскуються під `[DB_ERROR]` — сирий текст
+/// PG у тіло не потрапляє), клас виходить `VALIDATION`. Хибний `failed`
+/// безпечніший за хибний `defer` без кінця.
+fn classify_error_body(body: &str) -> &'static str {
+    if body.contains(crate::sync_receivers::MISSING_PARENT_MARKER) {
+        return error_class::RETRYABLE_FK;
+    }
+    match sqlstate_from_body(body).or_else(|| sqlstate_token(body)) {
+        Some("23503") => error_class::RETRYABLE_FK,
+        Some("23505") => error_class::CONFLICT,
+        _ => error_class::VALIDATION,
     }
 }
 
@@ -1236,7 +1533,9 @@ fn pos_err_msg(e: &crate::pos::PosErr) -> String {
     match e {
         crate::pos::PosErr::Service(pe) => pe.to_string(),
         crate::pos::PosErr::Validation(v) => v.to_string(),
-        crate::pos::PosErr::Forbidden(s) | crate::pos::PosErr::Unauthorized(s) => s.clone(),
+        crate::pos::PosErr::Forbidden(s)
+        | crate::pos::PosErr::Unauthorized(s)
+        | crate::pos::PosErr::QueueUndeliverable(s) => s.clone(),
     }
 }
 
@@ -1259,8 +1558,16 @@ async fn log_sync(
     error: Option<String>,
 ) {
     let entity: String = item.kind.chars().take(32).collect();
+    // `error_class` — той самий контракт, що в per-item відповіді (E2b):
+    // журнал і клієнт бачать ОДИН клас, а не два різні тлумачення.
+    let error_class = error.as_deref().map(classify_error_body);
+    // `batch_id` — з контексту запиту (E2a): усі агрегати батча мають той самий.
+    let batch_id = current_sync_batch();
     let res = sqlx::query(
-        "INSERT INTO sync_log             (store_id, direction, entity, client_uuid, status, payload_hash, error)          VALUES ($1, 'push', $2, $3, $4, $5, $6)",
+        "INSERT INTO sync_log \
+            (store_id, direction, entity, client_uuid, status, payload_hash, error, \
+             error_class, batch_id) \
+         VALUES ($1, 'push', $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(store_id)
     .bind(&entity)
@@ -1268,6 +1575,8 @@ async fn log_sync(
     .bind(status)
     .bind(hash)
     .bind(error)
+    .bind(error_class)
+    .bind(batch_id)
     .execute(pool)
     .await;
     if let Err(e) = res {

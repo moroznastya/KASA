@@ -90,6 +90,45 @@ fn seed_sqlite_store_id(store: Uuid) {
     .expect("settings.store_id");
 }
 
+/// Записує в SQLite каси КАНАЛ ДОСТАВКИ черги (`server_url` + `device_token`) —
+/// як після активації точки на хабі (реальна каса без нього не буває).
+///
+/// Навіщо явно: `POST` документа дає **202 Accepted лише якщо черга доставна**
+/// (інваріант з `receipt_silent_failure_e2e`: 202 — обіцянка доставки, а не
+/// «щось колись станеться»). Тут хаб НЕДОСТУПНИЙ (порт 1) — це і є легітимний
+/// offline-first: документ у черзі, касир бачить 202, доставка станеться, коли
+/// мережа повернеться. Без каналу той самий запит мусить дати 503.
+fn seed_sqlite_delivery_channel() {
+    let path = offline_db_path();
+    let conn =
+        torgashka_infrastructure::offline::sync_push::open_connection(&path).expect("SQLite каси");
+    for (key, value) in [
+        ("server_url", "http://127.0.0.1:1/"),
+        ("device_token", "e2e-device-token"),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )
+        .expect("settings каналу доставки");
+    }
+    // Прекондиція легітимного офлайну: канал НАЛАШТОВАНИЙ, але хаб недоступний.
+    assert!(
+        torgashka_infrastructure::offline::sync_push::queue_has_delivery_channel(),
+        "канал доставки мусить бути сконфігурований"
+    );
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", 1u16)).is_err(),
+        "прекондиція легітимного офлайну: хаб (127.0.0.1:1) мусить бути недоступний"
+    );
+    eprintln!(
+        "[e2e][evidence] легітимний офлайн: канал сконфігуровано (server_url=http://127.0.0.1:1/, \
+         хаб НЕДОСТУПНИЙ), queue_has_delivery_channel={}",
+        torgashka_infrastructure::offline::sync_push::queue_has_delivery_channel()
+    );
+}
+
 /// `postgresql://user:pass@host:port/db` → URL із підміненими credentials.
 fn swap_credentials(url: &str, user: &str, pass: &str) -> String {
     let scheme_end = url.find("://").map(|i| i + 3).expect("схема URL");
@@ -342,6 +381,8 @@ async fn standby_pos_documents_go_to_local_outbox_not_to_replica() {
     // Точка каси в SQLite-налаштуваннях: без неї `OutboxPos` віддає
     // 422 «точку продажу не налаштовано» (Validation, НЕ 500).
     seed_sqlite_store_id(store);
+    // Легітимний offline-first: канал є, хаб недоступний (див. хелпер).
+    seed_sqlite_delivery_channel();
     let ro_store_pool = StorePool::new(ro_pool.clone());
     let pos: Arc<dyn torgashka_domain::PosService + Send + Sync> =
         Arc::new(OutboxPos::new(Arc::new(SqlxPos::new(ro_store_pool))));

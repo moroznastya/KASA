@@ -86,6 +86,9 @@ pub const POLICY_TABLE: &[(&str, WritePolicy)] = &[
     ("sync_push", WritePolicy::DisabledOnStandby),
     ("store_sync_state", WritePolicy::DisabledOnStandby),
     ("sync_log", WritePolicy::DisabledOnStandby),
+    // ADR-0008 §7.1-A2: журнал батчів push — той самий клас, що `sync_log`
+    // (DML лише в агрегаторі-приймачі `sync.rs`; на standby вимкнено, E7 видаляє цілком).
+    ("sync_batches", WritePolicy::DisabledOnStandby),
     ("replication_ddl_role", WritePolicy::DisabledOnStandby),
     // Службові таблиці DDL-міток (Фаза 2.2, ізоляція тестів): пише ЛИШЕ
     // стартовий DDL-шлях (`ensure_schema` / `ensure_ddl_once`) у БД, яку вузол

@@ -63,14 +63,17 @@ fn get_setting_conn(conn: &rusqlite::Connection, key: &str) -> Result<Option<Str
 /// Пріоритет device: каса після активації може мати залишковий `api_token`
 /// у settings — `device_token` перемагає. Якщо `server_url` порожній або
 /// жоден режим не сконфігурований повністю — `Ok(None)` (не налаштовано).
-struct SyncAuth {
+pub(crate) struct SyncAuth {
     base_url: String,
     token: String,
     store_id: Option<String>,
 }
 
 /// Читає auth-налаштування sync з SQLite settings (логіка вище).
-fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncAuth>, String> {
+pub(crate) fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncAuth>, String> {
+    // pub(crate): те саме питання «чи має черга канал доставки» ставить шар
+    // HTTP (`sync_push::queue_has_delivery_channel` → `api/pos.rs`), і воно
+    // мусить мати ОДНУ відповідь — інакше 202 обіцяє доставку, якої не буде.
     let Some(base_url) = get_setting_conn(conn, "server_url")? else {
         return Ok(None);
     };

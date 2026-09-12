@@ -320,14 +320,20 @@ async fn unsupported_type_marks_failed_with_error() {
     let _h = run_facade(&addr);
     let token = login(&base).await;
 
-    // Агрегат невідомого типу (work_session каса локально НЕ створює) →
-    // сервер відхиляє: per-item error → каса failed + last_error (аномалія).
+    // Агрегат НЕВІДОМОГО хабу типу → сервер відхиляє: per-item error →
+    // каса failed + last_error (аномалія).
+    //
+    // kind — синтетичний `unknown_aggregate_e2e`, а не `work_session`: після
+    // ADR-0008 §7.1-B (етап E1) `work_session` — ПІДТРИМУВАНИЙ push-kind
+    // (каса створює його в `offline/transactions.rs::open_work_session`), і
+    // перевіряти на ньому «невідомий тип» більше не можна. Механізм той самий:
+    // kind поза `receiver_table` → сервер віддає error → outbox failed.
     let dir = tempfile::TempDir::new().expect("tmpdir");
     let db_path = dir.path().join("cash-unknown.db");
     let conn = open_connection(&db_path).expect("каса БД");
     let client_uuid = Uuid::new_v4().to_string();
     let payload = json!({
-        "type": "work_session",
+        "type": "unknown_aggregate_e2e",
         "client_uuid": client_uuid,
         "store_id": STORE1,
         "created_at": "2026-09-02T00:00:00Z",
@@ -336,10 +342,10 @@ async fn unsupported_type_marks_failed_with_error() {
     .to_string();
     conn.execute(
         "INSERT INTO outbox (type, client_uuid, payload, status) \
-         VALUES ('work_session', ?1, ?2, 'pending')",
+         VALUES ('unknown_aggregate_e2e', ?1, ?2, 'pending')",
         rusqlite::params![client_uuid, payload],
     )
-    .expect("insert work_session");
+    .expect("insert unknown_aggregate_e2e");
     drop(conn);
 
     let cfg = push_cfg(&db_path, &base, &token);

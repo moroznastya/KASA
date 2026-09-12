@@ -49,6 +49,14 @@ pub enum PosErr {
     Forbidden(String),
     /// 401 — користувача не знайдено.
     Unauthorized(String),
+    /// 503 — документ ліг ЛИШЕ в локальну чергу, але канал доставки не
+    /// налаштований: черга фізично не має куди його подзвонити.
+    ///
+    /// Чому помилка, а не 202: 202 Accepted — це обіцянка ДОСТАВКИ. Давати її,
+    /// коли доставляти нікуди, означає показати касиру «успіх» на документі,
+    /// якого немає ні в PG-джерелі істини, ні в доставній черзі (мовчазна
+    /// втрата даних; дефект, доведений `receipt_silent_failure_e2e`).
+    QueueUndeliverable(String),
 }
 
 impl From<PosError> for PosErr {
@@ -77,6 +85,20 @@ impl IntoResponse for PosErr {
             PosErr::Forbidden(msg) => (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"detail": msg})),
+            )
+                .into_response(),
+            // 503 Service Unavailable — конвенція проєкту для «зараз нікуди
+            // зберегти» (`write_gate::standby_503`, `route_local::LocalErr::
+            // Unavailable`, `sync.rs`, `setup.rs`, `prro.rs` — усі 503).
+            // Саме 5xx, бо це НЕ вина клієнта: запит коректний, вузол не має
+            // каналу. Тіло — без технічного тексту (§D), але з поясненням і
+            // ознакою `type`, щоб UI міг відрізнити від загальної 500.
+            PosErr::QueueUndeliverable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "detail": msg,
+                    "type": "queue_undeliverable",
+                })),
             )
                 .into_response(),
             PosErr::Unauthorized(msg) => (
@@ -141,17 +163,64 @@ impl IntoResponse for PosErr {
 
 // ─── Статус створення: 201 Created / 202 Accepted (LocalOutbox) ────────────
 
-/// ADR-0007 §11.1: на standby POS-документ не створюється на primary, а
-/// кладеться в локальну чергу (`LocalOutbox`) → **202 Accepted** з ознакою
-/// `queued` у тілі. Ознаку ставить ЄДИНЕ місце — `OutboxPos`
-/// (`fiscal_status`/`status` = "queued"); на primary вона не з'являється,
-/// тому F2 (201, байт-в-байт) не змінюється.
-fn created_or_queued(queued: bool) -> StatusCode {
-    if queued {
-        StatusCode::ACCEPTED
-    } else {
-        StatusCode::CREATED
+/// ADR-0007 §11.1: на вузлі, що пише лише локально, POS-документ не
+/// створюється на primary, а кладеться в локальну чергу (`LocalOutbox`) →
+/// **202 Accepted** з ознакою `queued` у тілі. Ознаку ставить ЄДИНЕ місце —
+/// `OutboxPos` (`fiscal_status`/`status` = "queued"); коли запис у PG
+/// підтверджено, ознаки немає → **201 Created** (F2, байт-в-байт).
+///
+/// ІНВАРІАНТ (дефект `receipt_silent_failure_e2e`): 202 — обіцянка доставки,
+/// тому вона допустима ЛИШЕ коли черга справді доставна
+/// ([`queue_deliverable`]). Якщо локальний запис не підтверджено (`queued`)
+/// І каналу доставки немає — це помилка [`PosErr::QueueUndeliverable`], а не
+/// «успіх»: інакше касир бачить 2xx на документі, якого немає ні в PG, ні в
+/// черзі, яку хтось колись відправить.
+///
+/// ВІДОМА МЕЖА (свідомо, задокументовано, не приховано): рішення ухвалюється
+/// ПІСЛЯ того, як адаптер уже поклав агрегат у SQLite-чергу, — відмова не
+/// відкочує його. Тому тіло відповіді прямо забороняє повторне введення
+/// документа (інакше — другий `client_uuid` → дубль після налаштування
+/// server_url). Остаточне усунення half-state: ґейт на самому enqueue
+/// (`OutboxPos`/`offline::sync_push::enqueue_*`) — окреме рішення власника
+/// контракту (див. звіт, аномалія A2).
+///
+/// Правило сформульовано про ДОСТАВНІСТЬ, а не про «вузол read-only»: воно
+/// лишається чинним і після того, як standby/read-only механіку знімуть.
+fn created_or_queued(state: &AppState, queued: bool) -> Result<StatusCode, PosErr> {
+    if !queued {
+        return Ok(StatusCode::CREATED);
     }
+    if queue_deliverable(state) {
+        return Ok(StatusCode::ACCEPTED);
+    }
+    // Текст навмисно називає ОБИДВА факти (документ у черзі + доставки не
+    // буде) і забороняє повторне введення: черга лишається на диску, тож після
+    // налаштування server_url агрегат доїде. Повторне введення чека створило б
+    // другий агрегат із новим client_uuid → подвійна фіскалізація.
+    Err(PosErr::QueueUndeliverable(
+        "Документ збережено лише в локальній черзі точки, а каналу доставки на \
+         головний сервер немає (не налаштований server_url / апстрім) — до \
+         джерела істини він не потрапить. Налаштуйте сервер синхронізації: \
+         черга відправиться автоматично. НЕ вводьте документ повторно — буде дубль."
+            .to_string(),
+    ))
+}
+
+/// Чи має документ, що ліг у локальну чергу, КУДИ доставитись.
+///
+/// Достатньо одного з двох незалежних джерел:
+///   * `NodeConfig::has_configured_upstream()` — апстрім заданий у конфігурації
+///     вузла (`[node] primary_db_url` / `upstream_write_url` / розв'язаний
+///     primary, що не є власним локальним кластером);
+///   * канал у самій черзі — `server_url` + токен у SQLite settings
+///     ([`torgashka_infrastructure::offline::sync_push::queue_has_delivery_channel`]),
+///     тобто рівно те, з чим працює фоновий push-цикл каси.
+///
+/// Свідомо НЕ питає «чи вузол read-only / standby» (node_config-режим тут
+/// зайвий): питання — чи дійде документ до джерела істини.
+fn queue_deliverable(state: &AppState) -> bool {
+    state.node_config.has_configured_upstream()
+        || torgashka_infrastructure::offline::sync_push::queue_has_delivery_channel()
 }
 
 /// Чи документ поставлено в локальну чергу (`OutboxPos::QUEUED_STATUS`).
@@ -801,7 +870,10 @@ pub async fn create_sale(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     let dto = svc.create_sale_receipt(&input).await?;
-    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
+    Ok((
+        created_or_queued(&state, queued(&dto.fiscal_status))?,
+        Json(dto),
+    ))
 }
 
 /// POST /api/v2/receipts/return → 201
@@ -815,7 +887,10 @@ pub async fn create_return(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     let dto = svc.create_return_receipt(&input).await?;
-    Ok((created_or_queued(queued(&dto.fiscal_status)), Json(dto)))
+    Ok((
+        created_or_queued(&state, queued(&dto.fiscal_status))?,
+        Json(dto),
+    ))
 }
 
 /// POST /api/v1/receipts — v1 create_receipt (боргова семантика) → 201.
@@ -1133,7 +1208,7 @@ pub async fn create_write_off(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     let dto = svc.create_write_off(&input).await?;
-    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
+    Ok((created_or_queued(&state, queued(&dto.status))?, Json(dto)))
 }
 
 /// PUT /api/v1/write-offs/{id}
@@ -1278,7 +1353,7 @@ pub async fn create_transfer(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     let dto = svc.create_transfer(&input).await?;
-    Ok((created_or_queued(queued(&dto.status)), Json(dto)))
+    Ok((created_or_queued(&state, queued(&dto.status))?, Json(dto)))
 }
 
 /// PUT /api/v1/transfers/{id}
@@ -1452,7 +1527,7 @@ pub async fn create_cash_operation(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok((
-        created_or_queued(state.node_config.is_standby()),
+        created_or_queued(&state, state.node_config.is_standby())?,
         Json(svc.create_cash_operation(store_id, user_id, &input).await?),
     ))
 }

@@ -415,6 +415,48 @@ pub fn sync_health(conn: &Connection) -> Result<serde_json::Value, String> {
     }))
 }
 
+// ─── Доставність черги ──────────────────────────────────────────────────────
+
+/// Чи має локальна черга КОНФІГУРОВАНИЙ канал доставки на головний сервер.
+///
+/// `true` — у SQLite `settings` є `server_url` **і** повний auth-режим (те саме
+/// питання ставить [`super::commands::read_sync_auth`]: `device_token` АБО
+/// `api_token` + `store_id`) — тобто рівно те, з чим працює фоновий
+/// push-цикл (`sync_now`, `spawn_push_task`). `false` — черга фізично не має
+/// куди доставити документ: жодного push не станеться, агрегат назавжди
+/// лишиться в SQLite.
+///
+/// Навіщо це інфраструктурі: шар HTTP (`api/pos.rs::created_or_queued`) дає
+/// **202 Accepted** лише якщо черга доставна. 202 без каналу — мовчазна
+/// втрата даних: касир бачить «успіх», документа немає ні в PG, ні в
+/// доставній черзі (дефект `receipt_silent_failure_e2e`).
+///
+/// НЕ залежить від «режиму вузла»/read-only: питання — про ДОСТАВНІСТЬ черги,
+/// а не про те, хто її наповнив.
+///
+/// Файлу БД немає → `false`, і БД НЕ створюється (перевірка без сайд-ефектів).
+pub fn queue_has_delivery_channel() -> bool {
+    let Ok(path) = crate::offline::db::OfflineDatabase::default_db_path() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+    match open_connection(&path) {
+        Ok(conn) => matches!(super::commands::read_sync_auth(&conn), Ok(Some(_))),
+        Err(e) => {
+            // Невідомий стан черги (не читається) — НЕ вважаємо канал наявним:
+            // краще видима помилка HTTP, ніж неправдивий 202 (G: без мовчазних
+            // 2xx). Технічний текст — у лог, не в тіло відповіді.
+            crate::embedded_pg::pg_log(
+                "ERROR",
+                &format!("[sync_push] queue_has_delivery_channel: {e}"),
+            );
+            false
+        }
+    }
+}
+
 // ─── Backoff ────────────────────────────────────────────────────────────────
 
 /// Затримка exponential backoff: min(2^attempts, BACKOFF_CAP_SECS) (дизайн 4.3).
@@ -435,9 +477,18 @@ pub struct ServerPushResult {
     pub status: String,
     #[serde(default)]
     pub server_id: Option<String>,
+    /// Машинний клас помилки від сервера (ADR-0008 §7.1-E1, етап E2b):
+    /// `RETRYABLE_FK` | `VALIDATION` | `CONFLICT`. Відсутній у старих серверів
+    /// → `None` (поведінка як до E2b: `error` → failed).
+    #[serde(default)]
+    pub error_class: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
 }
+
+/// Клас помилки сервера, за яким агрегат ПОВЕРТАЄТЬСЯ в чергу (`defer`), а не
+/// гине назавжди: FK-батько ще не прийнятий (SQLSTATE 23503).
+pub const ERROR_CLASS_RETRYABLE_FK: &str = "RETRYABLE_FK";
 
 /// Підсумок одного циклу push.
 #[derive(Debug, Clone, Default)]
@@ -530,8 +581,12 @@ pub async fn push_pending_batch_with_node(
         .map(|it| serde_json::from_str(&it.payload).unwrap_or(Value::Null))
         .collect();
 
+    // E2a (ADR-0008 §4.3 п.1): клієнт штампує батч — сервер збереже ТОЙ САМИЙ
+    // `batch_id` (sync_log/синхронна відповідь). Один цикл push = один батч.
+    let batch_id = uuid::Uuid::new_v4().to_string();
     let mut req = client
         .post(format!("{}/api/v1/sync/push", cfg.base_url))
+        .header("X-Sync-Batch-Id", &batch_id)
         .bearer_auth(&cfg.token);
     // Етап 2b: device-режим (store_id=None) — X-Store-Id НЕ шлемо,
     // сервер визначає точку з device_token (StoreCtx у task-local).
@@ -562,7 +617,7 @@ pub async fn push_pending_batch_with_node(
     // (дизайн 4.3). Після MAX_ATTEMPTS — failed + алерт.
     if status.is_server_error() || status.as_u16() == 429 {
         for it in &batch {
-            defer_or_fail(&mut conn, it, None)?;
+            defer_or_fail(&mut conn, it, None, Some("5xx/429: пакет"))?;
         }
         summary.deferred = batch.len();
         return Ok(summary);
@@ -587,7 +642,7 @@ pub async fn push_pending_batch_with_node(
             let msg = format!("невалідна відповідь push (HTTP 200, тіло не JSON): {e}");
             for it in &batch {
                 let _ = log_event(&conn, "push_fail", None, Some(&msg), None);
-                defer_or_fail(&mut conn, it, None)?;
+                defer_or_fail(&mut conn, it, None, Some("невалідна відповідь сервера"))?;
             }
             return Err(msg);
         }
@@ -603,6 +658,20 @@ pub async fn push_pending_batch_with_node(
             Some(r) if r.status == "already_exists" => {
                 mark_done(&mut conn, it)?;
                 summary.already_exists += 1;
+            }
+            // E2b (ADR-0008 §4.3): FK-батько ще не прийнятий — агрегат
+            // ПОВЕРТАЄТЬСЯ в чергу тим самим механізмом, що й 5xx-відкладення
+            // (attempts+1, next_attempt_at=backoff, подія retry) і приймається
+            // після прибуття батька. Незворотний failed — лише для решти
+            // (валідація/конфлікт): там повтор нічого не змінить.
+            Some(r) if r.error_class.as_deref() == Some(ERROR_CLASS_RETRYABLE_FK) => {
+                defer_or_fail(
+                    &mut conn,
+                    it,
+                    r.error.clone(),
+                    Some("RETRYABLE_FK: батько ще не прийнятий"),
+                )?;
+                summary.deferred += 1;
             }
             // Валідаційна/бізнес-помилка сервера → failed (без retry).
             Some(r) => {
@@ -665,14 +734,18 @@ pub fn log_event(
     .map_err(|e| format!("INSERT sync_log ({kind}): {e}"))
 }
 
-/// attempts += 1; якщо спроба 5xx/429: next_attempt_at = now + backoff;
-/// після MAX_ATTEMPTS невдалих спроб → failed (алерт — статус видимий).
+/// attempts += 1; next_attempt_at = now + backoff; після MAX_ATTEMPTS
+/// невдалих спроб → failed (алерт — статус видимий). Статус агрегата лишається
+/// `pending` — він ПОВЕРТАЄТЬСЯ в чергу (єдиний механізм відкладення: і для
+/// 5xx/429, і для `RETRYABLE_FK` з E2b — жодного другого «defer»).
 /// Кожна зміна статусу супроводжується подією sync_log у тій самій
 /// транзакції: 'retry' (відкладено) або 'push_fail' (failed).
+/// `reason` — людська причина відкладення для журналу (5xx/429, RETRYABLE_FK).
 fn defer_or_fail(
     conn: &mut Connection,
     item: &OutboxItem,
     error: Option<String>,
+    reason: Option<&str>,
 ) -> Result<(), String> {
     let attempts = outbox_attempts(conn, item.id)?;
     let next_attempts = attempts + 1;
@@ -682,9 +755,10 @@ fn defer_or_fail(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("BEGIN (backoff id={}): {e}", item.id))?;
 
+    let reason = reason.unwrap_or("5xx/429");
     if next_attempts >= MAX_ATTEMPTS {
-        // 10 невдалих спроб (5xx) → failed + last_error (дизайн 4.3).
-        let msg = error.unwrap_or_else(|| "10 невдалих спроб (5xx)".to_string());
+        // MAX_ATTEMPTS невдалих відкладань → failed + last_error (дизайн 4.3).
+        let msg = error.unwrap_or_else(|| format!("{next_attempts} невдалих спроб ({reason})"));
         tx.execute(
             "UPDATE outbox SET attempts = ?1, status = 'failed', last_error = ?2 \
              WHERE id = ?3",
@@ -704,7 +778,7 @@ fn defer_or_fail(
             params![next_attempts, offset, error, item.id],
         )
         .map_err(|e| format!("UPDATE outbox backoff: {e}"))?;
-        let detail = format!("5xx/429: спроба {next_attempts}, backoff {delay}с");
+        let detail = format!("{reason}: спроба {next_attempts}, backoff {delay}с");
         tx.execute(
             "INSERT INTO sync_log (kind, entity, detail, attempts) \
              VALUES ('retry', ?1, ?2, ?3)",
@@ -1054,7 +1128,7 @@ mod tests {
 
         // 9 defer_or_fail — pending зростаючий backoff.
         for _ in 0..9 {
-            defer_or_fail(&mut conn, &item, None).expect("defer");
+            defer_or_fail(&mut conn, &item, None, None).expect("defer");
         }
         let (status, attempts): (String, i64) = conn
             .query_row(
@@ -1068,7 +1142,7 @@ mod tests {
         assert_eq!(backoff_delay_secs(9), 512, "9-та спроба: 2^9 = 512с");
 
         // 10-та невдала спроба → failed.
-        defer_or_fail(&mut conn, &item, None).expect("10-та спроба");
+        defer_or_fail(&mut conn, &item, None, Some("5xx")).expect("10-та спроба");
         let (status, attempts, err): (String, i64, Option<String>) = conn
             .query_row(
                 "SELECT status, attempts, last_error FROM outbox WHERE id = ?1",

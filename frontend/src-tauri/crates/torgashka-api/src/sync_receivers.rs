@@ -29,6 +29,34 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+// ─── Клас помилки БД у каналі приймача (ADR-0008 §7.1-E1, етап E2b) ─────────
+
+/// Стабільний маркер «батьківського агрегата ще немає в цій точці».
+///
+/// Pre-flight перевірка батька (`SELECT … FROM debtors WHERE id = …`) — це ТОЙ
+/// САМИЙ FK-контракт, який дав би SQLSTATE 23503, лише перевірений наперед
+/// (див. `pg_constraint`: `debtor_payments.debtor_id → debtors.id`). Тому
+/// відмова маркується цим маркером і класифікується як `RETRYABLE_FK`
+/// (`sync::classify_error_body`) — ПОВТОРЮВАНА, а не незворотна: після
+/// прибуття батька (kind `debtor`, ADR-0008 §7.1-B1) той самий агрегат
+/// приймається.
+pub const MISSING_PARENT_MARKER: &str = "[MISSING_PARENT]";
+
+/// Текст помилки БД зі SQLSTATE у машинному токені: `<операція>: <текст> [SQLSTATE 23503]`.
+///
+/// Приймачі віддають `Result<_, String>` — типізований `sqlx::Error` губиться
+/// на межі, і разом із ним SQLSTATE. Токен фіксує його в каналі: `sync.rs`
+/// перетворює його на клас тіла відповіді `[DB_ERROR 23503]`, а
+/// `sync::classify_error_body` — на клас помилки (`RETRYABLE_FK` для 23503,
+/// `CONFLICT` для 23505). Розбір ЛОКАЛІЗОВАНОГО тексту PG не потрібен
+/// (текст залежить від `lc_messages`, код — ні).
+pub fn db_err(op: &str, e: sqlx::Error) -> String {
+    match torgashka_infrastructure::readonly_guard::sqlstate_of(&e) {
+        Some(code) => format!("{op}: {e} [SQLSTATE {code}]"),
+        None => format!("{op}: {e}"),
+    }
+}
+
 /// Спроба розпарсити created_at каси (RFC3339 або ISO без таймзони) в UTC.
 /// None → сервер візьме now() (контракт: created_at обов'язковий для push,
 /// але м'який fallback не ламає прийом аномальних пакетів).
@@ -168,7 +196,7 @@ async fn next_doc_number(pool: &PgPool, table: &str, prefix: &str) -> Result<Str
         .bind(format!("{pfx}%"))
         .fetch_one(pool)
         .await
-        .map_err(|e| format!("номер {table}: {e}"))?;
+        .map_err(|e| db_err("номер {table}", e))?;
     let last_seq = row
         .0
         .and_then(|n| {
@@ -211,7 +239,7 @@ async fn stock_add(
     .bind(format!("{}", delta3 as f64 / 1000.0))
     .execute(&mut **tx)
     .await
-    .map_err(|e| format!("stock_effect: {e}"))?;
+    .map_err(|e| db_err("stock_effect", e))?;
     Ok(())
 }
 
@@ -233,7 +261,7 @@ async fn stock_set(
     .bind(format!("{}", level3 as f64 / 1000.0))
     .execute(&mut **tx)
     .await
-    .map_err(|e| format!("stock_set: {e}"))?;
+    .map_err(|e| db_err("stock_set", e))?;
     Ok(())
 }
 
@@ -269,7 +297,7 @@ pub async fn accept_purchase_order(
         total_cents += (*q3 as i128) * prc / 1000;
     }
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
     let number = next_doc_number(pool, "purchase_orders", "ЗМ").await?;
     let id = Uuid::new_v4();
     sqlx::query(
@@ -293,7 +321,7 @@ pub async fn accept_purchase_order(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT purchase_orders: {e}"))?;
+    .map_err(|e| db_err("INSERT purchase_orders", e))?;
     for (pid, q3, _q, _, pr) in &items {
         let price = pr.as_deref().and_then(scaled2).unwrap_or(0);
         sqlx::query(
@@ -311,10 +339,10 @@ pub async fn accept_purchase_order(
         .bind(store_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("INSERT purchase_order_items: {e}"))?;
+        .map_err(|e| db_err("INSERT purchase_order_items", e))?;
         stock_add(&mut tx, store_id, *pid, *q3).await?;
     }
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
     Ok(id)
 }
 
@@ -338,7 +366,7 @@ pub async fn accept_inventory(
     let items = parse_items(payload, "inventory")?;
     let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
     let number = next_doc_number(pool, "inventories", "ІН").await?;
     let id = Uuid::new_v4();
     sqlx::query(
@@ -358,7 +386,7 @@ pub async fn accept_inventory(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT inventories: {e}"))?;
+    .map_err(|e| db_err("INSERT inventories", e))?;
     for (pid, q3, qty_s, cost, price) in &items {
         let acc = dec(&payload["items"], "accounting_quantity").ok().flatten();
         let _ = acc;
@@ -386,10 +414,10 @@ pub async fn accept_inventory(
         .bind(store_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("INSERT inventory_items: {e}"))?;
+        .map_err(|e| db_err("INSERT inventory_items", e))?;
         stock_set(&mut tx, store_id, *pid, *q3).await?;
     }
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
     Ok(id)
 }
 
@@ -437,7 +465,7 @@ pub async fn accept_transfer(
         0
     };
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
     let number = next_doc_number(pool, "transfers", "ПМ").await?;
     let id = Uuid::new_v4();
     sqlx::query(
@@ -458,7 +486,7 @@ pub async fn accept_transfer(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT transfers: {e}"))?;
+    .map_err(|e| db_err("INSERT transfers", e))?;
     for (pid, q3, _q, cost, price) in &items {
         let cost_c = cost.as_deref().and_then(scaled2).unwrap_or(0);
         let price_c = price.as_deref().and_then(scaled2).unwrap_or(0);
@@ -477,14 +505,14 @@ pub async fn accept_transfer(
         .bind(store_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("INSERT transfer_items: {e}"))?;
+        .map_err(|e| db_err("INSERT transfer_items", e))?;
         match side {
             1 => stock_add(&mut tx, from, *pid, -*q3).await?,
             -1 => stock_add(&mut tx, to, *pid, *q3).await?,
             _ => {} // каса не сторона — зберігаємо документ без stock-ефекту
         }
     }
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
     Ok(id)
 }
 
@@ -514,7 +542,7 @@ pub async fn accept_write_off(
         total_cents += (*q3 as i128) * prc / 1000;
     }
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
     let number = next_doc_number(pool, "write_offs", "СП").await?;
     let id = Uuid::new_v4();
     sqlx::query(
@@ -536,7 +564,7 @@ pub async fn accept_write_off(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT write_offs: {e}"))?;
+    .map_err(|e| db_err("INSERT write_offs", e))?;
     for (pid, q3, _q, cost, price) in &items {
         let cost_c = cost.as_deref().and_then(scaled2).unwrap_or(0);
         let price_c = price.as_deref().and_then(scaled2).unwrap_or(0);
@@ -555,10 +583,10 @@ pub async fn accept_write_off(
         .bind(store_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("INSERT write_off_items: {e}"))?;
+        .map_err(|e| db_err("INSERT write_off_items", e))?;
         stock_add(&mut tx, store_id, *pid, -*q3).await?;
     }
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
     Ok(id)
 }
 
@@ -628,7 +656,7 @@ pub async fn accept_cash_operation(
     .bind(client_uuid)
     .execute(pool)
     .await
-    .map_err(|e| format!("INSERT cash_operations: {e}"))?;
+    .map_err(|e| db_err("INSERT cash_operations", e))?;
     Ok(id)
 }
 
@@ -673,7 +701,7 @@ pub async fn accept_debtor_payment(
     // Час каси з конверта (не now()) — звіти за датами не зсуваються.
     let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
 
     // 1. Боржник точки мусить існувати (pre-flight до будь-якого INSERT).
     let debt_raw: Option<String> =
@@ -682,10 +710,10 @@ pub async fn accept_debtor_payment(
             .bind(store_id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(|e| format!("SELECT debtors: {e}"))?;
+            .map_err(|e| db_err("SELECT debtors", e))?;
     let Some(debt_raw) = debt_raw else {
         return Err(format!(
-            "Боржника {debtor_id} не знайдено в цій точці — оплату відхилено"
+            "{MISSING_PARENT_MARKER} Боржника {debtor_id} не знайдено в цій точці — оплату відхилено"
         ));
     };
     let debt_cents = scaled2(&debt_raw).unwrap_or(0);
@@ -711,7 +739,7 @@ pub async fn accept_debtor_payment(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT debtor_payments: {e}"))?;
+    .map_err(|e| db_err("INSERT debtor_payments", e))?;
 
     // 3. Борг ↓ (не нижче нуля: борг каси за очима primary).
     sqlx::query(
@@ -724,9 +752,9 @@ pub async fn accept_debtor_payment(
     .bind(store_id)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("debtors.total_debt (UPDATE): {e}"))?;
+    .map_err(|e| db_err("debtors.total_debt (UPDATE)", e))?;
 
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
     Ok(payment_id)
 }
 
@@ -780,14 +808,14 @@ pub async fn accept_supplier_ledger(
         .or(created_at)
         .unwrap_or_else(|| Utc::now().naive_utc());
 
-    let mut tx = pool.begin().await.map_err(|e| format!("BEGIN: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| db_err("BEGIN", e))?;
 
     // 1. Постачальник мусить існувати (як v1/v2-сервіс → 404).
     let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM suppliers WHERE id = $1")
         .bind(supplier_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| format!("SELECT suppliers: {e}"))?;
+        .map_err(|e| db_err("SELECT suppliers", e))?;
     if exists.is_none() {
         return Err(format!(
             "Постачальника з ID '{supplier_id}' не знайдено — запис книги відхилено"
@@ -801,7 +829,7 @@ pub async fn accept_supplier_ledger(
     .bind(supplier_id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| format!("SELECT SUM(supplier_ledger): {e}"))?;
+    .map_err(|e| db_err("SELECT SUM(supplier_ledger)", e))?;
     let balance_after = scaled2(&current_raw).unwrap_or(0) + scaled2(&amount).unwrap_or(0);
     let balance_str = format_cents2(balance_after);
 
@@ -825,9 +853,233 @@ pub async fn accept_supplier_ledger(
     .bind(client_uuid)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("INSERT supplier_ledger: {e}"))?;
+    .map_err(|e| db_err("INSERT supplier_ledger", e))?;
 
-    tx.commit().await.map_err(|e| format!("COMMIT: {e}"))?;
+    tx.commit().await.map_err(|e| db_err("COMMIT", e))?;
+    Ok(id)
+}
+
+// ─── БАТЬКІВСЬКІ сутності вузла (ADR-0008 §7.1-B, етап E1) ─────────────────
+//
+// Чому саме тут: без батька дитина НЕ приймається. `accept_debtor_payment`
+// робить pre-flight `SELECT … FROM debtors WHERE id = $1 AND store_id = $2` і
+// відхиляє платіж, якщо боржника немає («Боржника … не знайдено в цій точці»).
+// Боржник, створений на вузлі офлайн, доїжджає на хаб kind'ом `debtor` — і хаб
+// зберігає UUID ВУЗЛА, бо `debtor_payments.debtor_id` — FK на `debtors.id`.
+
+/// Боржник, створений на ВУЗЛІ (ADR-0008 §7.1-B1). Приймач — один INSERT.
+///
+/// Payload вузла: `{id, name, phone?, notes?, total_debt?}`.
+///
+/// * `id` — UUID боржника НА ВУЗЛІ. Хаб зберігає його як є: ідентичність
+///   мусить бути спільною, інакше платіж дитини (`debtor_payments.debtor_id`)
+///   не знайде батька. Немає `id` — беремо `client_uuid` (детерміновано).
+/// * `total_debt` — борг на момент створення (вузол знає свій реєстр); далі
+///   його веде [`accept_debtor_payment`].
+///
+/// Ідемпотентність: partial UNIQUE `uq_debtors_client_uuid` (Alembic 0019) +
+/// SELECT-дублікат у кроці 3 `process_push_item`; гонку двох push ловить UNIQUE.
+///
+/// Валідація payload — ЛЮДСЬКИМИ текстами (сирий текст PG лишається другим
+/// рубежем: `debtors_name_not_null`, `debtors_total_debt_numeric`).
+pub async fn accept_debtor(
+    pool: &PgPool,
+    store_id: Uuid,
+    _cashier: Uuid,
+    client_uuid: Uuid,
+    created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let id = u(payload, "id")?.unwrap_or(client_uuid);
+    let name = s(payload, "name").unwrap_or_default();
+    if name.trim().is_empty() {
+        return Err("боржник: name обов'язкове".to_string());
+    }
+    let phone = s(payload, "phone");
+    let notes = s(payload, "notes");
+    let total = dec(payload, "total_debt")?.unwrap_or_else(|| "0.00".to_string());
+    match scaled2(&total) {
+        Some(cents) if cents >= 0 => {}
+        _ => {
+            return Err(format!(
+                "боржник: total_debt мусить бути ≥ 0, маємо '{total}'"
+            ))
+        }
+    }
+    // created_at каси (конверт PushEnvelope), НЕ now() — як у документах/чеках.
+    let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
+    sqlx::query(
+        "INSERT INTO debtors \
+            (id, name, phone, notes, total_debt, store_id, created_at, updated_at, client_uuid) \
+         VALUES ($1,$2,$3,$4,$5::numeric,$6,$7::timestamp,$7::timestamp,$8)",
+    )
+    .bind(id)
+    .bind(name.trim())
+    .bind(phone.as_deref())
+    .bind(notes.as_deref())
+    .bind(&total)
+    .bind(store_id)
+    .bind(ts)
+    .bind(client_uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| db_err("INSERT debtors", e))?;
+    Ok(id)
+}
+
+/// Робоча сесія користувача ВУЗЛА (ADR-0008 §7.1-B2). Приймач — один INSERT.
+///
+/// Payload — той самий, що формує вузол
+/// (`offline/transactions.rs::work_session_payload`):
+/// `{user_id, store_id?, login_time, logout_time?, duration_hours?}`.
+///
+/// * `login_time`/`logout_time` — RFC 3339 каси → UTC (`parse_created_at_utc`);
+/// * `duration_hours` — вузол рахує ту саму формулу (мс / 3_600_000, 2 знаки);
+///   якщо поле не прийшло, а `logout_time` є — рахуємо на хабі тим самим
+///   округленням, щоб тривалість не загубилась (`numeric(5,2)` → clamp);
+/// * `user_id` — FK `work_sessions.user_id` → `users.id`: користувач мусить
+///   існувати й на хабі (спільний довідник). Немає → людська помилка.
+///
+/// Ідемпотентність: partial UNIQUE `uq_work_sessions_client_uuid` (уже є —
+/// шар Alembic 0013) + SELECT-дублікат у кроці 3 `process_push_item`.
+pub async fn accept_work_session(
+    pool: &PgPool,
+    store_id: Uuid,
+    _cashier: Uuid,
+    client_uuid: Uuid,
+    created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let user_id =
+        u(payload, "user_id")?.ok_or_else(|| "робоча сесія: user_id обов'язковий".to_string())?;
+    let login_raw = s(payload, "login_time")
+        .ok_or_else(|| "робоча сесія: login_time обов'язковий".to_string())?;
+    let login_time = parse_created_at_utc(Some(&login_raw))
+        .ok_or_else(|| format!("робоча сесія: login_time «{login_raw}» не RFC 3339"))?;
+    let logout_time = match s(payload, "logout_time") {
+        Some(v) => Some(
+            parse_created_at_utc(Some(&v))
+                .ok_or_else(|| format!("робоча сесія: logout_time «{v}» не RFC 3339"))?,
+        ),
+        None => None,
+    };
+    let duration_hours = logout_time.map(|end| {
+        let hours = s(payload, "duration_hours")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or_else(|| (end - login_time).num_milliseconds() as f64 / 3_600_000.0);
+        ((hours * 100.0).round() / 100.0).clamp(0.0, 999.99)
+    });
+    let id = u(payload, "id")?.unwrap_or(client_uuid);
+    let ts = created_at.unwrap_or_else(|| Utc::now().naive_utc());
+    sqlx::query(
+        "INSERT INTO work_sessions \
+            (id, user_id, login_time, logout_time, duration_hours, created_at, store_id, \
+             client_uuid) \
+         VALUES ($1,$2,$3::timestamp,$4::timestamp,$5::numeric,$6::timestamp,$7,$8)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(login_time)
+    .bind(logout_time)
+    .bind(duration_hours.map(|h| format!("{h:.2}")))
+    .bind(ts)
+    .bind(store_id)
+    .bind(client_uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| db_err("INSERT work_sessions", e))?;
+    Ok(id)
+}
+
+/// Фіскальна зміна точки (ADR-0008 §7.1-B3, аудит фіскалізації по точках).
+/// Приймач — один INSERT.
+///
+/// Payload = колонки `prro_shifts`: `{id?, shift_number, opened_at, closed_at?,
+/// status? (open|closed, дефолт open), signer_serial?, signer_name?, closed_by?,
+/// zreport_number?, receipt_count?, total_amount?, last_local_number?,
+/// last_mac?}`. Невідомий `status` → людська помилка (PG-enum
+/// `prro_shift_status` лишається другим рубежем).
+///
+/// Ідемпотентність: partial UNIQUE `uq_prro_shifts_client_uuid` (Alembic 0019).
+pub async fn accept_prro_shift(
+    pool: &PgPool,
+    store_id: Uuid,
+    _cashier: Uuid,
+    client_uuid: Uuid,
+    _created_at: Option<NaiveDateTime>,
+    payload: &Value,
+) -> Result<Uuid, String> {
+    let shift_number = match payload.get("shift_number").and_then(|v| v.as_i64()) {
+        Some(n) if n > 0 && n <= i32::MAX as i64 => n as i32,
+        other => {
+            return Err(format!(
+                "ПРРО-зміна: shift_number мусить бути цілим > 0, маємо {other:?}"
+            ))
+        }
+    };
+    let status = s(payload, "status").unwrap_or_else(|| "open".to_string());
+    if !matches!(status.as_str(), "open" | "closed") {
+        return Err(format!(
+            "ПРРО-зміна: status мусить бути open/closed, маємо '{status}'"
+        ));
+    }
+    let opened_raw =
+        s(payload, "opened_at").ok_or_else(|| "ПРРО-зміна: opened_at обов'язковий".to_string())?;
+    let opened_at = parse_created_at_utc(Some(&opened_raw))
+        .ok_or_else(|| format!("ПРРО-зміна: opened_at «{opened_raw}» не RFC 3339"))?;
+    let closed_at = match s(payload, "closed_at") {
+        Some(v) => Some(
+            parse_created_at_utc(Some(&v))
+                .ok_or_else(|| format!("ПРРО-зміна: closed_at «{v}» не RFC 3339"))?,
+        ),
+        None => None,
+    };
+    let total = dec(payload, "total_amount")?.unwrap_or_else(|| "0.00".to_string());
+    match scaled2(&total) {
+        Some(cents) if cents >= 0 => {}
+        _ => {
+            return Err(format!(
+                "ПРРО-зміна: total_amount мусить бути ≥ 0, маємо '{total}'"
+            ))
+        }
+    }
+    let receipt_count = payload
+        .get("receipt_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .clamp(0, i32::MAX as i64) as i32;
+    let last_local_number = payload
+        .get("last_local_number")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+        .clamp(0, i32::MAX as i64) as i32;
+    let id = u(payload, "id")?.unwrap_or(client_uuid);
+    sqlx::query(
+        "INSERT INTO prro_shifts \
+            (id, store_id, shift_number, opened_at, closed_at, signer_serial, signer_name, \
+             closed_by, zreport_number, status, receipt_count, total_amount, \
+             last_local_number, last_mac, client_uuid) \
+         VALUES ($1,$2,$3,$4::timestamp,$5::timestamp,$6,$7,$8,$9, \
+                 $10::public.prro_shift_status,$11,$12::numeric,$13,$14,$15)",
+    )
+    .bind(id)
+    .bind(store_id)
+    .bind(shift_number)
+    .bind(opened_at)
+    .bind(closed_at)
+    .bind(s(payload, "signer_serial").as_deref())
+    .bind(s(payload, "signer_name").as_deref())
+    .bind(s(payload, "closed_by").as_deref())
+    .bind(s(payload, "zreport_number").as_deref())
+    .bind(&status)
+    .bind(receipt_count)
+    .bind(&total)
+    .bind(last_local_number)
+    .bind(s(payload, "last_mac").as_deref())
+    .bind(client_uuid)
+    .execute(pool)
+    .await
+    .map_err(|e| db_err("INSERT prro_shifts", e))?;
     Ok(id)
 }
 
