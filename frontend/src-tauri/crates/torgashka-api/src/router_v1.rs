@@ -743,6 +743,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/admin/db-sources/export-dump",
             post(admin_db_sources::export_dump),
         )
+        // R3: знімок усієї активної БД хаба для провіжну вузлів (pg_dump -Fc
+        // у каталог знімків R1). Той самий admin-скоуп: без store_middleware
+        // (знімок — не дані точки), з auth + перевіркою ролі в хендлері.
+        .route(
+            "/api/v1/admin/hub-snapshot",
+            post(admin_db_sources::create_hub_snapshot),
+        )
         .route(
             "/api/v1/admin/network-config/export",
             post(admin_network_config::export_config),

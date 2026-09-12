@@ -41,21 +41,17 @@
 //! цього `/api/v1/sync/status` не має на чому рахувати чергу форвардингу.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use uuid::Uuid;
 
 use torgashka_api::auth::create_access_token;
-use torgashka_infrastructure::embedded_pg::{
-    pg_ctl_start_args, pg_ctl_stop_args, psql_conn_args, psql_conn_env, EmbeddedPostgres,
-    EMBEDDED_PG_PORT,
-};
+use torgashka_infrastructure::embedded_pg::EMBEDDED_PG_PORT;
 
 #[path = "common/hub_env.rs"]
 mod hub_env;
+#[path = "common/pg_cluster.rs"]
+mod pg_cluster;
 
 /// Порт власного кластера тесту можна переозначити ЛИШЕ явно (див. шапку).
 const PORT_ENV: &str = "TORGASHKA_PG_TEST_PORT";
@@ -77,316 +73,8 @@ fn evidence(line: &str) {
     eprintln!("[r2][evidence] {line}");
 }
 
-/// Шлях до інструмента в каталозі бінарників (той самий `.exe`-контракт, що в
-/// `embedded_pg`: Windows-збірки PG кладуть `.exe`).
-fn tool(bin_dir: &Path, base: &str) -> PathBuf {
-    if cfg!(windows) {
-        bin_dir.join(format!("{base}.exe"))
-    } else {
-        bin_dir.join(base)
-    }
-}
-
 fn artifact_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../artifacts/hub_snapshot")
-}
-
-/// Чи слухає хтось `127.0.0.1:<port>` (та сама перевірка, що `port_is_open`).
-fn port_open(port: u16) -> bool {
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
-}
-
-/// Доказова вибірка про власника порту — для ANOMALY-блоку (не для гадання).
-fn port_evidence(port: u16) -> String {
-    let mut out = String::new();
-    for (label, cmd, args) in [
-        ("ss -ltnp", "ss", vec!["-ltnp"]),
-        ("pg_lsclusters", "pg_lsclusters", vec![]),
-    ] {
-        let output = Command::new(cmd).args(&args).output();
-        match output {
-            Ok(o) => {
-                let text = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&o.stdout),
-                    String::from_utf8_lossy(&o.stderr)
-                );
-                let filtered: Vec<&str> = text
-                    .lines()
-                    .filter(|l| l.contains(&port.to_string()) || label == "pg_lsclusters")
-                    .collect();
-                out.push_str(&format!("\n  {label}:\n    {}\n", filtered.join("\n    ")));
-            }
-            Err(e) => out.push_str(&format!("\n  {label}: недоступно ({e})\n")),
-        }
-    }
-    // Хто саме тримає сокет: /proc/net/tcp дає uid власника (доказ, а не здогад).
-    if let Ok(tcp) = std::fs::read_to_string("/proc/net/tcp") {
-        let hex = format!("{:04X}", port);
-        for line in tcp.lines() {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if cols.len() > 7 && cols[1].ends_with(&format!(":{hex}")) {
-                out.push_str(&format!(
-                    "  /proc/net/tcp: local={} uid={} inode={}\n",
-                    cols[1], cols[7], cols[9]
-                ));
-            }
-        }
-    }
-    out
-}
-
-/// Порти, заявлені тестами цього файла (бінарник один — стан у межах процесу):
-/// завдяки цьому паралельні тести ніколи не ділять один номер порту.
-static CLAIMED_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
-/// Рядок `[r2][info]` про вибір власного порту друкуємо рівно один раз.
-static FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
-/// Верхня межа перебору власних портів тесту (5433 зайнятий — беремо 5434..5500).
-const PORT_SCAN_END: u16 = 5500;
-
-/// Порт тестового кластера (порядок вибору — у шапці файла).
-/// (1) явний `TORGASHKA_PG_TEST_PORT` — як є, зайнятий = аномалія вгору (паніка);
-/// (2) вільний порт продукту [`EMBEDDED_PG_PORT`] (5433) — реалізм продукту;
-/// (3) інакше — автоматично підібраний вільний порт (5434..=[`PORT_SCAN_END`]).
-/// Паніка в гілці 3 неможлива, поки є хоч один вільний порт; якщо вільного
-/// немає взагалі — це аномалія вгору з доказовою вибіркою власників портів.
-fn resolve_port() -> u16 {
-    let explicit = std::env::var(PORT_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u16>().ok());
-    let mut claimed = CLAIMED_PORTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    if let Some(port) = explicit {
-        if port_open(port) {
-            let evidence = port_evidence(port);
-            panic!(
-                "[r2][ANOMALY] порт {port} зайнятий, але його задано ЯВНО через {PORT_ENV} — \
-                 продовжувати на чужому порту небезпечно (під ним може бути робочий кластер). \
-                 Власник порту:{evidence}\n\
-                 Задайте вільний порт (напр. {PORT_ENV}=5434) або приберіть змінну — тоді тест \
-                 підбере вільний порт сам."
-            );
-        }
-        claimed.push(port);
-        return port;
-    }
-
-    if !claimed.contains(&EMBEDDED_PG_PORT) && !port_open(EMBEDDED_PG_PORT) {
-        claimed.push(EMBEDDED_PG_PORT);
-        return EMBEDDED_PG_PORT;
-    }
-
-    // 5433 недоступний (зайнятий ззовні або вже заявлений сусіднім тестом) —
-    // беремо власний вільний порт. Паніки тут НЕМАЄ: це штатна гілка.
-    let scan_end = PORT_SCAN_END.max(EMBEDDED_PG_PORT + 1);
-    let picked = (EMBEDDED_PG_PORT + 1..=scan_end)
-        .find(|candidate| !claimed.contains(candidate) && !port_open(*candidate))
-        .unwrap_or_else(|| {
-            panic!(
-                "[r2][ANOMALY] жоден порт {}..={scan_end} не вільний — власний кластер тесту \
-                 підняти неможливо. Власники зайнятих портів:{}{}{}",
-                EMBEDDED_PG_PORT + 1,
-                port_evidence(EMBEDDED_PG_PORT),
-                port_evidence(EMBEDDED_PG_PORT + 1),
-                port_evidence(scan_end),
-            )
-        });
-    claimed.push(picked);
-    if !FALLBACK_REPORTED.swap(true, Ordering::SeqCst) {
-        if port_open(EMBEDDED_PG_PORT) {
-            eprintln!(
-                "[r2][info] 5433 зайнятий (системний кластер) → власний кластер тесту на порту {picked}"
-            );
-        } else {
-            eprintln!(
-                "[r2][info] порт 5433 закріплено за іншим тестом цього файла → власний кластер тесту на порту {picked}"
-            );
-        }
-    }
-    picked
-}
-
-/// Власний тимчасовий кластер PG 17 (initdb + pg_ctl) для наскрізного провіжну.
-struct TestCluster {
-    bin_dir: PathBuf,
-    data_dir: PathBuf,
-    log: PathBuf,
-    port: u16,
-}
-
-impl TestCluster {
-    fn start(bin_dir: PathBuf, port: u16) -> Self {
-        let data_dir =
-            std::env::temp_dir().join(format!("{DATA_DIR_NAME}_{}_{port}", std::process::id()));
-        if data_dir.exists() {
-            std::fs::remove_dir_all(&data_dir).expect("прибирання старого каталогу тесту");
-        }
-        std::fs::create_dir_all(&data_dir).expect("каталог даних тесту");
-        let log = data_dir.join("pg_ctl.log");
-
-        let initdb = tool(&bin_dir, "initdb");
-        let out = Command::new(&initdb)
-            .args([
-                "-D",
-                &data_dir.to_string_lossy(),
-                "-U",
-                "postgres",
-                "-A",
-                "trust",
-                "--encoding=UTF8",
-            ])
-            .output()
-            .unwrap_or_else(|e| panic!("initdb {}: {e}", initdb.display()));
-        assert!(
-            out.status.success(),
-            "initdb не вдався: код {:?}\nstdout:\n{}\nstderr:\n{}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-
-        // Ті самі аргументи pg_ctl, що в проді (`pg_ctl_start_args`), плюс
-        // `-k <data_dir>`: сокет — у каталозі тесту, щоб не сваритися з
-        // системними кластерами.
-        let opts = format!("-p {port} -h 127.0.0.1 -k {}", data_dir.display());
-        let args = pg_ctl_start_args(&data_dir, &log, &opts, 60);
-        let pg_ctl = tool(&bin_dir, "pg_ctl");
-        let out = Command::new(&pg_ctl)
-            .args(&args)
-            .output()
-            .unwrap_or_else(|e| panic!("pg_ctl {}: {e}", pg_ctl.display()));
-        assert!(
-            out.status.success(),
-            "pg_ctl start не вдався: код {:?}\nstderr:\n{}\nлог {}:\n{}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr),
-            log.display(),
-            std::fs::read_to_string(&log).unwrap_or_default()
-        );
-
-        let cluster = Self {
-            bin_dir,
-            data_dir,
-            log,
-            port,
-        };
-        // БД вузла — створюємо так, як це робить застосунок (psql + psql_conn_args).
-        let (code, out_text, err_text) = cluster.psql("postgres", "CREATE DATABASE torgashka");
-        assert_eq!(
-            code,
-            Some(0),
-            "CREATE DATABASE torgashka: код {code:?}\n{out_text}\n{err_text}"
-        );
-        cluster
-    }
-
-    fn url(&self) -> String {
-        self.url_for("torgashka")
-    }
-
-    /// URL довільної БД того самого кластера тесту.
-    fn url_for(&self, db: &str) -> String {
-        format!("postgresql://postgres@127.0.0.1:{}/{db}", self.port)
-    }
-
-    /// Створює додаткову БД у кластері тесту (напр. для фасаду-«хаба», якому
-    /// потрібна власна робоча схема й аж ніяк не БД вузла).
-    fn create_db(&self, name: &str) {
-        let (code, out, err) = self.psql("postgres", &format!("CREATE DATABASE {name}"));
-        assert_eq!(code, Some(0), "CREATE DATABASE {name}: {out} {err}");
-    }
-
-    /// `psql` тим самим способом підключення, що в проді (`psql_conn_args`/`env`).
-    fn psql(&self, db: &str, sql: &str) -> (Option<i32>, String, String) {
-        let psql = tool(&self.bin_dir, "psql");
-        let mut command = Command::new(psql);
-        command.args(psql_conn_args("postgres", db, self.port));
-        for (k, v) in psql_conn_env() {
-            command.env(k, v);
-        }
-        command.arg("-c").arg(sql);
-        match command.output() {
-            Ok(o) => (
-                o.status.code(),
-                String::from_utf8_lossy(&o.stdout).to_string(),
-                String::from_utf8_lossy(&o.stderr).to_string(),
-            ),
-            Err(e) => (None, String::new(), format!("psql не запустився: {e}")),
-        }
-    }
-
-    /// Виконує SQL і повертає сирий вивід у лог (доказова лінія тесту).
-    fn psql_evidence(&self, title: &str, sql: &str) {
-        let (code, out, err) = self.psql("torgashka", sql);
-        evidence(&format!("{title}\n    SQL: {sql}\n    psql exit={code:?}"));
-        for line in out.trim_end().lines() {
-            evidence(&format!("    {line}"));
-        }
-        if !err.trim().is_empty() {
-            evidence(&format!("    stderr: {}", err.trim()));
-        }
-    }
-
-    fn stop(&self) {
-        let pg_ctl = tool(&self.bin_dir, "pg_ctl");
-        let args = pg_ctl_stop_args(&self.data_dir, 30);
-        match Command::new(pg_ctl).args(&args).output() {
-            Ok(o) => evidence(&format!(
-                "зупинка тестового кластера: код {:?}",
-                o.status.code()
-            )),
-            Err(e) => evidence(&format!("зупинка тестового кластера: {e}")),
-        }
-    }
-}
-
-impl Drop for TestCluster {
-    fn drop(&mut self) {
-        self.stop();
-        let _ = std::fs::remove_dir_all(&self.data_dir);
-        let _ = std::fs::remove_file(&self.log);
-    }
-}
-
-/// Версія інструмента одним рядком (для доказу «саме 17.x»).
-fn tool_version(program: &Path) -> String {
-    match Command::new(program).arg("--version").output() {
-        Ok(o) => format!(
-            "{}{}",
-            String::from_utf8_lossy(&o.stdout).trim(),
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => format!("не запустився: {e}"),
-    }
-}
-
-/// Реальний артефакт хаба + вибірка версій інструментів (PG 17 обов'язковий:
-/// дамп `Dump Version 1.16` системний `pg_restore` 16.x не читає).
-fn locate_binaries() -> PathBuf {
-    let Some(bin_dir) = EmbeddedPostgres::locate() else {
-        panic!(
-            "[r2][ANOMALY] бінарники PostgreSQL не знайдено (задайте \
-             TORGASHKA_PG_DIR=/usr/lib/postgresql/17/bin)"
-        );
-    };
-    let initdb = tool(&bin_dir, "initdb");
-    let pg_restore = tool(&bin_dir, "pg_restore");
-    let initdb_v = tool_version(&initdb);
-    let restore_v = tool_version(&pg_restore);
-    evidence(&format!("каталог бінарників PG: {}", bin_dir.display()));
-    evidence(&format!("initdb:    {initdb_v}"));
-    evidence(&format!("pg_restore: {restore_v}"));
-    // Версійна аномалія (дамп 1.16 від 17.6 проти бінарників 16.x) — не
-    // ігнорується: з 16.x відновлення впало б «незрозумілою» помилкою TOC.
-    assert!(
-        restore_v.contains("17.") && initdb_v.contains("17."),
-        "[r2][ANOMALY] потрібні бінарники PG 17 (дамп 17.6/v1.16): initdb='{initdb_v}', \
-         pg_restore='{restore_v}'"
-    );
-    bin_dir
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -400,9 +88,9 @@ async fn first_start_restores_db_from_hub_snapshot_and_becomes_node() {
     );
 
     // ── 0. Бінарники PG 17 і власний кластер у /tmp ─────────────────────────
-    let bin_dir = locate_binaries();
-    let port = resolve_port();
-    let cluster = TestCluster::start(bin_dir, port);
+    let bin_dir = pg_cluster::locate_binaries("[r2]", "17.");
+    let port = pg_cluster::resolve_port("[r2]", PORT_ENV, EMBEDDED_PG_PORT);
+    let cluster = pg_cluster::TestCluster::start("[r2]", DATA_DIR_NAME, bin_dir, port);
     evidence(&format!(
         "тестовий кластер: {} (порт {}), БД вузла {}",
         cluster.data_dir.display(),
@@ -592,15 +280,15 @@ async fn hub_path_downloads_snapshot_with_sha_check_and_rejects_bad_token() {
         "немає артефакта знімка хаба: {}",
         artifact.display()
     );
-    let bin_dir = locate_binaries();
+    let bin_dir = pg_cluster::locate_binaries("[r2]", "17.");
     // Кожен тест файла заявляє СВІЙ вільний порт (див. `resolve_port`): тести
     // можуть іти паралельно, спільного номера між ними немає.
-    let port = resolve_port();
+    let port = pg_cluster::resolve_port("[r2]", PORT_ENV, EMBEDDED_PG_PORT);
     assert!(
-        !port_open(port),
+        !pg_cluster::port_open(port),
         "[r2][ANOMALY] порт {port} зайнятий — тесту потрібен вільний порт"
     );
-    let cluster = TestCluster::start(bin_dir, port);
+    let cluster = pg_cluster::TestCluster::start("[r2]", DATA_DIR_NAME, bin_dir, port);
     evidence(&format!(
         "другий тест: власний кластер {} (порт {}), БД вузла {}",
         cluster.data_dir.display(),

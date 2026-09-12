@@ -465,19 +465,24 @@ pub fn build_url(src: &DbSource, plain_password: &str) -> String {
     } else {
         src.host.clone()
     };
+    // Порт ОБОВ'ЯЗКОВИЙ: без нього драйвер пішов би на 5432 (дефолт), а не на
+    // порт джерела з конфіга — джерело на 5433/іншому порту перевірялось би
+    // «не туди» (ping у /admin/* та resolve_database_url при старті).
     if plain_password.is_empty() {
         format!(
-            "postgresql://{}@{}/{}",
+            "postgresql://{}@{}:{}/{}",
             pct(&src.user),
             host,
+            src.port,
             pct(&src.database)
         )
     } else {
         format!(
-            "postgresql://{}:{}@{}/{}",
+            "postgresql://{}:{}@{}:{}/{}",
             pct(&src.user),
             pct(plain_password),
             host,
+            src.port,
             pct(&src.database)
         )
     }
@@ -709,13 +714,39 @@ mod tests {
             status: None,
         };
         let url = build_url(&src, "p@ss/word");
-        assert_eq!(url, "postgresql://u%3Aser:p%40ss%2Fword@db.internal/mydb");
+        assert_eq!(
+            url,
+            "postgresql://u%3Aser:p%40ss%2Fword@db.internal:5433/mydb"
+        );
         // IPv6 host — у квадратних дужках.
         let v6 = DbSource {
             host: "::1".to_string(),
             ..src
         };
-        assert_eq!(build_url(&v6, ""), "postgresql://u%3Aser@[::1]/mydb");
+        assert_eq!(build_url(&v6, ""), "postgresql://u%3Aser@[::1]:5433/mydb");
+    }
+
+    /// Порт з конфіга МУСИТЬ бути в URL: інакше ping/старт ідуть на 5432
+    /// (дефолт драйвера) і джерело на іншому порту перевіряється не на собі.
+    #[test]
+    fn build_url_keeps_source_port() {
+        let src = DbSource {
+            label: None,
+            host: "127.0.0.1".to_string(),
+            port: 5434,
+            database: "torgashka".to_string(),
+            user: "postgres".to_string(),
+            password_encrypted: None,
+            status: None,
+        };
+        assert_eq!(
+            build_url(&src, ""),
+            "postgresql://postgres@127.0.0.1:5434/torgashka"
+        );
+        assert_eq!(
+            build_url(&src, "secret"),
+            "postgresql://postgres:secret@127.0.0.1:5434/torgashka"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────

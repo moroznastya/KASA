@@ -729,6 +729,183 @@ pub async fn activate_source(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// POST /api/v1/admin/hub-snapshot — знімок УСІЄЇ активної БД хаба для провіжну
+// вузлів (ADR-0008 «Варіант B», контракт R3).
+// ─────────────────────────────────────────────────────────────────────────────
+// Чому саме тут і саме на роутері admin_network (обґрунтування):
+//   * модуль: активне джерело, `find_source`/`source_url`/`ping_source`,
+//     `find_binary`, `stderr_tail`, `DbSrcErr` і `actor_claims` — приватні в
+//     ЦЬОМУ модулі; інший файл вимагав би `pub(crate)` на п'яти хелперах
+//     (розширення внутрішнього API модуля заради одного роута);
+//   * роутер: `admin_network` — БЕЗ `store_middleware` і З `auth_middleware`:
+//     знімок — це ВСЯ БД мережі, а не дані однієї точки, тому X-Store-Id тут
+//     не лише зайвий, а й хибний скоуп (той самий аргумент, що в R1 для
+//     `sync_snapshot`-роутера). Роль перевіряє `actor_claims` (= require_admin:
+//     owner|store_manager|admin; 401 без токена, 403 для device/cashier).
+//
+// Формат `--format=custom` (-Fc) ОБОВ'ЯЗКОВИЙ: plain SQL (-Fp) `pg_restore`
+// вузла не читає (R2-провіжн викликає саме `pg_restore`).
+//
+// Каталог — `sync_snapshot::snapshot_dir()` (НЕ `dumps_dir()`): знімок мусить
+// з'явитися там, звідки його віддає `GET /api/v1/sync/snapshot` (R1) — тоді
+// «хаб створив → вузол одразу забрав» працює без перезапуску й без копіювання
+// (каталог читається на кожен запит).
+//
+// Ротації/видалення старих знімків НЕМАЄ: політики ретеншну не існує
+// (docs/operations/hub-and-nodes.md §11.1 Б7) — вигадувати її заборонено.
+
+/// Тіло `POST /api/v1/admin/hub-snapshot`: порожнє (`{}`), як в export-dump.
+#[derive(Debug, Default, Deserialize)]
+pub struct HubSnapshotBody {}
+
+/// Відповідь 200 (snake_case — як решта HTTP-DTO db-sources; camelCase у
+/// проєкті лише для Tauri-команд).
+#[derive(Debug, Serialize)]
+pub struct HubSnapshotResponse {
+    pub ok: bool,
+    pub file_name: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub path: String,
+}
+
+/// Чисте ім'я знімка: `<database>_YYYYMMDD_HHMMSS.<ext>` (без суфікса колізії).
+fn snapshot_file_name(database: &str, ts: &str) -> String {
+    format!(
+        "{database}_{ts}.{}",
+        crate::sync_snapshot::SNAPSHOT_EXTENSION
+    )
+}
+
+/// Те саме ім'я із суфіксом колізії `-01`, `-02`… (`n == 0` → без суфікса).
+/// Наявні файли НЕ перезаписуються: два знімки в одну секунду = два файли.
+fn snapshot_file_name_no(database: &str, ts: &str, n: u32) -> String {
+    if n == 0 {
+        snapshot_file_name(database, ts)
+    } else {
+        format!(
+            "{database}_{ts}-{n:02}.{}",
+            crate::sync_snapshot::SNAPSHOT_EXTENSION
+        )
+    }
+}
+
+/// Вільний шлях під знімок у каталозі (перевірка існування файла, не «на віру»).
+fn unique_snapshot_path(
+    dir: &std::path::Path,
+    database: &str,
+    ts: &str,
+) -> Result<PathBuf, DbSrcErr> {
+    for n in 0..=99u32 {
+        let candidate = dir.join(snapshot_file_name_no(database, ts, n));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(DbSrcErr::Conflict(format!(
+        "у каталозі вже 100 знімків з міткою {database}_{ts} — ім'я не підібрати"
+    )))
+}
+
+/// `POST /api/v1/admin/hub-snapshot` → створити знімок активної БД хаба.
+pub async fn create_hub_snapshot(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(_body): Json<HubSnapshotBody>,
+) -> Result<Json<HubSnapshotResponse>, DbSrcErr> {
+    actor_claims(&state, &claims).await?;
+
+    let cfg = db_sources::load()?.unwrap_or_default();
+    let source_id = cfg.active.clone().ok_or_else(|| {
+        DbSrcErr::BadRequest(
+            "Активне джерело не задано — знімок створюється лише з активної БД хаба".to_string(),
+        )
+    })?;
+    let src = find_source(&cfg, &source_id)?.clone();
+
+    // 1) Превентивна перевірка з'єднання — зрозуміла помилка ДО pg_dump.
+    let url = source_url(&src)?;
+    if let Err(e) = ping_source(&url).await {
+        eprintln!(
+            "[torgashka-api] hub-snapshot: джерело '{source_id}' ({}:{}): {}",
+            src.host, src.port, e.raw
+        );
+        return Err(DbSrcErr::BadRequest(format!(
+            "Джерело '{source_id}' ({}:{}) недосяжне: {}; знімок не створено",
+            src.host, src.port, e.class
+        )));
+    }
+
+    // 2) Бінарник + каталог знімків (той самий, звідки його віддає R1).
+    let pg_dump = db_sources::find_binary("pg_dump")?;
+    let dir = crate::sync_snapshot::snapshot_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| DbSrcErr::Internal(format!("не вдалося створити {}: {e}", dir.display())))?;
+
+    // 3) Ім'я файла: <database>_YYYYMMDD_HHMMSS.dump (+ -NN при колізії).
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let out_path = unique_snapshot_path(&dir, &src.database, &ts)?;
+
+    // 4) pg_dump -Fc. Порт/хост/БД — ТІЛЬКИ з конфіга джерела (жодних дефолтів).
+    let pw = source_password(&src)?;
+    let output = tokio::process::Command::new(&pg_dump)
+        .arg("--format=custom")
+        .arg("--no-owner")
+        .arg("--no-privileges")
+        .arg(format!("--file={}", out_path.display()))
+        .arg("-h")
+        .arg(&src.host)
+        .arg("-p")
+        .arg(src.port.to_string())
+        .arg("-U")
+        .arg(&src.user)
+        .arg("-d")
+        .arg(&src.database)
+        .env("PGPASSWORD", &pw)
+        .output()
+        .await
+        .map_err(|e| DbSrcErr::Internal(format!("pg_dump не запустився: {e}")))?;
+
+    // 5) Будь-яка невдача → файл прибрати (жодних обрізаних знімків у каталозі).
+    if !output.status.success() {
+        let tail = stderr_tail(&output.stderr);
+        let _ = std::fs::remove_file(&out_path);
+        return Err(DbSrcErr::BadRequest(format!(
+            "pg_dump -Fc завершився з помилкою (джерело '{source_id}'): {tail}"
+        )));
+    }
+    let bytes = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+    if bytes == 0 {
+        let _ = std::fs::remove_file(&out_path);
+        return Err(DbSrcErr::BadRequest(format!(
+            "pg_dump створив порожній знімок (0 байт) — файл прибрано: {}",
+            out_path.display()
+        )));
+    }
+
+    // 6) sha256 — із ЗАПИСАНОГО файла (а не «з повітря»).
+    let data = std::fs::read(&out_path)
+        .map_err(|e| DbSrcErr::Internal(format!("не вдалося прочитати знімок: {e}")))?;
+    let sha256 = crate::sync_snapshot::sha256_hex(&data);
+    let file_name = out_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    eprintln!(
+        "[torgashka-api] hub-snapshot: знімок створено {} ({} байт, sha256 {sha256})",
+        out_path.display(),
+        bytes
+    );
+    Ok(Json(HubSnapshotResponse {
+        ok: true,
+        file_name,
+        bytes,
+        sha256,
+        path: out_path.display().to_string(),
+    }))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/v1/admin/db-sources/export-dump — pg_dump активної БД
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1131,4 +1308,99 @@ pub async fn provision_source(
                     .to_string(),
         }),
     ))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Юніт-тести чистих частин hub-snapshot (без БД і без pg_dump)
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod hub_snapshot_tests {
+    use super::*;
+
+    /// Ім'я знімка: `<database>_YYYYMMDD_HHMMSS.dump` — саме той формат, який
+    /// очікує фронт/док і який читає `sync_snapshot::newest_dump` (розширення .dump).
+    #[test]
+    fn snapshot_file_name_matches_frozen_format() {
+        assert_eq!(
+            snapshot_file_name("torgashka", "20260912_101530"),
+            "torgashka_20260912_101530.dump"
+        );
+        assert_eq!(
+            snapshot_file_name("pos_system_fresh", "20260101_000000"),
+            "pos_system_fresh_20260101_000000.dump"
+        );
+        assert!(snapshot_file_name("db", "x").ends_with(".dump"));
+    }
+
+    /// Колізія в межах секунди: суфікс `-01`, `-02`… (не перезаписує наявний файл).
+    #[test]
+    fn snapshot_file_name_collision_suffix() {
+        assert_eq!(
+            snapshot_file_name_no("torgashka", "20260912_101530", 0),
+            "torgashka_20260912_101530.dump",
+            "n=0 — це основний файл без суфікса"
+        );
+        assert_eq!(
+            snapshot_file_name_no("torgashka", "20260912_101530", 1),
+            "torgashka_20260912_101530-01.dump"
+        );
+        assert_eq!(
+            snapshot_file_name_no("torgashka", "20260912_101530", 12),
+            "torgashka_20260912_101530-12.dump"
+        );
+    }
+
+    /// `unique_snapshot_path` реально дивиться на каталог: зайняте ім'я → наступне.
+    #[test]
+    fn unique_snapshot_path_skips_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "torgashka_hub_snap_unit_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let ts = "20260912_101530";
+        let first = unique_snapshot_path(&dir, "torgashka", ts).expect("1-й шлях");
+        assert!(first.ends_with("torgashka_20260912_101530.dump"));
+        std::fs::write(&first, b"x").expect("створення файла");
+        let second = unique_snapshot_path(&dir, "torgashka", ts).expect("2-й шлях");
+        assert_eq!(
+            second.file_name().map(|n| n.to_string_lossy().to_string()),
+            Some("torgashka_20260912_101530-01.dump".to_string())
+        );
+        assert_ne!(first, second, "наявний файл не перезаписуємо");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Порожнє тіло `{}` мусить десеріалізуватись (фронт робить `api.post(url, {})`).
+    #[test]
+    fn hub_snapshot_body_accepts_empty_object() {
+        let body: HubSnapshotBody = serde_json::from_str("{}").expect("{} має прийматись");
+        let _ = body;
+        // зайві поля ігноруються (як у решті DTO db-sources)
+        let _: HubSnapshotBody = serde_json::from_str(r#"{"ignored":1}"#).expect("ignored ok");
+    }
+
+    /// JSON-відповіді — snake_case (як решта HTTP-DTO; не camelCase Tauri).
+    #[test]
+    fn hub_snapshot_response_is_snake_case() {
+        let v = serde_json::to_value(HubSnapshotResponse {
+            ok: true,
+            file_name: "torgashka_20260912_101530.dump".to_string(),
+            bytes: 123,
+            sha256: "abc".to_string(),
+            path: "/tmp/x.dump".to_string(),
+        })
+        .expect("json");
+        for key in ["ok", "file_name", "bytes", "sha256", "path"] {
+            assert!(v.get(key).is_some(), "немає ключа {key} у {v}");
+        }
+        assert!(
+            v.get("fileName").is_none(),
+            "camelCase у HTTP-DTO заборонено"
+        );
+    }
 }

@@ -9,6 +9,7 @@ import {
   DbSourceView,
   DumpInfo,
   ExportResult,
+  HubSnapshotResult,
   ImportBody,
 } from '@/types/dbSources';
 
@@ -27,6 +28,7 @@ import {
  *   POST   /admin/db-sources/export-dump     → pg_dump активної БД (plain .sql)
  *   GET    /admin/db-sources/dumps           → список дампів
  *   POST   /admin/db-sources/import-dump     → psql-імпорт у вибране джерело
+ *   POST   /admin/hub-snapshot               → знімок УСІЄЇ БД хаба для приєднання вузла (pg_dump -Fc)
  *
  * ⚠️ Активація — stability_first: сервер зберігає active у db_sources.toml і
  * повертає applied_immediately=false («застосується після перезапуску»);
@@ -87,6 +89,9 @@ export const dbSourcesService = {
     return response.data;
   },
 
+  /** Знімок УСІЄЇ БД хаба для приєднання нового вузла (ADR-0008, Контракт 3). */
+  createHubSnapshot,
+
   async listDumps(): Promise<DumpInfo[]> {
     const response = await api.get<DumpInfo[]>('/admin/db-sources/dumps');
     return response.data;
@@ -97,3 +102,20 @@ export const dbSourcesService = {
     return response.data;
   },
 };
+
+/**
+ * Знімок УСІЄЇ БД хаба (pg_dump -Fc) для приєднання нового вузла
+ * (ADR-0008, Контракт 3). Ендпоінт: POST /api/v1/admin/hub-snapshot,
+ * роль admin|owner перевіряється НА СЕРВЕРІ.
+ *
+ * Джерело даних для UI — ВИКЛЮЧНО тіло відповіді сервера:
+ * { ok, file_name, bytes, sha256, path }. Жодних локальних/вигаданих значень:
+ * HTTP 200 із `ok !== true` виклик вважає помилкою (див. DataSourcePage).
+ * 400 (недосяжне джерело / pg_dump упав) → тіло { detail } з хвостом stderr
+ * (виймає extractDetail); 401/403 → роль/токен.
+ */
+export async function createHubSnapshot(): Promise<HubSnapshotResult> {
+  const response = await api.post<HubSnapshotResult>('/admin/hub-snapshot', {});
+  return response.data;
+}
+

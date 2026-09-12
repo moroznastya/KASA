@@ -73,6 +73,19 @@ export interface ExportResult {
   source_id: string;
 }
 
+/**
+ * POST /admin/hub-snapshot — знімок УСІЄЇ БД хаба (pg_dump -Fc) для приєднання
+ * нового вузла (ADR-0008, Контракт 3). snake_case — як решта DTO джерел даних.
+ * Імʼя файла: pos_system_<дата>_<час>.dump; path — абсолютний шлях на сервері.
+ */
+export interface HubSnapshotResult {
+  ok: boolean;
+  file_name: string;
+  bytes: number;
+  sha256: string;
+  path: string;
+}
+
 export interface DumpInfo {
   file: string;
   size_bytes: number;

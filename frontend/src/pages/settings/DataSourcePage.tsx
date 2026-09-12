@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   Database,
   Download,
   FileArchive,
@@ -28,7 +29,12 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Badge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
 import { dbSourcesService, extractDetail } from '@/services/dbSourcesService';
-import type { DbSourceProvision, DbSourceProvisionResult, DbSourceView } from '@/types/dbSources';
+import type {
+  DbSourceProvision,
+  DbSourceProvisionResult,
+  DbSourceView,
+  HubSnapshotResult,
+} from '@/types/dbSources';
 
 const formatBytes = (b: number): string => {
   if (b < 1024) return `${b} Б`;
@@ -263,6 +269,9 @@ const DataSourcePage: React.FC = () => {
 
   // ── Експорт / імпорт ─────────────────────────
   const [exporting, setExporting] = useState(false);
+  const [snapshotting, setSnapshotting] = useState(false);
+  /** Останній УСПІШНИЙ знімок хаба — виключно з відповіді сервера. */
+  const [hubSnapshot, setHubSnapshot] = useState<HubSnapshotResult | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importSource, setImportSource] = useState('');
   const [importFile, setImportFile] = useState('');
@@ -388,6 +397,38 @@ const DataSourcePage: React.FC = () => {
       toast.error(extractDetail(err));
     } finally {
       setExporting(false);
+    }
+  };
+
+  /**
+   * Знімок усієї БД хаба для приєднання нового вузла (ADR-0008, Контракт 3).
+   * Успіх малюється ТІЛЬКИ з відповіді сервера: `ok !== true` (навіть при HTTP
+   * 200) — помилка. Стан результату скидається на старті запиту, тому після
+   * помилки не лишається даних минулого успіху.
+   */
+  const doHubSnapshot = async () => {
+    setSnapshotting(true);
+    setHubSnapshot(null);
+    try {
+      const r = await dbSourcesService.createHubSnapshot();
+      if (r.ok !== true) {
+        throw new Error('Сервер не підтвердив створення знімка (ok != true)');
+      }
+      setHubSnapshot(r);
+      toast.success(`Знімок створено: ${r.file_name} (${formatBytes(r.bytes)})`);
+    } catch (err) {
+      toast.error(extractDetail(err));
+    } finally {
+      setSnapshotting(false);
+    }
+  };
+
+  const copyHubHash = async (hash: string) => {
+    try {
+      await navigator.clipboard.writeText(hash);
+      toast.success('Повний SHA-256 скопійовано');
+    } catch {
+      toast.error('Не вдалось скопіювати хеш у буфер');
     }
   };
 
@@ -647,6 +688,75 @@ const DataSourcePage: React.FC = () => {
           >
             Експортувати дамп
           </Button>
+        </div>
+
+        {/* Знімок усієї БД хаба для приєднання нового вузла (ADR-0008) */}
+        <div className="rounded-lg border border-gray-200 dark:border-slate-700 p-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                <Server className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                Створити знімок для вузла
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Знімок <b>усієї БД хаба</b> у форматі{' '}
+                <code className="px-1 rounded bg-gray-100 dark:bg-slate-700 text-xs">pg_dump -Fc</code> — для
+                приєднання нового вузла: вузол забирає файл сам через{' '}
+                <code className="px-1 rounded bg-gray-100 dark:bg-slate-700 text-xs">GET /api/v1/sync/snapshot</code>.
+                Файл лягає в каталог знімків на сервері.
+              </p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Це разова операція для приєднання вузла, а <b>не політика бекапу/ретеншну</b> (Б7 не
+                визначена): старі знімки не видаляються.
+              </p>
+            </div>
+            <Button
+              onClick={doHubSnapshot}
+              isLoading={snapshotting}
+              disabled={!activeSource}
+              icon={<Server className="w-4 h-4" />}
+            >
+              Створити знімок для вузла
+            </Button>
+          </div>
+
+          {hubSnapshot && (
+            <div className="rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/40 p-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span
+                  className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate max-w-full"
+                  title={hubSnapshot.file_name}
+                >
+                  {hubSnapshot.file_name}
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {formatBytes(hubSnapshot.bytes)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className="text-xs font-mono text-gray-500 dark:text-gray-400"
+                  title={hubSnapshot.sha256}
+                >
+                  sha256: {hubSnapshot.sha256.slice(0, 8)}…
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void copyHubHash(hubSnapshot.sha256)}
+                  icon={<Copy className="w-3.5 h-3.5" />}
+                >
+                  Копіювати повний хеш
+                </Button>
+              </div>
+              <div
+                className="text-xs font-mono text-gray-500 dark:text-gray-400 truncate"
+                title={hubSnapshot.path}
+              >
+                {hubSnapshot.path}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-900/40 text-sm text-gray-600 dark:text-gray-300">
