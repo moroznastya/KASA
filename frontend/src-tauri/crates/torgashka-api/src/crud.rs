@@ -180,14 +180,9 @@ fn write_repo(
 /// require_admin: перевіряє роль користувача в БД (як Python
 /// `AuthService.require_admin` → `user.role != ADMIN` → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), CrudError> {
-    // Роль-чек — це ЧИТАННЯ (`SELECT ... FROM users`), а не запис: F5 забороняє
-    // лише запис у репліку, читання з неї дозволене (§10). Тому пул беремо
-    // через `read_pool`, а НЕ `admin_pool`: останній на standby для
-    // ProxyToPrimary-сутності повертає 403, і це блокувало LocalOutbox-операції
-    // (інвентаризація §11.1), які мусять виконуватись локально (Фаза 3.3a).
-    // Запис у репліку неможливий і без цього: у LocalOutbox-хендлерів немає
-    // прямого SQL-запису, а ProxyToPrimary-поверхні перехоплює гейт (§11.2).
-    let pool = crate::write_gate::read_pool(state).map_err(CrudError::Forbidden)?;
+    // Роль-чек — це ЧИТАННЯ (`SELECT ... FROM users`); пул для нього той самий,
+    // що для запису (ADR-0008: окремих пулів/гейтів за режимом вузла немає).
+    let pool = state.write_pool_or_err().map_err(CrudError::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         CrudError::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

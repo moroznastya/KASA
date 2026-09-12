@@ -135,3 +135,24 @@ pub fn send_notification(app: tauri::AppHandle, title: String, body: String) -> 
         .show()
         .map_err(|e| format!("Помилка відправки сповіщення: {e}"))
 }
+
+/// Перезапустити застосунок.
+///
+/// Spawn поточного exe (`std::env::current_exe`) + `app.exit(0)` через 300 мс —
+/// час новому процесу зайняти порт :8000.
+///
+/// ADR-0008 (E7): раніше жив у `commands/standby.rs` разом із командою
+/// провіжингу репліки; провіжн видалено, а сам перезапуск лишається штатною
+/// системною командою (використовується UI після зміни налаштувань).
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if let Err(e) = std::process::Command::new(&exe).spawn() {
+            eprintln!("[torgashka] restart_app: не вдалося запустити {exe:?}: {e}");
+        }
+        app.exit(0);
+    });
+    Ok(())
+}

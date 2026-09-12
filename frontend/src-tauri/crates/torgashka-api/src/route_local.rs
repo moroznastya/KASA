@@ -1,11 +1,11 @@
-//! Локальний routing-шар standby-вузла (ЕТАП 18).
+//! Локальний routing-шар вузла (локальна копія БД; ЕТАП 18, оновлено E7).
 //!
 //! Коли primary мережі магазинів недоступний, вузол (каса) деградує в
 //! **локальний режим**:
 //!
 //! - **читання** (категорії, продукти, залишки, чеки — GET) виконуються
-//!   проти ЛОКАЛЬНОЇ embedded PostgreSQL-репліки (порт `node_config::local_port`,
-//!   зазвичай 5433; підготовлена `standby_provision` ЕТАП 16) через ТІ САМІ
+//!   проти ЛОКАЛЬНОЇ копії БД (порт `node_config::local_port`, зазвичай 5433)
+//!   через ТІ САМІ
 //!   domain-сервіси/репозиторії, що й primary-гілка — формат відповідей
 //!   ідентичний основному API;
 //! - **запис** (нові чеки/POS-операції — POST) потрапляє у SQLite-чергу
@@ -56,8 +56,8 @@ use crate::AppState;
 
 /// Сервіси локального режиму: репозиторії над пулом ЛОКАЛЬНОЇ репліки.
 ///
-/// Створюється фасадом ПРИ СТАРТІ, лише коли `node_config.mode == Standby`
-/// і локальна репліка (127.0.0.1:local_port) приймає з'єднання. Інакше
+/// Створюється фасадом ПРИ СТАРТІ, лише коли локальна копія БД
+/// (127.0.0.1:`node_config::local_port`) приймає з'єднання. Інакше
 /// `AppState.local = None` — локальні маршрути не монтуються.
 #[derive(Clone)]
 pub struct LocalApiState {
@@ -387,32 +387,7 @@ pub async fn local_status(State(state): State<AppState>) -> Result<Json<Value>, 
         "primary_reachable": primary_up,
         "effective": status,
         "queue_pending": pending,
-        // Видимість дрейфу (АДИТИВНЕ поле, наявні поля не змінені): скільки
-        // разів фунел `StorePool` спіймав запис у read-only репліку і скільки
-        // разів HTTP-шар (`readonly_net`) переписав таку відповідь на 503 §4.
-        // Порожні метрики = «гейт нічого не пропустив у репліку».
-        "readonly_net": readonly_net_status(),
     })))
-}
-
-/// Метрика «запис у read-only репліку» (дрейф ручної таблиці політик).
-fn readonly_net_status() -> Value {
-    use torgashka_infrastructure::readonly_guard as guard;
-    json!({
-        "fallback_hits": guard::fallback_hits(),
-        "funnel_hits": guard::hits(),
-        "last": guard::last_hit().map(|(fingerprint, at)| json!({
-            "fingerprint": fingerprint,
-            "at": at,
-        })),
-        // Гілка 2 «останнього рубежу»: санація сирої помилки БД (не 25006).
-        "last_sanitized": guard::last_sanitized().map(|(fingerprint, at)| json!({
-            "fingerprint": fingerprint,
-            "at": at,
-        })),
-        "sanitized_hits": guard::sanitized_hits(),
-        "top": guard::hits_by_fingerprint(),
-    })
 }
 
 /// GET /api/v1/local/categories?page=&size= — категорії з ЛОКАЛЬНОЇ репліки.
@@ -858,16 +833,60 @@ pub async fn drain_local_outbox(
     Ok(summary)
 }
 
-/// POST /api/v1/local/outbox/drain — ручний виклик drain-у (owner-only, як
-/// `promote`; без store-middleware: у DR-режимі він ходить у недоступний
-/// primary-пул). Автоматично викликається напр. `promote_handler`
-/// (best-effort) — вручну потрібен, якщо promote стався раніше/черга дійшла
-/// пізніше.
+// ─────────────────────────────────────────────────────────────────────────────
+// Stateless owner-авторизація (офлайн)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Валідує Bearer JWT локально (підпис `jwt_secret`, БЕЗ жодного запиту в БД)
+/// і вимагає `role=owner`, `type=access`.
+///
+/// Єдиний шар захисту маршруту `/api/v1/local/outbox/drain`: він лежить ПОЗА
+/// auth/store middleware приватної гілки — щоб працювати, коли власна БД
+/// вузла ще/вже недоступна для store-middleware.
+///
+/// ADR-0008 (E7): перенесено сюди з видаленого `promote.rs`, бо drain
+/// лишився єдиним споживачем цієї перевірки.
+fn require_owner_offline(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<crate::auth::Claims, LocalErr> {
+    let Some(h) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Err(LocalErr::Unauthorized(
+            "Відсутній заголовок авторизації".into(),
+        ));
+    };
+    let Some(token) = h.strip_prefix("Bearer ") else {
+        return Err(LocalErr::Unauthorized(
+            "Невірний формат токена. Використовуйте Bearer".into(),
+        ));
+    };
+    let claims = crate::auth::validate_jwt(token, &state.jwt_secret)
+        .map_err(|e| LocalErr::Unauthorized(format!("Недійсний або прострочений токен: {e}")))?;
+    if claims.token_type != "access" {
+        return Err(LocalErr::Unauthorized(
+            "Очікується access-токен (не refresh)".into(),
+        ));
+    }
+    if claims.role != "owner" {
+        return Err(LocalErr::Forbidden(
+            "Доступ заборонено: операція доступна лише власнику мережі (role=owner)".into(),
+        ));
+    }
+    Ok(claims)
+}
+
+/// POST /api/v1/local/outbox/drain — ручний виклик drain-у (owner-only, без
+/// store-middleware: у момент відновлення store-middleware може бути
+/// недоступним). Застосовує залишок SQLite-черги ВЛАСНОЇ БД вузла; виклик
+/// ідемпотентний.
 pub async fn drain_outbox_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, LocalErr> {
-    let claims = crate::promote::require_owner_offline(&state, &headers)?;
+    let claims = require_owner_offline(&state, &headers)?;
     let s = drain_local_outbox(&state, &claims).await?;
     Ok(Json(json!({
         "drained": s.drained,
@@ -881,8 +900,8 @@ pub async fn drain_outbox_handler(
     })))
 }
 
-/// Підроутер drain-у: монтується БЕЗ auth+store middleware приватної гілки
-/// (як `promote`) — авторизація stateless JWT owner усередині хендлера.
+/// Підроутер drain-у: монтується БЕЗ auth+store middleware приватної гілки —
+/// авторизація stateless JWT owner усередині хендлера.
 /// Монтується ЗАВЖДИ (не лише на standby): після promote+рестарту вузол уже
 /// `mode=Primary`, локальних маршрутів немає, а черга в SQLite лишається.
 pub fn outbox_router() -> Router<AppState> {
@@ -892,12 +911,15 @@ pub fn outbox_router() -> Router<AppState> {
 /// Будує підроутер `/api/v1/local/*`.
 ///
 /// Монтується ВСЕРЕДИНІ `router_v1::build_router` (перед CORS-шаром), тому
-/// маршрути проходять auth + store middleware. Якщо вузол НЕ standby або
-/// локальна репліка недоступна — повертає порожній роутер (жодних маршрутів
-/// не додається; поведінка фасаду не змінюється).
+/// маршрути проходять auth + store middleware. Якщо локальна копія БД
+/// недоступна — повертає порожній роутер (жодних маршрутів не додається;
+/// поведінка фасаду не змінюється).
+///
+/// ADR-0008: перевірки режиму вузла тут немає — E7 видалив самі режими;
+/// рішення ухвалює ФАКТ підключення локальної копії ([`crate::init_local_api`]).
 pub fn router(state: AppState) -> Router<AppState> {
-    if !state.node_config.is_standby() || state.local.is_none() {
-        // Не standby / репліка не підключена — жодних маршрутів не додається.
+    if state.local.is_none() {
+        // Локальної копії БД немає — жодних маршрутів не додається.
         return Router::<AppState>::new();
     }
     Router::<AppState>::new()
@@ -943,59 +965,6 @@ pub fn router(state: AppState) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── P4 (ADR-0007 F5): журнал подій — тільки апстрім, ніколи репліка ──
-
-    #[test]
-    fn event_log_target_is_never_local_replica() {
-        assert!(
-            event_log_pool(None).is_none(),
-            "без апстрім-пулу подія не пишеться нікуди (репліка — не ціль, F5)"
-        );
-    }
-
-    // ── Видимість дрейфу: поле `readonly_net` у /local/status (АДИТИВНЕ) ──
-
-    #[test]
-    fn readonly_net_status_is_additive_and_well_formed() {
-        let v = readonly_net_status();
-        let obj = v.as_object().expect("обʼєкт");
-        // Ключі рівно ті, що обіцяні касі/діагностиці (без зайвих).
-        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
-                "fallback_hits",
-                "funnel_hits",
-                "last",
-                "last_sanitized",
-                "sanitized_hits",
-                "top"
-            ],
-            "склад поля readonly_net"
-        );
-        assert!(obj["fallback_hits"].is_u64() || obj["fallback_hits"].is_i64());
-        assert!(obj["funnel_hits"].is_u64() || obj["funnel_hits"].is_i64());
-        assert!(obj["sanitized_hits"].is_u64() || obj["sanitized_hits"].is_i64());
-        assert!(obj["last_sanitized"].is_null() || obj["last_sanitized"].is_object());
-        if let Some(last) = obj["last_sanitized"].as_object() {
-            assert!(last["fingerprint"].is_string());
-            assert!(last["at"].is_u64() || last["at"].is_i64());
-        }
-        assert!(obj["top"].is_array(), "top — масив пар [fingerprint, n]");
-        assert!(obj["last"].is_null() || obj["last"].is_object());
-        if let Some(last) = obj["last"].as_object() {
-            assert!(last["fingerprint"].is_string());
-            assert!(last["at"].is_u64() || last["at"].is_i64());
-        }
-        for pair in obj["top"].as_array().expect("масив") {
-            let p: &Vec<serde_json::Value> = pair.as_array().expect("пара");
-            assert_eq!(p.len(), 2, "top: [fingerprint, count]");
-            assert!(p[0].is_string() && (p[1].is_u64() || p[1].is_i64()));
-        }
-        eprintln!("[local/status] readonly_net={v}");
-    }
 
     #[test]
     fn effective_status_mapping() {

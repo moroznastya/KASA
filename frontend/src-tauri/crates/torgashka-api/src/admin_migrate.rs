@@ -77,9 +77,9 @@ impl IntoResponse for MigrateErr {
 }
 
 fn pool(state: &AppState) -> Result<PgPool, MigrateErr> {
-    // ADR-0007 §11.1: `migrate_legacy` — `ProxyToPrimary` (реєстрація
-    // legacy-точки/каси в реєстрі мережі = primary-only операція).
-    crate::write_gate::admin_pool(state, "migrate_legacy").map_err(MigrateErr::BadRequest)
+    // Реєстрація legacy-точки/каси — запис у ВЛАСНУ БД вузла
+    // (ADR-0008: розділення «primary/standby-операції» скасовано).
+    state.write_pool_or_err().map_err(MigrateErr::BadRequest)
 }
 
 /// Тіло POST /admin/migrate/legacy — обидва поля опційні.

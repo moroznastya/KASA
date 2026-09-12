@@ -86,7 +86,7 @@ impl From<ProvisionError> for DbSrcErr {
                 "База даних '{db}' уже існує на цільовому сервері — виберіть інше ім'я"
             )),
             // Санація (ADR-0007 §D): `ProvisionError` несе `reason`/`stderr`
-            // pg_basebackup/psql — сирий текст інструментів; клієнту — людський
+            // psql — сирий текст інструментів; клієнту — людський
             // текст, причина — у stderr-лог. Статус 400 не змінюється.
             other => {
                 eprintln!("[torgashka-api] db-sources: provision: {other}");
@@ -407,14 +407,14 @@ async fn ping_source(url: &str) -> Result<u64, PingError> {
             .connect(url)
             .await
             .map_err(|e| PingError {
-                class: torgashka_infrastructure::readonly_guard::db_error_class(&e),
+                class: torgashka_infrastructure::db_error::db_error_class(&e),
                 raw: e.to_string(),
             })?;
         let r = sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&pool)
             .await
             .map_err(|e| PingError {
-                class: torgashka_infrastructure::readonly_guard::db_error_class(&e),
+                class: torgashka_infrastructure::db_error::db_error_class(&e),
                 raw: e.to_string(),
             });
         pool.close().await;

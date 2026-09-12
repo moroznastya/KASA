@@ -540,12 +540,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_client_uuid
     ON public.receipts (client_uuid)
     WHERE client_uuid IS NOT NULL;
 "#;
-/// ЕТАП 20 (§13 плану мережі): WAL-політика primary.
-/// `max_slot_wal_keep_size = 10GB` — захист диска primary від WAL-накопичення
-/// застарілими/відключеними replication-слотами: PG утримує WAL-хвіст слота
-/// щонайбільше 10 ГБ, після чого слот стає invalid і standby мусить пройти
-/// примусовий ресинк (новий pg_basebackup) — heartbeat зі старою позицією
-/// відхиляється (network_nodes.rs, requires_force_resync).
+/// Легасі WAL-політика з часів мережі на фізичній реплікації (ЕТАП 20 §13):
+/// `max_slot_wal_keep_size = 10GB` — захист диска від WAL-накопичення
+/// застарілими replication-слотами. ADR-0008 скасував фізичну реплікацію
+/// (E7 прибрав і код, що читав цю політику), але параметр лишається
+/// безпечним для наявних кластерів і не заважає прикладній синхронізації.
 ///
 /// УВАГА: `ALTER SYSTEM` заборонено всередині транзакції (PostgreSQL виконує
 /// multi-statement simple query в одній неявній транзакції) — тому

@@ -38,12 +38,10 @@ pub mod ocr;
 pub mod pos;
 pub mod print_templates;
 pub mod products_v2;
-pub mod promote;
 pub mod proxy;
 pub mod prro;
 pub mod purchase_orders;
 pub mod readdirs;
-pub mod readonly_net;
 pub mod return_invoices;
 pub mod route_local;
 pub mod router_v1;
@@ -54,7 +52,6 @@ pub mod suppliers;
 pub mod sync;
 pub mod sync_receivers;
 pub mod sync_status;
-pub mod write_gate;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -65,14 +62,7 @@ use torgashka_domain::{
     LedgerService, PosService, PrintTemplatesService, ProductsV2Service, PurchaseOrdersService,
     ReadDirectories, ReturnInvoicesService, SetupService, StoreService, WriteDirectories,
 };
-use torgashka_infrastructure::node_config::NodeMode;
-use torgashka_infrastructure::repositories::outbox_debtors::OutboxDebtors;
-use torgashka_infrastructure::repositories::outbox_invoices::{OutboxInvoicesV1, OutboxInvoicesV2};
-use torgashka_infrastructure::repositories::outbox_ledger::OutboxLedger;
 use torgashka_infrastructure::repositories::outbox_pos::OutboxPos;
-use torgashka_infrastructure::repositories::outbox_purchase_orders::OutboxPurchaseOrders;
-use torgashka_infrastructure::repositories::outbox_return_invoices::OutboxReturnInvoices;
-use torgashka_infrastructure::repositories::outbox_write::OutboxWrite;
 use torgashka_infrastructure::store_ctx::StorePool;
 
 /// Адреса фасаду за замовчуванням (той самий порт, що мав Python).
@@ -196,6 +186,20 @@ pub struct AppState {
 }
 
 /// Чистий payload для /api/v1/health (використовується роутером і diff CLI).
+impl AppState {
+    /// Пул PostgreSQL для ЗАПИСУ (єдине джерело пула для хендлерів).
+    ///
+    /// Замінює видалені хелпери вибору пула за режимом вузла (E7, ADR-0008
+    /// §8 п.3): у світі «кожен вузол read-write» такого вибору немає —
+    /// лишається сама наявність пула. Текст помилки збережено дослівно
+    /// (його бачать хендлери як `BadRequest`/`Forbidden`).
+    pub fn write_pool_or_err(&self) -> Result<PgPool, String> {
+        self.write_pool
+            .clone()
+            .ok_or_else(|| "write_pool не ініціалізовано".to_string())
+    }
+}
+
 pub fn health_payload() -> serde_json::Value {
     serde_json::json!({"status": "ok"})
 }
@@ -203,13 +207,6 @@ pub fn health_payload() -> serde_json::Value {
 /// Чиста функція echo для differential CLI (повертає args без змін).
 pub fn echo_payload(args: &serde_json::Value) -> serde_json::Value {
     args.clone()
-}
-
-/// Режим вузла мережі (ADR-0007 F6): читається локально з `node_config`,
-/// дешеве читання файлу. Викликається ЛИШЕ на старті фасаду (вибір адаптерів
-/// `pos`/`write`/`invoices`/`purchase_orders`) — жодних per-request розгалужень.
-fn node_cfg_mode() -> NodeMode {
-    torgashka_infrastructure::node_config::NodeConfig::load().mode
 }
 
 /// Читання bool-флага з env (1/true/yes → true).
@@ -253,60 +250,23 @@ async fn init_readdirs() -> Result<
                     store_pool.clone(),
                 ),
             ) as Arc<dyn ReadDirectories + Send + Sync>;
-            // ADR-0007 §11.7.9.7 (Фаза 3.3a): вибір write-АДАПТЕРА за режимом
-            // вузла — рівно як `pos`. standby: `OutboxWrite` (інвентаризація →
-            // SQLite-черга, довідники → відмова «потрібен головний сервер»;
-            // їх виконує primary через гейт `ProxyToPrimary`).
-            let write = match node_cfg_mode() {
-                NodeMode::Primary => Arc::new(
-                    torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
-                        store_pool.clone(),
-                    ),
-                ) as Arc<dyn WriteDirectories + Send + Sync>,
-                NodeMode::Standby => Arc::new(OutboxWrite::new(Arc::new(
-                    torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
-                        store_pool.clone(),
-                    ),
-                ))) as Arc<dyn WriteDirectories + Send + Sync>,
-            };
-            // ADR-0007 §11.7.9.7 (Фаза 3.3b): книга постачальника — той самий
-            // вибір адаптера за режимом. standby: `OutboxLedger` (ручний запис →
-            // SQLite-черга; до цього — сирий 500 у read-only репліку).
-            let ledger = match node_cfg_mode() {
-                NodeMode::Primary => Arc::new(
-                    torgashka_infrastructure::repositories::ledger::SqlxLedger::new(
-                        store_pool.clone(),
-                    ),
-                ) as Arc<dyn LedgerService + Send + Sync>,
-                NodeMode::Standby => Arc::new(OutboxLedger::new(Arc::new(
-                    torgashka_infrastructure::repositories::ledger::SqlxLedger::new(
-                        store_pool.clone(),
-                    ),
-                ))) as Arc<dyn LedgerService + Send + Sync>,
-            };
-            // ADR-0007 F6 (режим читається локально, дешеве читання файлу)
-            // + §11.1: вибір POS-АДАПТЕРА за режимом вузла.
-            //   * primary — PG-репозиторій (F2: поведінка байт-в-байт);
-            //   * standby — `OutboxPos`: читання з локальної репліки (§10),
-            //     запис POS-документів — у SQLite-чергу (`LocalOutbox`).
-            //     До цього standby писав у read-only репліку → 500
-            //     «read-only transaction» на кожному чеку.
-            let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
-            let pos: Arc<dyn PosService + Send + Sync> = match node_cfg.mode {
-                NodeMode::Primary => Arc::new(
-                    torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
-                ),
-                NodeMode::Standby => Arc::new(OutboxPos::new(Arc::new(
-                    torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
-                ))),
-            };
-            let pos = pos as Arc<dyn PosService + Send + Sync>;
-            let auth = Arc::new(
-                torgashka_infrastructure::repositories::auth::SqlxAuth::with_standby(
+            // ADR-0008: режимів вузла немає — кожна точка має власну
+            // read-write БД, тож адаптери завжди прямі (без outbox-обгорток).
+            let write = Arc::new(
+                torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
                     store_pool.clone(),
-                    node_cfg.is_standby(),
                 ),
-            ) as Arc<dyn AuthService + Send + Sync>;
+            ) as Arc<dyn WriteDirectories + Send + Sync>;
+            let ledger = Arc::new(
+                torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
+            ) as Arc<dyn LedgerService + Send + Sync>;
+            // POS — прямий PG-репозиторій (чеки пишуться у ВЛАСНУ БД вузла).
+            let pos: Arc<dyn PosService + Send + Sync> = Arc::new(
+                torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
+            );
+            let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
+                store_pool.clone(),
+            )) as Arc<dyn AuthService + Send + Sync>;
             Ok((pool, read, write, pos, ledger, auth))
         }
         Err(e) => {
@@ -489,12 +449,7 @@ async fn init_return_invoices() -> (
                 torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
                     StorePool::new(pool.clone()),
                 );
-            // ADR-0007 §11.7.9.7 (Фаза 3.3b): повернення ПОСТАЧАЛЬНИКУ —
-            // standby пише документ у SQLite-чергу (`TYPE_RETURN_INVOICE`).
-            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = match node_cfg_mode() {
-                NodeMode::Primary => Arc::new(repo),
-                NodeMode::Standby => Arc::new(OutboxReturnInvoices::new(Arc::new(repo))),
-            };
+            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
         }
         Err(e) => {
@@ -523,10 +478,7 @@ async fn init_purchase_orders() -> (
                 torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
                     StorePool::new(pool.clone()),
                 );
-            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = match node_cfg_mode() {
-                NodeMode::Primary => Arc::new(repo),
-                NodeMode::Standby => Arc::new(OutboxPurchaseOrders::new(Arc::new(repo))),
-            };
+            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = Arc::new(repo);
             (Some(svc), Some(pool))
         }
         Err(e) => {
@@ -560,13 +512,7 @@ async fn init_invoices() -> (
             let (v1, v2): (
                 Arc<dyn InvoicesV1Service + Send + Sync>,
                 Arc<dyn InvoicesV2Service + Send + Sync>,
-            ) = match node_cfg_mode() {
-                NodeMode::Primary => (Arc::new(repo), Arc::new(repo2)),
-                NodeMode::Standby => (
-                    Arc::new(OutboxInvoicesV1::new(Arc::new(repo))),
-                    Arc::new(OutboxInvoicesV2::new(Arc::new(repo2))),
-                ),
-            };
+            ) = (Arc::new(repo), Arc::new(repo2));
             (Some(v1), Some(v2), Some(pool))
         }
         Err(e) => {
@@ -593,15 +539,7 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
                     pool,
                 )),
             );
-            // ADR-0007 §11.6.4 варіант 1 + §11.7.9.7 (Фаза 3.3b): боргові
-            // сутності — `LocalOutbox`. standby: оплата боргу → SQLite-черга
-            // (`TYPE_DEBTOR_PAYMENT`), створення/редагування боржника — відмова.
-            Some(match node_cfg_mode() {
-                NodeMode::Primary => repo as Arc<dyn DebtorService + Send + Sync>,
-                NodeMode::Standby => {
-                    Arc::new(OutboxDebtors::new(repo)) as Arc<dyn DebtorService + Send + Sync>
-                }
-            })
+            Some(repo as Arc<dyn DebtorService + Send + Sync>)
         }
         Err(e) => {
             eprintln!(
@@ -627,50 +565,6 @@ async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
 // Стало: HTTP обслуговується з першої секунди (boot-gate), важкі кроки — у
 // `spawn_blocking`, кожен крок логується з часом.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// План підготовки БД при старті фасаду (ЧИСТА функція — тестована без env).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DbStartupPlan {
-    /// DATABASE_URL резолвиться ззовні (env → db_sources.toml → backend/.env):
-    /// embedded PG не чіпаємо взагалі.
-    ExternalUrl(String),
-    /// Standby-вузол: ЛИШЕ підняти локальну репліку (ідемпотентно).
-    /// initdb/CREATE DATABASE на каталозі репліки ЗАБОРОНЕНІ — каталог
-    /// отримано `pg_basebackup`, це hot standby (read-only): CREATE DATABASE
-    /// там неможливий, а спроба bootstrap псує каталог репліки (дефект 6).
-    StandbyReplica(String),
-    /// Standby-вузол, але ім'я локальної БД НЕВІДОМЕ (`[node] primary_db_url`
-    /// і env `TORGASHKA_PG_DB` порожні). `DATABASE_URL` не вигадуємо: пули й
-    /// роути не створюються, причина (з полем) іде в `torgashka.log`.
-    /// Раніше тут мовчки підставлялась БД «torgashka», якої на касі немає
-    /// (дефект 2026-09: `/api/v1/setup/status` = 503 назавжди).
-    StandbyWithoutDbName(String),
-    /// Primary-вузол: повний bootstrap (initdb → pg_ctl start → CREATE DATABASE).
-    PrimaryBootstrap,
-}
-
-/// Вибір плану підготовки БД (чиста логіка — покрита тестами).
-pub fn plan_db_startup(
-    resolved: Option<&str>,
-    is_standby: bool,
-    standby_url: Option<String>,
-) -> DbStartupPlan {
-    if let Some(url) = resolved.filter(|u| !u.trim().is_empty()) {
-        return DbStartupPlan::ExternalUrl(url.to_string());
-    }
-    if is_standby {
-        // Порожній/відсутній URL — НЕ «порожній рядок у DATABASE_URL», а чесна
-        // відмова монтувати пули: ім'я БД невідоме, здогадуватись заборонено.
-        return match standby_url.filter(|u| !u.trim().is_empty()) {
-            Some(url) => DbStartupPlan::StandbyReplica(url),
-            None => DbStartupPlan::StandbyWithoutDbName(
-                "ім'я локальної БД невідоме: ні [node] primary_db_url, ні TORGASHKA_PG_DB"
-                    .to_string(),
-            ),
-        };
-    }
-    DbStartupPlan::PrimaryBootstrap
-}
 
 /// Ім'я БД із `postgresql://` URL: частина після першого '/' у host-секції
 /// (query-параметри відкидаються). `None` — URL без імені БД
@@ -1067,12 +961,16 @@ pub fn run_facade(addr: &str) -> tokio::task::JoinHandle<()> {
 ///
 /// Публічна — щоб Tauri-шар міг спавнити фасад через власний runtime
 /// (`tauri::async_runtime::spawn`), а не через глобальний tokio::spawn.
-/// ЕТАП 18: підключення локального standby-стану (репліка 127.0.0.1:local_port).
 ///
-/// Викликається при старті фасаду. У режимі `Primary` (або коли репліка ще не
-/// provisioned / PG не запущено) повертає `None` — локальні маршрути
-/// `/api/v1/local/*` не монтуються, поведінка фасаду не змінюється.
-async fn init_local_standby(
+/// Локальна READ-поверхня (`/api/v1/local/*`, репліка на `127.0.0.1:local_port`).
+///
+/// ADR-0008: режимів вузла немає (E7 їх видалив повністю) — рішення приймається за
+/// ФАКТОМ: якщо локальна копія БД поруч відповідає на `cfg.local_port` і її ім'я
+/// можна резолвити (див. [`standby_url_for`]), поверхня монтується; інакше — ні.
+/// Хто саме створює таку копію — поза цим кодом (провіжн видалено разом із
+/// провіжну репліки, E7): у мережі ADR-0008 кожен вузол має власну
+/// read-write БД, тож поверхня лишається як діагностично-локальна опція.
+async fn init_local_api(
     cfg: &torgashka_infrastructure::node_config::NodeConfig,
 ) -> Option<crate::route_local::LocalApiState> {
     use sqlx::postgres::PgPoolOptions;
@@ -1080,13 +978,9 @@ async fn init_local_standby(
         repositories::{directories::SqlxDirectories, pos::SqlxPos, write::SqlxWriteDirectories},
         store_ctx::StorePool,
     };
-    if !cfg.is_standby() {
-        return None;
-    }
-    // URL локальної репліки: ім'я БД — з [node] primary_db_url (host:port →
+    // URL локальної копії: ім'я БД — з [node] primary_db_url (host:port →
     // 127.0.0.1:local_port, пароль відкидається) або з TORGASHKA_PG_DB.
-    // Жодних здогадок: немає імені БД → ERROR у torgashka.log і локальні роути
-    // НЕ монтуються (раніше підставлялась неіснуюча БД «torgashka»).
+    // Жодних здогадок: немає імені БД → тиша (поверхня не монтується).
     let url = standby_url_for(cfg)?;
     let pool = match PgPoolOptions::new()
         .max_connections(5)
@@ -1099,7 +993,7 @@ async fn init_local_standby(
             torgashka_infrastructure::embedded_pg::pg_log(
                 "ERROR",
                 &format!(
-                    "standby: локальна репліка 127.0.0.1:{} недоступна ({e}) — локальний режим вимкнено (запустіть embedded PG / standby_provision)",
+                    "local: локальна копія БД 127.0.0.1:{} недоступна ({e}) — /api/v1/local/* не монтуються (власна БД вузла використовується як основна)",
                     cfg.local_port
                 ),
             );
@@ -1110,13 +1004,13 @@ async fn init_local_standby(
     torgashka_infrastructure::embedded_pg::pg_log(
         "INFO",
         &format!(
-            "standby: локальна репліка 127.0.0.1:{} підключена — /api/v1/local/* активні",
+            "local: локальна копія БД 127.0.0.1:{} підключена — /api/v1/local/* активні",
             cfg.local_port
         ),
     );
-    // ADR-0007 F3/F5: пул ЗАПИСУ в primary. `resolve_upstream_write_url`
-    // НЕ падає на активне джерело — на standby воно вказує на локальну
-    // репліку, а репліка ціллю запису не є ніколи. Немає URL/недосяжний
+    // Пул ЗАПИСУ для локальної поверхні: `resolve_upstream_write_url`
+    // НЕ падає на активне джерело (локальна копія ціллю запису не є).
+    // Немає URL/недосяжний
     // → None: адмін-записи віддадуть 503 (F4).
     let upstream_pool = match cfg.resolve_upstream_write_url() {
         Some(url) => match torgashka_infrastructure::db::connect_upstream_write_pool(&url, 5).await
@@ -1158,13 +1052,6 @@ async fn init_local_standby(
 pub async fn serve(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_listener(listener).await
-}
-
-/// P3 (ADR-0007 §3.2 #21): фоновий `network_nodes` offline-job має сенс
-/// ЛИШЕ на primary — там сторінка моніторингу мережі. На standby він
-/// вимкнений (DISABLED_ON_STANDBY). Чиста умова — тестується без БД.
-fn offline_job_enabled(cfg: &torgashka_infrastructure::node_config::NodeConfig) -> bool {
-    !cfg.is_standby()
 }
 
 /// Ініціалізація ядра фасаду — виконується у ФОНІ (у власному таску), тому
@@ -1209,25 +1096,9 @@ async fn init_facade_state() -> Result<
             ),
         ),
     }
-    // ── Крок 2: режим вузла → план підготовки БД (дефекти 5+6) ──
-    let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
-    let plan = plan_db_startup(
-        resolved.as_ref().ok().map(String::as_str),
-        node_cfg.is_standby(),
-        standby_url_for(&node_cfg),
-    );
-    torgashka_infrastructure::embedded_pg::pg_log(
-        "INFO",
-        &format!(
-            "крок 2: режим вузла = {}; план = {plan:?}",
-            if node_cfg.is_standby() {
-                "standby"
-            } else {
-                "primary"
-            }
-        ),
-    );
-    let embedded_pg = apply_db_startup_plan(plan).await;
+    // ── Крок 2: підготовка ВЛАСНОЇ БД вузла (дефекти 5+6) ──
+    // ADR-0008: режимів вузла немає — кожен вузол сам собі read-write primary.
+    let embedded_pg = apply_db_startup(resolved.as_ref().ok().map(String::as_str)).await;
     // ── Крок 3: авто-міграції схеми ──
     let t3 = Instant::now();
     // Авто-міграції (Частина 1.2): застосувати схему на fresh-БД ПЕРЕД
@@ -1291,14 +1162,12 @@ async fn init_facade_state() -> Result<
                 eprintln!(
                     "[torgashka-api] {RUST_AUTH_ENV}=1 — Rust-гілка auth увімкнена (PostgreSQL)"
                 );
-                // ADR-0007 F6: той самий гейт, що й у readdirs-гілці.
-                let node_cfg = torgashka_infrastructure::node_config::NodeConfig::load();
-                Some(Arc::new(
-                    torgashka_infrastructure::repositories::auth::SqlxAuth::with_standby(
+                // ADR-0008: сесії пишуться у ВЛАСНУ БД вузла (пряма гілка).
+                Some(
+                    Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
                         StorePool::new(pool),
-                        node_cfg.is_standby(),
-                    ),
-                ) as Arc<dyn AuthService + Send + Sync>)
+                    )) as Arc<dyn AuthService + Send + Sync>,
+                )
             }
             Err(e) => {
                 torgashka_infrastructure::embedded_pg::pg_log(
@@ -1339,7 +1208,7 @@ async fn init_facade_state() -> Result<
     });
     // ЕТАП 18: режим вузла (Primary|Standby) + підключення локальної репліки.
     let node_config = torgashka_infrastructure::node_config::NodeConfig::load();
-    let local = init_local_standby(&node_config).await;
+    let local = init_local_api(&node_config).await;
     let state = AppState {
         jwt_secret: Arc::new(auth::resolve_jwt_secret()?),
         readdirs,
@@ -1376,10 +1245,9 @@ async fn init_facade_state() -> Result<
     // Вузол приймає документ каси ЛОКАЛЬНО і мусить передати його вгору — тим
     // самим протоколом (`POST /api/v1/sync/push` хаба). Задача піднімається
     // ЛИШЕ якщо хаб налаштований у ВЛАСНІЙ БД (`sync.hub_url`): у хаба цього
-    // налаштування немає, тож «форвард у себе» неможливий. Ґейт Фази 3.8
-    // (`NodeConfig::push_blocked_reason`) шлях форвардера НЕ проходить: тут
-    // власна PG-черга (`hub_outbox`) і спільний HTTP-виклик, а не стара
-    // SQLite-черга каси — ґейт лишається живим до E7 (див. §1.1 плану).
+    // налаштування немає, тож «форвард у себе» неможливий. Форвардер тримає
+    // ВЛАСНУ PG-чергу (`hub_outbox`) і спільний HTTP-виклик
+    // (`sync_push::post_push_batch`), не торкаючись SQLite-черги каси.
     if let Some(pool) = state.write_pool.clone() {
         match crate::hub_forwarder::HubForwardConfig::from_pool(&pool).await {
             Ok(Some(cfg)) => {
@@ -1402,36 +1270,6 @@ async fn init_facade_state() -> Result<
         }
     }
 
-    // Фоновий job мережі магазинів (ЕТАП 15, план §5.4): кожні 60 с вузли
-    // active/lagging без heartbeat > 5 хв → offline (той самий поріг, що й
-    // isDeviceOnline кас). Вузли archived не чіпаємо (термінальний стан).
-    // ADR-0007 §3.2 #21 = DISABLED_ON_STANDBY: це housekeeping реєстру
-    // вузлів (роль primary); на standby job крутився б проти read-only
-    // репліки → спам `read-only transaction` у postgres.log.
-    if !offline_job_enabled(&state.node_config) {
-        eprintln!("[torgashka-api] network_nodes offline-job вимкнено (режим standby)");
-    } else if let Some(pool) = state.write_pool.clone() {
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                tick.tick().await;
-                let res = sqlx::query(
-                    "UPDATE network_nodes \
-                     SET status = 'offline'::public.node_status, updated_at = now() \
-                     WHERE status IN ('active', 'lagging') \
-                       AND last_seen_at < now() - interval '5 minutes'",
-                )
-                .execute(&pool)
-                .await;
-                if let Err(e) = res {
-                    // Помилка може бути тимчасовою (БД недоступна) — логуємо
-                    // і продовжуємо наступний тик, а не виходимо.
-                    eprintln!("[torgashka-api] network_nodes offline-job: {e}");
-                }
-            }
-        });
-    }
-
     torgashka_infrastructure::embedded_pg::pg_log(
         "INFO",
         &format!(
@@ -1442,287 +1280,50 @@ async fn init_facade_state() -> Result<
     Ok((state, embedded_pg))
 }
 
-/// Ідемпотентний старт локальної репліки з логом результату (дефект 5а:
-/// блокуючий PG-старт — тільки через `spawn_blocking`). Спільний для обох
-/// standby-гілок плану.
-async fn start_local_replica_logged() {
-    let t = Instant::now();
-    match tokio::task::spawn_blocking(
-        torgashka_infrastructure::embedded_pg::ensure_local_replica_running,
-    )
-    .await
-    {
-        Ok(Ok(true)) => torgashka_infrastructure::embedded_pg::pg_log(
-            "INFO",
-            &format!(
-                "крок 2 (standby): локальну репліку піднято ({} мс)",
-                t.elapsed().as_millis()
-            ),
-        ),
-        Ok(Ok(false)) => torgashka_infrastructure::embedded_pg::pg_log(
-            "INFO",
-            &format!(
-                "крок 2 (standby): локальна репліка — no-op (уже слухає / ще не провіжнена) ({} мс)",
-                t.elapsed().as_millis()
-            ),
-        ),
-        // Чесна причина і робота далі: фасад відповідає, локальний режим
-        // увімкнеться, щойно репліка стане доступною.
-        Ok(Err(e)) => torgashka_infrastructure::embedded_pg::pg_log(
-            "ERROR",
-            &format!(
-                "крок 2 (standby): локальну репліку НЕ піднято ({e}) — працюємо далі ({} мс)",
-                t.elapsed().as_millis()
-            ),
-        ),
-        Err(e) => torgashka_infrastructure::embedded_pg::pg_log(
-            "ERROR",
-            &format!("крок 2 (standby): таск старту репліки панікував ({e})"),
-        ),
-    }
-}
-
-/// Проба ЖИВОЇ репліки: підключення БЕЗ пароля до БД `postgres` на
-/// `127.0.0.1:{local_port}` і перелік не-шаблонних БД (детермінований порядок).
+/// Що робити з БД при старті фасаду (ЧИСТА функція — тестована без env).
 ///
-/// НЕ панікує і НЕ `unwrap`-ить: будь-яка помилка (драйвер/connect/запит/
-/// таймаут 5 с) → [`ReplicaDbProbe::Err`] із текстом причини.
-async fn probe_live_replica(local_port: u16, user: &str) -> ReplicaDbProbe {
-    use sqlx::postgres::PgPoolOptions;
-    let dsn = format!("postgresql://{user}@127.0.0.1:{local_port}/postgres");
-    let pool = match PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect(&dsn)
-        .await
-    {
-        Ok(p) => p,
-        Err(e) => return ReplicaDbProbe::Err(format!("підключення до {dsn}: {e}")),
-    };
-    let rows = sqlx::query_scalar::<_, String>(
-        "SELECT datname FROM pg_database \
-         WHERE NOT datistemplate AND datname <> 'postgres' ORDER BY datname",
-    )
-    .fetch_all(&pool)
-    .await;
-    pool.close().await;
-    match rows {
-        Ok(names) => match classify_replica_probe(&names) {
-            Ok(name) => ReplicaDbProbe::Ok(name),
-            Err(e) => ReplicaDbProbe::Err(e),
-        },
-        Err(e) => ReplicaDbProbe::Err(format!("запит pg_database (порт {local_port}): {e}")),
+/// ADR-0008: гілок «standby-репліка» немає — каталог репліки створював
+/// видалений разом із E7 провіжн, а кожен вузол тепер завжди read-write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbStartup {
+    /// URL резолвиться ззовні (`env → db_sources.toml → backend/.env`):
+    /// embedded PG не чіпаємо взагалі.
+    ExternalUrl(String),
+    /// URL немає — вузол піднімає ВЛАСНУ embedded PostgreSQL
+    /// (`initdb → pg_ctl start → CREATE DATABASE`).
+    BootstrapOwn,
+}
+
+/// Вибір підготовки БД (чиста логіка — покрита тестами).
+pub fn plan_db_startup(resolved: Option<&str>) -> DbStartup {
+    match resolved.filter(|u| !u.trim().is_empty()) {
+        Some(url) => DbStartup::ExternalUrl(url.to_string()),
+        None => DbStartup::BootstrapOwn,
     }
 }
 
-/// Перевірка «пул реально піднявся»: `SELECT 1` на candidate-URL.
-/// `Err(text)` — з'єднання/запит не вдались (жодного `set_var` тоді не буде).
-async fn candidate_url_alive(url: &str) -> Result<(), String> {
-    use sqlx::postgres::PgPoolOptions;
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect(url)
-        .await
-        .map_err(|e| format!("підключення до candidate-URL {url}: {e}"))?;
-    let probe = sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(&pool)
-        .await;
-    pool.close().await;
-    probe
-        .map(|_| ())
-        .map_err(|e| format!("SELECT 1 на candidate-URL {url}: {e}"))
-}
-
-/// Самолікування standby-каси: визначити ім'я локальної БД із (c)/(d), ПЕРЕВІРИТИ
-/// живість URL, і лише тоді `DATABASE_URL` + запис `[node] primary_db_url`.
+/// Підготовка БД при старті фасаду (ФІКС дефектів 5+6).
 ///
-/// Повертає `None` завжди (standby-реплікою фасад не володіє — Drop її не
-/// зупиняє). Будь-яка невдача → ERROR у `torgashka.log` із ПЕРЕЛІКОМ джерел;
-/// без `set_var`, без запису у файл (регресії для primary немає — ця функція
-/// викликається лише з гілки `StandbyWithoutDbName`).
-async fn self_heal_standby_db_name(
-    reason: &str,
-) -> Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres> {
-    use torgashka_infrastructure::embedded_pg::pg_log;
-    let user = std::env::var("TORGASHKA_PG_USER").unwrap_or_else(|_| "postgres".to_string());
-    // cfg: тонка impure-обгортка (env → файл) — тут потрібен local_port + host/port.
-    let cfg = torgashka_infrastructure::node_config::NodeConfig::load();
-    let settings = torgashka_infrastructure::standby_heartbeat::read_standby_settings()
-        .ok()
-        .flatten();
-    let settings_db = settings
-        .as_ref()
-        .and_then(|s| s.replication_database.as_deref())
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .map(str::to_string);
-    // (d) пробу виконуємо ЛИШЕ якщо (c) не дало імені — зайвих з'єднань немає.
-    let probe = if settings_db.is_some() {
-        ReplicaDbProbe::NotAttempted
-    } else {
-        probe_live_replica(cfg.local_port, &user).await
-    };
-    if let ReplicaDbProbe::Err(e) = &probe {
-        pg_log(
-            "INFO",
-            &format!("крок 2 (standby): проба живої репліки не дала імені — {e}"),
-        );
-    }
-    let primary = cfg.resolve_primary_db_url();
-    let env_db = std::env::var("TORGASHKA_PG_DB").ok();
-    match standby_local_url_wide(
-        primary.as_deref(),
-        cfg.local_port,
-        &user,
-        env_db.as_deref(),
-        settings_db.as_deref(),
-        Some(&probe),
-    ) {
-        Ok((url, src)) => {
-            // Пул мусить РЕАЛЬНО піднятись — інакше не чіпаємо ні env, ні файл.
-            if let Err(e) = candidate_url_alive(&url).await {
-                pg_log(
-                    "ERROR",
-                    &format!(
-                        "крок 2 (standby): ім'я БД знайдено ({}, джерело: {}), але з'єднання \
-                         НЕ піднялось — DATABASE_URL не встановлено, файл НЕ змінено ({e}); \
-                         підстава: {reason}",
-                        url,
-                        src.as_str()
-                    ),
-                );
-                return None;
-            }
-            std::env::set_var("DATABASE_URL", &url);
-            pg_log(
-                "INFO",
-                &format!(
-                    "крок 2 (standby): DATABASE_URL = {url} (джерело: {}) — пули/роути \
-                     змонтуються, /api/v1/setup/status відповідатиме",
-                    src.as_str()
-                ),
-            );
-            // Самолікування [node] primary_db_url: лише для (c)/(d) — (a)/(b)
-            // не потребують запису (ім'я вже є у файлі/env).
-            if matches!(
-                src,
-                LocalDbNameSource::NodeSettings | LocalDbNameSource::ReplicaProbe
-            ) {
-                // Ім'я БД беремо з URL, який щойно перевірили (fallback_local_url:
-                // postgresql://user@127.0.0.1:port/<db>).
-                let db = db_name_from_url(&url).unwrap_or_else(|| url.clone());
-                let host = settings
-                    .as_ref()
-                    .and_then(|s| s.replication_host.clone())
-                    .map(|h| h.trim().to_string())
-                    .filter(|h| !h.is_empty())
-                    .unwrap_or_else(|| "127.0.0.1".to_string());
-                let port = settings
-                    .as_ref()
-                    .and_then(|s| s.replication_port)
-                    .unwrap_or(cfg.local_port);
-                let healed = torgashka_infrastructure::node_config::primary_db_url_from_parts(
-                    &user, &host, port, &db,
-                );
-                let healed_cfg = torgashka_infrastructure::node_config::NodeConfig {
-                    mode: torgashka_infrastructure::node_config::NodeMode::Standby,
-                    local_port: cfg.local_port,
-                    primary_db_url: Some(healed.clone()),
-                    // Решта полів — з реально завантаженого конфіга: `..default()`
-                    // затирав `degrade_to_local`/`repoint_pending` дефолтами.
-                    ..cfg.clone()
-                };
-                match healed_cfg.save_to_disk() {
-                    Ok(path) => pg_log(
-                        "INFO",
-                        &format!(
-                            "крок 2 (standby): самолікування [node] primary_db_url = {healed} \
-                             (mode=standby, local_port={}) записано у {}",
-                            cfg.local_port,
-                            path.display()
-                        ),
-                    ),
-                    Err(e) => pg_log(
-                        "ERROR",
-                        &format!(
-                            "крок 2 (standby): самолікування [node] primary_db_url НЕ записано ({e}); \
-                             робота продовжується з DATABASE_URL = {url}"
-                        ),
-                    ),
-                }
-            }
-            None
-        }
-        Err(reason_full) => {
-            pg_log(
-                "ERROR",
-                &format!(
-                    "крок 2 (standby): DATABASE_URL НЕ встановлено — {reason_full}; \
-                     локальні пули (readdirs/write/pos/ledger/auth) і /api/v1/setup/status \
-                     НЕ монтуються; здогадок імені БД немає; підстава: {reason}"
-                ),
-            );
-            None
-        }
-    }
-}
-
-/// Виконує план підготовки БД (ФІКС дефектів 5+6).
-///
-/// * `ExternalUrl` — БД ззовні: embedded PG не чіпаємо;
-/// * `StandbyReplica` — ЛИШЕ ідемпотентний старт локальної репліки +
-///   `DATABASE_URL` на неї (жодного initdb/CREATE DATABASE — каталог репліки
-///   read-only і належить pg_basebackup);
-/// * `PrimaryBootstrap` — повний bootstrap, але у `spawn_blocking`.
-pub async fn apply_db_startup_plan(
-    plan: DbStartupPlan,
+/// * URL резолвиться ззовні (`env → db_sources.toml → backend/.env`) —
+///   embedded PG не чіпаємо взагалі;
+/// * URL немає — вузол піднімає СВОЮ embedded PostgreSQL повним bootstrap-ом
+///   (`initdb → старт → CREATE DATABASE`) у `spawn_blocking`.
+pub async fn apply_db_startup(
+    resolved: Option<&str>,
 ) -> Option<torgashka_infrastructure::embedded_pg::EmbeddedPostgres> {
     use torgashka_infrastructure::embedded_pg::bootstrap_if_needed;
-    match plan {
-        DbStartupPlan::ExternalUrl(url) => {
+    if let DbStartup::ExternalUrl(url) = plan_db_startup(resolved) {
+        torgashka_infrastructure::embedded_pg::pg_log(
+            "INFO",
+            &format!("крок 2: DATABASE_URL ззовні ({url}) — embedded PG не потрібен"),
+        );
+        return None;
+    }
+    {
+        {
             torgashka_infrastructure::embedded_pg::pg_log(
                 "INFO",
-                &format!("крок 2: DATABASE_URL ззовні ({url}) — embedded PG не потрібен"),
-            );
-            None
-        }
-        DbStartupPlan::StandbyReplica(url) => {
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "INFO",
-                &format!(
-                    "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО — \
-                     це каталог репліки; ідемпотентно піднімаємо локальну репліку, читаємо {url}"
-                ),
-            );
-            start_local_replica_logged().await;
-            // Джерело даних standby-каси — локальна репліка, без пароля.
-            std::env::set_var("DATABASE_URL", &url);
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "INFO",
-                &format!("крок 2 (standby): DATABASE_URL = {url} (локальна репліка, лише читання)"),
-            );
-            // Реплікою НЕ володіємо: Drop фасаду не має її зупиняти.
-            None
-        }
-        DbStartupPlan::StandbyWithoutDbName(reason) => {
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "INFO",
-                "крок 2 (standby): bootstrap (initdb/CREATE DATABASE) ПРОПУЩЕНО — це каталог репліки",
-            );
-            // Саму репліку піднімаємо (її стан не залежить від імені БД у URL).
-            start_local_replica_logged().await;
-            // САМОЛІКУВАННЯ ІМЕНІ БД (гілка доступна ЛИШЕ тут — репліку вже
-            // піднято): (c) SQLite settings `node_replication_database` →
-            // (d) проба живої репліки на 127.0.0.1:<local_port>. Джерела (a)/(b)
-            // сюди не дійшли (plan = StandbyWithoutDbName), але лишаються в
-            // ланцюзі для повноти переліку в помилці.
-            self_heal_standby_db_name(&reason).await
-        }
-        DbStartupPlan::PrimaryBootstrap => {
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "INFO",
-                "крок 2 (primary): запускаємо embedded PostgreSQL (initdb → старт → CREATE DATABASE)",
+                "крок 2: запускаємо власну embedded PostgreSQL (initdb → старт → CREATE DATABASE)",
             );
             let t = Instant::now();
             // Дефект 5а: bootstrap — блокуючий (subprocess-и) → spawn_blocking.
@@ -1810,51 +1411,21 @@ pub async fn serve_listener(
 mod tests {
     use super::*;
 
-    // ── Дефект 6: standby НІКОЛИ не йде primary-шляхом (initdb/CREATE DATABASE) ──
-
-    #[test]
-    fn standby_without_external_url_never_bootstraps() {
-        let plan = plan_db_startup(
-            None,
-            true,
-            Some("postgresql://repuser@127.0.0.1:5433/repdb".to_string()),
-        );
-        assert_eq!(
-            plan,
-            DbStartupPlan::StandbyReplica("postgresql://repuser@127.0.0.1:5433/repdb".to_string()),
-            "standby-вузол мусить іти гілкою репліки, а не bootstrap (дефект 6)"
-        );
-        assert_ne!(plan, DbStartupPlan::PrimaryBootstrap);
-    }
-
-    #[test]
-    fn primary_without_external_url_bootstraps() {
-        assert_eq!(
-            plan_db_startup(None, false, None),
-            DbStartupPlan::PrimaryBootstrap
-        );
-    }
+    // ── Крок 2: вибір підготовки БД (ADR-0008: режимів вузла немає) ──
 
     #[test]
     fn external_url_always_wins_and_skips_embedded_pg() {
-        // env DATABASE_URL задано → embedded PG не чіпаємо (ні primary, ні standby)
         assert_eq!(
-            plan_db_startup(Some("postgresql://u@h:5432/db"), false, None),
-            DbStartupPlan::ExternalUrl("postgresql://u@h:5432/db".to_string())
-        );
-        assert_eq!(
-            plan_db_startup(
-                Some("postgresql://u@h:5432/db"),
-                true,
-                Some("x".to_string())
-            ),
-            DbStartupPlan::ExternalUrl("postgresql://u@h:5432/db".to_string())
+            plan_db_startup(Some("postgresql://u@h:5432/db")),
+            DbStartup::ExternalUrl("postgresql://u@h:5432/db".to_string())
         );
         // порожній/пробільний URL не вважається заданим
-        assert_eq!(
-            plan_db_startup(Some("   "), false, None),
-            DbStartupPlan::PrimaryBootstrap
-        );
+        assert_eq!(plan_db_startup(Some("   ")), DbStartup::BootstrapOwn);
+    }
+
+    #[test]
+    fn without_external_url_node_bootstraps_own_db() {
+        assert_eq!(plan_db_startup(None), DbStartup::BootstrapOwn);
     }
 
     #[test]
@@ -1951,32 +1522,6 @@ mod tests {
         // Без жодного джерела імені БД — Err, а не URL.
         assert!(standby_local_url_or_err(None, 5433, "postgres", None).is_err());
         assert!(standby_local_url_or_err(None, 5433, "postgres", Some("   ")).is_err());
-    }
-
-    /// План standby-вузла без імені БД не містить жодного URL (і НІКОЛИ не
-    /// піде primary-шляхом з initdb на каталозі репліки).
-    #[test]
-    fn standby_plan_without_db_name_skips_pool() {
-        let plan = plan_db_startup(None, true, None);
-        assert_ne!(
-            plan,
-            DbStartupPlan::PrimaryBootstrap,
-            "standby НІКОЛИ не bootstrap (дефект 6)"
-        );
-        assert_ne!(
-            plan,
-            DbStartupPlan::StandbyReplica(String::new()),
-            "порожній DATABASE_URL — стара поведінка, тепер заборонена"
-        );
-        match plan {
-            DbStartupPlan::StandbyWithoutDbName(reason) => {
-                assert!(
-                    reason.contains("primary_db_url") || reason.contains("TORGASHKA_PG_DB"),
-                    "причина мусить називати джерела: {reason}"
-                );
-            }
-            other => panic!("очікували StandbyWithoutDbName, отримали {other:?}"),
-        }
     }
 
     #[test]
@@ -2164,24 +1709,5 @@ mod tests {
         assert!(is_readiness_path("/api/v1/setup/status"));
         assert!(!is_readiness_path("/api/v1/auth/login"));
         assert!(!is_readiness_path("/api/v1/setup"));
-    }
-    // ── P3 (ADR-0007 #21): offline-job мережі вузлів — primary-only ──
-
-    #[test]
-    fn offline_job_disabled_on_standby_enabled_on_primary() {
-        use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
-        let standby = NodeConfig::load_from_str("[node]\nmode = \"standby\"\n");
-        assert!(!offline_job_enabled(&standby), "standby → job вимкнено");
-        let primary = NodeConfig::load_from_str("[node]\nmode = \"primary\"\n");
-        assert!(offline_job_enabled(&primary), "primary → job працює (F2)");
-        assert!(
-            offline_job_enabled(&NodeConfig::default()),
-            "без [node] → Primary → поведінка незмінна (F2)"
-        );
-        let standby = NodeConfig {
-            mode: NodeMode::Standby,
-            ..Default::default()
-        };
-        assert!(!offline_job_enabled(&standby));
     }
 }

@@ -14,6 +14,7 @@
 
 pub mod cash_drawer;
 pub mod db;
+pub mod db_error;
 pub mod db_sources;
 pub mod devices;
 pub mod embedded_pg;
@@ -24,10 +25,8 @@ pub mod offline;
 pub mod print;
 pub mod provision;
 pub mod prro;
-pub mod readonly_guard;
 pub mod repositories;
 pub mod standby_heartbeat;
-pub mod standby_provision;
 pub mod store_ctx;
 pub mod sync_schema;
 pub mod sync_settings;

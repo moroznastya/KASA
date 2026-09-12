@@ -151,10 +151,9 @@ fn ledger_repo(
 
 /// require_admin (Python AuthService.require_admin → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), LedgerErr> {
-    // ADR-0007 §11.1 НЕ має рядка для `supplier_ledger` (пишеться сервісом,
-    // не літералом DML у `src/`) → політики немає → `Pass` (АНОМАЛІЯ №1 звіту).
-    let pool =
-        crate::write_gate::admin_pool(state, "supplier_ledger").map_err(LedgerErr::Forbidden)?;
+    // Книга постачальника пишеться сервісом у ВЛАСНУ БД вузла (ADR-0008:
+    // таблиці політик запису більше не існує).
+    let pool = state.write_pool_or_err().map_err(LedgerErr::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         LedgerErr::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;

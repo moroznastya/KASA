@@ -51,7 +51,7 @@ pub const MISSING_PARENT_MARKER: &str = "[MISSING_PARENT]";
 /// `CONFLICT` для 23505). Розбір ЛОКАЛІЗОВАНОГО тексту PG не потрібен
 /// (текст залежить від `lc_messages`, код — ні).
 pub fn db_err(op: &str, e: sqlx::Error) -> String {
-    match torgashka_infrastructure::readonly_guard::sqlstate_of(&e) {
+    match torgashka_infrastructure::db_error::sqlstate_of(&e) {
         Some(code) => format!("{op}: {e} [SQLSTATE {code}]"),
         None => format!("{op}: {e}"),
     }

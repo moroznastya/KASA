@@ -88,8 +88,8 @@ impl IntoResponse for PosErr {
             )
                 .into_response(),
             // 503 Service Unavailable — конвенція проєкту для «зараз нікуди
-            // зберегти» (`write_gate::standby_503`, `route_local::LocalErr::
-            // Unavailable`, `sync.rs`, `setup.rs`, `prro.rs` — усі 503).
+            // зберегти» (`route_local::LocalErr::Unavailable`, `sync.rs`,
+            // `setup.rs`, `prro.rs` — усі 503).
             // Саме 5xx, бо це НЕ вина клієнта: запит коректний, вузол не має
             // каналу. Тіло — без технічного тексту (§D), але з поясненням і
             // ознакою `type`, щоб UI міг відрізнити від загальної 500.
@@ -241,10 +241,9 @@ fn pos_repo(
 
 /// require_admin (Python AuthService.require_admin → 403).
 async fn require_admin(state: &AppState, claims: &Claims) -> Result<(), PosErr> {
-    // ADR-0007 §11.1: POS-документи каси — `LocalOutbox` → на standby гейт
-    // пропускає цю поверхню (лічені операції каси не блокуються). Пул тут
-    // потрібен лише для перевірки ролі (читання) — див. `admin_pool`.
-    let pool = crate::write_gate::admin_pool(state, "receipt").map_err(PosErr::Forbidden)?;
+    // Пул потрібен лише для перевірки ролі (читання) — POS-документи
+    // пишуться у ВЛАСНУ БД вузла (ADR-0008).
+    let pool = state.write_pool_or_err().map_err(PosErr::Forbidden)?;
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| {
         PosErr::Unauthorized("Недійсний токен: відсутній ідентифікатор користувача".to_string())
     })?;
@@ -1506,15 +1505,13 @@ fn current_store_id() -> Result<Uuid, PosErr> {
     })
 }
 
-/// POST /api/v1/cash-operations → 201 Created (primary) / 202 Accepted (standby).
+/// POST /api/v1/cash-operations → 201 Created.
 ///
-/// ADR-0007 §11.6: касова операція — клас `LocalOutbox`; на standby вона не
-/// створюється на primary, а лягає в локальну чергу (`OutboxPos`) → **202**,
-/// той самий контракт статусу, що в POS-документів (`created_or_queued`).
-/// DTO касової операції не має поля-маркера (`fiscal_status`/`status`), тому
-/// ознака «в черзі» тут — сам код 202 + заголовок `X-Torgashka-Node-Mode`
-/// (§4) + `/api/v1/local/status`; на primary — 201, байт-в-байт стара
-/// поведінка (F2).
+/// ADR-0008: касова операція виконується у ВЛАСНІЙ БД вузла — 202 «в черзі»
+/// більше не існує як результат цього хендлера (режимів вузла немає, E7).
+/// `created_or_queued(&state, false)` збережено як єдине місце формування
+/// статусу: воно ж використовується POS-документами, де черга лишається
+/// можливою (каса без апстріму).
 pub async fn create_cash_operation(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -1527,7 +1524,7 @@ pub async fn create_cash_operation(
     let repo = pos_repo(&state)?;
     let svc = PosServiceFacade::new(repo);
     Ok((
-        created_or_queued(&state, state.node_config.is_standby())?,
+        created_or_queued(&state, false)?,
         Json(svc.create_cash_operation(store_id, user_id, &input).await?),
     ))
 }

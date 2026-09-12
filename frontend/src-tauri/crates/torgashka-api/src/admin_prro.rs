@@ -105,9 +105,8 @@ impl IntoResponse for AdminPrroErr {
 }
 
 fn pool(state: &AppState) -> Result<PgPool, AdminPrroErr> {
-    // ADR-0007 §11.1: `prro_settings` — `ProxyToPrimary` (адмін-конфіг ПРРО
-    // мусить дійти до primary: єдина конфігурація фіскалізації мережі).
-    crate::write_gate::admin_pool(state, "prro_settings").map_err(AdminPrroErr::BadRequest)
+    // `prro_settings` — конфігурація фіскалізації у ВЛАСНІЙ БД вузла.
+    state.write_pool_or_err().map_err(AdminPrroErr::BadRequest)
 }
 
 /// RBAC адмін-ПРРО: лише owner|admin (store_manager та cashier → 403).

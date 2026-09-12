@@ -70,14 +70,12 @@ impl IntoResponse for AuthRouteError {
                     AuthError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
                     AuthError::Validation(_) => unreachable!("validation handled above"),
                     AuthError::Infrastructure(m) => {
-                        // ADR-0007 §7.7: евристику «503 за текстом PG-помилки»
-                        // (`m.contains("read-only transaction")`) ПРИБРАНО —
-                        // рішення «куди писати» ухвалює виключно гейт
-                        // (`crate::write_gate`), а не розпізнавання рядка
-                        // помилки (залежало від локалі/версії PostgreSQL).
-                        // Auth-поверхня на standby: політики в §11.1 немає
-                        // (F6 — work_sessions у SQLite — окремий обсяг) →
-                        // pass-through; тут лишається чесний 500 без тексту PG.
+                        // Евристику «503 за текстом PG-помилки»
+                        // (`m.contains("read-only transaction")`) прибрано ще в
+                        // ADR-0007 §7.7: рішення за рядком помилки залежало б
+                        // від локалі/версії PostgreSQL. Тут — чесний 500 без
+                        // тексту PG (класифікація — стабільним SQLSTATE,
+                        // `torgashka_infrastructure::db_error`).
                         eprintln!("[torgashka-api] auth infrastructure error: {m}");
                         (StatusCode::INTERNAL_SERVER_ERROR, "Помилка БД".to_string())
                     }
@@ -1033,13 +1031,13 @@ fn _sqlx_auth(pool: sqlx::PgPool) -> SqlxAuth {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADR-0007 §7.7: рішення «куди писати» ухвалює ГЕЙТ, а не текст PG-помилки.
+// Рішення «куди писати» більше НЕ ухвалюється за текстом PG-помилки.
 //
-// Евристику `m.contains("read-only transaction") → 503` ПРИБРАНО (вона залежала
-// від локалі/версії PostgreSQL і була другим, неперевірюваним місцем рішення).
-// 503 §4 для admin-поверхонь тепер віддає `crate::write_gate::gate_middleware`
-// (або `write_gate::admin_pool` як друга лінія) — див. tests/write_gate_*.rs.
-// Логін/логаут на standby взагалі не торкаються PG (F6: SQLite + outbox).
+// Евристику `m.contains("read-only transaction") → 503` прибрано (вона залежала
+// від локалі/версії PostgreSQL). ADR-0008 пішов далі: самого питання «чи можу
+// я писати» на HTTP-поверхні немає — кожен вузол пише у ВЛАСНУ read-write БД,
+// а помилки БД класифікуються стабільним SQLSTATE
+// (`torgashka_infrastructure::db_error`).
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

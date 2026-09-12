@@ -665,16 +665,7 @@ pub fn build_router(state: AppState) -> Router {
     // (без JWT: каса ще не має токена). /admin/* — глобальні дії власника,
     // НЕ прив'язані до X-Store-Id точки → окремий роутер БЕЗ store_middleware,
     // але З auth (роль admin|owner перевіряється в require_admin хендлерів).
-    let activate = Router::new()
-        .route("/api/v1/devices/activate", post(network::activate_device))
-        // Мережа магазинів (ЕТАП 15): join — ПУБЛІЧНИЙ (як /devices/activate,
-        // rate-limit у хендлері); heartbeat автентифікується node_token (Bearer)
-        // САМИМ хендлером — поза JWT-шаром (вузол не є користувачем).
-        .route("/api/v1/network-nodes/join", post(network_nodes::join_node))
-        .route(
-            "/api/v1/network-nodes/:id/heartbeat",
-            put(network_nodes::heartbeat_node),
-        );
+    let activate = Router::new().route("/api/v1/devices/activate", post(network::activate_device));
     let admin_network = Router::new()
         // Адмін-панель власника мережі (Етап 1): точки + працівники + деактивація.
         .route(
@@ -801,10 +792,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/admin/network-nodes/:node_id/archive",
             post(network_nodes::archive_node),
         )
-        .route(
-            "/api/v1/admin/network-nodes/:node_id/force-resync",
-            post(network_nodes::force_resync_node),
-        )
         // Журнал мережевих подій (рішення Творця): діагностика взаємодії вузлів.
         .route(
             "/api/v1/admin/network-events",
@@ -830,34 +817,14 @@ pub fn build_router(state: AppState) -> Router {
         .merge(admin_network)
         .merge(private)
         .merge(route_local::router(state.clone()))
-        // ЕТАП 19 (DR): promote + repoint-primary — ОКРЕМО від route_local::router:
-        // ці адмін-маршрути НЕ проходять store-middleware (він ходить у primary-пул,
-        // недоступний у момент аварії) — авторизація stateless JWT owner у хендлерах.
-        .merge(crate::promote::admin_router(state.clone()))
         // ФАЗА 3.8: drain залишку SQLite-черги у власний PG. Монтується
-        // ЗАВЖДИ (не лише на standby): після promote+рестарту вузол уже
-        // mode=Primary, а черга в SQLite лишається — owner має мати шлях її
-        // застосувати. Авторизація — stateless JWT owner у хендлері.
+        // ЗАВЖДИ: owner має мати шлях застосувати локальну чергу після
+        // відновлення. Авторизація — stateless JWT owner у хендлері.
         .merge(route_local::outbox_router())
         .layer(cors)
-        // ADR-0007 §11 (WriteGate): ОДИН шар на весь роутер фасаду — після CORS,
-        // тобто найзовнішній. Класифікує запит (§11.1) і вирішує F2/§4:
-        // primary → незмінно; standby+ProxyToPrimary → HTTP pass-through;
-        // standby+DisabledOnStandby → 503; standby+LocalOutbox → локальний шлях.
-        // Кожна відповідь фасаду отримує `X-Torgashka-Node-Mode` (§4).
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::write_gate::gate_middleware,
-        ))
-        // Read-only net (останній рубіж): ЗОВНІШНІЙ щодо гейта — бачить
-        // ОСТАТОЧНУ відповідь хендлера. Якщо у тілі є маркер
-        // `[READ_ONLY_REPLICA]` (запис у репліку пройшов повз фунел
-        // `StorePool`, напр. транзакцією), відповідь переписується на 503 §4.
-        // Власний 503 гейта (`STANDBY_DETAIL`, без маркера) не чіпається.
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::readonly_net::readonly_net_middleware,
-        ))
+        // ADR-0008: шарів «чи можу я писати» більше немає — вузол завжди
+        // read-write (кожна точка має власну БД), тож жодного рішення про
+        // проксіювання/503 за режимом вузла на HTTP-поверхні не потрібно.
         .with_state(state)
 }
 

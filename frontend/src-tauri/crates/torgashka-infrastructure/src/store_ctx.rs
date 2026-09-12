@@ -133,16 +133,14 @@ async fn reset_config(conn: &mut sqlx::PgConnection) -> Result<(), Error> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Фунел запису: `Executor for &StorePool` — ЄДИНЕ місце, через яке фізично
 // проходять усі одиночні запити репозиторіїв (`query(...).fetch_*`/`execute`).
-// Тут ловиться відмова PostgreSQL «read_only_sql_transaction» (SQLSTATE 25006,
-// `readonly_guard`) — тобто клас «запис у локальну репліку», а не окремий
-// маршрут; ручна таблиця політик (`write_gate::classify_request`) більше не є
-// обов'язковою умовою безпеки.
 //
-// МЕЖА ПОКРИТТЯ (свідома): `StorePool::begin()` → `sqlx::Transaction` НЕ
-// проходить цей impl — там виконавець `&mut PgConnection` (власне з'єднання
-// транзакції), тож запис у read-only репліку з транзакції фунел не побачить.
-// Другий, «останній» рубіж для таких випадків — шар відповіді:
-// `torgashka-api::readonly_net` (маркер `[READ_ONLY_REPLICA]` у тілі → 503 §4).
+// Призначення (єдине): проставити RLS-контекст точки (`app.user_id`/
+// `app.store_id`) на з'єднанні й скинути його після запиту.
+//
+// ADR-0008: перехоплення помилки `read_only_sql_transaction` (SQLSTATE 25006)
+// тут БІЛЬШЕ НЕМАЄ — концепція «вузол-репліка, що не може писати» видалена
+// (E7): кожен вузол пише у ВЛАСНУ read-write БД, а помилки БД класифікуються
+// стабільним SQLSTATE-кодом у [`crate::db_error`].
 // ─────────────────────────────────────────────────────────────────────────────
 impl<'p> Executor<'p> for &'_ StorePool {
     type Database = Postgres;
@@ -162,9 +160,6 @@ impl<'p> Executor<'p> for &'_ StorePool {
     {
         let pool = self.0.clone();
         let ctx = current_store_ctx();
-        // SQL для fingerprint — беремо ДО передачі `query` у виконавець
-        // (`Execute::sql()` дешевий; рядок формується ЛИШЕ при помилці).
-        let sql: &'q str = query.sql();
         Box::pin(
             futures_util::stream::once(async move {
                 let mut conn = pool.acquire().await?;
@@ -172,11 +167,7 @@ impl<'p> Executor<'p> for &'_ StorePool {
                     set_config(&mut conn, ctx, false).await?;
                 }
                 // Повне (eager) виконання: fetch_many → Vec. Після цього reset.
-                let result = (&mut *conn)
-                    .fetch_many(query)
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(|e| crate::readonly_guard::normalize_with_sql(e, Some(sql)));
+                let result = (&mut *conn).fetch_many(query).try_collect::<Vec<_>>().await;
                 if ctx.is_some() {
                     let _ = reset_config(&mut conn).await;
                 }
@@ -196,16 +187,12 @@ impl<'p> Executor<'p> for &'_ StorePool {
     {
         let pool = self.0.clone();
         let ctx = current_store_ctx();
-        let sql: &'q str = query.sql();
         Box::pin(async move {
             let mut conn = pool.acquire().await?;
             if let Some(ctx) = &ctx {
                 set_config(&mut conn, ctx, false).await?;
             }
-            let result = (&mut *conn)
-                .fetch_optional(query)
-                .await
-                .map_err(|e| crate::readonly_guard::normalize_with_sql(e, Some(sql)));
+            let result = (&mut *conn).fetch_optional(query).await;
             if ctx.is_some() {
                 let _ = reset_config(&mut conn).await;
             }
@@ -219,13 +206,7 @@ impl<'p> Executor<'p> for &'_ StorePool {
         parameters: &'e [<Self::Database as Database>::TypeInfo],
     ) -> BoxFuture<'e, Result<<Self::Database as Database>::Statement<'q>, Error>> {
         let pool = self.0.clone();
-        Box::pin(async move {
-            pool.acquire()
-                .await?
-                .prepare_with(sql, parameters)
-                .await
-                .map_err(|e| crate::readonly_guard::normalize_with_sql(e, Some(sql)))
-        })
+        Box::pin(async move { pool.acquire().await?.prepare_with(sql, parameters).await })
     }
 
     #[doc(hidden)]
@@ -234,12 +215,6 @@ impl<'p> Executor<'p> for &'_ StorePool {
         sql: &'q str,
     ) -> BoxFuture<'e, Result<Describe<Self::Database>, Error>> {
         let pool = self.0.clone();
-        Box::pin(async move {
-            pool.acquire()
-                .await?
-                .describe(sql)
-                .await
-                .map_err(|e| crate::readonly_guard::normalize_with_sql(e, Some(sql)))
-        })
+        Box::pin(async move { pool.acquire().await?.describe(sql).await })
     }
 }

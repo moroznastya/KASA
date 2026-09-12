@@ -18,15 +18,13 @@
 //!      `done`;
 //!   4. роль інстанса вирішує налаштування ЙОГО БД: у хаба `sync.hub_url`
 //!      немає → він не форвардить і НЕ наповнює чергу (нуль сміття);
-//!   5. ґейт Фази 3.8 (`push_blocked_reason`) шлях форвардера НЕ проходить:
-//!      у стані «promoted primary без апстріму», де касовий HTTP-push
-//!      ЗАБЛОКОВАНО, форвардер усе одно доставив (перевіряється нижче і
-//!      доводиться тим, що `hub_forwarder` не має `NodeConfig` взагалі).
+//!   5. форвардер не залежить від конфігурації налаштувань каси: він має
+//!      ВЛАСНУ PG-чергу (`hub_outbox`) і не читає ані SQLite-черги каси, ані
+//!      її `NodeConfig` (у `hub_forwarder` його немає взагалі).
 
 mod common;
 
 use serde_json::Value;
-use torgashka_infrastructure::node_config::NodeConfig;
 use torgashka_infrastructure::store_ctx::StorePool;
 use uuid::Uuid;
 
@@ -77,18 +75,11 @@ async fn node_forwards_receipt_to_hub() {
     );
     evidence("роль інстанса: вузол має sync.hub_url, хаб — ні (різні БД, не прапорець)");
 
-    // ── Ґейт Фази 3.8: у цьому стані КАСОВИЙ шлях заблоковано ──────────────
-    let promoted = NodeConfig::default().into_promoted_primary();
-    let gate_reason = promoted.push_blocked_reason();
-    assert!(
-        gate_reason.is_some(),
-        "стан вузла мусить бути 'promoted primary без апстріму' (ґейт касового push активний)"
-    );
-    evidence(&format!(
-        "ґейт Фази 3.8 активний для касового шляху: {}",
-        gate_reason.unwrap_or_default()
-    ));
-
+    // ── Форвардер незалежний від налаштувань каси ─────────────────────────
+    // ADR-0008 (E7): ґейта «promoted primary без апстріму» більше не існує,
+    // тож доводити «форвардер його обходить» нема чого — лишається факт:
+    // `hub_forwarder` не читає `NodeConfig` взагалі (немає імпорту в модулі).
+    evidence("форвардер не читає конфігурацію каси (власна PG-черга hub_outbox)");
     // ── 1. Каса → вузол: чек прийнято ЛОКАЛЬНО ────────────────────────────
     let client_uuid = Uuid::new_v4();
     let batch_id = Uuid::new_v4();

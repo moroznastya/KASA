@@ -1737,7 +1737,7 @@ async fn find_by_client_uuid_in(pool: &StorePool, table: &str, client_uuid: Uuid
 /// Стабільний машинний код помилки БД для тіла відповіді (ADR-0007 §D, §3):
 /// `[DB_ERROR <sqlstate>]` / `[DB_ERROR]`. Сирий текст PG — лише в лог.
 fn db_error_class_of(e: &sqlx::Error) -> String {
-    torgashka_infrastructure::readonly_guard::db_error_class(e)
+    torgashka_infrastructure::db_error::db_error_class(e)
 }
 
 /// Той самий код без SQLSTATE (коли на руках лише текст причини: приймачі
@@ -1823,7 +1823,7 @@ fn receiver_error_body(msg: &str) -> String {
 }
 
 /// SQLSTATE із машинного маркера тіла `[DB_ERROR <sqlstate>]`
-/// (формат — `readonly_guard::db_error_class`; тут лише читання).
+/// (формат — `db_error::db_error_class`; тут лише читання).
 fn sqlstate_from_body(body: &str) -> Option<&str> {
     let rest = body.trim().strip_prefix("[DB_ERROR ")?;
     let code = rest.strip_suffix(']')?.trim();

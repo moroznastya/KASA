@@ -20,7 +20,6 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::Deserialize;
 use serde_json::json;
 use torgashka_infrastructure::prro::SqlxPrroRepository;
-use torgashka_infrastructure::readonly_guard::MARKER as READONLY_MARKER;
 use torgashka_infrastructure::store_ctx::current_store_ctx;
 use torgashka_prro::crypto::{signer_from_key_material, PrroSigner};
 use torgashka_prro::grpc::{PrroGrpcClient, TlsConfig};
@@ -79,18 +78,8 @@ impl PrroApiError {
     /// Санація (ADR-0007 §D, той самий принцип, що в `PosError::Infrastructure`):
     /// імена таблиць/колонок, SQL-фрагменти й текст драйвера PG ідуть ЛИШЕ у
     /// stderr (`torgashka.log`); користувачу — стабільне повідомлення.
-    ///
-    /// Виняток — read-only репліка: маркер [`READONLY_MARKER`] СВІДОМО
-    /// зберігається у тілі (це контракт для шару відповіді
-    /// `crate::readonly_net`, який перепише відповідь на 503 §4). Сам маркер
-    /// не містить ні SQL, ні тексту PostgreSQL.
     pub fn public_message(&self) -> String {
         let raw = self.to_string();
-        if raw.contains(READONLY_MARKER) {
-            return format!(
-                "{READONLY_MARKER} вузол у режимі standby: запис у локальну репліку неможливий"
-            );
-        }
         if self.is_db_backed() {
             eprintln!("[torgashka-api] ПРРО: помилка БД (сирий текст): {raw}");
             return "помилка бази даних ПРРО: операцію не виконано на цьому вузлі (деталі — у журналі вузла)"

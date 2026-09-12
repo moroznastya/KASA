@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use torgashka_api::auth::create_access_token;
 use torgashka_api::{router_v1, AppState};
 use torgashka_domain::PosService;
-use torgashka_infrastructure::node_config::{NodeConfig, NodeMode};
+use torgashka_infrastructure::node_config::NodeConfig;
 use torgashka_infrastructure::repositories::outbox_pos::{OutboxPos, QUEUED_STATUS};
 use torgashka_infrastructure::repositories::pos::SqlxPos;
 use torgashka_infrastructure::store_ctx::StorePool;
@@ -204,11 +204,8 @@ fn standby_state(pos: Arc<dyn PosService + Send + Sync>, pool: sqlx::PgPool) -> 
         store_pool: Some(StorePool::new(pool)),
         stores: None,
         setup: None,
-        // ОДНОВУЗЛОВА машина: режим standby, апстрім НЕ заданий (жодного поля).
-        node_config: NodeConfig {
-            mode: NodeMode::Standby,
-            ..NodeConfig::default()
-        },
+        // ОДНОВУЗЛОВА машина: апстрім НЕ заданий (жодного поля).
+        node_config: NodeConfig::default(),
         local: None,
     }
 }
@@ -364,19 +361,16 @@ async fn failed_receipt_write_must_not_look_like_success() {
 
     // ── 2. Фасад standby-вузла з OboutPos (нова обв'язка, lib.rs:296) ───────
     seed_sqlite_store_id(store);
-    let node = NodeConfig {
-        mode: NodeMode::Standby,
-        ..NodeConfig::default()
-    };
+    let node = NodeConfig::default();
     // Прекондиція «каналу доставки НЕМАЄ» — інакше тест неінформативний.
     assert!(
         !node.has_configured_upstream(),
         "прекондиція: апстрім не заданий"
     );
-    assert!(
-        node.push_blocked_reason().is_none(),
-        "прекондиція: ґейт push на standby мовчить (push_blocked_reason = None)"
-    );
+    // Прекондиція «ніщо не блокує відправку» більше не має об'єкта: ADR-0008 (E7)
+    // видалив і режими вузла, і ґейт блокування push — HTTP-шлях касової черги
+    // вільний за побудовою. Сам assert знято ТІЛЬКИ через зникнення його
+    // предмета; усі змістовні асерти цього тесту не змінювались.
     assert!(
         !sqlite_has_server_url(),
         "прекондиція: у SQLite каси не задано server_url"

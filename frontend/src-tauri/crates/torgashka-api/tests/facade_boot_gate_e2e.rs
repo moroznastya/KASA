@@ -14,7 +14,7 @@
 //!     прибрати spawn-boot-gate у `serve_listener`, фаза 1 перетворюється на
 //!     фазу 2 і тест падає.
 //!
-//! План ініціалізації тут саме `PrimaryBootstrap`: `db_sources.toml` у
+//! План ініціалізації тут — власний bootstrap (URL не резолвиться): `db_sources.toml` у
 //! tmp-каталозі має `active`, якого немає серед джерел → `resolve_database_url()`
 //! → Err (чесно, без fallback), тож фасад реально йде у крок embedded-PG.
 use std::io::{Read, Write};
@@ -61,7 +61,7 @@ fn raw_http_get(addr: &str, path: &str, timeout: Duration) -> (usize, Duration, 
 }
 
 /// Env-обгортка фасаду: ізоляція в tmp + «неможливий» db_sources.toml
-/// (active → неіснуюче джерело) → resolve дає Err → план PrimaryBootstrap.
+/// (active → неіснуюче джерело) → resolve дає Err → план «bootstrap власної БД».
 fn isolate_env(root: &Path) -> std::path::PathBuf {
     std::env::set_var("XDG_DATA_HOME", root);
     std::env::remove_var("DATABASE_URL");
@@ -140,8 +140,8 @@ async fn http_answers_within_2s_while_boot_init_blocks() {
         raw_http_get(&probe_addr, "/api/v1/setup/status", Duration::from_secs(2))
     });
     // Стара поведінка: синхронний блокуючий bootstrap ДО старту обслуговування.
-    let _ =
-        torgashka_api::apply_db_startup_plan(torgashka_api::DbStartupPlan::PrimaryBootstrap).await;
+    // (E7: `DbStartupPlan` замінено на `apply_db_startup` — режимів вузла немає.)
+    let _ = torgashka_api::apply_db_startup(None).await;
     let (n_old, elapsed_old, head_old) = probe.await.expect("контрольна проба");
     eprintln!(
         "[boot-gate] ФАЗА 2 (контроль, старий порядок): {n_old} байт за {elapsed_old:?}; \
