@@ -1,3 +1,34 @@
+> [!WARNING]
+> **⛔ ЗАСТАРІЛО — АРХІВ (2026-09-12).** Документ описує модель **read-only вузла /
+> фізичної реплікації PostgreSQL** (`primary` → hot-standby, `pg_basebackup`,
+> WAL-стрімінг, promote). Цю модель **демонтовано** рішенням Творця,
+> зафіксованим у [ADR-0008 «Рівноправні read-write вузли + центральний хаб»](../../adr/ADR-0008-peer-nodes-sync-hub.md)
+> і виконаним кроком **E7** плану [`plan-adr0008-peer-nodes.md`](../../architecture/plan-adr0008-peer-nodes.md)
+> (коміт `50eb8ec`).
+>
+> **Актуальна модель: [docs/operations/hub-and-nodes.md](../hub-and-nodes.md).**
+>
+> Збережено як **історичний запис** (рішення, процедури, факти реальних прогонів) — не видаляти.
+> **НЕ керуватися цим документом.** Згадані тут шляхи та роути у коді БІЛЬШЕ НЕ ІСНУЮТЬ:
+> `/api/v1/network-nodes/join`, `/api/v1/network-nodes/:id/heartbeat`,
+> `/api/v1/admin/network-nodes/:id/force-resync`, `/api/v1/local/promote`,
+> `/api/v1/local/repoint-primary`, локальна embedded-PG репліка на порту 5433,
+> `pg_basebackup`-провіжн, ґейт запису `write_gate`/`readonly_net`.
+
+---
+> [!NOTE]
+> **Що з цього документа лишається чинним:** ЧАСТИНА 1 (отримати Windows-інсталятор),
+> ЧАСТИНА 2 (встановлення на Windows-пристрій), ЧАСТИНА 4 (оновлення), §6 (Linux-пристрій)
+> — це загальні кроки, не пов'язані з реплікацією; план збірки/релізу —
+> [`docs/windows-build-plan.md`](../../windows-build-plan.md).
+> **Що мертве:** заголовок (гілка `feat/pg-replication`), Варіант B (LAN-тест на 2 пристрої:
+> join-екран → `pg_basebackup` → standby-репліка), Варіант C (ZBOX як `primary`),
+> чекліст «read-only standby / promote / split-brain» і FAQ-рядки про `pg_basebackup`
+> та `TORGASHKA_PG_LISTEN_ADDRESSES`. Ці кроки **неможливо виконати** — відповідні роути
+> видалено (перевірено: `grep -n "network-nodes/join\|promote\|repoint" crates/torgashka-api/src/router_v1.rs`
+> → 0 збігів).
+
+---
 # Встановлення Torgashka на інший пристрій і тестування — покроково
 
 > Гілка: `feat/pg-replication` (PG-реплікація + SQLite offline-черга).

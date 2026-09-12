@@ -1,3 +1,29 @@
+> [!WARNING]
+> **⛔ ЗАСТАРІЛО — АРХІВ (2026-09-12).** Документ описує модель **read-only вузла /
+> фізичної реплікації PostgreSQL** (`primary` → hot-standby, `pg_basebackup`,
+> WAL-стрімінг, promote). Цю модель **демонтовано** рішенням Творця,
+> зафіксованим у [ADR-0008 «Рівноправні read-write вузли + центральний хаб»](../../adr/ADR-0008-peer-nodes-sync-hub.md)
+> і виконаним кроком **E7** плану [`plan-adr0008-peer-nodes.md`](../../architecture/plan-adr0008-peer-nodes.md)
+> (коміт `50eb8ec`).
+>
+> **Актуальна модель: [docs/operations/hub-and-nodes.md](../hub-and-nodes.md).**
+>
+> Збережено як **історичний запис** (рішення, процедури, факти реальних прогонів) — не видаляти.
+> **НЕ керуватися цим документом.** Згадані тут шляхи та роути у коді БІЛЬШЕ НЕ ІСНУЮТЬ:
+> `/api/v1/network-nodes/join`, `/api/v1/network-nodes/:id/heartbeat`,
+> `/api/v1/admin/network-nodes/:id/force-resync`, `/api/v1/local/promote`,
+> `/api/v1/local/repoint-primary`, локальна embedded-PG репліка на порту 5433,
+> `pg_basebackup`-провіжн, ґейт запису `write_gate`/`readonly_net`.
+
+---
+> [!NOTE]
+> Це був **план реалізації ЕТАПів 15–20** (фізична реплікація + реєстр вузлів).
+> Частина механізмів пережила E7 і працює в новій моделі **за іншим призначенням**:
+> `network_nodes` лишився як реєстр вузлів/подій (`/api/v1/admin/network-nodes`,
+> `list_network_events`), а `debtors`/`work_sessions`/`prro_shifts` — як push-kinds
+> етапу E1 замість реплікації. Перевіряти в коді, не за цим текстом.
+
+---
 # План реалізації: мережа магазинів з повною копією БД на кожному вузлі
 
 **Статус:** ДО ЗАТВЕРДЖЕННЯ (версія для аудиту, передана Творцем 2026-09-09).
