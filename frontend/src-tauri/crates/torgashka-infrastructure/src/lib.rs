@@ -24,6 +24,7 @@ pub mod ocr;
 pub mod offline;
 pub mod print;
 pub mod provision;
+pub mod provision_from_hub;
 pub mod prro;
 pub mod repositories;
 pub mod standby_heartbeat;

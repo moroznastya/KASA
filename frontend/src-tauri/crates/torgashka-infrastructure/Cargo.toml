@@ -21,6 +21,8 @@ dirs-next = "2"
 serialport = { version = "4", default-features = false }
 image = "0.25"
 thiserror = "2"
+# sha2 — перевірка цілісності знімка хаба (X-Snapshot-Sha256, R2)
+sha2 = "0.10"
 tempfile = "3"
 base64 = "0.22"
 libc = "0.2"

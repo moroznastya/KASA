@@ -1,0 +1,736 @@
+//! Контракт R2 (ADR-0008 «Варіант B») — наскрізний тест: ПЕРШИЙ ЗАПУСК ВУЗЛА
+//! відновлює БД зі знімка хаба.
+//!
+//! Що доводить тест (усе — на РЕАЛЬНОМУ кластері PostgreSQL 17 і реальному
+//! артефакті хаба, без жодної «тимчасової» процедури):
+//!   1. офлайн-шлях провіжну (`local_dump_path`) відновлює
+//!      `artifacts/hub_snapshot/pos_system_fresh_20260912.dump` у БД вузла
+//!      через реальний `pg_restore` з прапорцями контракту;
+//!   2. у ЦІЙ Ж БД з'являються `sync.hub_url` (нормалізований) і
+//!      `sync.hub_token`, причому `system_settings.store_id IS NULL` — запис
+//!      інстансний, не скоуп точки;
+//!   3. дані справді відновлені: `users=4`, `products=4409`, `receipts≥264`,
+//!      `stores=35` (фактичні `count(*)`, виведені в лог);
+//!   4. HTTP-фасад на цій БД віддає `GET /api/v1/sync/status` з
+//!      `"role":"node"` — тобто БД справді стала ВУЗЛОМ мережі (роль вирішує
+//!      налаштування ЇЇ власної БД, а не прапорець запуску).
+//!
+//! # Кластер тесту
+//! Тест піднімає ВЛАСНИЙ кластер PG 17 (`initdb` + `pg_ctl`) у тимчасовому
+//! каталозі `/tmp`, щоб не торкатись робочих БД машини. Дані — у tmp, порт
+//! вибирає [`resolve_port`]: (1) явний `TORGASHKA_PG_TEST_PORT` — беремо як є,
+//! зайнятий = АНОМАЛІЯ вгору (паніка з доказовою вибіркою власника порту:
+//! `pg_lsclusters` + `/proc/net/tcp`); (2) інакше — порт продукту
+//! [`embedded_pg::EMBEDDED_PG_PORT`] (5433), якщо він вільний (реалізм: той
+//! самий порт, що в проді); (3) інакше 5433 зайнятий (на цій машині його тримає
+//! системний кластер PG 17/main) — АВТОМАТИЧНО беремо вільний порт
+//! (5434..=5500) і друкуємо факт вибору рядком `[r2][info] …`.
+//! Паніки в гілці 3 немає: зайнятий 5433 — не привід червонити тест,
+//! а привід підняти кластер поруч.
+//! Паралельні тести цього файла завжди отримують РІЗНІ порти (заявка на порт
+//! у межах процесу), тому `cargo test --workspace --no-fail-fast` зелений і без
+//! ручного переозначення порту.
+//!
+//! # Чому після відновлення застосовується sync-шар
+//! Знімок хаба зафіксовано на `alembic_version = 0014` (див.
+//! `artifacts/hub_snapshot/MANIFEST.md`), тому в ньому НЕМАЄ таблиць sync-шару
+//! пізніших міграцій (`hub_outbox` — 0021, `catalog_change_requests` — 0022).
+//! У проді цей шар додає міграція, Rust-`ensure_schema` створює лише базову
+//! схему; тест застосовує його ТИМ САМИМ хелпером, що решта sync-e2e
+//! (`common/sync_schema.rs`), і друкує факт відсутності таблиць у лог — без
+//! цього `/api/v1/sync/status` не має на чому рахувати чергу форвардингу.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use uuid::Uuid;
+
+use torgashka_api::auth::create_access_token;
+use torgashka_infrastructure::embedded_pg::{
+    pg_ctl_start_args, pg_ctl_stop_args, psql_conn_args, psql_conn_env, EmbeddedPostgres,
+    EMBEDDED_PG_PORT,
+};
+
+#[path = "common/hub_env.rs"]
+mod hub_env;
+
+/// Порт власного кластера тесту можна переозначити ЛИШЕ явно (див. шапку).
+const PORT_ENV: &str = "TORGASHKA_PG_TEST_PORT";
+/// Каталог тестового кластера (дані — у tmp, не в робочих шляхах застосунку).
+const DATA_DIR_NAME: &str = "torgashka_contract2_pgdata";
+/// Токен вузла, який мусить доїхати до БД вузла як `sync.hub_token`.
+const NODE_TOKEN: &str = "contract2-node-token-0123456789";
+/// Очікувані характеристики артефакта (MANIFEST.md хаба).
+const DUMP_FILENAME: &str = "pos_system_fresh_20260912.dump";
+const DUMP_BYTES: u64 = 716_167;
+const DUMP_SHA256: &str = "3d2d17c2f1592dccd39d824da047cbf5c07f9e4ac50a19a7fade75616fabb25a";
+/// Очікувані `count(*)` у відновленій БД (з MANIFEST.md, перевіряються фактом).
+const EXPECTED_USERS: i64 = 4;
+const EXPECTED_PRODUCTS: i64 = 4_409;
+const EXPECTED_RECEIPTS_MIN: i64 = 264;
+const EXPECTED_STORES: i64 = 35;
+
+fn evidence(line: &str) {
+    eprintln!("[r2][evidence] {line}");
+}
+
+/// Шлях до інструмента в каталозі бінарників (той самий `.exe`-контракт, що в
+/// `embedded_pg`: Windows-збірки PG кладуть `.exe`).
+fn tool(bin_dir: &Path, base: &str) -> PathBuf {
+    if cfg!(windows) {
+        bin_dir.join(format!("{base}.exe"))
+    } else {
+        bin_dir.join(base)
+    }
+}
+
+fn artifact_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../artifacts/hub_snapshot")
+}
+
+/// Чи слухає хтось `127.0.0.1:<port>` (та сама перевірка, що `port_is_open`).
+fn port_open(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// Доказова вибірка про власника порту — для ANOMALY-блоку (не для гадання).
+fn port_evidence(port: u16) -> String {
+    let mut out = String::new();
+    for (label, cmd, args) in [
+        ("ss -ltnp", "ss", vec!["-ltnp"]),
+        ("pg_lsclusters", "pg_lsclusters", vec![]),
+    ] {
+        let output = Command::new(cmd).args(&args).output();
+        match output {
+            Ok(o) => {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                let filtered: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.contains(&port.to_string()) || label == "pg_lsclusters")
+                    .collect();
+                out.push_str(&format!("\n  {label}:\n    {}\n", filtered.join("\n    ")));
+            }
+            Err(e) => out.push_str(&format!("\n  {label}: недоступно ({e})\n")),
+        }
+    }
+    // Хто саме тримає сокет: /proc/net/tcp дає uid власника (доказ, а не здогад).
+    if let Ok(tcp) = std::fs::read_to_string("/proc/net/tcp") {
+        let hex = format!("{:04X}", port);
+        for line in tcp.lines() {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() > 7 && cols[1].ends_with(&format!(":{hex}")) {
+                out.push_str(&format!(
+                    "  /proc/net/tcp: local={} uid={} inode={}\n",
+                    cols[1], cols[7], cols[9]
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Порти, заявлені тестами цього файла (бінарник один — стан у межах процесу):
+/// завдяки цьому паралельні тести ніколи не ділять один номер порту.
+static CLAIMED_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+/// Рядок `[r2][info]` про вибір власного порту друкуємо рівно один раз.
+static FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
+/// Верхня межа перебору власних портів тесту (5433 зайнятий — беремо 5434..5500).
+const PORT_SCAN_END: u16 = 5500;
+
+/// Порт тестового кластера (порядок вибору — у шапці файла).
+/// (1) явний `TORGASHKA_PG_TEST_PORT` — як є, зайнятий = аномалія вгору (паніка);
+/// (2) вільний порт продукту [`EMBEDDED_PG_PORT`] (5433) — реалізм продукту;
+/// (3) інакше — автоматично підібраний вільний порт (5434..=[`PORT_SCAN_END`]).
+/// Паніка в гілці 3 неможлива, поки є хоч один вільний порт; якщо вільного
+/// немає взагалі — це аномалія вгору з доказовою вибіркою власників портів.
+fn resolve_port() -> u16 {
+    let explicit = std::env::var(PORT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok());
+    let mut claimed = CLAIMED_PORTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(port) = explicit {
+        if port_open(port) {
+            let evidence = port_evidence(port);
+            panic!(
+                "[r2][ANOMALY] порт {port} зайнятий, але його задано ЯВНО через {PORT_ENV} — \
+                 продовжувати на чужому порту небезпечно (під ним може бути робочий кластер). \
+                 Власник порту:{evidence}\n\
+                 Задайте вільний порт (напр. {PORT_ENV}=5434) або приберіть змінну — тоді тест \
+                 підбере вільний порт сам."
+            );
+        }
+        claimed.push(port);
+        return port;
+    }
+
+    if !claimed.contains(&EMBEDDED_PG_PORT) && !port_open(EMBEDDED_PG_PORT) {
+        claimed.push(EMBEDDED_PG_PORT);
+        return EMBEDDED_PG_PORT;
+    }
+
+    // 5433 недоступний (зайнятий ззовні або вже заявлений сусіднім тестом) —
+    // беремо власний вільний порт. Паніки тут НЕМАЄ: це штатна гілка.
+    let scan_end = PORT_SCAN_END.max(EMBEDDED_PG_PORT + 1);
+    let picked = (EMBEDDED_PG_PORT + 1..=scan_end)
+        .find(|candidate| !claimed.contains(candidate) && !port_open(*candidate))
+        .unwrap_or_else(|| {
+            panic!(
+                "[r2][ANOMALY] жоден порт {}..={scan_end} не вільний — власний кластер тесту \
+                 підняти неможливо. Власники зайнятих портів:{}{}{}",
+                EMBEDDED_PG_PORT + 1,
+                port_evidence(EMBEDDED_PG_PORT),
+                port_evidence(EMBEDDED_PG_PORT + 1),
+                port_evidence(scan_end),
+            )
+        });
+    claimed.push(picked);
+    if !FALLBACK_REPORTED.swap(true, Ordering::SeqCst) {
+        if port_open(EMBEDDED_PG_PORT) {
+            eprintln!(
+                "[r2][info] 5433 зайнятий (системний кластер) → власний кластер тесту на порту {picked}"
+            );
+        } else {
+            eprintln!(
+                "[r2][info] порт 5433 закріплено за іншим тестом цього файла → власний кластер тесту на порту {picked}"
+            );
+        }
+    }
+    picked
+}
+
+/// Власний тимчасовий кластер PG 17 (initdb + pg_ctl) для наскрізного провіжну.
+struct TestCluster {
+    bin_dir: PathBuf,
+    data_dir: PathBuf,
+    log: PathBuf,
+    port: u16,
+}
+
+impl TestCluster {
+    fn start(bin_dir: PathBuf, port: u16) -> Self {
+        let data_dir =
+            std::env::temp_dir().join(format!("{DATA_DIR_NAME}_{}_{port}", std::process::id()));
+        if data_dir.exists() {
+            std::fs::remove_dir_all(&data_dir).expect("прибирання старого каталогу тесту");
+        }
+        std::fs::create_dir_all(&data_dir).expect("каталог даних тесту");
+        let log = data_dir.join("pg_ctl.log");
+
+        let initdb = tool(&bin_dir, "initdb");
+        let out = Command::new(&initdb)
+            .args([
+                "-D",
+                &data_dir.to_string_lossy(),
+                "-U",
+                "postgres",
+                "-A",
+                "trust",
+                "--encoding=UTF8",
+            ])
+            .output()
+            .unwrap_or_else(|e| panic!("initdb {}: {e}", initdb.display()));
+        assert!(
+            out.status.success(),
+            "initdb не вдався: код {:?}\nstdout:\n{}\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Ті самі аргументи pg_ctl, що в проді (`pg_ctl_start_args`), плюс
+        // `-k <data_dir>`: сокет — у каталозі тесту, щоб не сваритися з
+        // системними кластерами.
+        let opts = format!("-p {port} -h 127.0.0.1 -k {}", data_dir.display());
+        let args = pg_ctl_start_args(&data_dir, &log, &opts, 60);
+        let pg_ctl = tool(&bin_dir, "pg_ctl");
+        let out = Command::new(&pg_ctl)
+            .args(&args)
+            .output()
+            .unwrap_or_else(|e| panic!("pg_ctl {}: {e}", pg_ctl.display()));
+        assert!(
+            out.status.success(),
+            "pg_ctl start не вдався: код {:?}\nstderr:\n{}\nлог {}:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+            log.display(),
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+
+        let cluster = Self {
+            bin_dir,
+            data_dir,
+            log,
+            port,
+        };
+        // БД вузла — створюємо так, як це робить застосунок (psql + psql_conn_args).
+        let (code, out_text, err_text) = cluster.psql("postgres", "CREATE DATABASE torgashka");
+        assert_eq!(
+            code,
+            Some(0),
+            "CREATE DATABASE torgashka: код {code:?}\n{out_text}\n{err_text}"
+        );
+        cluster
+    }
+
+    fn url(&self) -> String {
+        self.url_for("torgashka")
+    }
+
+    /// URL довільної БД того самого кластера тесту.
+    fn url_for(&self, db: &str) -> String {
+        format!("postgresql://postgres@127.0.0.1:{}/{db}", self.port)
+    }
+
+    /// Створює додаткову БД у кластері тесту (напр. для фасаду-«хаба», якому
+    /// потрібна власна робоча схема й аж ніяк не БД вузла).
+    fn create_db(&self, name: &str) {
+        let (code, out, err) = self.psql("postgres", &format!("CREATE DATABASE {name}"));
+        assert_eq!(code, Some(0), "CREATE DATABASE {name}: {out} {err}");
+    }
+
+    /// `psql` тим самим способом підключення, що в проді (`psql_conn_args`/`env`).
+    fn psql(&self, db: &str, sql: &str) -> (Option<i32>, String, String) {
+        let psql = tool(&self.bin_dir, "psql");
+        let mut command = Command::new(psql);
+        command.args(psql_conn_args("postgres", db, self.port));
+        for (k, v) in psql_conn_env() {
+            command.env(k, v);
+        }
+        command.arg("-c").arg(sql);
+        match command.output() {
+            Ok(o) => (
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout).to_string(),
+                String::from_utf8_lossy(&o.stderr).to_string(),
+            ),
+            Err(e) => (None, String::new(), format!("psql не запустився: {e}")),
+        }
+    }
+
+    /// Виконує SQL і повертає сирий вивід у лог (доказова лінія тесту).
+    fn psql_evidence(&self, title: &str, sql: &str) {
+        let (code, out, err) = self.psql("torgashka", sql);
+        evidence(&format!("{title}\n    SQL: {sql}\n    psql exit={code:?}"));
+        for line in out.trim_end().lines() {
+            evidence(&format!("    {line}"));
+        }
+        if !err.trim().is_empty() {
+            evidence(&format!("    stderr: {}", err.trim()));
+        }
+    }
+
+    fn stop(&self) {
+        let pg_ctl = tool(&self.bin_dir, "pg_ctl");
+        let args = pg_ctl_stop_args(&self.data_dir, 30);
+        match Command::new(pg_ctl).args(&args).output() {
+            Ok(o) => evidence(&format!(
+                "зупинка тестового кластера: код {:?}",
+                o.status.code()
+            )),
+            Err(e) => evidence(&format!("зупинка тестового кластера: {e}")),
+        }
+    }
+}
+
+impl Drop for TestCluster {
+    fn drop(&mut self) {
+        self.stop();
+        let _ = std::fs::remove_dir_all(&self.data_dir);
+        let _ = std::fs::remove_file(&self.log);
+    }
+}
+
+/// Версія інструмента одним рядком (для доказу «саме 17.x»).
+fn tool_version(program: &Path) -> String {
+    match Command::new(program).arg("--version").output() {
+        Ok(o) => format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout).trim(),
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Err(e) => format!("не запустився: {e}"),
+    }
+}
+
+/// Реальний артефакт хаба + вибірка версій інструментів (PG 17 обов'язковий:
+/// дамп `Dump Version 1.16` системний `pg_restore` 16.x не читає).
+fn locate_binaries() -> PathBuf {
+    let Some(bin_dir) = EmbeddedPostgres::locate() else {
+        panic!(
+            "[r2][ANOMALY] бінарники PostgreSQL не знайдено (задайте \
+             TORGASHKA_PG_DIR=/usr/lib/postgresql/17/bin)"
+        );
+    };
+    let initdb = tool(&bin_dir, "initdb");
+    let pg_restore = tool(&bin_dir, "pg_restore");
+    let initdb_v = tool_version(&initdb);
+    let restore_v = tool_version(&pg_restore);
+    evidence(&format!("каталог бінарників PG: {}", bin_dir.display()));
+    evidence(&format!("initdb:    {initdb_v}"));
+    evidence(&format!("pg_restore: {restore_v}"));
+    // Версійна аномалія (дамп 1.16 від 17.6 проти бінарників 16.x) — не
+    // ігнорується: з 16.x відновлення впало б «незрозумілою» помилкою TOC.
+    assert!(
+        restore_v.contains("17.") && initdb_v.contains("17."),
+        "[r2][ANOMALY] потрібні бінарники PG 17 (дамп 17.6/v1.16): initdb='{initdb_v}', \
+         pg_restore='{restore_v}'"
+    );
+    bin_dir
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_start_restores_db_from_hub_snapshot_and_becomes_node() {
+    let started = Instant::now();
+    let artifact = artifact_dir().join(DUMP_FILENAME);
+    assert!(
+        artifact.is_file(),
+        "немає артефакта знімка хаба: {}",
+        artifact.display()
+    );
+
+    // ── 0. Бінарники PG 17 і власний кластер у /tmp ─────────────────────────
+    let bin_dir = locate_binaries();
+    let port = resolve_port();
+    let cluster = TestCluster::start(bin_dir, port);
+    evidence(&format!(
+        "тестовий кластер: {} (порт {}), БД вузла {}",
+        cluster.data_dir.display(),
+        cluster.port,
+        cluster.url()
+    ));
+
+    // ── 1. Провіжн: офлайн-шлях (дамп із файлу — «перший запуск із USB») ────
+    // hub_url навмисно БЕЗ схеми й з хвостовим слешем: перевіряємо нормалізацію.
+    let hub_url_input = format!("127.0.0.1:{}/", cluster.port);
+    let expected_hub_url = format!("http://127.0.0.1:{}", cluster.port);
+    let dump_dir = std::env::temp_dir().join(format!("{DATA_DIR_NAME}_dumps"));
+    let mut cfg = torgashka_infrastructure::provision_from_hub::HubProvisionConfig::new(
+        hub_url_input.clone(),
+        NODE_TOKEN,
+        Some(artifact.clone()),
+    );
+    cfg.target_db_url = cluster.url();
+    cfg.ensure_local_db = false; // кластер тесту вже піднятий — ін'єкція цілі
+    cfg.dump_dir = Some(dump_dir.clone());
+
+    let outcome =
+        torgashka_infrastructure::provision_from_hub::run(cfg, |step, status, message| {
+            eprintln!("[r2][progress] {step} {} — {message}", status.as_str());
+        })
+        .await;
+
+    evidence(&format!(
+        "провіжн: ok={} class={:?} source={:?} dump_bytes={:?} dump_sha256={:?}",
+        outcome.ok, outcome.class, outcome.source, outcome.dump_bytes, outcome.dump_sha256
+    ));
+    evidence(&format!("провіжн message: {}", outcome.message));
+    if let Some(tail) = &outcome.stderr_tail {
+        evidence(&format!(
+            "pg_restore (хвіст виводу):\n    {}",
+            tail.replace('\n', "\n    ")
+        ));
+    }
+    assert!(
+        outcome.ok,
+        "провіжн мусить пройти: class={:?} message={} steps={:#?}",
+        outcome.class, outcome.message, outcome.steps
+    );
+    assert_eq!(outcome.class, None);
+    assert_eq!(outcome.source.as_deref(), Some("file"));
+    assert_eq!(outcome.hub_url.as_deref(), Some(expected_hub_url.as_str()));
+    assert_eq!(outcome.dump_bytes, Some(DUMP_BYTES));
+    assert_eq!(outcome.dump_sha256.as_deref(), Some(DUMP_SHA256));
+    let step_names: Vec<&str> = outcome.steps.iter().map(|s| s.step.as_str()).collect();
+    assert_eq!(
+        step_names,
+        vec![
+            "validate_url",
+            "hub_reachable",
+            "download",
+            "restore",
+            "configure"
+        ]
+    );
+    let restore_step = outcome
+        .steps
+        .iter()
+        .find(|s| s.step == "restore")
+        .expect("крок restore");
+    assert!(restore_step.ok, "restore: {}", restore_step.detail);
+
+    // ── 2. Факти БД вузла: налаштування + дані (psql, доказово у лог) ───────
+    cluster.psql_evidence(
+        "schema: alembic_version і наявність sync-шару у відновленій БД",
+        "SELECT (SELECT version_num FROM alembic_version) AS alembic, \
+         to_regclass('public.hub_outbox') IS NOT NULL AS has_hub_outbox, \
+         (SELECT count(*) FROM information_schema.tables WHERE table_schema='public') AS public_tables;",
+    );
+    cluster.psql_evidence(
+        "налаштування вузла у ВЛАСНІЙ БД вузла",
+        "SELECT key, value, (store_id IS NULL) AS store_is_null FROM system_settings \
+         WHERE key IN ('sync.hub_url','sync.hub_token') ORDER BY key;",
+    );
+    cluster.psql_evidence(
+        "count(*) відновлених даних",
+        "SELECT (SELECT count(*) FROM users) AS users, (SELECT count(*) FROM products) AS products, \
+         (SELECT count(*) FROM receipts) AS receipts, \
+         (SELECT count(*) FROM stores) AS stores, (SELECT count(*) FROM user_stores) AS user_stores;",
+    );
+
+    let pool = hub_env::pool_to(&cluster.url()).await;
+    let configured: Option<(String, Option<String>, Option<bool>)> = sqlx::query_as(
+        "SELECT value, (SELECT value FROM system_settings WHERE key = 'sync.hub_token' LIMIT 1), \
+                (store_id IS NULL) FROM system_settings WHERE key = 'sync.hub_url' LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("читання sync.hub_url");
+    let (hub_url_written, token_written, store_is_null) =
+        configured.expect("sync.hub_url мусить бути записаний");
+    assert_eq!(
+        hub_url_written, expected_hub_url,
+        "записано НОРМАЛІЗОВАНИЙ URL (вхід був {hub_url_input})"
+    );
+    assert_eq!(
+        token_written.as_deref(),
+        Some(NODE_TOKEN),
+        "sync.hub_token мусить доїхати до БД вузла"
+    );
+    assert_eq!(
+        store_is_null,
+        Some(true),
+        "запис мусить бути інстансним (store_id IS NULL), а не в скоупі точки"
+    );
+
+    let counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM products), \
+                (SELECT count(*) FROM receipts), (SELECT count(*) FROM stores)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count(*) після відновлення");
+    assert_eq!(counts.0, EXPECTED_USERS, "users");
+    assert_eq!(counts.1, EXPECTED_PRODUCTS, "products");
+    assert!(
+        counts.2 >= EXPECTED_RECEIPTS_MIN,
+        "receipts: {} < {EXPECTED_RECEIPTS_MIN}",
+        counts.2
+    );
+    assert_eq!(counts.3, EXPECTED_STORES, "stores");
+
+    // ── 3. Фасад на цій БД: роль інстанса = node ────────────────────────────
+    // sync-шар: у проді його додає міграція (тут — хелпер решти sync-e2e), бо
+    // знімок хаба зафіксовано на alembic 0014 і таблиць 0021+ у ньому немає.
+    hub_env::ensure_schema_on(&pool).await;
+    evidence("sync-шар застосовано (ensure_schema + sync_schema::apply) — як у решті sync-e2e");
+
+    let pair: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT us.user_id, us.store_id FROM user_stores us \
+         JOIN stores s ON s.id = us.store_id ORDER BY us.created_at, us.user_id LIMIT 1",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("користувач із доступом до точки з дампа");
+    let (user_id, store_id) = pair.expect("у знімку хаба є user_stores (39 рядків)");
+    evidence(&format!(
+        "точка з дампа для перевірки: store_id={store_id}, користувач={user_id}"
+    ));
+
+    let (base, api_port) = hub_env::serve_any(hub_env::app_state(&pool)).await;
+    hub_env::wait_ready(&base).await;
+    let token = create_access_token(&user_id.to_string(), "owner", &[], hub_env::SECRET)
+        .expect("JWT для запиту статусу");
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/api/v1/sync/status"))
+        .bearer_auth(&token)
+        .header("x-store-id", store_id.to_string())
+        .send()
+        .await
+        .expect("GET /api/v1/sync/status");
+    let status_code = response.status().as_u16();
+    let body: serde_json::Value = response.json().await.expect("JSON статусу");
+    evidence(&format!(
+        "GET /api/v1/sync/status → HTTP {status_code} (фасад на 127.0.0.1:{api_port}): {body}"
+    ));
+    assert_eq!(status_code, 200, "статус вузла: {body}");
+    assert_eq!(
+        body["role"], "node",
+        "роль інстанса мусить бути node (є sync.hub_url у ВЛАСНІЙ БД): {body}"
+    );
+
+    evidence(&format!(
+        "ЗАГАЛЬНО: провіжн+перевірки завершено за {:?}",
+        started.elapsed()
+    ));
+}
+
+/// Мережевий шлях провіжну: вузол тягне знімок із ХАБА (реальний HTTP-фасад з
+/// ендпоінтом R1 `GET /api/v1/sync/snapshot`), звіряє `X-Snapshot-Sha256`,
+/// зберігає знімок у тимчасовий файл і лише потім відновлює БД.
+///
+/// Тут же — негативна гілка (канал аномалій контракту): невалідний токен
+/// мусить дати `DownloadFailed` з явним «хаб відкинув токен», і жоден
+/// наступний крок (restore/configure) виконаний бути не може.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hub_path_downloads_snapshot_with_sha_check_and_rejects_bad_token() {
+    // Той самий файл, який «хаб» віддаватиме ендпоінтом R1 (той самий каталог).
+    let artifact = artifact_dir().join(DUMP_FILENAME);
+    assert!(
+        artifact.is_file(),
+        "немає артефакта знімка хаба: {}",
+        artifact.display()
+    );
+    let bin_dir = locate_binaries();
+    // Кожен тест файла заявляє СВІЙ вільний порт (див. `resolve_port`): тести
+    // можуть іти паралельно, спільного номера між ними немає.
+    let port = resolve_port();
+    assert!(
+        !port_open(port),
+        "[r2][ANOMALY] порт {port} зайнятий — тесту потрібен вільний порт"
+    );
+    let cluster = TestCluster::start(bin_dir, port);
+    evidence(&format!(
+        "другий тест: власний кластер {} (порт {}), БД вузла {}",
+        cluster.data_dir.display(),
+        cluster.port,
+        cluster.url()
+    ));
+    // БД вузла (ціль відновлення) лишається незайманою до самого провіжну.
+    let pool = hub_env::pool_to(&cluster.url()).await;
+
+    // ── «Хаб»: справжній фасад зі справжнім ендпоінтом R1 на артефакті репо ──
+    // Фасад потребує РОБОЧОЇ БД (readiness = /setup/status), тому йому даємо
+    // ОКРЕМУ БД цього ж кластера — не БД вузла: інакше перевірка готовності
+    // фасаду торкалася б тієї самої БД, яку от-от має відновити pg_restore.
+    cluster.create_db("hub_control");
+    let hub_pool = hub_env::pool_to(&cluster.url_for("hub_control")).await;
+    hub_env::ensure_schema_on(&hub_pool).await;
+    // Назва env — КОНСТАНТА модуля R1 (жодного літерала-дубля в тесті).
+    std::env::set_var(
+        torgashka_api::sync_snapshot::SNAPSHOT_DIR_ENV,
+        artifact_dir().to_string_lossy().to_string(),
+    );
+    let (hub_base, hub_port) = hub_env::serve_any(hub_env::app_state(&hub_pool)).await;
+    hub_env::wait_ready(&hub_base).await;
+    evidence(&format!(
+        "хаб (фасад із R1-ендпоінтом знімка) слухає 127.0.0.1:{hub_port}; каталог знімків {}",
+        artifact_dir().display()
+    ));
+
+    // ── Негативна гілка: токен невалідний → 401 → DownloadFailed ────────────
+    let mut bad = torgashka_infrastructure::provision_from_hub::HubProvisionConfig::new(
+        format!("127.0.0.1:{hub_port}"),
+        "не-токен-вузла",
+        None,
+    );
+    bad.target_db_url = cluster.url();
+    bad.ensure_local_db = false;
+    let failed = torgashka_infrastructure::provision_from_hub::run(bad, |_, _, _| {}).await;
+    evidence(&format!(
+        "негативна гілка (сміттєвий токен): ok={} class={:?} message={}",
+        failed.ok, failed.class, failed.message
+    ));
+    assert!(!failed.ok, "невалідний токен не може давати успіх");
+    assert_eq!(failed.class.as_deref(), Some("DownloadFailed"));
+    assert!(
+        failed.message.contains("401") || failed.message.contains("403"),
+        "у повідомленні мусить бути фактичний статус хаба: {}",
+        failed.message
+    );
+    let failed_steps: Vec<(String, bool)> = failed
+        .steps
+        .iter()
+        .map(|s| (s.step.clone(), s.ok))
+        .collect();
+    assert_eq!(
+        failed_steps,
+        vec![
+            ("validate_url".to_string(), true),
+            ("hub_reachable".to_string(), true),
+            ("download".to_string(), false),
+        ],
+        "після невдачі завантаження жоден наступний крок не виконується"
+    );
+
+    // ── Позитивна гілка: реальний JWT (ендпоінт R1 приймає device/admin/owner) ─
+    let node_token =
+        create_access_token(&Uuid::new_v4().to_string(), "owner", &[], hub_env::SECRET)
+            .expect("JWT хаба");
+    let dump_dir = std::env::temp_dir().join(format!("{DATA_DIR_NAME}_hub_dumps"));
+    let mut cfg = torgashka_infrastructure::provision_from_hub::HubProvisionConfig::new(
+        format!("127.0.0.1:{hub_port}"),
+        node_token,
+        None,
+    );
+    cfg.target_db_url = cluster.url();
+    cfg.ensure_local_db = false;
+    cfg.dump_dir = Some(dump_dir.clone());
+
+    let outcome =
+        torgashka_infrastructure::provision_from_hub::run(cfg, |step, status, message| {
+            eprintln!("[r2][progress] {step} {} — {message}", status.as_str());
+        })
+        .await;
+    evidence(&format!(
+        "мережевий провіжн: ok={} source={:?} dump_bytes={:?} dump_sha256={:?}",
+        outcome.ok, outcome.source, outcome.dump_bytes, outcome.dump_sha256
+    ));
+    assert!(
+        outcome.ok,
+        "провіжн із хаба мусить пройти: class={:?} message={} steps={:#?}",
+        outcome.class, outcome.message, outcome.steps
+    );
+    assert_eq!(outcome.source.as_deref(), Some("hub"));
+    assert_eq!(outcome.dump_bytes, Some(DUMP_BYTES));
+    assert_eq!(outcome.dump_sha256.as_deref(), Some(DUMP_SHA256));
+    let saved = dump_dir.join(DUMP_FILENAME);
+    assert!(
+        saved.is_file(),
+        "знімок мусить лежати у тимчасовому файлі {} (ім'я з X-Snapshot-Filename)",
+        saved.display()
+    );
+    evidence(&format!(
+        "знімок із хаба збережено: {} ({} Б)",
+        saved.display(),
+        std::fs::metadata(&saved).map(|m| m.len()).unwrap_or(0)
+    ));
+
+    // Дані у відновленій з мережі БД + налаштування вузла.
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM products),                 (SELECT count(*) FROM receipts)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count(*) після мережевого відновлення");
+    assert_eq!(counts.0, EXPECTED_USERS);
+    assert_eq!(counts.1, EXPECTED_PRODUCTS);
+    assert!(counts.2 >= EXPECTED_RECEIPTS_MIN);
+    let hub_setting: (String, Option<bool>) = sqlx::query_as(
+        "SELECT value, (store_id IS NULL) FROM system_settings WHERE key = 'sync.hub_url' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("sync.hub_url після мережевого провіжну");
+    assert_eq!(hub_setting.0, format!("http://127.0.0.1:{hub_port}"));
+    assert_eq!(
+        hub_setting.1,
+        Some(true),
+        "запис інстансний (store_id IS NULL)"
+    );
+    evidence(&format!(
+        "після мережевого провіжну: users={} products={} receipts={} sync.hub_url={} (store_id IS NULL: {:?})",
+        counts.0, counts.1, counts.2, hub_setting.0, hub_setting.1
+    ));
+}

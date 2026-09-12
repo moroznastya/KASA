@@ -51,6 +51,8 @@ pub mod stores;
 pub mod suppliers;
 pub mod sync;
 pub mod sync_receivers;
+// R1 (ADR-0008 «Варіант B»): знімок БД хаба для провіжну вузла.
+pub mod sync_snapshot;
 pub mod sync_status;
 
 use std::sync::Arc;

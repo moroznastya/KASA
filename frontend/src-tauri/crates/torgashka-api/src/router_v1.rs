@@ -23,7 +23,7 @@ use crate::{
     admin_reports, auth, auth_routes, catalog_proposal, categories_v2, crud, debtors, documents,
     invoices, ledger, network, network_nodes, ocr, pos, print_templates, products_v2, proxy, prro,
     purchase_orders, readdirs, return_invoices, route_local, setup, store_context, stores,
-    suppliers, sync, sync_status, AppState,
+    suppliers, sync, sync_snapshot, sync_status, AppState,
 };
 
 /// Збирає роутер v1 зі станом.
@@ -808,6 +808,18 @@ pub fn build_router(state: AppState) -> Router {
             auth::auth_middleware,
         ));
 
+    // R1 (ADR-0008 «Варіант B»): ЗНІМОК БД хаба — джерело провіжну вузла (R2).
+    // Знімок — це ВСЯ БД, а не дані точки: store_middleware (X-Store-Id) тут
+    // не лише зайвий, а й хибний скоуп. Тому окремий роутер БЕЗ store-шару,
+    // але З auth (як admin_network/activate); роль перевіряє сам хендлер
+    // (device|admin|owner → 403 іншим).
+    let sync_snapshot = Router::new()
+        .route("/api/v1/sync/snapshot", get(sync_snapshot::download))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
     // Локальний routing standby-вузла (ЕТАП 18): /api/v1/local/* — читання
     // з локальної репліки (5433) + запис у SQLite-чергу, коли primary
     // недоступний. Порожній Router, якщо вузол не standby або репліка не
@@ -815,6 +827,7 @@ pub fn build_router(state: AppState) -> Router {
     // route_local::router (як у private-гілки).
     activate
         .merge(admin_network)
+        .merge(sync_snapshot)
         .merge(private)
         .merge(route_local::router(state.clone()))
         // ФАЗА 3.8: drain залишку SQLite-черги у власний PG. Монтується

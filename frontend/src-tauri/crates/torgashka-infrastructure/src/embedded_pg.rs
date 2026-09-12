@@ -271,6 +271,30 @@ fn pg_ctl_name() -> &'static str {
     }
 }
 
+/// Ім'я `pg_restore` у ТОМУ САМОМУ каталозі бінарників, що `pg_ctl`/`psql`.
+///
+/// Навіщо саме так: `pg_restore` мусить бути ТІЄЇ Ж версії, що сервер і решта
+/// інструментів (дамп v1.16 читає лише PG 17.x; системний `/usr/bin/pg_restore`
+/// 16.x його не читає). Каталог резолвить `EmbeddedPostgres::locate()` —
+/// TORGASHKA_PG_DIR → resources/postgres → .cache/pg → pg_config → системні
+/// шляхи; хардкодити `/usr/lib/postgresql/...` не можна.
+pub fn pg_restore_name() -> &'static str {
+    if cfg!(windows) {
+        "pg_restore.exe"
+    } else {
+        "pg_restore"
+    }
+}
+
+/// Ім'я `pg_dump` (та сама логіка каталогу й `.exe`, що [`pg_restore_name`]).
+pub fn pg_dump_name() -> &'static str {
+    if cfg!(windows) {
+        "pg_dump.exe"
+    } else {
+        "pg_dump"
+    }
+}
+
 /// Готує `Command` для `pg_ctl` зі stdio, які НЕ може успадкувати демон.
 ///
 /// ДЕФЕКТ 5б (жива Windows-каса): `pg_ctl start` лишає жити `postgres.exe`
@@ -1571,6 +1595,19 @@ mod tests {
     // Дефект 5: жоден виклик PG не має права висіти безмежно (psql `-w` +
     // PGCONNECT_TIMEOUT; pg_ctl `-w -t <наш таймаут>`).
     // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn restore_and_dump_binaries_follow_the_same_naming_rules_as_pg_ctl() {
+        let expected = |base: &str| {
+            if cfg!(windows) {
+                format!("{base}.exe")
+            } else {
+                base.to_string()
+            }
+        };
+        assert_eq!(pg_restore_name(), expected("pg_restore"));
+        assert_eq!(pg_dump_name(), expected("pg_dump"));
+    }
 
     #[test]
     fn psql_conn_args_contain_no_password_flag() {

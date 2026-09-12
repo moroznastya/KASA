@@ -129,6 +129,21 @@ pub enum SyncError {
         /// Версію вузла приписано (заголовок не надіслано — вузол до E9).
         assumed: bool,
     },
+    /// R1 (ADR-0008 «Варіант B»): каталог знімків або файл `*.dump` відсутній
+    /// → 404. `detail` містить ФАКТИЧНИЙ шлях (оператор має бачити, куди
+    /// дивився хаб, а не здогадуватись).
+    #[error("не знайдено: {0}")]
+    NotFound(String),
+    /// R1: роль не має доступу до ресурсу (знімок усієї БД — не дані точки)
+    /// → 403. Окремий варіант, а не `BadRequest`: 400 означав би «запит
+    /// зіпсований», хоча запит коректний — бракує ПРАВА.
+    #[error("доступ заборонено: {0}")]
+    Forbidden(String),
+    /// R1: помилка файлової системи (каталог/знімок не читається) → 500.
+    /// `Db` тут не підходить: він типізований `sqlx::Error` і віддає клієнту
+    /// загальне «помилка бази даних» — для збою диска це була б брехня.
+    #[error("файлова помилка: {0}")]
+    Io(String),
 }
 
 impl IntoResponse for SyncError {
@@ -198,6 +213,26 @@ impl IntoResponse for SyncError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"detail": "помилка бази даних"})),
+                )
+                    .into_response()
+            }
+            // R1: 404 — немає каталогу/знімка. Шлях у `detail` (не «щось не
+            // знайдено», а КОНКРЕТНО що і де).
+            SyncError::NotFound(msg) => {
+                (StatusCode::NOT_FOUND, Json(json!({"detail": msg}))).into_response()
+            }
+            // R1: 403 — роль не має права на знімок усієї БД.
+            SyncError::Forbidden(msg) => {
+                (StatusCode::FORBIDDEN, Json(json!({"detail": msg}))).into_response()
+            }
+            // R1: 500 — збій файлової системи. Текст у `detail`: це локальна
+            // операція хаба (шлях на диску), не дані клієнта → приховувати
+            // нічого, а діагностувати треба з першого погляду.
+            SyncError::Io(msg) => {
+                eprintln!("[sync] файлова помилка: {msg}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"detail": msg})),
                 )
                     .into_response()
             }

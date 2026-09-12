@@ -23,7 +23,6 @@ import {
   listNetworkNodes,
   createNetworkNode,
   archiveNetworkNode,
-  forceResyncNode,
   NodeCreateResult,
 } from '@/services/networkNodeService';
 import { formatRelativeTime, formatBytes } from '@/utils/format';
@@ -64,7 +63,6 @@ const NetworkTopologyPage: React.FC = () => {
 
   // Деструктивні дії.
   const [archiveTarget, setArchiveTarget] = useState<NetworkNode | null>(null);
-  const [resyncTarget, setResyncTarget] = useState<NetworkNode | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -118,21 +116,6 @@ const NetworkTopologyPage: React.FC = () => {
       void load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка архівації');
-    } finally {
-      setActionBusyId(null);
-    }
-  };
-
-  const handleResync = async () => {
-    if (!resyncTarget) return;
-    setActionBusyId(resyncTarget.id);
-    try {
-      await forceResyncNode(resyncTarget.id);
-      toast.success(`Ресинк «${resyncTarget.name}» запущено`);
-      setResyncTarget(null);
-      void load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка запуску ресинку');
     } finally {
       setActionBusyId(null);
     }
@@ -244,16 +227,6 @@ const NetworkTopologyPage: React.FC = () => {
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="flex-1"
-                      disabled={actionBusyId === node.id}
-                      onClick={() => setResyncTarget(node)}
-                    >
-                      {actionBusyId === node.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
-                      Ресинк
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
                       className="flex-1 text-danger-600"
                       disabled={actionBusyId === node.id}
                       onClick={() => setArchiveTarget(node)}
@@ -317,18 +290,6 @@ const NetworkTopologyPage: React.FC = () => {
         onConfirm={() => void handleArchive()}
         variant="danger"
         isLoading={actionBusyId === archiveTarget?.id}
-      />
-
-      {/* ── Підтвердження ресинку ── */}
-      <ConfirmDialog
-        isOpen={resyncTarget !== null}
-        title="Примусовий ресинк?"
-        message={`Для вузла «${resyncTarget?.name ?? ''}» буде запущено новий pg_basebackup з primary.`}
-        confirmText="Запустити ресинк"
-        onClose={() => setResyncTarget(null)}
-        onConfirm={() => void handleResync()}
-        variant="warning"
-        isLoading={actionBusyId === resyncTarget?.id}
       />
     </div>
   );

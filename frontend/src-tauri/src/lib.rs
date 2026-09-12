@@ -359,6 +359,9 @@ pub fn run() {
             torgashka_infrastructure::offline::commands::save_write_off_offline,
             torgashka_infrastructure::offline::commands::get_stock_level,
             torgashka_infrastructure::offline::commands::get_stock_levels,
+            // ── Провіжн вузла зі знімка хаба (ADR-0008 «Варіант B») ──────
+            commands::node_provision::provision_node_from_hub,
+            commands::node_provision::pick_dump_file,
             // ── Команди системної інтеграції ──────────────────────────
             commands::system::get_app_version,
             commands::system::get_platform,

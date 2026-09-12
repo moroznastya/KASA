@@ -835,14 +835,14 @@ impl AuthService for SqlxAuth {
     ) -> Result<SettingDto, AuthError> {
         use torgashka_domain::{determine_module, determine_value_type, humanize_key};
         let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM system_settings WHERE key = $1 AND store_id IS NOT DISTINCT FROM NULLIF(current_setting('app.store_id', true), '')::uuid)")
                 .bind(key)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
 
         if exists {
-            sqlx::query("UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid")
+            sqlx::query("UPDATE system_settings SET value = $1, updated_at = now() WHERE key = $2 AND store_id IS NOT DISTINCT FROM NULLIF(current_setting('app.store_id', true), '')::uuid")
                 .bind(&value)
                 .bind(key)
                 .execute(&self.pool)
@@ -869,7 +869,7 @@ impl AuthService for SqlxAuth {
             .map_err(|e| AuthError::Infrastructure(e.to_string()))?;
         }
         let row = sqlx::query_as::<_, (Uuid, String, String, Option<String>, String, String, Option<String>, Option<String>, bool, DateTime<Utc>, DateTime<Utc>)>(
-            "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE key = $1 AND store_id = NULLIF(current_setting('app.store_id', true), '')::uuid",
+            "SELECT id, module, key, value, value_type, label, description, options, is_active, created_at, updated_at FROM system_settings WHERE key = $1 AND store_id IS NOT DISTINCT FROM NULLIF(current_setting('app.store_id', true), '')::uuid",
         )
         .bind(key)
         .fetch_one(&self.pool)

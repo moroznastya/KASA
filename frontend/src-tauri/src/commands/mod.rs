@@ -4,4 +4,5 @@
 // Етап 0 міграції: залишились лише тонкі системні команди.
 // devices/offline/print/pb_protocol — перенесені в torgashka-infrastructure.
 
+pub mod node_provision;
 pub mod system;
