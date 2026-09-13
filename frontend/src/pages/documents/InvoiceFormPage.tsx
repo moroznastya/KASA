@@ -722,22 +722,6 @@ const InvoiceFormPage: React.FC = () => {
     })),
   ];
 
-  const _taxRateOptions = [
-    { value: 0, label: '0%' },
-    { value: 5, label: '5%' },
-    { value: 7, label: '7%' },
-    { value: 20, label: '20%' },
-  ];
-
-  const _unitOptions = [
-    { value: 'pcs', label: 'шт' },
-    { value: 'kg', label: 'кг' },
-    { value: 'l', label: 'л' },
-    { value: 'm', label: 'м' },
-    { value: 'box', label: 'кор' },
-    { value: 'pack', label: 'уп' },
-  ];
-
   // ─── Рендер ──────────────────────────────────────────────────────────────
 
   return (

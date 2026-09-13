@@ -1,108 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useProduct, useCreateProduct, useUpdateProduct } from '@/hooks/useProducts';
-import { useCategoryTree } from '@/hooks/useCategories';
-import { useSuppliers } from '@/hooks/useSuppliers';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { Select, SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
-import { ArrowLeft, Save, Percent, DollarSign, Plus, Hash, Image as ImageIcon, X, Barcode as BarcodeIcon, Trash2 } from 'lucide-react';
-import { ProductCreate, VatRate, UnitOfMeasure, Category } from '@/types/product';
+import { ArrowLeft, Save, Plus, Image as ImageIcon, X, Barcode as BarcodeIcon, Trash2 } from 'lucide-react';
+import { ProductCreate, VatRate, UnitOfMeasure } from '@/types/product';
 import { productService } from '@/services/productService';
+import { ProductFormFields } from '@/components/products/ProductFormFields';
+import { ProductFormState, EMPTY_PRODUCT_FORM } from '@/utils/productOptions';
 
 import { useBackNavigation } from '@/hooks/useBackNavigation';
-const taxRateOptions = [
-  { value: 0, label: '0%' },
-  { value: 5, label: '5%' },
-  { value: 7, label: '7%' },
-  { value: 20, label: '20%' },
-];
-
-const unitOptions = [
-  { value: 'pcs', label: 'шт' },
-  { value: 'kg', label: 'кг' },
-  { value: 'l', label: 'л' },
-  { value: 'm', label: 'м' },
-  { value: 'box', label: 'кор' },
-  { value: 'pack', label: 'уп' },
-];
-
-interface FormState {
-  title: string;
-  barcode: string;
-  sku: string;
-  uktzed: string;
-  price: number;
-  cost_price: number | null;
-  markup: number | null;
-  stock: number;
-  recommended_qty: number;
-  category_id: string | null;
-  supplier_id: string | null;
-  tax_rate: VatRate;
-  unit: UnitOfMeasure;
-  is_weight: boolean;
-  scan_excise: boolean;
-}
-
-/**
- * Розраховує ціну на основі собівартості та націнки.
- * Формула: Ціна = Собівартість × (1 + Націнка/100)
- *
- * Ціна округлюється до гривні (0 знаків після коми).
- */
-function calcPriceFromCostAndMarkup(cost: number | null, markup: number | null): number {
-  if (cost === null || cost <= 0 || markup === null || markup <= 0) return 0;
-  return Math.round(cost * (1 + markup / 100));
-}
-
-/**
- * Розраховує націнку на основі собівартості та ціни.
- * Формула: Націнка = (Ціна / Собівартість - 1) × 100
- *
- * Націнка округлюється до сотих (2 знаки після коми).
- */
-function calcMarkupFromCostAndPrice(cost: number | null, price: number): number | null {
-  if (cost === null || cost <= 0 || price <= 0) return null;
-  const markup = (price / cost - 1) * 100;
-  return Math.round(markup * 100) / 100;
-}
-
-/**
- * Рекурсивно будує список SelectOption для випадаючого списку категорій.
- * Основні категорії — жирним шрифтом, не вибираються (disabled).
- * Підкатегорії — з відступом, вибираються.
- * Тільки кінцеві підкатегорії (без дітей) можна вибрати.
- */
-function buildCategoryOptions(categories: Category[], depth: number = 0): SelectOption[] {
-  const options: SelectOption[] = [];
-
-  for (const cat of categories) {
-    const hasChildren = Array.isArray(cat.children) && cat.children.length > 0;
-
-    if (hasChildren) {
-      // Основна категорія — не вибирається, показуємо як заголовок
-      options.push({
-        value: cat.id,
-        label: `${'  '.repeat(depth)}▶ ${cat.name}`,
-        disabled: true,
-      });
-      // Додаємо підкатегорії
-      options.push(...buildCategoryOptions(cat.children ?? [], depth + 1));
-    } else {
-      // Кінцева підкатегорія — вибирається
-      options.push({
-        value: cat.id,
-        label: `${'  '.repeat(depth)}└── ${cat.name}`,
-        disabled: false,
-      });
-    }
-  }
-
-  return options;
-}
-
 const ProductFormPage: React.FC = () => {
   const navigate = useNavigate();
   const { goBack } = useBackNavigation();
@@ -110,28 +17,10 @@ const ProductFormPage: React.FC = () => {
   const isEdit = !!id;
 
   const { data: product, isLoading: isLoadingProduct } = useProduct(id || '');
-  const { data: categoryTree } = useCategoryTree();
-  const { data: suppliersData } = useSuppliers({ page: 1, size: 100 });
   const createMutation = useCreateProduct();
   const updateMutation = useUpdateProduct();
 
-  const [form, setForm] = useState<FormState>({
-    title: '',
-    barcode: '',
-    sku: '',
-    uktzed: '',
-    price: 0,
-    cost_price: null,
-    markup: null,
-    stock: 0,
-    recommended_qty: 0,
-    category_id: null,
-    supplier_id: null,
-    tax_rate: 0,
-    unit: 'pcs',
-    is_weight: false,
-    scan_excise: false,
-  });
+  const [form, setForm] = useState<ProductFormState>({ ...EMPTY_PRODUCT_FORM });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -156,55 +45,6 @@ const ProductFormPage: React.FC = () => {
       });
     }
   }, [isEdit, product]);
-
-  // ─── Зміна собівартості → перераховує ціну (якщо є націнка) ───
-  const handleCostPriceChange = (value: number | null) => {
-    setForm((prev) => {
-      const newForm = { ...prev, cost_price: value };
-      if (value !== null && value > 0 && newForm.markup !== null && newForm.markup > 0) {
-        newForm.price = calcPriceFromCostAndMarkup(value, newForm.markup);
-      }
-      return newForm;
-    });
-  };
-
-  // ─── Зміна націнки → перераховує ціну (якщо є собівартість) ───
-  const handleMarkupChange = (value: number | null) => {
-    setForm((prev) => {
-      const newForm = { ...prev, markup: value };
-      if (value !== null && value > 0 && newForm.cost_price !== null && newForm.cost_price > 0) {
-        newForm.price = calcPriceFromCostAndMarkup(newForm.cost_price, value);
-      }
-      return newForm;
-    });
-  };
-
-  // ─── Зміна ціни → перераховує націнку (якщо є собівартість) ───
-  const handlePriceChange = (value: number) => {
-    setForm((prev) => {
-      const newForm = { ...prev, price: value };
-      if (value > 0 && newForm.cost_price !== null && newForm.cost_price > 0) {
-        const newMarkup = calcMarkupFromCostAndPrice(newForm.cost_price, value);
-        if (newMarkup !== null) {
-          newForm.markup = newMarkup;
-        }
-      }
-      return newForm;
-    });
-  };
-
-  // ─── Кнопка +20%: множить собівартість на 1.2 ───
-  const handleAddTwentyPercent = () => {
-    setForm((prev) => {
-      const cost = prev.cost_price ?? 0;
-      const newCost = Math.round(cost * 1.2 * 100) / 100;
-      const newForm = { ...prev, cost_price: newCost };
-      if (newCost > 0 && newForm.markup !== null && newForm.markup > 0) {
-        newForm.price = calcPriceFromCostAndMarkup(newCost, newForm.markup);
-      }
-      return newForm;
-    });
-  };
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -253,31 +93,26 @@ const ProductFormPage: React.FC = () => {
     }
   };
 
-  const handleChange = (field: keyof FormState, value: any) => {
-    setForm((prev) => {
-      const newForm = { ...prev, [field]: value };
-
-      // Якщо встановили галочку "Ваговий товар" → одиниця виміру = кг
-      if (field === 'is_weight') {
-        if (value === true) {
-          newForm.unit = 'kg';
-        } else {
-          // Якщо зняли галочку → одиниця виміру = шт
-          newForm.unit = 'pcs';
+  /**
+   * Точкове оновлення стану форми. Логіка зв'язки
+   * «собівартість ↔ націнка ↔ ціна» живе всередині ProductFormFields —
+   * тут лише застосування патча та зняття помилок зі змінених полів.
+   */
+  const handlePatch = (patch: Partial<ProductFormState>) => {
+    setForm((prev) => ({ ...prev, ...patch }));
+    setErrors((prevErrors) => {
+      const next = { ...prevErrors };
+      let changed = false;
+      for (const key of Object.keys(patch)) {
+        if (next[key]) {
+          delete next[key];
+          changed = true;
         }
       }
-
-      return newForm;
+      return changed ? next : prevErrors;
     });
-
-    if (errors[field]) {
-      setErrors((prev) => {
-        const newErrors = { ...prev };
-        delete newErrors[field];
-        return newErrors;
-      });
-    }
   };
+
 
   if (isEdit && isLoadingProduct) {
     return (
@@ -287,19 +122,6 @@ const ProductFormPage: React.FC = () => {
     );
   }
 
-  // Будуємо ієрархічний список категорій
-  const categoryOptions: SelectOption[] = [
-    { value: '', label: 'Без категорії' },
-    ...(Array.isArray(categoryTree) ? buildCategoryOptions(categoryTree) : []),
-  ];
-
-  const supplierOptions = [
-    { value: '', label: 'Без постачальника' },
-    ...(suppliersData?.items?.map((sup) => ({
-      value: String(sup.id),
-      label: sup.name,
-    })) || []),
-  ];
 
   // Перше фото товару (для прев'ю)
   const mainImage = product?.images && product.images.length > 0
@@ -404,209 +226,16 @@ const ProductFormPage: React.FC = () => {
               </div>
             )}
           </div>
-
-          {/* Поля інформації — праворуч */}
-          <div className="flex-1 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input
-                label="Назва товару *"
-                value={form.title}
-                onChange={(e) => handleChange('title', e.target.value)}
-                error={errors.title}
-                placeholder="Введіть назву"
-              />
-              <Input
-                label="Штрих-код"
-                value={form.barcode || ''}
-                onChange={(e) => handleChange('barcode', e.target.value)}
-                placeholder="13 цифр"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input
-                label="Артикул"
-                value={form.sku || ''}
-                onChange={(e) => handleChange('sku', e.target.value)}
-                placeholder="Артикул товару"
-              />
-              <Select
-                label="Категорія"
-                options={categoryOptions}
-                value={String(form.category_id || '')}
-                onChange={(e) =>
-                  handleChange('category_id', e.target.value || null)
-                }
-              />
-            </div>
-          </div>
         </div>
 
-        {/* ═══════════════════════════════════════════════════════════════
-           ЦІНИ ТА ФІНАНСИ — три взаємопов'язані поля
-           ═══════════════════════════════════════════════════════════════ */}
-        <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
-            Ціни та фінанси
-          </h3>
+        <ProductFormFields
+          form={form}
+          onPatch={handlePatch}
+          errors={errors}
+          stockReadOnly
+          autoFocusTitle={!isEdit}
+        />
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Собівартість */}
-            <div>
-              <Input
-                label="Собівартість"
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.cost_price ?? ''}
-                onChange={(e) =>
-                  handleCostPriceChange(
-                    e.target.value ? parseFloat(e.target.value) : null
-                  )
-                }
-                icon={<DollarSign className="w-4 h-4 text-gray-400" />}
-              />
-              <button
-                type="button"
-                onClick={handleAddTwentyPercent}
-                className="mt-1.5 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md
-                  bg-green-50 text-green-700 hover:bg-green-100 
-                  dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30
-                  transition-colors"
-              >
-                <Plus className="w-3 h-3" />
-                +20% (ПДВ)
-              </button>
-            </div>
-
-            {/* Націнка (%) — з кроком 0.01 (соті) */}
-            <Input
-              label="Націнка (%)"
-              type="number"
-              step="0.01"
-              min="0"
-              value={form.markup ?? ''}
-              onChange={(e) =>
-                handleMarkupChange(
-                  e.target.value ? parseFloat(e.target.value) : null
-                )
-              }
-              icon={<Percent className="w-4 h-4 text-gray-400" />}
-            />
-
-            {/* Ціна продажу — з кроком 1 (гривні) */}
-            <Input
-              label="Ціна продажу"
-              type="number"
-              step="1"
-              min="0"
-              value={form.price}
-              onChange={(e) => handlePriceChange(parseFloat(e.target.value) || 0)}
-              error={errors.price}
-            />
-          </div>
-        </div>
-
-        {/* Облік */}
-        <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
-            Облік
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Input
-              label="Кількість"
-              type="number"
-              min="0"
-              value={form.stock}
-              disabled
-              helperText="Облікова кількість. Змінюється через накладні, списання та інвентаризацію"
-            />
-            <Input
-              label="Рекомендований залишок"
-              type="number"
-              min="0"
-              value={form.recommended_qty}
-              onChange={(e) => handleChange('recommended_qty', parseInt(e.target.value) || 0)}
-              error={errors.recommended_qty}
-              helperText="Мінімальний залишок для замовлення"
-            />
-            <Select
-              label="Постачальник"
-              options={supplierOptions}
-              value={String(form.supplier_id || '')}
-              onChange={(e) =>
-                handleChange('supplier_id', e.target.value || null)
-              }
-            />
-          </div>
-        </div>
-
-        {/* Податки, УКТЗЕД та одиниці виміру */}
-        <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
-            Податки та одиниці виміру
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Select
-              label="Ставка податків"
-              options={taxRateOptions}
-              value={form.tax_rate}
-              onChange={(e) => handleChange('tax_rate', Number(e.target.value) as VatRate)}
-            />
-            <Select
-              label="Одиниця виміру"
-              options={unitOptions}
-              value={form.unit}
-              onChange={(e) => handleChange('unit', e.target.value as UnitOfMeasure)}
-            />
-          </div>
-          <div className="mt-4">
-            <Input
-              label="Код УКТЗЕД"
-              value={form.uktzed}
-              onChange={(e) => handleChange('uktzed', e.target.value)}
-              placeholder="10 цифр"
-              icon={<Hash className="w-4 h-4 text-gray-400" />}
-              helperText="Український класифікатор товарів зовнішньоекономічної діяльності"
-            />
-          </div>
-        </div>
-
-        {/* Додаткові опції */}
-        <div className="border-t border-gray-200 dark:border-slate-700 pt-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
-            Додаткові опції
-          </h3>
-          <div className="space-y-3">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.is_weight}
-                onChange={(e) => handleChange('is_weight', e.target.checked)}
-                className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-              />
-              <span className="text-sm text-gray-700 dark:text-gray-300">
-                Ваговий товар (продаж за вагою)
-              </span>
-              {form.is_weight ? (
-                <span className="text-xs text-amber-500">→ одиницю виміру змінено на кг</span>
-              ) : (
-                <span className="text-xs text-gray-400">→ одиниця виміру: шт</span>
-              )}
-            </label>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.scan_excise}
-                onChange={(e) => handleChange('scan_excise', e.target.checked)}
-                className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-              />
-              <span className="text-sm text-gray-700 dark:text-gray-300">
-                Сканувати акцизну марку
-              </span>
-            </label>
-          </div>
-        </div>
 
         {/* Додаткові коди */}
         {isEdit && (
