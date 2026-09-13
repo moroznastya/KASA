@@ -156,3 +156,13 @@ frontend/dist-admin/
 
 # ── External reference materials (ДПС/ПРРО, посібники — не для VCS) ──
 resources/
+
+# ── Артефакти сесій: бекапи, дампи, скріншоти — не для публічного репо ──
+# backups/ містить 51MB бінарник застосунку та дампи БД із реальними даними.
+# screenshots/ може містити секрети в кадрі — не комітимо без перевірки.
+artifacts/backups/
+artifacts/screenshots/
+artifacts/**/*.dump
+artifacts/**/*.sql.gz
+artifacts/**/*.tar.gz
+db_sources.toml.bak*
