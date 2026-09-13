@@ -529,6 +529,49 @@ END
 $$;
 "#;
 
+/// ADR-0008 §7.1-D3 (E5, Alembic 0024): локальний маркер касира вузла.
+///
+/// `users.sync_state` розрізняє «локально створене, ще не підтверджене хабом»
+/// (`pending_hub`) від канонічного (`confirmed`); `local` — зарезервовано під
+/// явне локальне створення. Читає його `repositories::auth` (вхід касира за
+/// політикою `sync.require_hub_confirm_before_login`), пише — `create_user`.
+///
+/// Чому тут, а не лише в `schema.sql`: знімок `scripts/schema.sql` (його
+/// використовує CI/стенд) старіший за 0024, тому DDL мусить додаватися
+/// ідемпотентно при старті фасаду — інакше `INSERT INTO users (… sync_state)`
+/// падає з 500 «Помилка БД» на будь-якій БД, зібраній зі знімка.
+const USERS_SYNC_STATE_DDL: &str = r#"
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS
+    sync_state text NOT NULL DEFAULT 'confirmed';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'users_sync_state_check'
+    ) THEN
+        ALTER TABLE public.users ADD CONSTRAINT users_sync_state_check
+            CHECK (sync_state IN ('local', 'pending_hub', 'confirmed'));
+    END IF;
+END
+$$;
+"#;
+
+/// ADR-0008 §7.1-B5/C3 (E5, Alembic 0024): ціна точки — сутність мережі.
+///
+/// `server_version` — канонічна версія для дельти pull (`sync.rs`,
+/// `query_store_product_prices`), `is_deleted` — tombstone («перевизначення
+/// ціни знято» ≠ «рядок зник», `catalog_proposal::apply_store_product_prices`).
+///
+/// Тригер bump + рядок `sync_meta` сюди НЕ додаються свідомо: вони спираються
+/// на функцію `bump_sync_version` з Alembic 0012, якої на БД без sync-шару
+/// немає — DDL упав би на старті фасаду. Цю частину шару відтворює
+/// `tests/common/sync_schema.rs` (тести) і Alembic (прод).
+const STORE_PRICES_VERSION_DDL: &str = r#"
+ALTER TABLE public.store_product_prices ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE public.store_product_prices ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+"#;
+
 const RLS_FORCE_DDL: &str = r#"
 -- ============================================================================
 -- ЕТАП 7: FORCE ROW LEVEL SECURITY для вже мігрованих БД.
@@ -647,6 +690,8 @@ fn schema_fingerprint() -> String {
         NETWORK_NODES_DDL,
         NETWORK_EVENTS_DDL,
         STORE_LEGAL_COLUMNS_DDL,
+        USERS_SYNC_STATE_DDL,
+        STORE_PRICES_VERSION_DDL,
         RLS_FORCE_DDL,
         RECEIPTS_CLIENT_UUID_DDL,
         WAL_POLICY_DDL,
@@ -907,6 +952,17 @@ async fn ensure_schema_inner(pool: &PgPool) -> Result<(), DbError> {
         }
     }
     sqlx::raw_sql(STORE_LEGAL_COLUMNS_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    // E5 (Alembic 0024): колонки sync-шару, яких немає у знімку scripts/schema.sql.
+    // Ідемпотентно і без залежностей (ні функцій, ні тригерів) — тому безпечно
+    // на будь-якій БД, включно з тією, де sync-шар узагалі відсутній.
+    sqlx::raw_sql(USERS_SYNC_STATE_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(STORE_PRICES_VERSION_DDL)
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;
