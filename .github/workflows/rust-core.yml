@@ -27,9 +27,9 @@ name: 🦀 Rust Core — workspace
 
 on:
   push:
-    branches: [main, feat/rust-migration]
+    branches: [main, 'feat/*']
   pull_request:
-    branches: [main, feat/rust-migration]
+    branches: [main, 'feat/*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

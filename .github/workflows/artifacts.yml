@@ -1,0 +1,111 @@
+# ============================================================================
+# Torgashka POS — Артефакти досліджень і діагностики
+# ============================================================================
+# Запускається при будь-якій зміні artifacts/** (або самого workflow).
+#
+# Jobs:
+#   lint        — bash -n · py_compile · shellcheck (-x -S warning) · розміри
+#   secret-scan — жорсткий гейт: артефакти не мають містити секретів
+#
+# Навіщо: artifacts/ — це робочі зрізи досліджень (заміри, дампи, SQL,
+# скрипти). Саме там найлегше випадково закомітити пароль БД або токен,
+# бо це одноразові скрипти, які ніхто не рецензує. Сканер шукає ФОРМИ
+# секретів, а не конкретні значення (щоб сам не стати джерелом витоку).
+#
+# Локально те саме:
+#   bash artifacts/scripts/scan_secrets.sh
+#   shellcheck -x -S warning artifacts/scripts/*.sh
+# ============================================================================
+name: 📦 Artifacts — lint & secret gate
+
+on:
+  push:
+    branches: [main, 'feat/*']
+    paths:
+      - 'artifacts/**'
+      - '.github/workflows/artifacts.yml'
+  pull_request:
+    paths:
+      - 'artifacts/**'
+      - '.github/workflows/artifacts.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (bash · python · shellcheck · розміри)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 🔎 bash -n (синтаксис shell-скриптів)
+        run: |
+          fail=0
+          for f in artifacts/scripts/*.sh; do
+            [ -e "$f" ] || continue
+            bash -n "$f" || { echo "::error file=$f::синтаксична помилка"; fail=1; }
+          done
+          exit $fail
+
+      - name: 🐍 python -m py_compile (синтаксис python-скриптів)
+        run: |
+          fail=0
+          for f in artifacts/scripts/*.py; do
+            [ -e "$f" ] || continue
+            python3 -m py_compile "$f" || { echo "::error file=$f::синтаксична помилка"; fail=1; }
+          done
+          exit $fail
+
+      - name: 🧹 shellcheck (-x -S warning)
+        run: shellcheck -x -S warning -f gcc artifacts/scripts/*.sh
+
+      - name: 📏 Розміри (дампи/бекапи лишаються локальними)
+        run: |
+          echo "── файли > 1 MB ──"
+          big=$(find artifacts -type f -size +1M | sort)
+          if [ -n "$big" ]; then
+            echo "$big" | while read -r f; do echo "  $(du -h "$f" | cut -f1)  $f"; done
+            echo "::error::Артефакти > 1 MB не комітяться — тримайте їх локально (див. .gitignore)"
+            exit 1
+          fi
+          echo "  немає"
+
+      - name: 📦 Загальний обсяг artifacts/
+        run: |
+          echo "  tracked: $(git ls-files artifacts | wc -l) файлів, $(git ls-files artifacts | xargs -r du -ch 2>/dev/null | tail -1 | cut -f1)"
+
+  secret-scan:
+    name: секрети (жорсткий гейт)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🚫 artifacts/ — без секретів
+        run: bash artifacts/scripts/scan_secrets.sh
+
+      - name: 📋 решта репозиторію — звіт (не блокує)
+        if: always()
+        run: |
+          echo "Нижче — знахідки поза artifacts/ (історичні, не блокують збірку)."
+          bash artifacts/scripts/scan_secrets.sh --all || true
+
+      - name: 🔑 .env.local не має бути в git
+        run: |
+          if git ls-files --error-unmatch artifacts/.env.local >/dev/null 2>&1; then
+            echo "::error::artifacts/.env.local потрапив у git — видаліть із індексу і ротуйте пароль"
+            exit 1
+          fi
+          echo "  ✓ artifacts/.env.local у git відсутній"
