@@ -80,8 +80,11 @@ pub async fn print_invoice_items(
     }
     let items = sqlx::query(
         "SELECT ii.product_id, ii.price::text AS inv_price, ii.previous_price::text AS prev, \
-         p.title, p.barcode, p.sku, p.price::text AS cur \
+         p.title, p.barcode, p.sku, \
+         COALESCE(NULLIF(st.price, 0), p.price)::text AS cur \
          FROM invoice_items ii LEFT JOIN products p ON p.id = ii.product_id \
+         LEFT JOIN stock st ON st.product_id = p.id \
+             AND st.store_id = NULLIF(current_setting('app.store_id', true), '')::uuid \
          WHERE ii.invoice_id = $1",
     )
     .bind(invoice_id)

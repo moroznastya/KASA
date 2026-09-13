@@ -101,6 +101,13 @@ pub const RUST_PRRO_ENV: &str = "TORGASHKA_RUST_PRRO";
 pub const RUST_PRRO_V2_ENV: &str = "TORGASHKA_RUST_PRRO_V2";
 pub const RUST_OCR_ENV: &str = "TORGASHKA_RUST_OCR";
 
+/// Максимальний розмір СПІЛЬНОГО пула БД фасаду (В).
+///
+/// Один пул на всі гілки замість 11 окремих. Кожен HTTP-запит тримає з'єднання
+/// на час обробки (контекст запиту, А), тому запас потрібен; водночас 24 << 110
+/// (11 пулів × 10), тож навантаження на сервер БД зменшується.
+pub const DB_POOL_MAX: u32 = 24;
+
 /// Дефолтні значення feature-флагів після повної дезактивації Python (етап 8).
 /// serve() встановлює їх, якщо env не задано явно — Rust-ядро за замовчуванням
 /// для будь-якого викликача (Tauri, bin/facade, тести). Явний env має пріоритет.
@@ -222,7 +229,9 @@ fn env_flag(name: &str) -> bool {
 ///
 /// Якщо `TORGASHKA_RUST_READDIRS=1` і БД доступна — повертає (пул, read-репо,
 /// write-репо). Інакше `None` (роути не монтуються → fallback → 410).
-async fn init_readdirs() -> Result<
+async fn init_readdirs(
+    shared_pool: Option<PgPool>,
+) -> Result<
     (
         PgPool,
         Arc<dyn ReadDirectories + Send + Sync>,
@@ -238,261 +247,240 @@ async fn init_readdirs() -> Result<
             "{RUST_READDIRS_ENV} не увімкнено (1/true/yes) — Rust-гілку довідників не монтуємо"
         ));
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "INFO",
-                &format!(
-                    "{RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
-                ),
-            );
-            let store_pool = StorePool::new(pool.clone());
-            let read = Arc::new(
-                torgashka_infrastructure::repositories::directories::SqlxDirectories::new(
-                    store_pool.clone(),
-                ),
-            ) as Arc<dyn ReadDirectories + Send + Sync>;
-            // ADR-0008: режимів вузла немає — кожна точка має власну
-            // read-write БД, тож адаптери завжди прямі (без outbox-обгорток).
-            let write = Arc::new(
-                torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
-                    store_pool.clone(),
-                ),
-            ) as Arc<dyn WriteDirectories + Send + Sync>;
-            let ledger = Arc::new(
-                torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
-            ) as Arc<dyn LedgerService + Send + Sync>;
-            // POS — прямий PG-репозиторій (чеки пишуться у ВЛАСНУ БД вузла).
-            let pos: Arc<dyn PosService + Send + Sync> = Arc::new(
-                torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
-            );
-            let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
-                store_pool.clone(),
-            )) as Arc<dyn AuthService + Send + Sync>;
-            Ok((pool, read, write, pos, ledger, auth))
-        }
-        Err(e) => {
-            // Windows-каса: stderr прихований (windows_subsystem=windows) —
-            // причина мусить лягти в torgashka.log.
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "ERROR",
-                &format!("{RUST_READDIRS_ENV}=1, але БД недоступна — пул читання НЕ створено: {e}"),
-            );
-            Err(format!("пул читання не створено: {e}"))
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        // Windows-каса: stderr прихований (windows_subsystem=windows) —
+        // причина мусить лягти в torgashka.log.
+        torgashka_infrastructure::embedded_pg::pg_log(
+            "ERROR",
+            &format!(
+                "{RUST_READDIRS_ENV}=1, але БД недоступна — пул НЕ створено (спільний пул фасаду)"
+            ),
+        );
+        return Err(format!(
+            "{RUST_READDIRS_ENV}=1, але спільний пул БД НЕ створено"
+        ));
+    };
+    torgashka_infrastructure::embedded_pg::pg_log(
+        "INFO",
+        &format!(
+            "{RUST_READDIRS_ENV}=1 — Rust-гілка довідників увімкнена (PostgreSQL, read-write)"
+        ),
+    );
+    let store_pool = StorePool::new(pool.clone());
+    let read = Arc::new(
+        torgashka_infrastructure::repositories::directories::SqlxDirectories::new(
+            store_pool.clone(),
+        ),
+    ) as Arc<dyn ReadDirectories + Send + Sync>;
+    // ADR-0008: режимів вузла немає — кожна точка має власну
+    // read-write БД, тож адаптери завжди прямі (без outbox-обгорток).
+    let write = Arc::new(
+        torgashka_infrastructure::repositories::write::SqlxWriteDirectories::new(
+            store_pool.clone(),
+        ),
+    ) as Arc<dyn WriteDirectories + Send + Sync>;
+    let ledger = Arc::new(
+        torgashka_infrastructure::repositories::ledger::SqlxLedger::new(store_pool.clone()),
+    ) as Arc<dyn LedgerService + Send + Sync>;
+    // POS — прямий PG-репозиторій (чеки пишуться у ВЛАСНУ БД вузла).
+    let pos: Arc<dyn PosService + Send + Sync> = Arc::new(
+        torgashka_infrastructure::repositories::pos::SqlxPos::new(store_pool.clone()),
+    );
+    let auth = Arc::new(torgashka_infrastructure::repositories::auth::SqlxAuth::new(
+        store_pool.clone(),
+    )) as Arc<dyn AuthService + Send + Sync>;
+    Ok((pool, read, write, pos, ledger, auth))
 }
 
 /// Ініціалізує Rust-гілку OCR під TORGASHKA_RUST_OCR=1.
 /// Повертає (OcrService, пул БД для invoice-ocr зіставлення).
-async fn init_ocr() -> (
+async fn init_ocr(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<std::sync::Arc<torgashka_ocr::OcrService>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_OCR_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(5).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_OCR_ENV}=1 — Rust-гілка OCR увімкнена (PostgreSQL; Gemini keys: {:?})",
-                torgashka_ocr::OcrService::new().client().keys_file_hint()
-            );
-            (
-                Some(std::sync::Arc::new(torgashka_ocr::OcrService::new())),
-                Some(pool),
-            )
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_OCR_ENV}=1, але БД недоступна ({e}); OCR не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_OCR_ENV}=1, але БД недоступна (пул не створено); OCR не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!(
+        "[torgashka-api] {RUST_OCR_ENV}=1 — Rust-гілка OCR увімкнена (PostgreSQL; Gemini keys: {:?})",
+        torgashka_ocr::OcrService::new().client().keys_file_hint()
+        );
+    (
+        Some(std::sync::Arc::new(torgashka_ocr::OcrService::new())),
+        Some(pool),
+    )
 }
 
 /// Ініціалізує Rust-гілку ПРРО під TORGASHKA_RUST_PRRO (1|shadow).
-async fn init_prro() -> Option<Arc<crate::prro::PrroFacade>> {
+async fn init_prro(shared_pool: Option<PgPool>) -> Option<Arc<crate::prro::PrroFacade>> {
     let mode = std::env::var(RUST_PRRO_ENV).unwrap_or_default();
     if !matches!(mode.trim().to_lowercase().as_str(), "1" | "true" | "shadow") {
         return None;
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(5).await {
-        Ok(pool) => {
-            match torgashka_infrastructure::prro::SqlxPrroRepository::connect(StorePool::new(pool))
-                .await
-            {
-                Ok(repo) => {
-                    let shadow = mode.trim().to_lowercase() == "shadow";
-                    eprintln!(
-                        "[torgashka-api] {RUST_PRRO_ENV}={mode} — Rust-гілка ПРРО увімкнена (shadow={shadow}, PostgreSQL)"
-                    );
-                    Some(Arc::new(crate::prro::PrroFacade::new(repo, shadow)))
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[torgashka-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено ({e}); роути не змонтовано (LEGACY → 410)"
-                    );
-                    None
-                }
-            }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено (пул не створено); роути не змонтовано (LEGACY → 410)"
+        );
+        return None;
+    };
+    match torgashka_infrastructure::prro::SqlxPrroRepository::connect(StorePool::new(pool)).await {
+        Ok(repo) => {
+            let shadow = mode.trim().to_lowercase() == "shadow";
+            eprintln!(
+        "[torgashka-api] {RUST_PRRO_ENV}={mode} — Rust-гілка ПРРО увімкнена (shadow={shadow}, PostgreSQL)"
+        );
+            Some(Arc::new(crate::prro::PrroFacade::new(repo, shadow)))
         }
         Err(e) => {
             eprintln!(
-                "[torgashka-api] попередження: {RUST_PRRO_ENV}={mode}, але БД недоступна ({e}); роути не змонтовано (LEGACY → 410)"
-            );
+        "[torgashka-api] попередження: {RUST_PRRO_ENV}={mode}, але схему ПРРО не створено ({e}); роути не змонтовано (LEGACY → 410)"
+        );
             None
         }
     }
 }
 
 /// Ініціалізує Rust-гілку документів під TORGASHKA_RUST_DOCUMENTS=1.
-async fn init_documents() -> (
+async fn init_documents(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn DocumentsService + Send + Sync>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_DOCUMENTS_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_DOCUMENTS_ENV}=1 — Rust-гілка документів увімкнена (PostgreSQL)"
-            );
-            let svc: Arc<dyn DocumentsService + Send + Sync> = Arc::new(
-                torgashka_infrastructure::repositories::documents::SqlxDocuments::new(
-                    StorePool::new(pool.clone()),
-                ),
-            );
-            (Some(svc), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна ({e}); документи через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_DOCUMENTS_ENV}=1, але БД недоступна (пул не створено); документи через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!(
+        "[torgashka-api] {RUST_DOCUMENTS_ENV}=1 — Rust-гілка документів увімкнена (PostgreSQL)"
+    );
+    let svc: Arc<dyn DocumentsService + Send + Sync> = Arc::new(
+        torgashka_infrastructure::repositories::documents::SqlxDocuments::new(StorePool::new(
+            pool.clone(),
+        )),
+    );
+    (Some(svc), Some(pool))
 }
 
 /// Ініціалізує Rust-гілку друку під TORGASHKA_RUST_PRINT=1.
-async fn init_print_templates() -> (
+async fn init_print_templates(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn PrintTemplatesService + Send + Sync>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_PRINT_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_PRINT_ENV}=1 — Rust-гілка друку увімкнена (PostgreSQL)"
-            );
-            let repo =
-                torgashka_infrastructure::repositories::print_templates::SqlxPrintTemplates::new(
-                    StorePool::new(pool.clone()),
-                );
-            let svc: Arc<dyn PrintTemplatesService + Send + Sync> = Arc::new(repo);
-            (Some(svc), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна ({e}); друк через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_PRINT_ENV}=1, але БД недоступна (пул не створено); друк через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!("[torgashka-api] {RUST_PRINT_ENV}=1 — Rust-гілка друку увімкнена (PostgreSQL)");
+    let repo = torgashka_infrastructure::repositories::print_templates::SqlxPrintTemplates::new(
+        StorePool::new(pool.clone()),
+    );
+    let svc: Arc<dyn PrintTemplatesService + Send + Sync> = Arc::new(repo);
+    (Some(svc), Some(pool))
 }
 
 /// Ініціалізує Rust-гілку товарів v2 під TORGASHKA_RUST_PRODUCTS_V2=1.
-async fn init_products_v2() -> (
+async fn init_products_v2(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn ProductsV2Service + Send + Sync>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_PRODUCTS_V2_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_PRODUCTS_V2_ENV}=1 — Rust-гілка товарів v2 увімкнена (PostgreSQL)"
-            );
-            let repo = torgashka_infrastructure::repositories::products_v2::SqlxProductsV2::new(
-                StorePool::new(pool.clone()),
-            );
-            let svc: Arc<dyn ProductsV2Service + Send + Sync> = Arc::new(repo);
-            (Some(svc), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_PRODUCTS_V2_ENV}=1, але БД недоступна ({e}); товари v2 через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_PRODUCTS_V2_ENV}=1, але БД недоступна (пул не створено); товари v2 через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!(
+        "[torgashka-api] {RUST_PRODUCTS_V2_ENV}=1 — Rust-гілка товарів v2 увімкнена (PostgreSQL)"
+    );
+    let repo = torgashka_infrastructure::repositories::products_v2::SqlxProductsV2::new(
+        StorePool::new(pool.clone()),
+    );
+    let svc: Arc<dyn ProductsV2Service + Send + Sync> = Arc::new(repo);
+    (Some(svc), Some(pool))
 }
 
 /// Ініціалізує Rust-гілку інвойсів під TORGASHKA_RUST_INVOICES=1.
 /// Ініціалізує Rust-гілку повернень під TORGASHKA_RUST_RETURN_INVOICES=1.
-async fn init_return_invoices() -> (
+async fn init_return_invoices(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn ReturnInvoicesService + Send + Sync>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_RETURN_INVOICES_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_RETURN_INVOICES_ENV}=1 — Rust-гілка повернень увімкнена (PostgreSQL)"
-            );
-            let repo =
-                torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
-                    StorePool::new(pool.clone()),
-                );
-            let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
-            (Some(svc), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_RETURN_INVOICES_ENV}=1, але БД недоступна ({e}); повернення через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_RETURN_INVOICES_ENV}=1, але БД недоступна (пул не створено); повернення через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!(
+        "[torgashka-api] {RUST_RETURN_INVOICES_ENV}=1 — Rust-гілка повернень увімкнена (PostgreSQL)"
+        );
+    let repo = torgashka_infrastructure::repositories::return_invoices::SqlxReturnInvoices::new(
+        StorePool::new(pool.clone()),
+    );
+    let svc: Arc<dyn ReturnInvoicesService + Send + Sync> = Arc::new(repo);
+    (Some(svc), Some(pool))
 }
 
 /// Ініціалізує Rust-гілку замовлень постачальнику під TORGASHKA_RUST_PURCHASE_ORDERS=1.
-async fn init_purchase_orders() -> (
+async fn init_purchase_orders(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn PurchaseOrdersService + Send + Sync>>,
     Option<PgPool>,
 ) {
     if !env_flag(RUST_PURCHASE_ORDERS_ENV) {
         return (None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_PURCHASE_ORDERS_ENV}=1 — Rust-гілка замовлень увімкнена (PostgreSQL)"
-            );
-            let repo =
-                torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
-                    StorePool::new(pool.clone()),
-                );
-            let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = Arc::new(repo);
-            (Some(svc), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_PURCHASE_ORDERS_ENV}=1, але БД недоступна ({e}); замовлення через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_PURCHASE_ORDERS_ENV}=1, але БД недоступна (пул не створено); замовлення через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None);
+    };
+    eprintln!(
+        "[torgashka-api] {RUST_PURCHASE_ORDERS_ENV}=1 — Rust-гілка замовлень увімкнена (PostgreSQL)"
+        );
+    let repo = torgashka_infrastructure::repositories::purchase_orders::SqlxPurchaseOrders::new(
+        StorePool::new(pool.clone()),
+    );
+    let svc: Arc<dyn PurchaseOrdersService + Send + Sync> = Arc::new(repo);
+    (Some(svc), Some(pool))
 }
 
-async fn init_invoices() -> (
+async fn init_invoices(
+    shared_pool: Option<PgPool>,
+) -> (
     Option<Arc<dyn InvoicesV1Service + Send + Sync>>,
     Option<Arc<dyn InvoicesV2Service + Send + Sync>>,
     Option<PgPool>,
@@ -500,56 +488,42 @@ async fn init_invoices() -> (
     if !env_flag(RUST_INVOICES_ENV) {
         return (None, None, None);
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_INVOICES_ENV}=1 — Rust-гілка інвойсів увімкнена (PostgreSQL)"
-            );
-            let repo = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(
-                StorePool::new(pool.clone()),
-            );
-            let repo2 = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(
-                StorePool::new(pool.clone()),
-            );
-            let (v1, v2): (
-                Arc<dyn InvoicesV1Service + Send + Sync>,
-                Arc<dyn InvoicesV2Service + Send + Sync>,
-            ) = (Arc::new(repo), Arc::new(repo2));
-            (Some(v1), Some(v2), Some(pool))
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_INVOICES_ENV}=1, але БД недоступна ({e}); інвойси через роути не змонтовано (LEGACY → 410)"
-            );
-            (None, None, None)
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_INVOICES_ENV}=1, але БД недоступна (пул не створено); інвойси через роути не змонтовано (LEGACY → 410)"
+        );
+        return (None, None, None);
+    };
+    eprintln!("[torgashka-api] {RUST_INVOICES_ENV}=1 — Rust-гілка інвойсів увімкнена (PostgreSQL)");
+    let repo = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(StorePool::new(
+        pool.clone(),
+    ));
+    let repo2 = torgashka_infrastructure::repositories::invoices::SqlxInvoices::new(
+        StorePool::new(pool.clone()),
+    );
+    let (v1, v2): (
+        Arc<dyn InvoicesV1Service + Send + Sync>,
+        Arc<dyn InvoicesV2Service + Send + Sync>,
+    ) = (Arc::new(repo), Arc::new(repo2));
+    (Some(v1), Some(v2), Some(pool))
 }
 
 /// Ініціалізує Rust-гілку боржників під TORGASHKA_RUST_DEBTORS=1.
-async fn init_debtors() -> Option<Arc<dyn DebtorService + Send + Sync>> {
+async fn init_debtors(shared_pool: Option<PgPool>) -> Option<Arc<dyn DebtorService + Send + Sync>> {
     if !env_flag(RUST_DEBTORS_ENV) {
         return None;
     }
-    match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-        Ok(pool) => {
-            eprintln!(
-                "[torgashka-api] {RUST_DEBTORS_ENV}=1 — Rust-гілка боржників увімкнена (PostgreSQL)"
-            );
-            let repo = Arc::new(
-                torgashka_infrastructure::repositories::debtors::SqlxDebtors::new(StorePool::new(
-                    pool,
-                )),
-            );
-            Some(repo as Arc<dyn DebtorService + Send + Sync>)
-        }
-        Err(e) => {
-            eprintln!(
-                "[torgashka-api] попередження: {RUST_DEBTORS_ENV}=1, але БД недоступна ({e}); боржники через роути не змонтовано (LEGACY → 410)"
-            );
-            None
-        }
-    }
+    let Some(pool) = shared_pool.clone() else {
+        eprintln!(
+        "[torgashka-api] попередження: {RUST_DEBTORS_ENV}=1, але БД недоступна (пул не створено); боржники через роути не змонтовано (LEGACY → 410)"
+        );
+        return None;
+    };
+    eprintln!("[torgashka-api] {RUST_DEBTORS_ENV}=1 — Rust-гілка боржників увімкнена (PostgreSQL)");
+    let repo = Arc::new(
+        torgashka_infrastructure::repositories::debtors::SqlxDebtors::new(StorePool::new(pool)),
+    );
+    Some(repo as Arc<dyn DebtorService + Send + Sync>)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1101,28 +1075,48 @@ async fn init_facade_state() -> Result<
     // ── Крок 2: підготовка ВЛАСНОЇ БД вузла (дефекти 5+6) ──
     // ADR-0008: режимів вузла немає — кожен вузол сам собі read-write primary.
     let embedded_pg = apply_db_startup(resolved.as_ref().ok().map(String::as_str)).await;
+    // ── Спільний пул БД (В) ──
+    // Було: 11 окремих пулів (`connect_readonly_pool` у кожній гілці) на ОДИН і
+    // той самий PostgreSQL — 11 незалежних наборів з'єднань і 11× витрат на
+    // handshake/keepalive. Тепер пул ОДИН: усі гілки беремо його клон (той самий
+    // набір з'єднань). Розмір — 24: один круг ≈ 29 мс, а кожен запит тримає
+    // з'єднання на час обробки (контекст запиту, А), тож запас потрібен.
+    let shared_pool =
+        match torgashka_infrastructure::db::connect_pool_with_ctx_reset(DB_POOL_MAX).await {
+            Ok(p) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "INFO",
+                    &format!("крок 2.5: спільний пул БД створено (max {DB_POOL_MAX})"),
+                );
+                Some(p)
+            }
+            Err(e) => {
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!("крок 2.5: спільний пул БД НЕ створено — {e}"),
+                );
+                None
+            }
+        };
     // ── Крок 3: авто-міграції схеми ──
     let t3 = Instant::now();
     // Авто-міграції (Частина 1.2): застосувати схему на fresh-БД ПЕРЕД
     // підняттям listener. Ідемпотентно: повна схема лише якщо users немає;
     // owners_db створюється завжди (CREATE TABLE IF NOT EXISTS).
-    match torgashka_infrastructure::db::connect_readonly_pool(5).await {
-        Ok(pool) => {
-            if let Err(e) = torgashka_infrastructure::db::ensure_schema(&pool).await {
+    // Пул НЕ закриваємо — він спільний для всього фасаду.
+    match shared_pool.as_ref() {
+        Some(pool) => {
+            if let Err(e) = torgashka_infrastructure::db::ensure_schema(pool).await {
                 torgashka_infrastructure::embedded_pg::pg_log(
                     "ERROR",
                     &format!("крок 3: авто-міграція схеми НЕ виконана — {e}"),
                 );
             }
-            pool.close().await;
         }
-        Err(e) => {
-            // Провал створення пула: причина мусить бути у файлі (Windows: stderr приховано).
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "ERROR",
-                &format!("крок 3: БД недоступна для авто-міграції — {e}"),
-            );
-        }
+        None => torgashka_infrastructure::embedded_pg::pg_log(
+            "ERROR",
+            "крок 3: БД недоступна для авто-міграції — спільний пул не створено",
+        ),
     }
     torgashka_infrastructure::embedded_pg::pg_log(
         "INFO",
@@ -1134,33 +1128,34 @@ async fn init_facade_state() -> Result<
 
     // ── Крок 4: репозиторії/сервіси (кожен пул створюється один раз) ──
     let t4 = Instant::now();
-    let (readdirs, write, write_pool, pos, ledger, auth) = match init_readdirs().await {
-        Ok((pool, read, write, pos, ledger, auth)) => (
-            Some(read),
-            Some(write),
-            Some(pool),
-            Some(pos),
-            Some(ledger),
-            Some(auth),
-        ),
-        Err(reason) => {
-            // Перелік того, що НЕ змонтовано — щоб причина 503-ї була видима
-            // в torgashka.log без здогадок (дефект 2026-09).
-            torgashka_infrastructure::embedded_pg::pg_log(
-                "ERROR",
-                &format!(
-                    "крок 4: НЕ змонтовано readdirs/write/pos/ledger/auth/setup \
+    let (readdirs, write, write_pool, pos, ledger, auth) =
+        match init_readdirs(shared_pool.clone()).await {
+            Ok((pool, read, write, pos, ledger, auth)) => (
+                Some(read),
+                Some(write),
+                Some(pool),
+                Some(pos),
+                Some(ledger),
+                Some(auth),
+            ),
+            Err(reason) => {
+                // Перелік того, що НЕ змонтовано — щоб причина 503-ї була видима
+                // в torgashka.log без здогадок (дефект 2026-09).
+                torgashka_infrastructure::embedded_pg::pg_log(
+                    "ERROR",
+                    &format!(
+                        "крок 4: НЕ змонтовано readdirs/write/pos/ledger/auth/setup \
                      (/api/v1/setup/status = 503, логін-гейт каси висне) — {reason}"
-                ),
-            );
-            (None, None, None, None, None, None)
-        }
-    };
+                    ),
+                );
+                (None, None, None, None, None, None)
+            }
+        };
     // Окремий флаг auth: TORGASHKA_RUST_AUTH=1 вмикає Rust-гілку auth навіть якщо
-    // readdirs вимкнено (проксі-режим для решти) — але пул створюється спільно.
+    // readdirs вимкнено (проксі-режим для решти) — пул при цьому СПІЛЬНИЙ (В).
     let auth = if env_flag(RUST_AUTH_ENV) && auth.is_none() {
-        match torgashka_infrastructure::db::connect_readonly_pool(10).await {
-            Ok(pool) => {
+        match shared_pool.clone() {
+            Some(pool) => {
                 eprintln!(
                     "[torgashka-api] {RUST_AUTH_ENV}=1 — Rust-гілка auth увімкнена (PostgreSQL)"
                 );
@@ -1171,11 +1166,11 @@ async fn init_facade_state() -> Result<
                     )) as Arc<dyn AuthService + Send + Sync>,
                 )
             }
-            Err(e) => {
+            None => {
                 torgashka_infrastructure::embedded_pg::pg_log(
                     "ERROR",
                     &format!(
-                        "{RUST_AUTH_ENV}=1, але пул для auth НЕ створено ({e}) — auth через роути не змонтовано (LEGACY → 410)"
+                        "{RUST_AUTH_ENV}=1, але спільний пул БД НЕ створено — auth через роути не змонтовано (LEGACY → 410)"
                     ),
                 );
                 None
@@ -1184,18 +1179,18 @@ async fn init_facade_state() -> Result<
     } else {
         auth
     };
-    let prro = init_prro().await;
-    let debtors = init_debtors().await;
-    let (documents, documents_pool) = init_documents().await;
-    let (invoices_v1, invoices_v2, invoices_pool) = init_invoices().await;
-    let (return_invoices, return_invoices_pool) = init_return_invoices().await;
-    let (purchase_orders, purchase_orders_pool) = init_purchase_orders().await;
-    let (print_templates, print_pool) = init_print_templates().await;
-    let (products_v2, products_v2_pool) = init_products_v2().await;
+    let prro = init_prro(shared_pool.clone()).await;
+    let debtors = init_debtors(shared_pool.clone()).await;
+    let (documents, documents_pool) = init_documents(shared_pool.clone()).await;
+    let (invoices_v1, invoices_v2, invoices_pool) = init_invoices(shared_pool.clone()).await;
+    let (return_invoices, return_invoices_pool) = init_return_invoices(shared_pool.clone()).await;
+    let (purchase_orders, purchase_orders_pool) = init_purchase_orders(shared_pool.clone()).await;
+    let (print_templates, print_pool) = init_print_templates(shared_pool.clone()).await;
+    let (products_v2, products_v2_pool) = init_products_v2(shared_pool.clone()).await;
     let uploads_dir = std::env::var("TORGASHKA_UPLOADS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("uploads"));
-    let (ocr, ocr_pool) = init_ocr().await;
+    let (ocr, ocr_pool) = init_ocr(shared_pool.clone()).await;
     // StoreContext (Етап 3): пул для middleware + сервіс точок.
     let store_pool = write_pool.clone().map(StorePool::new);
     let stores = store_pool.as_ref().map(|sp| {

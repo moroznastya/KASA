@@ -69,6 +69,22 @@ pub(crate) struct SyncAuth {
     store_id: Option<String>,
 }
 
+/// Нормалізувати `server_url` до КОРЕНЯ сервера (без суфікса `/api/v1`).
+///
+/// Шлях `/api/v1/...` дописує сам sync-клієнт (`sync_push`/`sync_pull`).
+/// Якщо в settings лежить значення із суфіксом (напр. фронтенд зберіг свій
+/// `API_BASE_URL = .../api/v1`), шлях подвоюється → сервер віддає 410 і
+/// синхронізація мовчки не працює. Нормалізація на читанні лікує вже
+/// збережені значення без перезбірки даних на касі.
+fn normalize_base_url(raw: &str) -> String {
+    let url = raw.trim().trim_end_matches('/');
+    let url = match url.len() {
+        n if n >= 7 && url[n - 7..].eq_ignore_ascii_case("/api/v1") => &url[..n - 7],
+        _ => url,
+    };
+    url.trim_end_matches('/').to_string()
+}
+
 /// Читає auth-налаштування sync з SQLite settings (логіка вище).
 pub(crate) fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncAuth>, String> {
     // pub(crate): те саме питання «чи має черга канал доставки» ставить шар
@@ -80,7 +96,7 @@ pub(crate) fn read_sync_auth(conn: &rusqlite::Connection) -> Result<Option<SyncA
     if base_url.trim().is_empty() {
         return Ok(None);
     }
-    let base_url = base_url.trim().to_string();
+    let base_url = normalize_base_url(&base_url);
 
     // Device-режим має ПРІОРИТЕТ: після активації каси device_token —
     // головний токен sync; залишковий api_token у settings ігнорується.
@@ -601,6 +617,39 @@ mod tests {
             .expect("INSERT settings");
         }
         conn
+    }
+
+    #[test]
+    fn base_url_strips_api_v1_suffix() {
+        // Регресія: фронтенд зберігав API_BASE_URL (.../api/v1) як server_url —
+        // шлях подвоювався і pull віддавав 410.
+        let conn = conn_with_settings(&[
+            ("server_url", "http://127.0.0.1:8000/api/v1"),
+            ("device_token", "dev-token-123"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("сконфігуровано");
+        assert_eq!(a.base_url, "http://127.0.0.1:8000");
+    }
+
+    #[test]
+    fn base_url_strips_trailing_slash_and_case() {
+        let conn = conn_with_settings(&[
+            ("server_url", "  http://host:9000/API/V1/  "),
+            ("api_token", "jwt"),
+            ("store_id", "store-1"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("сконфігуровано");
+        assert_eq!(a.base_url, "http://host:9000");
+    }
+
+    #[test]
+    fn base_url_keeps_plain_root() {
+        let conn = conn_with_settings(&[
+            ("server_url", "http://10.0.0.5:8000/"),
+            ("device_token", "t"),
+        ]);
+        let a = read_sync_auth(&conn).unwrap().expect("сконфігуровано");
+        assert_eq!(a.base_url, "http://10.0.0.5:8000");
     }
 
     #[test]

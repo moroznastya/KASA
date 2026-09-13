@@ -11,9 +11,15 @@
 //!      (зміна ціни в одній точці НЕ впливає на іншу).
 //!   3. Зміна ЛИШЕ ціни → quantity точки A не загубилась.
 //!   4. v2-шлях (products_v2): та сама ізоляція update/get.
+//!   5. **Симетрія «картка vs список»**: v1-список (`fetch_product_rows`) читає ту
+//!      САМУ per-store ціну, що й картка (`get_product`). Регресія, яку ловить
+//!      `per_store_price_list_matches_card_v1`: список/пошук на касі брав
+//!      `p.price` (глобальний дефолт) без JOIN stock → показував СТАРУ ціну
+//!      (живий доказ: картка 77.77, список 42.00 після PUT).
 
 use torgashka_domain::{
-    ProductCreateInput, ProductUpdateInput, ProductsV2Service, ReadDirectories, WriteDirectories,
+    ProductCreateInput, ProductFilters, ProductUpdateInput, ProductsV2Service, ReadDirectories,
+    WriteDirectories,
 };
 use torgashka_infrastructure::repositories::directories::SqlxDirectories;
 use torgashka_infrastructure::repositories::products_v2::SqlxProductsV2;
@@ -30,7 +36,17 @@ async fn pool() -> sqlx::PgPool {
 
 /// Унікальний суфікс для barcode/sku/title.
 fn uniq() -> String {
-    chrono::Utc::now().timestamp_micros().to_string()
+    // cargo test виконує тести цього файлу ПАРАЛЕЛЬНО: самі лише мікросекунди
+    // можуть збігтися у двох тестів (флейк: пошук `query: ts` знаходив товар
+    // сусіднього тесту). Атомарний лічильник дає гарантовану унікальність
+    // у межах процесу.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}{}",
+        chrono::Utc::now().timestamp_micros(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Точка A — «Білий магазин», точка B — «Жовтий магазин»; власник має доступ до обох.
@@ -236,6 +252,96 @@ async fn per_store_price_isolation_v2() {
     .await
     .expect("v2 stock quantity A");
     assert_eq!(qty, "5.000", "v2 зміна лише ціни не загубила quantity");
+
+    cleanup_product(&p, created.id).await;
+}
+
+/// Регресія «картка vs список» (v1): список/пошук мусить бачити ту саму
+/// per-store ціну, що й картка. ДО фіксу падав: `fetch_product_rows` читав
+/// `p.price` (глобальний дефолт) без JOIN stock → у списку лишалась стара ціна.
+#[tokio::test]
+async fn per_store_price_list_matches_card_v1() {
+    let p = pool().await;
+    let store_pool = StorePool::new(p.clone());
+    let write = SqlxWriteDirectories::new(store_pool.clone());
+    let read = SqlxDirectories::new(store_pool.clone());
+    let ts = uniq();
+    let a = Uuid::parse_str(STORE_A).unwrap();
+    let b = Uuid::parse_str(STORE_B).unwrap();
+    let ctx_a = ctx(a);
+    let ctx_b = ctx(b);
+
+    // 1) Товар у точці A: price 100.00, stock 16.
+    let created = with_store_ctx(ctx_a.clone(), async {
+        write.create_product(&create_input(&ts)).await
+    })
+    .await
+    .expect("create product in A");
+
+    // 2) Зміна ціни ЛИШЕ в A (write.rs пише stock.price; products.price — дефолт).
+    let upd = ProductUpdateInput {
+        price: Some(Some("150.00".into())),
+        ..Default::default()
+    };
+    with_store_ctx(ctx_a.clone(), async {
+        write.update_product(created.id, &upd).await
+    })
+    .await
+    .expect("update price in A");
+
+    // 3) Картка A (еталон) — 150.00.
+    let card_a = with_store_ctx(ctx_a.clone(), async { read.get_product(created.id).await })
+        .await
+        .expect("card in A");
+    assert_eq!(
+        card_a.price.as_deref(),
+        Some("150.00"),
+        "картка A: нова per-store ціна"
+    );
+
+    // 4) СПИСОК/пошук A (той самий шлях, що /api/v1/products і пошук на касі).
+    //    page/size беремо з default_page() — Default дає size=0 (порожня сторінка).
+    let filters = ProductFilters {
+        query: Some(ts.clone()),
+        ..ProductFilters::default_page()
+    };
+    let list_a = with_store_ctx(ctx_a.clone(), async { read.list_products(&filters).await })
+        .await
+        .expect("list in A");
+    // Фільтруємо СВІЙ товар, а не вимагаємо len()==1 на всій сторінці:
+    // паралельний тест зі збігом суфікса більше не робить це флейком.
+    let mine: Vec<_> = list_a.items.iter().filter(|p| p.id == created.id).collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "товар рівно один раз (SELECT DISTINCT + унікальний stock_pkey)"
+    );
+    assert_eq!(
+        mine[0].price.as_deref(),
+        Some("150.00"),
+        "СПИСОК A == картка A (регресія: було 100.00)"
+    );
+    assert_eq!(
+        mine[0].stock.as_deref(),
+        Some("16.000"),
+        "залишок точки A у списку — з stock, не глобальний"
+    );
+
+    // 5) Ізоляція точки: у списку точки B ціна ДОСІ глобальна 100.00.
+    let list_b = with_store_ctx(ctx_b.clone(), async { read.list_products(&filters).await })
+        .await
+        .expect("list in B");
+    let mine_b: Vec<_> = list_b.items.iter().filter(|p| p.id == created.id).collect();
+    assert_eq!(
+        mine_b.len(),
+        1,
+        "товар рівно один раз і в точці B (дедуплікація JOIN)"
+    );
+    assert_eq!(
+        mine_b[0].price.as_deref(),
+        Some("100.00"),
+        "список B: глобальний дефолт (ізоляція точки)"
+    );
 
     cleanup_product(&p, created.id).await;
 }

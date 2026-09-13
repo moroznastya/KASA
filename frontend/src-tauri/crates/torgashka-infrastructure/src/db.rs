@@ -110,6 +110,43 @@ pub async fn connect_readonly_pool(max_connections: u32) -> Result<PgPool, DbErr
     Ok(pool)
 }
 
+/// Створює пул з автоматичним скиданням RLS-контексту точки.
+///
+/// Хук `after_release` виконується ПЕРЕД тим, як з'єднання повернеться в пул:
+/// саме тут скидаються `app.user_id`/`app.store_id`, які проставив контекст
+/// запиту ([`crate::store_ctx::StoreRequest`]). Це (1) гарантує, що жоден
+/// споживач — у т.ч. прямий `&PgPool` в адмін-гілках — не побачить точку
+/// попереднього запиту, і (2) знімає скидання з критичного шляху відповіді
+/// (≈29 мс на касі ZeroTier).
+///
+/// Якщо скидання не вдалося — стан з'єднання невідомий, тому повертаємо
+/// `Ok(false)`: sqlx закриє його, а не віддасть у пул.
+pub async fn connect_pool_with_ctx_reset(max_connections: u32) -> Result<PgPool, DbError> {
+    let url = resolve_database_url()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_release(|conn, _meta| {
+            Box::pin(async move {
+                match crate::store_ctx::reset_store_ctx(conn).await {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        crate::embedded_pg::pg_log(
+                            "WARN",
+                            &format!(
+                                "пул: скидання RLS-контексту не вдалося ({e}) — з'єднання закрито"
+                            ),
+                        );
+                        Ok(false)
+                    }
+                }
+            })
+        })
+        .connect(&url)
+        .await?;
+    Ok(pool)
+}
+
 /// Створює пул ЗАПИСУ в апстрім (primary) для standby-вузла (ADR-0007 F3).
 ///
 /// URL передається ЯВНО (`NodeConfig::resolve_upstream_write_url`) і НЕ

@@ -7,9 +7,11 @@
 //   - точка, до якої немає доступу → 403 (перевірка через user_stores)
 //   - публічні/auth/stores-шляхи   → без X-Store-Id (управління точками)
 //
-// Додатково: проставляє task-local [`StoreCtx`] — репозиторії (StorePool)
-// підставляють `app.user_id`/`app.store_id` у `set_config` на кожен запит
-// (RLS-контур 0004_rls). Працює ПІСЛЯ auth_middleware (Claims у extensions).
+// Додатково: проставляє task-local [`StoreCtx`] і ВІДКРИВАЄ КОНТЕКСТ ЗАПИТУ
+// ([`StoreRequest`]) — одне з'єднання з `app.user_id`/`app.store_id` (RLS-контур
+// 0004_rls) на весь HTTP-запит. Раніше кожен одиночний запит репозиторію коштував
+// 3 мережеві круги (`set_config` → запит → `reset`) — тепер 1 круг на запит
+// плюс один круг на скидання. Працює ПІСЛЯ auth_middleware (Claims у extensions).
 // ─────────────────────────────────────────────────────────────────────────────
 
 use axum::{
@@ -21,7 +23,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool};
+use torgashka_infrastructure::store_ctx::{with_store_ctx, StoreCtx, StorePool, StoreRequest};
 
 use crate::auth::{Claims, DeviceCtx};
 use crate::AppState;
@@ -49,16 +51,49 @@ fn json_error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({"detail": msg.into()}))).into_response()
 }
 
-/// Перевірка доступу користувача до точки (user_stores) у межах RLS-контексту.
-async fn check_store_access(pool: &StorePool, ctx: &StoreCtx) -> bool {
-    let res: Result<Option<bool>, _> = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM user_stores WHERE user_id = $1 AND store_id = $2)",
-    )
-    .bind(ctx.user_id)
-    .bind(ctx.store_id)
-    .fetch_optional(pool)
-    .await;
-    matches!(res, Ok(Some(true)))
+/// Відкриває КОНТЕКСТ ЗАПИТУ (А): ОДИН мережевий круг на все — `set_config`
+/// RLS-параметрів (`app.user_id`/`app.store_id`) + перевірка доступу
+/// користувача до точки (`user_stores`).
+///
+/// Повертає `(контекст, доступ дозволено)`. Пул не сконфігуровано (режим
+/// проксі) → `Ok(None)`: працюємо як раніше (кожен statement сам собі контекст).
+async fn open_request_ctx(
+    pool: &Option<StorePool>,
+    ctx: &StoreCtx,
+) -> Result<Option<(StoreRequest, bool)>, Response> {
+    let Some(pool) = pool else {
+        return Ok(None);
+    };
+    match StoreRequest::open(&pool.0, ctx).await {
+        Ok((req_tx, allowed)) => Ok(Some((req_tx, allowed))),
+        Err(e) => {
+            eprintln!("[torgashka-api] store_middleware: відкриття контексту запиту: {e}");
+            Err(json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "База даних недоступна",
+            ))
+        }
+    }
+}
+
+/// Те саме без перевірки доступу (шляхи управління точками: X-Store-Id опційний).
+async fn open_request_ctx_unchecked(
+    pool: &Option<StorePool>,
+    ctx: &StoreCtx,
+) -> Result<Option<StoreRequest>, Response> {
+    let Some(pool) = pool else {
+        return Ok(None);
+    };
+    match StoreRequest::open_unchecked(&pool.0, ctx).await {
+        Ok(req_tx) => Ok(Some(req_tx)),
+        Err(e) => {
+            eprintln!("[torgashka-api] store_middleware: відкриття контексту запиту: {e}");
+            Err(json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "База даних недоступна",
+            ))
+        }
+    }
 }
 
 /// Middleware StoreContext: валідація X-Store-Id + task-local контекст.
@@ -89,7 +124,7 @@ pub async fn store_middleware(
     // auth_middleware за Bearer device_token на sync-шляхах. X-Store-Id
     // ІГНОРУЄТЬСЯ — точка береться з DeviceCtx (захист від підміни точки
     // касою). user_stores не перевіряємо: пристрій — не користувач, його
-    // немає в user_stores (check_store_access давав би 403).
+    // немає в user_stores (перевірка давала б 403).
     if claims.role == "device" {
         let dctx = match req.extensions().get::<DeviceCtx>().cloned() {
             Some(c) => c,
@@ -101,7 +136,11 @@ pub async fn store_middleware(
             role: "device".to_string(),
         };
         let pool = state.store_pool.clone();
-        return with_store_ctx(ctx, async move {
+        let req_tx = match open_request_ctx_unchecked(&state.store_pool, &ctx).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let inner = async move {
             // Живість каси: last_seen_at=now() на кожен запит. devices БЕЗ RLS
             // (політик немає) — оновлення безпечне в будь-якому контексті.
             //
@@ -117,8 +156,17 @@ pub async fn store_middleware(
                 }
             }
             next.run(req).await
-        })
-        .await;
+        };
+        let resp = match &req_tx {
+            Some(req_tx) => with_store_ctx(ctx.clone(), req_tx.scope(inner)).await,
+            None => with_store_ctx(ctx.clone(), inner).await,
+        };
+        if let Some(req_tx) = req_tx {
+            if let Err(e) = req_tx.finish().await {
+                eprintln!("[torgashka-api] store_middleware: скидання контексту запиту: {e}");
+            }
+        }
+        return resp;
     }
     // Управління точками: X-Store-Id опційний.
     //   - POST /stores (створення нової точки) виконується З активної точки —
@@ -139,7 +187,21 @@ pub async fn store_middleware(
             store_id,
             role: claims.role.clone(),
         };
-        return with_store_ctx(ctx, async { next.run(req).await }).await;
+        let req_tx = match open_request_ctx_unchecked(&state.store_pool, &ctx).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let inner = async { next.run(req).await };
+        let resp = match &req_tx {
+            Some(req_tx) => with_store_ctx(ctx.clone(), req_tx.scope(inner)).await,
+            None => with_store_ctx(ctx.clone(), inner).await,
+        };
+        if let Some(req_tx) = req_tx {
+            if let Err(e) = req_tx.finish().await {
+                eprintln!("[torgashka-api] store_middleware: скидання контексту запиту: {e}");
+            }
+        }
+        return resp;
     }
     // Бізнес-ендпоінти: X-Store-Id обов'язковий.
     let store_header = req.headers().get("x-store-id");
@@ -166,24 +228,38 @@ pub async fn store_middleware(
         store_id,
         role: claims.role.clone(),
     };
-    let Some(pool) = state.store_pool.clone() else {
+    if state.store_pool.is_none() {
         eprintln!("[torgashka-api] store_middleware: store_pool не ініціалізовано");
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Внутрішня помилка сервера",
         );
+    }
+    // RLS-контекст + перевірка доступу — ОДИН круг (контекст запиту).
+    let req_tx = match open_request_ctx(&state.store_pool, &ctx).await {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-    // Перевірка доступу + виконання хендлера в ОДНОМУ scope контексту:
-    // і перевірка user_stores, і всі запити хендлера бачать app.user_id/store_id.
-    with_store_ctx(ctx.clone(), async move {
-        let allowed = check_store_access(&pool, &ctx).await;
-        if !allowed {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "Доступ до торговельної точки заборонено",
-            );
+    let allowed = req_tx.as_ref().map(|(_, allowed)| *allowed).unwrap_or(true);
+    if !allowed {
+        if let Some((req_tx, _)) = req_tx {
+            let _ = req_tx.finish().await;
         }
-        next.run(req).await
-    })
-    .await
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "Доступ до торговельної точки заборонено",
+        );
+    }
+    // Виконання хендлера — у тому самому контексті запиту (той самий таск).
+    let inner = async move { next.run(req).await };
+    let resp = match &req_tx {
+        Some((req_tx, _)) => with_store_ctx(ctx.clone(), req_tx.scope(inner)).await,
+        None => with_store_ctx(ctx.clone(), inner).await,
+    };
+    if let Some((req_tx, _)) = req_tx {
+        if let Err(e) = req_tx.finish().await {
+            eprintln!("[torgashka-api] store_middleware: скидання контексту запиту: {e}");
+        }
+    }
+    resp
 }
