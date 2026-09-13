@@ -21,6 +21,23 @@
 #      збірка падає з "PKG_CONFIG_PATH not set".
 #   5. Додано frontend build перед clippy: tauri::generate_context!() вимагає
 #      frontendDist (../dist) — без зібраного frontend proc macro падає.
+#
+# 🔧 ФІКС 2026-09-13 (PG 17 для pg_cluster-e2e):
+#   `contract2_restore_e2e` і `hub_snapshot_create_e2e` піднімають ВЛАСНИЙ
+#   тимчасовий кластер (initdb + pg_ctl) і вимагають, щоб major бінарників
+#   дорівнював major сервера: резолвер `tests/common/pg_cluster.rs:342-364`
+#   кличе `EmbeddedPostgres::locate()` з `required_major = "17."` і падає
+#   `[ANOMALY] потрібні бінарники PG 17` (pg_cluster.rs:361). На ubuntu-latest
+#   (24.04) є лише PG 16 → ставимо 17 із PGDG (apt.postgresql.org).
+#   Двох речей замало поодинці:
+#     • PATH — потрібен хендлеру export-dump (`db_sources::find_binary("pg_dump")`):
+#       `/usr/bin/pg_dump` — це pg_wrapper postgresql-common, і він віддає 16
+#       (перевірено на робочій машині: pg_dump 16.15 при сервері 17.6);
+#     • TORGASHKA_PG_DIR — ПЕРШИЙ крок резолвера (`embedded_pg.rs:503-515`), і
+#       він іде ПЕРЕД `pg_config --bindir`, тому лише PATH не гарантує 17.
+#   Сервіс-контейнер postgres:16 (5432) не конфліктує: pg_cluster бере власний
+#   вільний порт (`resolve_port`: 5433 → 5434..=5500, ніколи 5432), а системний
+#   кластер 17/apt глушиться через policy-rc.d (див. крок нижче).
 # ============================================================================
 
 name: 🦀 Rust Core — workspace
@@ -39,6 +56,10 @@ env:
   DATABASE_URL: postgresql://postgres:test_password@localhost:5432/pos_system
   TEST_DATABASE_URL: postgresql://postgres:test_password@localhost:5432/pos_system_test
   TORGASHKA_JWT_SECRET: ci-test-secret-key-2026-32chars-minimum!!
+  # Резолвер PG-бінарників читає це ПЕРШИМ (embedded_pg.rs:503) — так вибір 17
+  # не залежить від того, куди вкаже /usr/bin/pg_config (postgresql-common може
+  # віддати 16). Значення = каталог bin, як і в тексті ANOMALY-підказки.
+  TORGASHKA_PG_DIR: /usr/lib/postgresql/17/bin
 
 defaults:
   run:
@@ -83,6 +104,38 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
             postgresql postgresql-contrib
+
+      # ─── PostgreSQL 17 (PGDG): бінарники для pg_cluster-e2e ───────────
+      # policy-rc.d: apt не має підняти системний кластер 17/main на 5432 —
+      # там уже сервіс-контейнер postgres:16 (інакше боротьба за порт).
+      - name: 🐘 Install PostgreSQL 17 (PGDG)
+        run: |
+          printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d >/dev/null
+          sudo chmod +x /usr/sbin/policy-rc.d
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          PGDG_ASC=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=$PGDG_ASC] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17 postgresql-client-17
+          sudo pg_ctlcluster 17 main stop 2>/dev/null || true
+
+      # PATH — для підпроцесів (export-dump кличе find_binary("pg_dump")).
+      # GITHUB_PATH діє з НАСТУПНОГО кроку, тому в цьому перевіряємо явно
+      # ЕФЕКТИВНИЙ major (обгортка postgresql-common може підсунути 16).
+      - name: 🐘 PostgreSQL 17 → PATH (+ доказ ефективного major)
+        run: |
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/lib/postgresql/17/bin:$PATH"
+          echo "TORGASHKA_PG_DIR=$TORGASHKA_PG_DIR"
+          echo "pg_config: $(command -v pg_config) → $(pg_config --bindir)"
+          echo "initdb:    $(command -v initdb) $(initdb --version)"
+          echo "pg_dump:   $(command -v pg_dump) $(pg_dump --version)"
+          initdb --version | grep -q ' 17\.' || { echo "::error::ефективний initdb не 17.x — pg_cluster-тести впадуть ANOMALY"; exit 1; }
+          pg_dump --version | grep -q ' 17\.' || { echo "::error::ефективний pg_dump не 17.x"; exit 1; }
 
       # ─── Frontend build (tauri::generate_context! вимагає ../dist) ─────
       - name: ⚡ Setup Node
