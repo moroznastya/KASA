@@ -9,6 +9,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { normalizeServerUrl } from '@/services/deviceActivationService';
 
 // ─── Типи ───────────────────────────────────────────────────────────────────
 
@@ -279,7 +280,13 @@ export async function setSetting(key: string, value: string): Promise<void> {
 export async function persistSyncCredentials(apiToken: string, serverUrl: string): Promise<boolean> {
   try {
     await invoke<void>('set_setting', { key: 'api_token', value: apiToken });
-    await invoke<void>('set_setting', { key: 'server_url', value: serverUrl });
+    // Rust сам дописує `/api/v1/...` до base_url — у settings мусить лежати
+    // корінь сервера. Без нормалізації `API_BASE_URL` (.../api/v1) давав
+    // подвоєний шлях → 410 і мовчки неробочий pull.
+    await invoke<void>('set_setting', {
+      key: 'server_url',
+      value: normalizeServerUrl(serverUrl),
+    });
     return true;
   } catch {
     return false;
