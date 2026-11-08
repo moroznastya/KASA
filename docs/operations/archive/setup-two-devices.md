@@ -14,6 +14,11 @@
 > `/api/v1/admin/network-nodes/:id/force-resync`, `/api/v1/local/promote`,
 > `/api/v1/local/repoint-primary`, локальна embedded-PG репліка на порту 5433,
 > `pg_basebackup`-провіжн, ґейт запису `write_gate`/`readonly_net`.
+>
+> Для топології ZBOX (2026-09-13) застосовні інші документи: діюча процедура —
+> [onboarding-windows-device.md](../../operations/onboarding-windows-device.md), модель —
+> [ADR-0009](../../adr/ADR-0009-direct-db-sync-model.md), технічний довідник —
+> [hub-and-nodes.md §0.1, §15.0](../../operations/hub-and-nodes.md).
 
 ---
 # Розгортання мережі: Zotac ZBOX Windows (primary) + каси (standby)

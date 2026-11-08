@@ -44,11 +44,9 @@ export interface NetworkNode {
   created_at: string;
 }
 
-/** Відповідь на створення вузла: одноразовий join-код. */
+/** Відповідь на створення вузла: реєстровий запис. */
 export interface NodeCreateResult {
   id: string;
-  join_code: string;
-  join_code_expires_at: string;
   primary_host_hint: string;
 }
 
@@ -58,7 +56,7 @@ export async function listNetworkNodes(): Promise<NetworkNode[]> {
   return data;
 }
 
-/** Створити вузол → отримати одноразовий join-код (TTL 30 хв). */
+/** Створити вузол (реєстровий запис). */
 export async function createNetworkNode(name: string, storeId?: string): Promise<NodeCreateResult> {
   const { data } = await api.post<NodeCreateResult>('/admin/network-nodes', {
     name,

@@ -15,7 +15,14 @@
 //!   4. block каси (admin) → 403 "Пристрій заблоковано"; unblock → 200;
 //!   5. стара JWT-каса: sync/master з JWT касира + X-Store-Id A → 200;
 //!   6. push smoke: POST /sync/push з device_token (порожній пакет) → 400
-//!      «порожній пакет push» — авторизація device пройшла (не 401/403).
+//!      «порожній пакет push» — авторизація device пройшла (не 401/403);
+//!   7. R1, крок приєднання вузла: GET /sync/snapshot з device_token (без JWT
+//!      і без X-Store-Id) → 200 з тими самими байтами/хешем/іменем, що у
+//!      файлі каталогу знімків (НЕ 401 — вузол забирає знімок одразу після
+//!      активації, коли JWT касира ще не існує);
+//!   8. негативні на тому ж шляху: невідомий/сміттєвий device_token та запит
+//!      БЕЗ заголовка авторизації → 401 (шлях НЕ став публічним);
+//!   9. push з невалідним device_token → 401 (поведінка push НЕ змінилась).
 //!
 //! БД: TEST_DATABASE_URL або робочий URL + _test (tests/common/mod.rs).
 //! Самодостатній на ПОРОЖНІЙ БД: apply_schema застосовує ensure_schema
@@ -211,6 +218,24 @@ async fn cashier_master(base: &str, token: &str, store_id: Uuid, since: i64) -> 
     let status = resp.status().as_u16();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     (status, body)
+}
+
+/// GET /sync/snapshot; `token = None` — запит без заголовка авторизації.
+async fn snapshot_get(base: &str, token: Option<&str>) -> (u16, Value, Vec<u8>) {
+    let mut req = reqwest::Client::new().get(format!("{base}/api/v1/sync/snapshot"));
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send().await.expect("snapshot запит");
+    let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
+    let body = resp.bytes().await.expect("тіло snapshot").to_vec();
+    let meta = json!({
+        "x-snapshot-sha256": headers.get("x-snapshot-sha256").and_then(|v| v.to_str().ok()),
+        "x-snapshot-filename": headers.get("x-snapshot-filename").and_then(|v| v.to_str().ok()),
+        "content-length": headers.get("content-length").and_then(|v| v.to_str().ok()),
+    });
+    (status, meta, body)
 }
 
 fn find_change<'a>(delta: &'a Value, id: &str) -> Option<&'a Value> {
@@ -412,5 +437,84 @@ async fn device_sync_master_auth_isolates_stores_and_tracks_state() {
             .map(|d| d.contains("порожній пакет"))
             .unwrap_or(false),
         "деталь push: {push_body}"
+    );
+
+    // ── 7. R1 (крок приєднання вузла): знімок БД хаба за device_token ──────
+    // Вузол після активації НЕ має JWT касира — його єдиний креденшл це
+    // device_token. Каталог знімків підсовуємо свій (синтетичний дамп):
+    // перевіряємо не вміст PG, а факт авторизації + цілісність віддачі.
+    let snap_dir =
+        std::env::temp_dir().join(format!("torgashka_snap_e2e_{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&snap_dir).expect("каталог знімків");
+    let dump: Vec<u8> = b"PGDMP-e2e-fake-dump-for-device-auth".to_vec();
+    let dump_name = "pos_e2e_snapshot.dump";
+    std::fs::write(snap_dir.join(dump_name), &dump).expect("файл знімка");
+    std::env::set_var(
+        torgashka_api::sync_snapshot::SNAPSHOT_DIR_ENV,
+        snap_dir.as_os_str(),
+    );
+    let dump_sha = torgashka_api::sync_snapshot::sha256_hex(&dump);
+
+    let (s_snap, snap_meta, snap_body) = snapshot_get(&base, Some(&device_token)).await;
+    assert_ne!(
+        s_snap, 401,
+        "device_token на /sync/snapshot: вузол не може забрати знімок: {snap_meta}"
+    );
+    assert_eq!(s_snap, 200, "device_token на /sync/snapshot: {snap_meta}");
+    assert_eq!(
+        snap_meta["x-snapshot-sha256"].as_str(),
+        Some(dump_sha.as_str()),
+        "хеш знімка у заголовку"
+    );
+    assert_eq!(
+        snap_meta["x-snapshot-filename"].as_str(),
+        Some(dump_name),
+        "ім'я знімка у заголовку"
+    );
+    assert_eq!(snap_body, dump, "тіло знімка = байти файла каталогу");
+
+    // ── 8. Негативні на тому ж шляху: захист НЕ послаблено ─────────────────
+    for (label, tok) in [
+        ("невідомий device_token", Some("f".repeat(48))),
+        ("сміттєвий токен", Some("не-токен".to_string())),
+        ("без заголовка авторизації", None),
+    ] {
+        let (s_bad, bad_meta, _b) = snapshot_get(&base, tok.as_deref()).await;
+        assert_eq!(s_bad, 401, "{label} на /sync/snapshot: {bad_meta}");
+    }
+    // Заблокована каса → 403 (не 401 і не 200): шлях не став публічним.
+    let rb2 = client
+        .post(format!("{base}/api/v1/admin/devices/{device_id}/block"))
+        .bearer_auth(&owner)
+        .send()
+        .await
+        .expect("block запит 2");
+    assert!(rb2.status().is_success(), "block 2: {}", rb2.status());
+    let (s_blk_snap, blk_meta, _b) = snapshot_get(&base, Some(&device_token)).await;
+    assert_eq!(
+        s_blk_snap, 403,
+        "заблокована каса на /sync/snapshot: {blk_meta}"
+    );
+    let ru2 = client
+        .post(format!("{base}/api/v1/admin/devices/{device_id}/unblock"))
+        .bearer_auth(&owner)
+        .send()
+        .await
+        .expect("unblock запит 2");
+    assert!(ru2.status().is_success(), "unblock 2: {}", ru2.status());
+
+    // ── 9. push з невалідним токеном → 401 (поведінка push НЕ змінилась) ───
+    let rp_bad = client
+        .post(format!("{base}/api/v1/sync/push"))
+        .bearer_auth("f".repeat(48))
+        .json(&json!([]))
+        .send()
+        .await
+        .expect("push з невалідним токеном");
+    let sp_bad = rp_bad.status().as_u16();
+    let push_bad_body: Value = rp_bad.json().await.unwrap_or(Value::Null);
+    assert_eq!(
+        sp_bad, 401,
+        "невалідний device_token на push: {push_bad_body}"
     );
 }

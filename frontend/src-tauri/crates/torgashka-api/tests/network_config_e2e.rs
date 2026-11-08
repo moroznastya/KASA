@@ -10,14 +10,26 @@
 //!   1. export: filename/content валідні; activation_code 8 символів A-Z0-9
 //!      (алфавіт без 0/O/1/I); content містить network_id=owner users.id
 //!      (канонічний вибір ORDER BY created_at), store.id/name, server_url;
-//!   2. include_db_password=false → db.password_encrypted відсутній;
-//!      true → присутній (base64, AES-256-GCM) і розшифровується назад;
-//!      plaintext пароля ніколи не потрапляє у content;
+//!   2. schema_version=2. include_db_password=false → db.password_encrypted і
+//!      db.key_b64 ВІДСУТНІ; true → обидва присутні: password_encrypted
+//!      (base64, AES-256-GCM: nonce(12)‖ct+tag(16)) і key_b64 (base64 32 Б —
+//!      ТОЙ САМИЙ ключ `.dbkey`, яким зашифровано пароль); key_b64 декодується
+//!      у 32 байти й дорівнює ключу, яким password_encrypted розшифровується
+//!      назад; plaintext пароля ніколи не потрапляє у content;
 //!   3. import того самого content → ok:true з тим самим network_id/store/server_url;
 //!   4. import з підробленим code для нашої точки → 400; неіснуюча точка → 404;
-//!      невалідний JSON → 400; schema_version != 1 → 400;
+//!      невалідний JSON → 400 (розбір JSON); JSON без обов'язкових полів → 400
+//!      (валідація ПОЛІВ, не версії); schema_version 3/0/відсутня/нечислова →
+//!      400 (ґейт ВЕРСІЇ, у тексті — значення з файлу); зайвий db-блок у
+//!      v2-файлі → 200 (ігнорується); v1 (без db і з db без key_b64) → 200;
 //!   5. RBAC: cashier/admin → 403 на export і import (owner-only, Етап 5);
 //!   6. server_url: явний body > env TORGASHKA_FACADE_ADDR > дефолт.
+//!
+//! СУМІСНІСТЬ ВЕРСІЙ: ґейт import_config приймає schema_version 1 (старі
+//! файли пристроїв) і 2 (поточний) — регресію строгої рівності (== 2), через
+//! яку v1-файл діставав 400, виправлено. Позитивні v1-кейси (без db і з
+//! db.password_encrypted без key_b64) перевіряє
+//! `v1_compatible_file_imports_with_200_after_version_gate_fix`.
 //!
 //! Конфіг db_sources.toml ізолюється у temp через env TORGASHKA_DB_SOURCES
 //! (як admin_db_sources_e2e); активне джерело створюється/активується через
@@ -27,6 +39,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use serde_json::{json, Value};
 use torgashka_api::run_facade;
 use uuid::Uuid;
@@ -341,7 +355,11 @@ async fn network_config_export_import_lifecycle() {
 
     let content = exp["content"].as_str().expect("content").to_string();
     let cfg1: Value = serde_json::from_str(&content).expect("content — валідний JSON");
-    assert_eq!(cfg1["schema_version"], json!(1));
+    assert_eq!(
+        cfg1["schema_version"],
+        json!(2),
+        "v2: файл самодостатній (за include_db_password несе key_b64)"
+    );
     assert_eq!(cfg1["server_url"], json!("http://127.0.0.1:8000"));
 
     let owner_id = canonical_owner_id(&pool).await;
@@ -371,6 +389,10 @@ async fn network_config_export_import_lifecycle() {
     assert!(
         cfg1["db"].get("password_encrypted").is_none(),
         "без include_db_password пароль не включається: {cfg1}"
+    );
+    assert!(
+        cfg1["db"].get("key_b64").is_none(),
+        "без include_db_password ключа теж немає (жодного з двох полів): {cfg1}"
     );
     assert!(
         !content.contains(&parts.password),
@@ -408,7 +430,36 @@ async fn network_config_export_import_lifecycle() {
             .contains(&parts.password),
         "content не містить plaintext пароля"
     );
+    // Структура шифротексту: base64(nonce(12) ‖ ct+tag(16)) — довжина
+    // розкодованого = 12 + |пароль| + 16 (доводить AES-256-GCM із nonce 12).
+    let ct = B64.decode(enc).expect("password_encrypted — base64");
+    assert_eq!(
+        ct.len(),
+        12 + parts.password.len() + 16,
+        "nonce(12)+ct+tag(16) для пароля довжини {}",
+        parts.password.len()
+    );
+
+    // v2: key_b64 — base64 STANDARD (padded, як `.dbkey` на диску; unpadded
+    // STANDARD не приймає) 32-байтного AES-256-ключа, і це БАЙТ-У-БАЙТ той
+    // самий ключ, яким зашифровано password_encrypted у db_sources.toml.
+    let key_b64 = cfg2["db"]["key_b64"]
+        .as_str()
+        .expect("key_b64 присутній разом із password_encrypted");
+    assert_eq!(key_b64.len(), 44, "32 байти → 44 симв. base64: {key_b64}");
+    assert!(key_b64.ends_with('='), "base64 padded: {key_b64}");
+    let key_from_file = B64.decode(key_b64).expect("key_b64 — валідний base64");
+    assert_eq!(key_from_file.len(), 32, "AES-256 → 32 байти");
+    let key_on_disk =
+        torgashka_infrastructure::db_sources::resolve_key(&cfg_path).expect("resolve_key(.dbkey)");
+    assert_eq!(
+        key_from_file, key_on_disk,
+        "key_b64 = ключ, яким зашифровано пароль (32 байти, байт-у-байт)"
+    );
+
     // Розшифровка назад дає оригінал (AES-256-GCM, ключ .dbkey у temp-дирі).
+    // Ланцюг самодостатності файла: key_b64 (у файлі) == resolve_key (.dbkey) —
+    // і САМЕ цим ключем успішно розшифровується password_encrypted із файла.
     let decrypted =
         torgashka_infrastructure::db_sources::decrypt_password(&cfg_path, enc).expect("decrypt");
     assert_eq!(decrypted, parts.password, "розшифрований пароль = оригінал");
@@ -479,6 +530,31 @@ async fn network_config_export_import_lifecycle() {
         "https://vpn.example:8443"
     );
 
+    // ── Import v2 із ЗАЙВИМ db-блоком (password_encrypted без key_b64) → 200 ──
+    // db-блок import_config ігнорує (сервер не приймає параметри підключення
+    // ззовні), тому зайві/старі поля db читання не ламають.
+    let mut with_db = cfg4.clone();
+    with_db["db"] = json!({
+        "host": "10.0.0.7",
+        "port": 5433,
+        "database": "old-db",
+        "user": "old-user",
+        "password_encrypted": "QUFBQQ==",
+    });
+    let (swd, impwd) = req(
+        &base,
+        reqwest::Method::POST,
+        "/api/v1/admin/network-config/import",
+        Some(&owner_tok),
+        Some(json!({"content": with_db.to_string()})),
+    )
+    .await;
+    assert_eq!(
+        swd, 200,
+        "v2 + зайвий db-блок (без key_b64) → 200, db ігнорується: {impwd}"
+    );
+    assert_eq!(impwd["store"]["id"].as_str().unwrap_or(""), store_id);
+
     // ── Import СТАРОГО content (#1, з попереднім кодом) → 400 ──
     let (si2, imp2) = req(
         &base,
@@ -519,7 +595,13 @@ async fn network_config_export_import_lifecycle() {
     .await;
     assert_eq!(sg, 404, "неіснуюча точка → 404: {impg}");
 
-    // ── Import: невалідний JSON / schema_version != 1 / битий формат → 400 ──
+    // ── Import: негативні кейси — ЧЕСНО про ПРИЧИНУ кожного 400 ────────────
+    // `NetCfgFileIn` (src, не чіпав) НЕ має поля schema_version, а ґейт версії
+    // стоїть ПЕРЕД розбором полів. Тому причини 400 різні — і їх треба
+    // розрізняти, інакше тест «проходить із хибної причини» й нічого не захищає.
+    let detail = |b: &Value| b["detail"].as_str().unwrap_or("").to_string();
+
+    // (1) невалідний JSON → 400 на РОЗБОРІ JSON.
     let (sb1, b1) = req(
         &base,
         reqwest::Method::POST,
@@ -529,6 +611,13 @@ async fn network_config_export_import_lifecycle() {
     )
     .await;
     assert_eq!(sb1, 400, "невалідний JSON: {b1}");
+    assert!(
+        detail(&b1).contains("JSON"),
+        "400 має бути про розбір JSON: {b1}"
+    );
+
+    // (2) валідний JSON, але БЕЗ обов'язкових полів → 400 на ВАЛІДАЦІЇ ПОЛІВ
+    // (ґейт версії проходить: 2 == 2; далі serde → missing field network_id).
     let (sb2, b2) = req(
         &base,
         reqwest::Method::POST,
@@ -537,7 +626,60 @@ async fn network_config_export_import_lifecycle() {
         Some(json!({"content": "{\"schema_version\": 2}"})),
     )
     .await;
-    assert_eq!(sb2, 400, "schema_version != 1: {b2}");
+    assert_eq!(sb2, 400, "без network_id/store → 400: {b2}");
+    assert!(
+        detail(&b2).contains("формат") && detail(&b2).contains("network_id"),
+        "400 має бути про ВІДСУТНІ ПОЛЯ, а не про версію: {b2}"
+    );
+
+    // (3) ҐЕЙТ ВЕРСІЇ реально працює: приймаються ЛИШЕ 1 (старі файли
+    // пристроїв) і 2 (поточний) — усе інше → 400, і в тексті — ФАКТИЧНЕ
+    // значення з файлу. Перший кейс — ПОВНИЙ валідний файл (усі поля + живий
+    // код активації): 400 зумовлений САМЕ версією, інакше він би імпортувався,
+    // як cfg4 вище.
+    let mut v3_full = cfg4.clone();
+    v3_full["schema_version"] = json!(3);
+    let version_cases: [(&str, Value, &str); 4] = [
+        (
+            "повний валідний файл, version=3",
+            v3_full,
+            "schema_version=3",
+        ),
+        (
+            "version=0",
+            json!({"schema_version": 0}),
+            "schema_version=0",
+        ),
+        (
+            "version відсутня",
+            json!({"store": {}, "network_id": "x"}),
+            "schema_version=відсутня",
+        ),
+        (
+            "version нечислова",
+            json!({"schema_version": "2"}),
+            "schema_version=\"2\"",
+        ),
+    ];
+    for (what, body, expected) in version_cases {
+        let (st, b) = req(
+            &base,
+            reqwest::Method::POST,
+            "/api/v1/admin/network-config/import",
+            Some(&owner_tok),
+            Some(json!({"content": body.to_string()})),
+        )
+        .await;
+        assert_eq!(st, 400, "{what} → 400: {b}");
+        assert!(
+            detail(&b).contains(expected),
+            "{what}: 400 має бути САМЕ про версію, зі значенням із файлу ({expected}): {b}"
+        );
+    }
+
+    // (5) СУМІСНІСТЬ v1 (обов'язкова вимога Творця) → 200: позитивні кейси
+    // (v1 без db і v1 із db.password_encrypted без key_b64) перевіряє окремий
+    // тест `v1_compatible_file_imports_with_200_after_version_gate_fix`.
 
     // ── Export неіснуючої точки → 404 ──
     let (sx, x) = req(
@@ -560,4 +702,98 @@ async fn network_config_export_import_lifecycle() {
     )
     .await;
     assert_eq!(sx2, 400, "невалідний store_id: {x2}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ЗВОРОТНА СУМІСНІСТЬ schema_version=1 (реальний HTTP-шлях)
+
+/// ВИМОГА ТВОРЦЯ: конфіг-файл зі СТАРОГО пристрою (schema_version=1, без
+/// db-блоку або з db.password_encrypted БЕЗ key_b64) імпортується зі 200 —
+/// інакше після оновлення всі раніше видані файли стають непридатними.
+///
+/// Раніше це була регресія: ґейт `import_config` порівнював schema_version
+/// СТРОГО з поточною (== 2) і відкидав v1-файл 400; тест до виправлення стояв
+/// `#[ignore]` (фіксація дефекту без підгонки очікувань). Тепер ґейт приймає
+/// 1 | 2 — тест зелений і виконується у звичайному прогоні.
+#[tokio::test]
+async fn v1_compatible_file_imports_with_200_after_version_gate_fix() {
+    common::force_test_db();
+    let _dir = sources_dir(); // ізоляція db_sources.toml у temp (у репо нічого)
+    let pool = api_pool().await;
+    apply_schema().await;
+    let tag = Uuid::new_v4().simple().to_string()[..10].to_string();
+    let (owner_login, _admin, _cashier) = seed_users(&pool, &tag).await;
+
+    let port = free_port().await;
+    let base = format!("http://127.0.0.1:{port}");
+    let _h = run_facade(&format!("127.0.0.1:{port}"));
+    wait_ready(&base).await;
+    let owner_tok = login(&base, &owner_login).await;
+
+    // Точка й РЕАЛЬНИЙ export цього сервера: валідний код активації + наявна
+    // точка — тобто єдине, чого «не вистачає» v1-файлу, це версія.
+    let (ss, store) = req(
+        &base,
+        reqwest::Method::POST,
+        "/api/v1/admin/stores",
+        Some(&owner_tok),
+        Some(json!({"name": "NC E2E v1 compat"})),
+    )
+    .await;
+    assert_eq!(ss, 201, "створити точку: {store}");
+    let store_id = store["id"].as_str().expect("store.id").to_string();
+
+    let (se, exp) = req(
+        &base,
+        reqwest::Method::POST,
+        "/api/v1/admin/network-config/export",
+        Some(&owner_tok),
+        Some(json!({"store_id": store_id})),
+    )
+    .await;
+    assert_eq!(se, 200, "export: {exp}");
+    let v2: Value = serde_json::from_str(exp["content"].as_str().expect("content")).expect("json");
+    assert_eq!(v2["schema_version"], json!(2));
+
+    // (а) v1 БЕЗ db-блоку — найстаріші файли, що лежать на пристроях.
+    let mut v1_bare = v2.clone();
+    v1_bare["schema_version"] = json!(1);
+    if let Some(o) = v1_bare.as_object_mut() {
+        o.remove("db");
+    }
+    let (s1, b1) = req(
+        &base,
+        reqwest::Method::POST,
+        "/api/v1/admin/network-config/import",
+        Some(&owner_tok),
+        Some(json!({"content": v1_bare.to_string()})),
+    )
+    .await;
+    assert_eq!(s1, 200, "v1-файл без db мусить імпортуватись: {b1}");
+    assert_eq!(b1["store"]["id"].as_str().unwrap_or(""), store_id);
+
+    // (б) v1 із db.password_encrypted і БЕЗ key_b64 — старий файл із паролем:
+    // db-блок ігнорується, зайве/невідоме поле читання не ламає.
+    let mut v1_db = v2.clone();
+    v1_db["schema_version"] = json!(1);
+    v1_db["db"] = json!({
+        "host": "10.0.0.7",
+        "port": 5433,
+        "database": "old-db",
+        "user": "old-user",
+        "password_encrypted": "QUFBQQ==",
+    });
+    let (s2, b2) = req(
+        &base,
+        reqwest::Method::POST,
+        "/api/v1/admin/network-config/import",
+        Some(&owner_tok),
+        Some(json!({"content": v1_db.to_string()})),
+    )
+    .await;
+    assert_eq!(
+        s2, 200,
+        "v1-файл із db.password_encrypted (без key_b64) мусить імпортуватись: {b2}"
+    );
+    assert_eq!(b2["store"]["id"].as_str().unwrap_or(""), store_id);
 }

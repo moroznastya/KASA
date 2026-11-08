@@ -4,6 +4,17 @@
 > Дата: 2026-08-20 (оновлено за зауваженнями Творця)
 > Стек: Rust-фасад (torgashka-*) + React + PostgreSQL
 
+> 🔴 **Неактуально для топології ZBOX (станом на 2026-09-13).** Модель «сервер
+> (хаб) слухає `:<port>` і точки ходять до нього по HTTP» для ZBOX не застосовна:
+> на ZBOX порти `8000`/`80`/`443` **ЗАКРИТІ**, відкритий лише `5432` (перевірено
+> 2026-09-13 з `10.179.55.165`). Тобто кроки «`systemctl enable --now torgashka` →
+> `server_url = "http://<ip>:8000"`» у цій топології **НЕ ВИКОНУЮТЬСЯ**.
+> Діюча процедура — [operations/onboarding-windows-device.md](../../operations/onboarding-windows-device.md);
+> ADR — [ADR-0009-direct-db-sync-model.md](../../adr/ADR-0009-direct-db-sync-model.md);
+> технічний довідник — [operations/hub-and-nodes.md §0.1, §15.0, §15.6](../../operations/hub-and-nodes.md).
+> Зв'язок пристрій ↔ ZBOX — **прямий PostgreSQL-канал** (`10.179.55.210:5432`),
+> конфіг — `db_sources.toml` + `.dbkey`. Текст нижче збережено як історичний.
+
 ---
 
 ## 0. КЛЮЧОВІ РІШЕННЯ (за зауваженнями Творця)

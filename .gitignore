@@ -162,7 +162,7 @@ resources/
 # screenshots/ може містити секрети в кадрі — не комітимо без перевірки.
 artifacts/backups/
 artifacts/screenshots/
-artifacts/**/*.dump
+artifacts/**/*.dump*
 artifacts/**/*.sql.gz
 artifacts/**/*.tar.gz
 db_sources.toml.bak*

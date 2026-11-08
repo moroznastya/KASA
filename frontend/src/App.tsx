@@ -37,9 +37,6 @@ const NetworkReportsPage = lazy(() => import('@/pages/network/NetworkReportsPage
 const NetworkFinancesPage = lazy(() => import('@/pages/network/NetworkFinancesPage'));
 const AuditLogPage = lazy(() => import('@/pages/network/AuditLogPage'));
 const NetworkTopologyPage = lazy(() => import('@/pages/network/NetworkTopologyPage'));
-const NodeJoinPage = lazy(() => import('@/pages/network/NodeJoinPage'));
-
-
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const PrroPage = lazy(() => import('@/pages/prro/PrroPage'));
 const PrroSettings = lazy(() => import('@/pages/settings/PrroSettings'));
@@ -100,7 +97,6 @@ const App: React.FC = () => {
           {/* Майстер першого встановлення — САМОДОСТАТНІЙ (без ProtectedRoute):
               на fresh-БД авторизації ще немає, сторінка створює першого власника. */}
           <Route path="/setup" element={<SetupPage />} />
-          <Route path="/node-join" element={<NodeJoinPage />} />
           <Route
             path="/onboarding"
             element={

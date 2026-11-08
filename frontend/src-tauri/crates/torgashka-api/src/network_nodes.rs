@@ -3,7 +3,7 @@
 // сутність покриває роль вузла-клієнта хаба: store_id, name, node_token_hash,
 // status, last_seen_at).
 //
-//   POST /api/v1/admin/network-nodes                  — вузол + join-код (owner)
+//   POST /api/v1/admin/network-nodes                  — реєстровий запис вузла (owner)
 //   GET  /api/v1/admin/network-nodes                  — список вузлів (admin|owner)
 //   POST /api/v1/admin/network-nodes/:id/archive      — вивести з мережі (owner)
 //   GET  /api/v1/admin/network-events                 — журнал мережевих подій
@@ -14,9 +14,8 @@
 // хабом іде прикладним протоколом (`/api/v1/sync/*`), токен вузла зберігається
 // в його власних налаштуваннях (`sync.hub_token`).
 //
-// Безпека (як network.rs): join-код (8 символів CODE_ALPHABET без 0/O/1/I)
-// і node_token (48 hex) повертаються ОДИН раз; у БД — лише SHA-256-хеші
-// (join_token_hash / node_token_hash). /admin/* — роль через
+// Безпека: секрети вузла зберігаються лише хешами (node_token_hash);
+// /admin/* — роль через
 // auth_routes::require_admin/require_owner (роль береться з JWT, БЕЗ запиту
 // в БД).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,9 +133,7 @@ fn pool(state: &AppState) -> Result<PgPool, NodeErr> {
     state.write_pool_or_err().map_err(NodeErr::Unavailable)
 }
 
-// ─── Генерація секретів ─────────────────────────────────────────────────────
-
-// ─── Підказка хоста для join-екрана (не адреса реплікації) ──────────────────
+// ─── Підказка хоста для нового вузла (не адреса реплікації) ──────────────────
 
 /// Хост:порт, на яких фасад цього вузла доступний у мережі — джерело той самий
 /// DSN, через який фасад підключений до БД (стандартний парсинг sqlx
@@ -172,16 +169,12 @@ pub struct CreateNodeBody {
 #[derive(Debug, Serialize)]
 pub struct CreateNodeResponse {
     pub id: Uuid,
-    /// Одноразовий join-код (8 символів A-Z0-9 без 0/O/1/I) — повертається
-    /// один раз; у БД — лише SHA-256-хеш.
-    pub join_code: String,
-    pub join_code_expires_at: NaiveDateTime,
     pub primary_host_hint: String,
 }
 
-/// Створює запис вузла (status='provisioning') і видає одноразовий join-код
-/// (TTL 30 хв). Повторний виклик для того самого store_id створює НОВИЙ вузол
-/// (жодних UNIQUE-обмежень на store_id — мережа дозволяє кілька вузлів).
+/// Створює реєстровий запис вузла (status='provisioning'). Повторний виклик
+/// для того самого store_id створює НОВИЙ вузол (жодних UNIQUE-обмежень на
+/// store_id — мережа дозволяє кілька вузлів).
 pub async fn create_node(
     State(state): State<AppState>,
     Extension(claims): Extension<crate::auth::Claims>,
@@ -211,20 +204,14 @@ pub async fn create_node(
         }
     }
 
-    // Одноразовий join-код: у БД — лише SHA-256-хеш, TTL 30 хв (UTC).
-    let join_code = network::gen_code();
-    let join_token_hash = network::sha256_hex(&join_code);
-    let row: (Uuid, NaiveDateTime) = sqlx::query_as(
-        "INSERT INTO network_nodes (store_id, name, join_token_hash, join_token_expires_at) \
-         VALUES ($1, $2, $3, (now() AT TIME ZONE 'utc') + interval '30 minutes') \
-         RETURNING id, join_token_expires_at",
+    // Реєстровий запис вузла: секретів провіжнингу тут не створюється.
+    let node_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO network_nodes (store_id, name) VALUES ($1, $2) RETURNING id",
     )
     .bind(store_id)
     .bind(&name)
-    .bind(&join_token_hash)
     .fetch_one(&pool)
     .await?;
-    let (node_id, expires_at) = row;
 
     network::audit(
         &pool,
@@ -237,7 +224,6 @@ pub async fn create_node(
             "name": name,
             "role": "standby",
             "status": "provisioning",
-            "join_code_ttl_minutes": 30,
         }),
     )
     .await;
@@ -255,8 +241,6 @@ pub async fn create_node(
         StatusCode::CREATED,
         Json(CreateNodeResponse {
             id: node_id,
-            join_code,
-            join_code_expires_at: expires_at,
             primary_host_hint: host,
         }),
     ))

@@ -262,8 +262,15 @@ pub struct DeviceCtx {
 
 /// Шляхи, на яких каса може автентифікуватись device_token (Bearer)
 /// замість JWT касира. Інші шляхи device-авторизації НЕ дають.
+///
+/// `/api/v1/sync/snapshot` — крок приєднання вузла (docs/operations/
+/// hub-and-nodes.md §15.1): вузол забирає знімок БД хаба ОДРАЗУ після
+/// активації, коли JWT касира ще не існує. Дозвіл на роль дає сам хендлер
+/// (`sync_snapshot::ALLOWED_ROLES` = device|admin|owner; інші → 403), тож
+/// device_token тут — єдиний доступний вузлу спосіб автентифікації, а не
+/// розширення прав: без валідного активного device_token шлях так само 401.
 fn is_device_sync_path(path: &str) -> bool {
-    path == "/api/v1/sync/master" || path == "/api/v1/sync/push"
+    path == "/api/v1/sync/master" || path == "/api/v1/sync/push" || path == "/api/v1/sync/snapshot"
 }
 
 enum DeviceAuthError {

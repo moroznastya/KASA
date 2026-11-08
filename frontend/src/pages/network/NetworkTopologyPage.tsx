@@ -4,7 +4,6 @@ import {
   Laptop,
   RefreshCw,
   Archive,
-  Copy,
   Loader2,
   Plus,
   Database,
@@ -121,15 +120,6 @@ const NetworkTopologyPage: React.FC = () => {
     }
   };
 
-  const copyCode = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      toast.success('Скопійовано');
-    } catch {
-      toast.error('Не вдалося скопіювати');
-    }
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -242,7 +232,7 @@ const NetworkTopologyPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Модалка створення вузла / join-код ── */}
+      {/* ── Модалка створення вузла ── */}
       <Modal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} title={created ? 'Вузол створено' : 'Додати вузол'}>
         {!created ? (
           <div className="space-y-4">
@@ -259,16 +249,6 @@ const NetworkTopologyPage: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            <p className="text-sm text-gray-600 dark:text-slate-300">
-              На новому комп'ютері (вузол) відкрийте екран «Приєднати як вузол мережі» і введіть цей код. Код дійсний до{' '}
-              <b>{new Date(created.join_code_expires_at).toLocaleString()}</b>.
-            </p>
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-100 dark:bg-slate-700 font-mono text-lg tracking-widest">
-              <span className="flex-1 text-center font-bold">{created.join_code}</span>
-              <button onClick={() => void copyCode(created.join_code)} className="text-gray-500 hover:text-gray-800" title="Копіювати">
-                <Copy className="w-4 h-4" />
-              </button>
-            </div>
             <p className="text-xs text-gray-400">
               Підказка для підключення (primary): <span className="font-mono">{created.primary_host_hint}</span>
             </p>
