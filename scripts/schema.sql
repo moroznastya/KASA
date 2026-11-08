@@ -756,7 +756,9 @@ CREATE TABLE public.system_settings (
     is_active boolean NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
-    store_id uuid
+    store_id uuid,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -869,7 +871,9 @@ CREATE TABLE public.write_off_reasons (
     id uuid NOT NULL,
     name character varying(100) NOT NULL,
     is_active boolean DEFAULT true NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 

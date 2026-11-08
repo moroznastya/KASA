@@ -572,6 +572,53 @@ ALTER TABLE public.store_product_prices ADD COLUMN IF NOT EXISTS
     is_deleted boolean NOT NULL DEFAULT false;
 "#;
 
+/// E5 (ADR-0008 §7.1-C, Alembic 0011, 0012, 0023): колонки sync-шару для pull довідників.
+///
+/// `server_version` і `is_deleted` — канонічні колонки для дельти pull у `sync.rs`
+/// (`query_settings`, `query_write_off_reasons`, `query_barcodes`, `query_product_images`,
+/// `query_categories`, `query_products`, `query_suppliers`, `query_employees`).
+///
+/// Додаються ідемпотентно при старті фасаду: якщо БД мігрована без 0023 або
+/// створена зі старого знімка, ендпоінти pull (напр. GET /api/v1/sync/settings)
+/// не падатимуть з HTTP 500 («column "is_deleted" does not exist»).
+const SYNC_CATALOG_COLUMNS_DDL: &str = r#"
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+ALTER TABLE public.categories ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE public.suppliers ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+ALTER TABLE public.suppliers ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE public.system_settings ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+
+ALTER TABLE public.write_off_reasons ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+ALTER TABLE public.write_off_reasons ADD COLUMN IF NOT EXISTS
+    is_deleted boolean NOT NULL DEFAULT false;
+
+ALTER TABLE public.barcodes ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE public.product_images ADD COLUMN IF NOT EXISTS
+    server_version bigint NOT NULL DEFAULT 0;
+"#;
+
 const RLS_FORCE_DDL: &str = r#"
 -- ============================================================================
 -- ЕТАП 7: FORCE ROW LEVEL SECURITY для вже мігрованих БД.
@@ -692,6 +739,7 @@ fn schema_fingerprint() -> String {
         STORE_LEGAL_COLUMNS_DDL,
         USERS_SYNC_STATE_DDL,
         STORE_PRICES_VERSION_DDL,
+        SYNC_CATALOG_COLUMNS_DDL,
         RLS_FORCE_DDL,
         RECEIPTS_CLIENT_UUID_DDL,
         WAL_POLICY_DDL,
@@ -963,6 +1011,10 @@ async fn ensure_schema_inner(pool: &PgPool) -> Result<(), DbError> {
         .await
         .map_err(DbError::Sqlx)?;
     sqlx::raw_sql(STORE_PRICES_VERSION_DDL)
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    sqlx::raw_sql(SYNC_CATALOG_COLUMNS_DDL)
         .execute(pool)
         .await
         .map_err(DbError::Sqlx)?;

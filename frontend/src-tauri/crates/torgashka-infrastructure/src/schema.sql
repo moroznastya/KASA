@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS public.barcodes (
     is_primary boolean DEFAULT false NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    store_id uuid
+    store_id uuid,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.categories (
@@ -111,7 +112,9 @@ CREATE TABLE IF NOT EXISTS public.categories (
     parent_id uuid,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    store_id uuid
+    store_id uuid,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.debtor_payments (
@@ -211,7 +214,8 @@ CREATE TABLE IF NOT EXISTS public.product_images (
     sort_order integer DEFAULT 0 NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    store_id uuid
+    store_id uuid,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.products (
@@ -236,7 +240,9 @@ CREATE TABLE IF NOT EXISTS public.products (
     markup numeric(5,2),
     recommended_qty numeric(10,3),
     is_fiscal boolean DEFAULT false NOT NULL,
-    fiscal_stock numeric(10,3) DEFAULT 0 NOT NULL
+    fiscal_stock numeric(10,3) DEFAULT 0 NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.prro_queue_items (
@@ -442,7 +448,9 @@ CREATE TABLE IF NOT EXISTS public.suppliers (
     address text,
     notes text,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.system_settings (
@@ -457,7 +465,9 @@ CREATE TABLE IF NOT EXISTS public.system_settings (
     is_active boolean NOT NULL,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
-    store_id uuid
+    store_id uuid,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.transfer_items (
@@ -507,7 +517,9 @@ CREATE TABLE IF NOT EXISTS public.users (
     permissions jsonb,
     hourly_rate numeric(10,2),
     last_login_at timestamp without time zone,
-    onboarding_completed boolean DEFAULT true NOT NULL
+    onboarding_completed boolean DEFAULT true NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.work_sessions (
@@ -535,7 +547,9 @@ CREATE TABLE IF NOT EXISTS public.write_off_reasons (
     id uuid NOT NULL,
     name character varying(100) NOT NULL,
     is_active boolean DEFAULT true NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    server_version bigint DEFAULT 0 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS public.write_offs (
