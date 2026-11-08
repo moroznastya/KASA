@@ -145,7 +145,7 @@ async fn note_connectivity_transition(up: Option<&PgPool>, primary_up: bool) {
                 crate::network::log_node_event(pool, None, event, level, json!({})).await
             }
             None => eprintln!(
-                "[torgashka-api] network: подію {event} не записано — апстрім-пул недоступний (standby; F5 ADR-0007: локальна репліка не ціль запису)"
+                "[torgashka-api] network: подію {event} не записано — апстрім-пул недоступний"
             ),
         }
     }
@@ -162,7 +162,7 @@ fn event_log_pool(up: Option<&PgPool>) -> Option<&PgPool> {
 pub(crate) fn local(state: &AppState) -> Result<LocalApiState, LocalErr> {
     state.local.clone().ok_or_else(|| {
         LocalErr::Unavailable(
-            "локальна репліка недоступна (режим standby не активовано або PG на 5433 не запущено)"
+            "локальна копія БД недоступна (PG на 5433 не запущено)"
                 .into(),
         )
     })
@@ -381,7 +381,7 @@ pub async fn local_status(State(state): State<AppState>) -> Result<Json<Value>, 
     let pending = offline::commands::get_unsynced_count().unwrap_or(0);
     let status = effective_status(primary_up, pending);
     Ok(Json(json!({
-        "mode": "standby",
+        "mode": "node",
         "degrade_to_local": cfg.degrade_to_local,
         "local_port": cfg.local_port,
         "primary_reachable": primary_up,
@@ -743,7 +743,7 @@ pub async fn drain_local_outbox(
         Some(ls) => ls.pool.clone(),
         None => state.store_pool.clone().ok_or_else(|| {
             LocalErr::Unavailable(
-                "немає пула БД: ні локальної репліки (standby), ні store_pool (primary) — \
+                "немає пула БД: ні локальної копії БД, ні store_pool — \
                  застосувати чергу нікуди"
                     .into(),
             )

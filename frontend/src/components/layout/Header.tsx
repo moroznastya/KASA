@@ -96,8 +96,7 @@ export const Header: React.FC = () => {
           />
         )}
 
-        {/* Стан вузла (standby): primary доступний / черга синкається / офлайн.
-            Джерело — GET /local/status, НЕ navigator.onLine (Фаза 3.1а/3.1б). */}
+        {/* Стан зв'язку вузла: сервер доступний / синхронізація / офлайн */}
         <NodeStatusIndicator />
 
         {/* Індикатор офлайн-синхронізації (Tauri SQLite черга; null у браузері) */}

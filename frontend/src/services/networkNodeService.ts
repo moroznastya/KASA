@@ -26,7 +26,7 @@ import { isTauri } from '@/hooks/useTauri';
 
 // ── Реєстр вузлів (живий контур) ─────────────────────────────────────────────
 
-export type NodeRole = 'primary' | 'standby';
+export type NodeRole = 'primary' | 'node' | 'standby';
 export type NodeStatus = 'provisioning' | 'syncing' | 'active' | 'lagging' | 'offline' | 'archived';
 
 /** Вузол зі списку (без секретів). */

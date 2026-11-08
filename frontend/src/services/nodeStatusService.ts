@@ -2,23 +2,23 @@ import { AxiosError } from 'axios';
 import api from './api';
 
 /**
- * Статус вузла (standby-режим, ADR-0007 §10.2/§11.3).
+ * Статус вузла (локальний режим, синхронізація з центральним сервером).
  *
  * Бекенд: `route_local.rs::local_status` (GET /api/v1/local/status).
  * Шлях саме `/local/status` (без `/api/v1`), бо `services/api.ts` має
  * `baseURL = <host>/api/v1` → фактичний URL `/api/v1/local/status`.
  *
- * Роутер `/api/v1/local/*` монтується ЛИШЕ коли вузол у standby і локальна
- * репліка підключена (`route_local.rs:502`) → на звичайному primary-вузлі
- * маршруту немає (404). Це НЕ помилка: індикатор просто не показується.
+ * Роутер `/api/v1/local/*` монтується, коли локальна копія БД підключена
+ * (`route_local.rs`). На центральному сервері маршруту немає (404). Це НЕ
+ * помилка: індикатор просто не показується.
  *
  * Запит іде тим самим axios-інстансом, тому автоматично отримує JWT
  * (`Authorization`) і `X-Store-Id` — рівно ті самі шари, що й решта API
- * (`store_middleware` + `auth_middleware`, `route_local.rs:526-533`).
+ * (`store_middleware` + `auth_middleware`, `route_local.rs`).
  */
 
-/** `mode` вузла. `route_local.rs:337` повертає лише `standby`. */
-export type NodeMode = 'standby' | 'primary';
+/** `mode` вузла. */
+export type NodeMode = 'node' | 'primary' | 'standby';
 
 /**
  * `effective` з `route_local.rs::effective_status(primary_up, pending)`:

@@ -827,9 +827,9 @@ pub fn build_router(state: AppState) -> Router {
             auth::auth_middleware,
         ));
 
-    // Локальний routing standby-вузла (ЕТАП 18): /api/v1/local/* — читання
-    // з локальної репліки (5433) + запис у SQLite-чергу, коли primary
-    // недоступний. Порожній Router, якщо вузол не standby або репліка не
+    // Локальний routing вузла (ЕТАП 18): /api/v1/local/* — читання
+    // з локальної копії БД (5433) + запис у SQLite-чергу, коли сервер
+    // недоступний. Порожній Router, якщо локальна копія БД не
     // підключена (жодних маршрутів не додається). Auth+store шари — всередині
     // route_local::router (як у private-гілки).
     activate

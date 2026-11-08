@@ -1,24 +1,19 @@
 //! Локальний стан вузла у SQLite каси: присутність device-ів і налаштування
 //! `[node]`-сесії (node_server_url / node_node_id / node_node_token / БД).
 //!
-//! ADR-0008: standby-частину (фоновий heartbeat-цикл у primary і
-//! `PUT /api/v1/network-nodes/:id/heartbeat`) видалено разом із самою
-//! концепцією репліки (E7, ADR-0008 §8 п.7). Лишилося те, що НЕ було
-//! standby-специфічним:
+//! Після ліквідації standby-архітектури (ADR-0008 E7, ADR-0009) використовується
+//! виключно для:
 //!   * `record_device_seen` — журнал життєвості device-ів у ЛОКАЛЬНІЙ БД
 //!     вузла (SQLite каналу присутності; пише кожен вузол у себе);
-//!   * `read_standby_settings` — читання збережених `node_*` налаштувань
-//!     (використовує резолв URL локальної копії БД, `node_config`).
+//!   * `read_standby_settings` — читання збережених `node_*` налаштувань.
 
 use rusqlite::{params, Connection};
 
 use crate::offline::db::OfflineDatabase;
 use crate::offline::sync_push;
 
-/// Локальний журнал життєвості device-каси на standby-вузлі (ADR-0007
-/// §11.7.9.8, Фаза 3.3b): `UPDATE devices SET last_seen_at` на standby не
-/// виконується (репліка read-only) — факт звернення пишемо в SQLite каси.
-/// Авторитетне `devices.last_seen_at` пише primary (там же й device-авторизація).
+/// Локальний журнал життєвості device-каси на вузлі: факт звернення пишемо в SQLite каси.
+/// Авторитетне `devices.last_seen_at` пише центральна БД.
 pub fn record_device_seen(device_id: &str) -> Result<(), String> {
     let conn = open_offline_conn()?;
     conn.execute(

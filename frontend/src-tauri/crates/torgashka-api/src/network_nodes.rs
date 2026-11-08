@@ -222,7 +222,7 @@ pub async fn create_node(
         store_id,
         serde_json::json!({
             "name": name,
-            "role": "standby",
+            "role": "node",
             "status": "provisioning",
         }),
     )

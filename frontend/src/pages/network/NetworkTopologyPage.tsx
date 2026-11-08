@@ -27,17 +27,14 @@ import {
 import { formatRelativeTime, formatBytes } from '@/utils/format';
 
 /**
- * «Вузли мережі» — топологія реплікації (ЕТАП 15-17, plan-network-replication).
+ * «Вузли мережі» — топологія вузлів торговельних точок.
  *
- * Відмінність від «Каси мережі» (DevicesPage — логічні пристрої синхронізації):
- * тут — ФІЗИЧНІ standby-копії БД (pg_basebackup + streaming replication).
- * Кожен standby — повноцінний PostgreSQL-вузол, що приймає трафік офлайн.
+ * Кожен вузол — робоча каса/станція торгової точки з локальною копією БД,
+ * що синхронізується з центральною БД.
  *
  * Дії:
- *  - «Додати вузол» → створює запис + показує одноразовий join-код (TTL 30 хв)
- *    та primary_host_hint для підключення нового комп'ютера.
+ *  - «Додати вузол» → створює реєстровий запис вузла для точки.
  *  - Архівувати → вимкнути вузол з мережі (статус archived).
- *  - Примусовий ресинк → перезапуск basebackup для вузла (кнопка на standby).
  */
 
 const STATUS_META: Record<NodeStatus, { label: string; badgeClass: string }> = {
@@ -126,7 +123,7 @@ const NetworkTopologyPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold">Вузли мережі</h1>
           <p className="text-sm text-gray-500 dark:text-slate-400">
-            Фізичні standby-копії БД (реплікація PostgreSQL). Тестування на 2 пристроях — після реалізації всіх етапів.
+            Робочі вузли торговельних точок та стан їхньої синхронізації з центральною БД.
           </p>
         </div>
         <Button onClick={() => { setCreated(null); setIsCreateOpen(true); }}>
@@ -153,7 +150,7 @@ const NetworkTopologyPage: React.FC = () => {
         <div className="text-center py-16 border-2 border-dashed rounded-xl text-gray-400">
           <Server className="w-12 h-12 mx-auto mb-3" />
           <p>Ще немає жодного вузла мережі.</p>
-          <p className="text-sm mt-1">Додайте перший standby-вузол або підключіть комп'ютер через join-код.</p>
+          <p className="text-sm mt-1">Додайте перший вузол мережі.</p>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

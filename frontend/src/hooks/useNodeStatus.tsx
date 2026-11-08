@@ -26,9 +26,9 @@ const POLL_INTERVAL_MS = 20_000;
 const FOCUS_MIN_GAP_MS = 5_000;
 
 export interface NodeStatusState {
-  /** Останній успішно прочитаний статус (null — вузол не standby / API недоступний). */
+  /** Останній успішно прочитаний статус (null — API недоступний). */
   status: NodeStatus | null;
-  /** true, коли вузол підтверджено standby і /local/status відповідає. */
+  /** true, коли /local/status відповідає. */
   available: boolean;
 }
 
@@ -58,9 +58,9 @@ export function useNodeStatus(): NodeStatusState {
     lastFetchAtRef.current = Date.now();
     const next = await getNodeStatus();
 
-    // Не standby (404) або локальний API мовчить → індикатора немає.
+    // Локальний API мовчить → індикатора немає.
     // Базу переходів скидаємо: після повернення не буде хибного «відновлено».
-    if (!next || next.mode !== 'standby') {
+    if (!next || (next.mode !== 'node' && next.mode !== 'standby')) {
       prevEffectiveRef.current = null;
       setAvailable(false);
       setStatus(null);
@@ -139,7 +139,7 @@ export function useNodeStatus(): NodeStatusState {
 export const NodeStatusIndicator: React.FC = () => {
   const { status, available } = useNodeStatus();
 
-  if (!available || !status || status.mode !== 'standby') return null;
+  if (!available || !status || (status.mode !== 'node' && status.mode !== 'standby')) return null;
 
   const pending = status.queue_pending;
 
@@ -186,7 +186,7 @@ export const NodeStatusIndicator: React.FC = () => {
     <span
       role="status"
       aria-live="polite"
-      title="Головний сервер доступний, черга порожня (вузол у режимі standby)"
+      title="Головний сервер доступний, черга порожня"
       className="inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full border text-xs font-medium bg-success-50 dark:bg-success-900/20 text-success-700 dark:text-success-400 border-success-200 dark:border-success-800"
     >
       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
